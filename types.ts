@@ -440,6 +440,16 @@ export interface FreightPurchase {
   materializedProductId?: string;
   materializedAt?: string;
   receivedAt?: string;
+  receivedQuantity?: number;
+  remainingQuantity?: number;
+  receiveHistory?: Array<{
+    id: string;
+    date: string;
+    quantity: number;
+    unitCost?: number;
+    notes?: string;
+    productId?: string;
+  }>;
 }
 
 export interface PurchaseReceiptInventoryDelta {
