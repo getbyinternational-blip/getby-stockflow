@@ -24,7 +24,8 @@
     "test": "rm -rf .tmp-tests && tsc -p tsconfig.erp-tests.json && node scripts/fix-test-import-extensions.cjs && node --test .tmp-tests/tests/erp-readonly.test.js",
     "test:erp": "rm -rf .tmp-tests && tsc -p tsconfig.erp-tests.json && node scripts/fix-test-import-extensions.cjs && node --test .tmp-tests/tests/erp-readonly.test.js",
     "sample:firestore": "node --experimental-strip-types scripts/firestore-scenario-sampler.ts",
-    "export:firestore:canonical": "node --experimental-strip-types scripts/firestore-canonical-export.ts"
+    "export:firestore:canonical": "node --experimental-strip-types scripts/firestore-canonical-export.ts",
+    "export:firestore": "node --experimental-strip-types scripts/firestore-full-export.ts"
   },
   "dependencies": {
     "@google/genai": "^1.31.0",
