@@ -2424,6 +2424,8 @@ const syncFromCloud = async () => {
 // Helper to recursively remove undefined values for Firestore compatibility
 const sanitizeData = (obj: any): any => {
     if (obj === undefined) return null;
+    if (typeof obj === 'number') return Number.isFinite(obj) ? obj : 0;
+    if (obj instanceof Date) return Number.isFinite(obj.getTime()) ? obj.toISOString() : null;
     if (obj === null || typeof obj !== 'object') return obj;
     
     if (Array.isArray(obj)) {
@@ -2450,6 +2452,37 @@ const isDataUrlImage = (value: string | undefined): boolean => {
 
 const normalizeLabel = (value?: string) => (value || '').trim();
 const toStockKey = (variant?: string, color?: string) => `${normalizeStockBucketVariant(variant)}__${normalizeStockBucketColor(color)}`;
+const cleanProductText = (value: unknown): string | undefined => {
+  const text = String(value ?? '').trim();
+  return text || undefined;
+};
+const cleanProductNumber = (value: unknown, fallback = 0): number => {
+  if (value === '' || value === null || value === undefined) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
+const sanitizeProductPayload = (product: Product): Product => {
+  const cleaned: any = {
+    ...product,
+    id: cleanProductText(product.id) || Date.now().toString(),
+    name: cleanProductText(product.name) || 'not set yet',
+    category: cleanProductText(product.category) || 'not set yet',
+    buyPrice: cleanProductNumber(product.buyPrice, 0),
+    sellPrice: cleanProductNumber(product.sellPrice, 0),
+    stock: cleanProductNumber(product.stock, 0),
+    totalPurchase: cleanProductNumber(product.totalPurchase, 0),
+    totalSold: cleanProductNumber(product.totalSold, 0),
+    variants: Array.isArray(product.variants) ? product.variants.filter(Boolean).map(String) : [],
+    colors: Array.isArray(product.colors) ? product.colors.filter(Boolean).map(String) : [],
+  };
+  ['barcode', 'description', 'hsn', 'image'].forEach((key) => {
+    const value = cleanProductText((product as any)[key]);
+    if (value) cleaned[key] = value;
+    else delete cleaned[key];
+  });
+  return cleaned as Product;
+};
 
 const sanitizeVariantColorStock = (product: Product): Product => {
   const entries = Array.isArray(product.stockByVariantColor) ? product.stockByVariantColor : [];
@@ -3217,12 +3250,12 @@ export const resetData = () => {
 export const addProduct = async (product: Product): Promise<Product[]> => {
   const data = loadData();
   const nowIso = new Date().toISOString();
-  const sanitized = sanitizeVariantColorStock({
+  const sanitized = sanitizeVariantColorStock(sanitizeProductPayload({
     ...product,
     createdAt: product.createdAt || nowIso,
     totalSold: Math.max(0, Number(product.totalSold) || 0),
     totalPurchase: product.totalPurchase === undefined ? undefined : Math.max(0, Number(product.totalPurchase) || 0),
-  });
+  }));
   const preparedProduct = await uploadProductImageIfNeeded(sanitized);
   const newProducts = [...data.products.filter(p => p.id !== preparedProduct.id), preparedProduct];
 
@@ -3250,12 +3283,12 @@ export const addProduct = async (product: Product): Promise<Product[]> => {
 
 export const updateProduct = async (product: Product): Promise<Product[]> => {
   const data = loadData();
-  const sanitized = sanitizeVariantColorStock({
+  const sanitized = sanitizeVariantColorStock(sanitizeProductPayload({
     ...product,
     updatedAt: new Date().toISOString(),
     totalSold: Math.max(0, Number(product.totalSold) || 0),
     totalPurchase: product.totalPurchase === undefined ? undefined : Math.max(0, Number(product.totalPurchase) || 0),
-  });
+  }));
   const preparedProduct = await uploadProductImageIfNeeded(sanitized);
   const newProducts = data.products.map(p => p.id === product.id ? preparedProduct : p);
 
