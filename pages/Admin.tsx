@@ -245,7 +245,7 @@ export default function Admin() {
   useEffect(() => {
     if (barcodePreview && barcodeCanvasRef.current) {
     try {
-            JsBarcode(barcodeCanvasRef.current, barcodePreview.barcode, {
+            JsBarcode(barcodeCanvasRef.current, displayProductText(barcodePreview.barcode, barcodePreview.id), {
                 format: "CODE128",
                 displayValue: true, // This includes the barcode number
                 fontSize: 20,
@@ -269,6 +269,19 @@ export default function Admin() {
     if (!Number.isFinite(n) || n < 0) return undefined;
     return n;
   };
+
+  const cleanOptionalText = (value: any): string | undefined => {
+    const text = String(value ?? '').trim();
+    return text || undefined;
+  };
+
+  const cleanOptionalNumber = (value: any, fallback = 0): number => {
+    if (value === '' || value === null || value === undefined) return fallback;
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+
+  const displayProductText = (value: any, fallback = 'not set yet') => cleanOptionalText(value) || fallback;
 
   const getSuggestedStock = (totalPurchase: any, totalSold: any) => {
     const purchase = toNonNegativeNumber(totalPurchase);
@@ -552,25 +565,9 @@ export default function Admin() {
     const hasVariantAxes = !!(formData.variants?.length || formData.colors?.length);
     const hasCombos = hasVariantAxes && Array.isArray(formData.stockByVariantColor) && formData.stockByVariantColor.length > 0;
 
-    // Strict Validation
-    const missingFields: string[] = [];
-    if (!String(formData.name || '').trim()) missingFields.push('Product Name');
-    if (!String(formData.category || '').trim()) missingFields.push('Category');
-    if (!hasCombos && (formData.buyPrice === '' || formData.buyPrice === null || formData.buyPrice === undefined)) missingFields.push('Buy Price');
-    if (!hasCombos && (formData.sellPrice === '' || formData.sellPrice === null || formData.sellPrice === undefined)) missingFields.push('Sell Price');
-    const hasManualStock = formData.stock !== '' && formData.stock !== null && formData.stock !== undefined;
-    if (!hasCombos && !hasManualStock) missingFields.push('Stock / Quantity');
-    if (missingFields.length > 0) {
-      setError(`Please fill required fields: ${missingFields.join(', ')}`);
-      return;
-    }
-    const openingStockValue = toNonNegativeNumber(formData.stock);
+    const openingStockValue = cleanOptionalNumber(formData.stock, 0);
     const totalPurchaseBlank = formData.totalPurchase === '' || formData.totalPurchase === null || formData.totalPurchase === undefined;
-    const effectiveTotalPurchase = totalPurchaseBlank && openingStockValue > 0 ? openingStockValue : formData.totalPurchase;
-    if (effectiveTotalPurchase === '' || effectiveTotalPurchase === null || effectiveTotalPurchase === undefined || Number(effectiveTotalPurchase) < 0 || !Number.isFinite(Number(effectiveTotalPurchase))) {
-      setError('Total purchase is required and must be a number ≥ 0.');
-      return;
-    }
+    const effectiveTotalPurchase = totalPurchaseBlank && openingStockValue > 0 ? openingStockValue : cleanOptionalNumber(formData.totalPurchase, 0);
     const supplierName = String(formData.supplierName || '').trim();
     const supplierPayableRaw = formData.supplierTotalPayable;
     const supplierPaidRaw = formData.supplierTotalPaid;
@@ -596,16 +593,16 @@ export default function Admin() {
     const productPayload = {
       id: editingProduct ? editingProduct.id : Date.now().toString(),
       createdAt: editingProduct?.createdAt || new Date().toISOString(),
-      image: formData.image || '',
-      name: formData.name,
-      barcode: formData.barcode,
-      description: formData.description || '',
-      category: formData.category,
-      hsn: formData.hsn || '',
-      buyPrice: hasCombos ? toNonNegativeNumber(editingProduct?.buyPrice) : toNonNegativeNumber(formData.buyPrice),
-      sellPrice: hasCombos ? toNonNegativeNumber(editingProduct?.sellPrice) : toNonNegativeNumber(formData.sellPrice),
-      totalPurchase: parseOptionalNonNegative(effectiveTotalPurchase),
-      totalSold: parseOptionalNonNegative(formData.totalSold),
+      ...(cleanOptionalText(formData.image) ? { image: cleanOptionalText(formData.image)! } : {}),
+      name: cleanOptionalText(formData.name) || 'not set yet',
+      ...(cleanOptionalText(formData.barcode) ? { barcode: cleanOptionalText(formData.barcode)! } : {}),
+      ...(cleanOptionalText(formData.description) ? { description: cleanOptionalText(formData.description)! } : {}),
+      category: cleanOptionalText(formData.category) || 'not set yet',
+      ...(cleanOptionalText(formData.hsn) ? { hsn: cleanOptionalText(formData.hsn)! } : {}),
+      buyPrice: hasCombos ? cleanOptionalNumber(editingProduct?.buyPrice, 0) : cleanOptionalNumber(formData.buyPrice, 0),
+      sellPrice: hasCombos ? cleanOptionalNumber(editingProduct?.sellPrice, 0) : cleanOptionalNumber(formData.sellPrice, 0),
+      totalPurchase: cleanOptionalNumber(effectiveTotalPurchase, 0),
+      totalSold: cleanOptionalNumber(formData.totalSold, 0),
       stock: totalComboStock,
       variants: hasCombos ? (formData.variants || []) : [],
       colors: hasCombos ? (formData.colors || []) : [],
@@ -614,10 +611,10 @@ export default function Admin() {
             variant: row.variant,
             color: row.color,
             stock: toNonNegativeNumber(row.stock),
-            buyPrice: parseOptionalNonNegative(row.buyPrice),
-            sellPrice: parseOptionalNonNegative(row.sellPrice),
-            totalPurchase: parseOptionalNonNegative(row.totalPurchase),
-            totalSold: parseOptionalNonNegative(row.totalSold),
+            buyPrice: cleanOptionalNumber(row.buyPrice, 0),
+            sellPrice: cleanOptionalNumber(row.sellPrice, 0),
+            totalPurchase: cleanOptionalNumber(row.totalPurchase, 0),
+            totalSold: cleanOptionalNumber(row.totalSold, 0),
           }))
         : []
     } as Product;
@@ -678,9 +675,9 @@ export default function Admin() {
                 id: `line-admin-create-${Date.now()}`,
                 sourceType: 'inventory',
                 productId: productPayload.id,
-                productName: productPayload.name,
-                category: productPayload.category,
-                image: productPayload.image,
+                productName: displayProductText(productPayload.name),
+                category: displayProductText(productPayload.category),
+                image: productPayload.image || '',
                 variant: NO_VARIANT,
                 color: NO_COLOR,
                 quantity: openingStockValue,
@@ -1411,7 +1408,8 @@ export default function Admin() {
     ctx.fillStyle = "black";
     ctx.font = "bold 22px Arial";
     ctx.textAlign = "center";
-    const displayName = barcodePreview.name.length > 25 ? barcodePreview.name.substring(0, 22) + '...' : barcodePreview.name;
+    const barcodeProductName = displayProductText(barcodePreview.name);
+    const displayName = barcodeProductName.length > 25 ? barcodeProductName.substring(0, 22) + '...' : barcodeProductName;
     ctx.fillText(displayName.toUpperCase(), compositeCanvas.width / 2, padding + 20);
 
     // Draw Barcode (Centered below name)
@@ -1624,14 +1622,14 @@ export default function Admin() {
         doc.setFont("helvetica", "bold");
         doc.setFontSize(10);
         doc.setTextColor(20, 20, 20);
-        const titleLines = doc.splitTextToSize(product.name, cardWidth - 6);
+        const titleLines = doc.splitTextToSize(displayProductText(product.name), cardWidth - 6);
         doc.text(titleLines[0], x + 3, textStartY);
         
         const codeY = textStartY + 4;
         doc.setFont("helvetica", "normal");
         doc.setFontSize(8);
         doc.setTextColor(100, 100, 100);
-        doc.text(product.barcode, x + 3, codeY); 
+        doc.text(displayProductText(product.barcode, '-'), x + 3, codeY);
 
         const priceY = codeY + 8;
         doc.setFont("helvetica", "bold");
@@ -1853,33 +1851,33 @@ export default function Admin() {
                     type="checkbox"
                     checked={selectedProductIds.includes(product.id)}
                     onChange={() => handleToggleProductSelection(product.id)}
-                    aria-label={`Select ${product.name}`}
+                    aria-label={`Select ${displayProductText(product.name)}`}
                     className="mt-1 h-4 w-4 rounded border-slate-300"
                   />
                 </td>
                 <td className="p-3">
                   <button
                     type="button"
-                    aria-label={`View or edit photo for ${product.name}`}
+                    aria-label={`View or edit photo for ${displayProductText(product.name)}`}
                     className="h-12 w-12 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center"
                     onClick={(e) => { e.stopPropagation(); openProductPhotoModal(product); }}
                   >
-                    {getProductImageUrl(product) ? <img src={getProductImageUrl(product)} alt={product.name} className="h-full w-full object-cover" /> : <Package className="w-4 h-4 text-muted-foreground" />}
+                    {getProductImageUrl(product) ? <img src={getProductImageUrl(product)} alt={displayProductText(product.name)} className="h-full w-full object-cover" /> : <Package className="w-4 h-4 text-muted-foreground" />}
                   </button>
                 </td>
                 <td className="p-3 min-w-[260px]">
                   <div className="group relative inline-block">
-                    <div className="font-medium">{product.name}</div>
-                    <div className="text-xs text-muted-foreground">{product.barcode}</div>
+                    <div className="font-medium">{displayProductText(product.name)}</div>
+                    <div className="text-xs text-muted-foreground">{displayProductText(product.barcode, '-')}</div>
                     {product.stockByVariantColor && product.stockByVariantColor.length > 0 && (
                       <>
                         <div className="mt-1 text-[11px] text-primary">Hover to view variants</div>
                         <div className="pointer-events-none absolute z-20 hidden group-hover:block top-full left-0 mt-2 w-[360px] rounded-xl border bg-white p-3 shadow-xl">
                           <div className="mb-2 flex items-center gap-2">
-                            <div className="h-10 w-10 rounded overflow-hidden border bg-muted/30 flex items-center justify-center">{product.image ? <img src={product.image} alt={product.name} className="h-full w-full object-cover" /> : <Package className="w-3 h-3 text-muted-foreground" />}</div>
+                            <div className="h-10 w-10 rounded overflow-hidden border bg-muted/30 flex items-center justify-center">{product.image ? <img src={product.image} alt={displayProductText(product.name)} className="h-full w-full object-cover" /> : <Package className="w-3 h-3 text-muted-foreground" />}</div>
                             <div>
-                              <div className="text-xs font-semibold">{product.name}</div>
-                              <div className="text-[10px] text-muted-foreground">{product.category}</div>
+                              <div className="text-xs font-semibold">{displayProductText(product.name)}</div>
+                              <div className="text-[10px] text-muted-foreground">{displayProductText(product.category)}</div>
                             </div>
                           </div>
                           <div className="max-h-56 overflow-y-auto space-y-1.5">
@@ -1895,7 +1893,7 @@ export default function Admin() {
                     )}
                   </div>
                 </td>
-                <td className="p-3">{product.category}</td>
+                <td className="p-3">{displayProductText(product.category)}</td>
                 <td className="p-3">{toNonNegativeNumber(metrics.totalPurchase)} / {toNonNegativeNumber(metrics.totalSold)}</td>
                 <td className="p-3 font-semibold">{product.stock}</td>
                 <td className="p-3">₹{metrics.combinedAvgBuyPrice.toFixed(2)} / ₹{metrics.combinedAvgSellPrice.toFixed(2)}</td>
@@ -2014,12 +2012,12 @@ export default function Admin() {
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Product Name <span className="text-red-500">*</span></Label>
+                      <Label>Product Name</Label>
                       <Input value={formData.name || ''} onChange={e => setFormData({ ...formData, name: e.target.value })} placeholder="e.g. Wireless Mouse" />
                     </div>
 
                     <div className="space-y-2">
-                      <div className="flex items-center justify-between"><Label>Product Category <span className="text-red-500">*</span></Label><button type="button" className="text-xs text-primary" onClick={() => setShowAddCategoryInline(v => !v)}>+ Add Category</button></div>
+                      <div className="flex items-center justify-between"><Label>Product Category</Label><button type="button" className="text-xs text-primary" onClick={() => setShowAddCategoryInline(v => !v)}>+ Add Category</button></div>
                       <Select
                         value={formData.category}
                         onChange={e => {
@@ -2154,7 +2152,7 @@ export default function Admin() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label>Total Purchase *</Label>
+                        <Label>Total Purchase</Label>
                         <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => setFormData({ ...formData, totalPurchase: e.target.value })} placeholder="0" />
                       </div>
 

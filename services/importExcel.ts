@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { CartItem, Customer, Product, PurchaseOrder, PurchaseOrderLine, Transaction } from '../types';
 import { addCategory, addCustomer, addHistoricalTransactions, addProduct, createPurchaseOrder, loadData, normalizeHistoricalTransactionForImport, processTransaction, updateCustomer, updateProduct, updatePurchaseOrder } from './storage';
 import { NO_COLOR, NO_VARIANT } from './productVariants';
+import { normalizeTransactionItems } from '../utils/transactionItems';
 
 export type ImportIssue = { sheet: string; row: number; field: string; message: string };
 export type ImportResult = { totalRows: number; importedRows: number; errors: ImportIssue[]; warnings?: ImportIssue[]; summary: string };
@@ -181,14 +182,14 @@ export const downloadInventoryTemplate = () => writeTemplate(
   ['product-001', 'SKU-1001', 'Cotton Shirt', 'Apparel', 250, 499, 30, 10, 20, '6109', 'https://example.com/images/shirt.jpg', 'Regular fit cotton shirt'],
   [
     { field: 'Product ID', behavior: 'Lookup-only', required: 'Preferred', format: 'Text', notes: 'Stable identity for update matching. Keep unchanged for existing records.', example: 'product-001' },
-    { field: 'Barcode', behavior: 'Editable', required: 'Mandatory', format: 'Text', notes: 'Must be unique. Duplicate barcode rows are rejected.', example: 'SKU-1001' },
-    { field: 'Product Name', behavior: 'Editable', required: 'Mandatory', format: 'Text', notes: 'Product display name.', example: 'Cotton Shirt' },
-    { field: 'Category', behavior: 'Editable', required: 'Mandatory', format: 'Text', notes: 'Will be auto-created if not present.', example: 'Apparel' },
-    { field: 'Buy Price', behavior: 'Editable', required: 'Mandatory', format: 'Number >= 0', notes: 'Cost price.', example: '250' },
-    { field: 'Sell Price', behavior: 'Editable', required: 'Mandatory', format: 'Number >= 0', notes: 'Selling price.', example: '499' },
+    { field: 'Barcode', behavior: 'Editable', required: 'Optional', format: 'Text', notes: 'Optional. If provided, it must be unique; duplicate barcode rows are rejected.', example: 'SKU-1001' },
+    { field: 'Product Name', behavior: 'Editable', required: 'Optional', format: 'Text', notes: 'Optional display name. Blank imports display as not set yet.', example: 'Cotton Shirt' },
+    { field: 'Category', behavior: 'Editable', required: 'Optional', format: 'Text', notes: 'Optional. Non-empty values are auto-created if not present; blanks display as not set yet.', example: 'Apparel' },
+    { field: 'Buy Price', behavior: 'Editable', required: 'Optional', format: 'Number >= 0', notes: 'Optional cost price. Blank values import as 0.', example: '250' },
+    { field: 'Sell Price', behavior: 'Editable', required: 'Optional', format: 'Number >= 0', notes: 'Optional selling price. Blank values import as 0.', example: '499' },
     { field: 'Total Purchase', behavior: 'Editable', required: 'Optional', format: 'Number >= 0', notes: 'Opening/baseline total purchased quantity.', example: '30' },
     { field: 'Total Sold', behavior: 'Editable', required: 'Optional', format: 'Number >= 0', notes: 'Opening/baseline total sold quantity.', example: '10' },
-    { field: 'Current Stock', behavior: 'Editable', required: 'Mandatory', format: 'Number >= 0', notes: 'Current stock quantity. Must equal Total Purchase - Total Sold.', example: '20' },
+    { field: 'Current Stock', behavior: 'Editable', required: 'Optional', format: 'Number >= 0', notes: 'Optional current stock quantity. Blank values import as 0; when totals are supplied, stock must equal Total Purchase - Total Sold.', example: '20' },
     { field: 'HSN/SAC', behavior: 'Editable', required: 'Optional', format: 'Text', notes: 'Tax code.', example: '6109' },
     { field: 'Image Source', behavior: 'Editable', required: 'Optional', format: 'Cloudinary URL | public https image URL | data:image base64', notes: 'Public URL is fetched and uploaded to Cloudinary. Local file paths are not supported.', example: 'https://example.com/images/shirt.jpg' },
     { field: 'Description', behavior: 'Editable', required: 'Optional', format: 'Text', notes: 'Product notes.', example: 'Regular fit cotton shirt' },
@@ -323,7 +324,7 @@ export const downloadTransactionsData = (transactions?: Transaction[] | unknown)
   const rows: Record<string, any>[] = [];
   sourceTransactions.forEach(tx => {
     const customerPhone = tx.customerId ? (customersById.get(tx.customerId)?.phone || '') : '';
-    if (tx.type === 'payment' || !tx.items.length) {
+    if (tx.type === 'payment' || !normalizeTransactionItems(tx.items).length) {
       rows.push({
         'Transaction ID': tx.id,
         'Date': tx.date,
@@ -355,7 +356,7 @@ export const downloadTransactionsData = (transactions?: Transaction[] | unknown)
       });
       return;
     }
-    tx.items.forEach(item => {
+    normalizeTransactionItems(tx.items).forEach(item => {
       rows.push({
         'Transaction ID': tx.id,
         'Date': tx.date,
@@ -471,24 +472,23 @@ export const importInventoryFromFile = async (file: File, onProgress?: (progress
     const barcode = toStr(row['Barcode']);
     const name = toStr(row['Product Name']);
     const category = toStr(row['Category']);
-    const buyPrice = toNum(row['Buy Price']);
-    const sellPrice = toNum(row['Sell Price']);
+    const buyPriceRaw = row['Buy Price'];
+    const sellPriceRaw = row['Sell Price'];
+    const buyPrice = buyPriceRaw === '' || buyPriceRaw === undefined || buyPriceRaw === null ? 0 : toNum(buyPriceRaw);
+    const sellPrice = sellPriceRaw === '' || sellPriceRaw === undefined || sellPriceRaw === null ? 0 : toNum(sellPriceRaw);
     const currentStockRaw = row['Current Stock'] !== undefined && row['Current Stock'] !== '' ? row['Current Stock'] : row['Stock'];
-    const stock = toNum(currentStockRaw);
+    const stock = currentStockRaw === '' || currentStockRaw === undefined || currentStockRaw === null ? 0 : toNum(currentStockRaw);
     const totalPurchaseInput = row['Total Purchase'];
     const totalSoldInput = row['Total Sold'];
     const totalSold = totalSoldInput === '' || totalSoldInput === undefined || totalSoldInput === null ? 0 : toNum(totalSoldInput);
-    const totalPurchase = totalPurchaseInput === '' || totalPurchaseInput === undefined || totalPurchaseInput === null ? (Number.isFinite(stock) && Number.isFinite(totalSold) ? stock + totalSold : NaN) : toNum(totalPurchaseInput);
+    const totalPurchase = totalPurchaseInput === '' || totalPurchaseInput === undefined || totalPurchaseInput === null ? (Number.isFinite(stock) && Number.isFinite(totalSold) ? stock + totalSold : 0) : toNum(totalPurchaseInput);
 
     if (productId && seenIds.has(productId)) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Product ID', message: 'Duplicate Product ID in file' });
     if (productId) seenIds.add(productId);
 
-    if (!barcode) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Barcode', message: 'Barcode is required' });
-    if (!name) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Product Name', message: 'Product Name is required' });
-    if (!category) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Category', message: 'Category is required' });
-    if (!Number.isFinite(buyPrice) || buyPrice < 0) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Buy Price', message: 'Buy Price must be a valid non-negative number' });
-    if (!Number.isFinite(sellPrice) || sellPrice < 0) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Sell Price', message: 'Sell Price must be a valid non-negative number' });
-    if (!Number.isFinite(stock) || stock < 0) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Current Stock', message: 'Current Stock must be a valid non-negative number' });
+    if (buyPriceRaw !== '' && buyPriceRaw !== undefined && buyPriceRaw !== null && (!Number.isFinite(buyPrice) || buyPrice < 0)) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Buy Price', message: 'Buy Price must be a valid non-negative number' });
+    if (sellPriceRaw !== '' && sellPriceRaw !== undefined && sellPriceRaw !== null && (!Number.isFinite(sellPrice) || sellPrice < 0)) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Sell Price', message: 'Sell Price must be a valid non-negative number' });
+    if (currentStockRaw !== '' && currentStockRaw !== undefined && currentStockRaw !== null && (!Number.isFinite(stock) || stock < 0)) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Current Stock', message: 'Current Stock must be a valid non-negative number' });
     if (!Number.isFinite(totalPurchase) || totalPurchase < 0) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Total Purchase', message: 'Total Purchase must be a valid non-negative number' });
     if (!Number.isFinite(totalSold) || totalSold < 0) errors.push({ sheet: 'Inventory', row: rowNo, field: 'Total Sold', message: 'Total Sold must be a valid non-negative number' });
     if (Number.isFinite(stock) && Number.isFinite(totalPurchase) && Number.isFinite(totalSold) && stock !== (totalPurchase - totalSold)) {
@@ -509,8 +509,8 @@ export const importInventoryFromFile = async (file: File, onProgress?: (progress
       valid.push({
         id: `import-product-${Date.now()}-${i}`,
         barcode,
-        name,
-        category,
+        name: name || 'not set yet',
+        category: category || 'not set yet',
         buyPrice,
         sellPrice,
         stock,
@@ -891,7 +891,7 @@ export const importTransactionsFromFile = async (
         discount: Number((existingTx.discount || 0).toFixed(2)),
         tax: Number((existingTx.tax || 0).toFixed(2)),
         paymentMethod: existingTx.paymentMethod || 'Cash',
-        itemCount: (existingTx.items || []).length,
+        itemCount: (normalizeTransactionItems(existingTx.items)).length,
       });
       const incomingComparable = JSON.stringify({
         type: computedTx.type,
@@ -900,7 +900,7 @@ export const importTransactionsFromFile = async (
         discount: Number((computedTx.discount || 0).toFixed(2)),
         tax: Number((computedTx.tax || 0).toFixed(2)),
         paymentMethod: computedTx.paymentMethod || 'Cash',
-        itemCount: (computedTx.items || []).length,
+        itemCount: (normalizeTransactionItems(computedTx.items)).length,
       });
       if (existingComparable !== incomingComparable) {
         errors.push({ sheet: 'Transactions', row: rowNo0, field: 'Transaction ID', message: 'Existing transactions are immutable and must match exported values' });
