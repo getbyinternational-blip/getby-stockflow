@@ -85,19 +85,19 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
 );
 
 export const Card = ({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("rounded-lg border bg-card text-card-foreground shadow-sm", className)} {...props}>{children}</div>
+  <div className={cn("rounded-lg border bg-card text-card-foreground", className)} {...props}>{children}</div>
 );
 
 export const CardHeader = ({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col space-y-1.5 p-6", className)} {...props}>{children}</div>
+  <div className={cn("flex flex-col space-y-1 p-4", className)} {...props}>{children}</div>
 );
 
 export const CardTitle = ({ className, children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-  <h3 className={cn("text-2xl font-semibold leading-none tracking-tight", className)} {...props}>{children}</h3>
+  <h3 className={cn("text-lg font-semibold leading-tight tracking-tight", className)} {...props}>{children}</h3>
 );
 
 export const CardContent = ({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("p-6 pt-0", className)} {...props}>{children}</div>
+  <div className={cn("p-4 pt-0", className)} {...props}>{children}</div>
 );
 
 export const Label = React.forwardRef<HTMLLabelElement, React.LabelHTMLAttributes<HTMLLabelElement>>(
@@ -122,7 +122,7 @@ export const Badge = ({ children, variant = 'default', className }: { children?:
         secondary: "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
     }
     return (
-        <div className={cn("inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shrink-0", variants[variant], className)}>
+        <div className={cn("inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 shrink-0", variants[variant], className)}>
             {children}
         </div>
     )
@@ -130,7 +130,7 @@ export const Badge = ({ children, variant = 'default', className }: { children?:
 
 export const LightweightLoader = ({ label = 'Loading data…', className }: { label?: string; className?: string }) => (
   <div className={cn("flex min-h-[180px] items-center justify-center p-6 text-sm text-muted-foreground", className)}>
-    <div className="flex items-center gap-3 rounded-full border bg-card px-4 py-2 shadow-sm">
+    <div className="flex items-center gap-3 rounded-md border bg-card px-4 py-2">
       <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
       <span>{label}</span>
     </div>

@@ -17,12 +17,24 @@ export type InvariantContext = {
   operation?: string;
   source?: string;
   productionAuditKey?: string;
+  modeOverride?: InvariantEnforcementMode;
 };
+
+export type InvariantEnforcementMode = 'log-only' | 'critical-only' | 'full';
 
 export type InvariantEnforcementResult = {
   ok: boolean;
   blocked: boolean;
+  wouldBlock: boolean;
+  actuallyBlocked: boolean;
   requiresOverride: boolean;
+  mode: InvariantEnforcementMode;
+  timestamp: string;
+  action: string;
+  source: string;
+  violationCodes: string[];
+  violationSeverities: InvariantSeverity[];
+  shortReason?: string;
   violations: InvariantViolation[];
 };
 
@@ -35,8 +47,29 @@ export type InvariantOverride = {
 
 const AUDIT_STORAGE_KEY = 'stockflow_invariant_audit_log_v1';
 const MAX_LOCAL_AUDIT_EVENTS = 200;
+const CRITICAL_ONLY_BLOCK_CODES = new Set([
+  'duplicate_id',
+  'missing_id',
+  'stock_nan_or_undefined',
+  'transaction_missing_id',
+  'transaction_invalid_date',
+  'transaction_total_invalid',
+  'negative_or_invalid_quantity',
+  'purchase_total_invalid',
+  'purchase_remaining_invalid',
+]);
 
 const isDev = () => Boolean((import.meta as any)?.env?.DEV);
+const getConfiguredInvariantMode = (): string => String(
+  (import.meta as any)?.env?.VITE_INVARIANT_ENFORCEMENT_MODE
+  ?? (import.meta as any)?.env?.INVARIANT_ENFORCEMENT_MODE
+  ?? ''
+).trim().toLowerCase();
+export const resolveInvariantEnforcementMode = (): InvariantEnforcementMode => {
+  const configured = getConfiguredInvariantMode();
+  if (configured === 'log-only' || configured === 'critical-only' || configured === 'full') return configured;
+  return isDev() ? 'critical-only' : 'log-only';
+};
 const safeNumber = (value: unknown): number => {
   const n = Number(value);
   return Number.isFinite(n) ? n : Number.NaN;
@@ -48,44 +81,100 @@ const validDate = (value: unknown): boolean => {
   return Number.isFinite(ms);
 };
 
-const appendProductionAuditLog = (violations: InvariantViolation[], context: InvariantContext & { override?: InvariantOverride; blocked?: boolean; requiresOverride?: boolean }) => {
-  if (typeof window === 'undefined' || violations.length === 0) return;
+const appendProductionAuditLog = (
+  result: InvariantEnforcementResult,
+  context: InvariantContext & { override?: InvariantOverride }
+) => {
+  if (typeof window === 'undefined' || result.violations.length === 0) return;
   const key = context.productionAuditKey || AUDIT_STORAGE_KEY;
   try {
     const existing = JSON.parse(window.localStorage.getItem(key) || '[]');
     const rows = Array.isArray(existing) ? existing : [];
-    rows.push({ at: new Date().toISOString(), operation: context.operation || 'unknown', source: context.source || 'invariant_framework', blocked: context.blocked || false, requiresOverride: context.requiresOverride || false, override: context.override || null, violations });
+    rows.push({
+      at: result.timestamp,
+      mode: result.mode,
+      operation: result.action,
+      source: result.source,
+      blocked: result.actuallyBlocked,
+      wouldBlock: result.wouldBlock,
+      actuallyBlocked: result.actuallyBlocked,
+      requiresOverride: result.requiresOverride,
+      override: context.override || null,
+      violationCodes: result.violationCodes,
+      violationSeverities: result.violationSeverities,
+      shortReason: result.shortReason || null,
+      violations: result.violations,
+    });
     window.localStorage.setItem(key, JSON.stringify(rows.slice(-MAX_LOCAL_AUDIT_EVENTS)));
-    window.dispatchEvent(new CustomEvent('stockflow-invariant-violation', { detail: { operation: context.operation, violations } }));
+    window.dispatchEvent(new CustomEvent('stockflow-invariant-violation', { detail: result }));
   } catch {
     // Last-resort audit path: do not throw while already handling invariant failures.
-    console.error('[StockFlow invariant audit failed]', { operation: context.operation, violations });
+    console.error('[StockFlow invariant audit failed]', { operation: context.operation, violations: result.violations });
   }
 };
 
 const NON_OVERRIDABLE_CODES = new Set(['duplicate_id', 'missing_id']);
 
 const validateOverride = (override?: InvariantOverride): boolean => Boolean(String(override?.reason || '').trim());
+const getShortInvariantReason = (violations: InvariantViolation[]): string => {
+  const first = violations[0];
+  if (!first) return 'unknown integrity issue';
+  switch (first.code) {
+    case 'duplicate_id': return 'duplicate record ID detected';
+    case 'missing_id': return 'missing required record ID';
+    case 'stock_nan_or_undefined': return 'product stock is blank or not numeric';
+    case 'transaction_missing_id': return 'transaction ID is missing';
+    case 'transaction_invalid_date': return 'transaction date is invalid';
+    case 'transaction_total_invalid': return 'transaction total is not numeric';
+    case 'negative_or_invalid_quantity': return 'transaction quantity is invalid';
+    case 'purchase_total_invalid': return 'purchase total is invalid';
+    case 'purchase_remaining_invalid': return 'purchase remaining amount is invalid';
+    default: return first.message;
+  }
+};
 
 export const handleInvariantViolations = (
   violations: InvariantViolation[],
   context: InvariantContext & { override?: InvariantOverride } = {}
 ): InvariantEnforcementResult => {
+  const mode = context.modeOverride || resolveInvariantEnforcementMode();
+  const timestamp = new Date().toISOString();
+  const action = context.operation || 'unknown';
+  const source = context.source || 'invariant_framework';
   const hasCritical = violations.some((violation) => violation.severity === 'critical');
   const hasNonOverridable = violations.some((violation) => NON_OVERRIDABLE_CODES.has(violation.code));
   const hasOverrideRequired = violations.some((violation) => violation.severity === 'error');
   const overrideAccepted = validateOverride(context.override);
-  const blocked = hasNonOverridable || hasCritical || (hasOverrideRequired && !overrideAccepted);
-  const requiresOverride = hasOverrideRequired && !hasCritical && !hasNonOverridable;
-  const result = { ok: violations.length === 0 || (!blocked && overrideAccepted), blocked, requiresOverride, violations };
+  const hasCriticalOnlyDisasterViolation = violations.some((violation) => CRITICAL_ONLY_BLOCK_CODES.has(violation.code));
+  const wouldBlock = hasNonOverridable || hasCritical || (hasOverrideRequired && !overrideAccepted);
+  const requiresOverride = mode === 'full' && hasOverrideRequired && !hasCritical && !hasNonOverridable && !overrideAccepted;
+  const actuallyBlocked = mode === 'full'
+    ? wouldBlock
+    : mode === 'critical-only'
+      ? hasCriticalOnlyDisasterViolation
+      : false;
+  const result = {
+    ok: violations.length === 0 || !actuallyBlocked,
+    blocked: actuallyBlocked,
+    wouldBlock,
+    actuallyBlocked,
+    requiresOverride,
+    mode,
+    timestamp,
+    action,
+    source,
+    violationCodes: violations.map((violation) => violation.code),
+    violationSeverities: Array.from(new Set(violations.map((violation) => violation.severity))),
+    shortReason: violations.length > 0 ? getShortInvariantReason(violations) : undefined,
+    violations,
+  };
 
   if (violations.length > 0) {
-    const payload = { operation: context.operation, source: context.source, blocked, requiresOverride, override: context.override, violations };
+    const payload = { ...result, override: context.override };
     if (isDev()) {
       console.warn('[StockFlow invariant violation]', payload);
-    } else {
-      appendProductionAuditLog(violations, { ...context, blocked, requiresOverride });
     }
+    appendProductionAuditLog(result, context);
   }
   return result;
 };
@@ -218,9 +307,54 @@ export const enforceAppStateInvariants = (state: Partial<AppState>, context: Inv
 
 export const assertInvariantCriticalSamplesBlock = (): boolean => {
   const duplicateTx: Transaction = { id: 'dup', date: new Date().toISOString(), type: 'sale', items: [], total: 1 } as Transaction;
-  const duplicateReport = handleInvariantViolations(validateAppStateInvariants({ transactions: [duplicateTx, duplicateTx] }), { operation: 'sample_duplicate' });
-  const nanStockReport = handleInvariantViolations(validateAppStateInvariants({ products: [{ id: 'p1', stock: Number.NaN } as Product] }), { operation: 'sample_nan_stock' });
-  const invalidDateReport = handleInvariantViolations(validateAppStateInvariants({ transactions: [{ id: 'tx-date', date: 'not-a-date', type: 'sale', items: [], total: 1 } as Transaction] }), { operation: 'sample_invalid_date' });
-  const warningOnlyReport = handleInvariantViolations([{ domain: 'transaction', severity: 'warning', code: 'sample_warning', message: 'sample warning' }], { operation: 'sample_warning' });
+  const duplicateReport = handleInvariantViolations(validateAppStateInvariants({ transactions: [duplicateTx, duplicateTx] }), { operation: 'sample_duplicate', modeOverride: 'full' });
+  const nanStockReport = handleInvariantViolations(validateAppStateInvariants({ products: [{ id: 'p1', stock: Number.NaN } as Product] }), { operation: 'sample_nan_stock', modeOverride: 'full' });
+  const invalidDateReport = handleInvariantViolations(validateAppStateInvariants({ transactions: [{ id: 'tx-date', date: 'not-a-date', type: 'sale', items: [], total: 1 } as Transaction] }), { operation: 'sample_invalid_date', modeOverride: 'full' });
+  const warningOnlyReport = handleInvariantViolations([{ domain: 'transaction', severity: 'warning', code: 'sample_warning', message: 'sample warning' }], { operation: 'sample_warning', modeOverride: 'full' });
   return duplicateReport.blocked && nanStockReport.blocked && invalidDateReport.blocked && !warningOnlyReport.blocked;
+};
+
+export const assertInvariantEnforcementModeSamples = () => {
+  const duplicateTx: Transaction = { id: 'dup', date: new Date().toISOString(), type: 'sale', items: [], total: 1 } as Transaction;
+  const duplicateViolations = validateAppStateInvariants({ transactions: [duplicateTx, duplicateTx] });
+  const nanStockViolations = validateAppStateInvariants({ products: [{ id: 'p1', stock: Number.NaN } as Product] });
+  const variantMismatchViolations = validateAppStateInvariants({
+    products: [{ id: 'p2', stock: 10, stockByVariantColor: [{ variant: 'M', color: 'Red', stock: 9 }] } as Product],
+  });
+  const warningViolations: InvariantViolation[] = [{ domain: 'transaction', severity: 'warning', code: 'sample_warning', message: 'sample warning' }];
+  const overridableErrorViolations: InvariantViolation[] = [{
+    domain: 'inventory',
+    severity: 'error',
+    code: 'variant_stock_total_mismatch',
+    message: 'Variant stock totals must reconcile with product stock.',
+  }];
+
+  const logOnlyDuplicate = handleInvariantViolations(duplicateViolations, { operation: 'sample_log_only_duplicate', source: 'sample', modeOverride: 'log-only', productionAuditKey: AUDIT_STORAGE_KEY });
+  const criticalOnlyDuplicate = handleInvariantViolations(duplicateViolations, { operation: 'sample_critical_only_duplicate', source: 'sample', modeOverride: 'critical-only' });
+  const criticalOnlyNanStock = handleInvariantViolations(nanStockViolations, { operation: 'sample_critical_only_nan_stock', source: 'sample', modeOverride: 'critical-only' });
+  const criticalOnlyVariantMismatch = handleInvariantViolations(variantMismatchViolations, { operation: 'sample_critical_only_variant_mismatch', source: 'sample', modeOverride: 'critical-only' });
+  const criticalOnlyWarning = handleInvariantViolations(warningViolations, { operation: 'sample_critical_only_warning', source: 'sample', modeOverride: 'critical-only' });
+  const fullDuplicate = handleInvariantViolations(duplicateViolations, { operation: 'sample_full_duplicate', source: 'sample', modeOverride: 'full' });
+  const fullErrorNeedsOverride = handleInvariantViolations(overridableErrorViolations, { operation: 'sample_full_error_without_override', source: 'sample', modeOverride: 'full' });
+  const fullErrorWithOverride = handleInvariantViolations(overridableErrorViolations, { operation: 'sample_full_error_with_override', source: 'sample', modeOverride: 'full', override: { reason: 'legacy cleanup' } });
+  const fullDuplicateWithOverride = handleInvariantViolations(duplicateViolations, { operation: 'sample_full_duplicate_with_override', source: 'sample', modeOverride: 'full', override: { reason: 'should not override duplicate' } });
+
+  return {
+    defaultMode: resolveInvariantEnforcementMode(),
+    logOnly: {
+      duplicateLogsButDoesNotBlock: logOnlyDuplicate.wouldBlock && !logOnlyDuplicate.actuallyBlocked,
+    },
+    criticalOnly: {
+      duplicateBlocks: criticalOnlyDuplicate.actuallyBlocked,
+      nanStockBlocks: criticalOnlyNanStock.actuallyBlocked,
+      variantMismatchLogsOnly: criticalOnlyVariantMismatch.wouldBlock && !criticalOnlyVariantMismatch.actuallyBlocked,
+      warningLogsOnly: !criticalOnlyWarning.wouldBlock && !criticalOnlyWarning.actuallyBlocked,
+    },
+    full: {
+      duplicateBlocks: fullDuplicate.actuallyBlocked,
+      errorRequiresOverride: fullErrorNeedsOverride.actuallyBlocked && fullErrorNeedsOverride.requiresOverride,
+      overrideWithReasonAllowsOverridableError: !fullErrorWithOverride.actuallyBlocked,
+      duplicateCannotBeOverridden: fullDuplicateWithOverride.actuallyBlocked,
+    },
+  };
 };

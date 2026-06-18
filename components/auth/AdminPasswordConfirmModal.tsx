@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../ui';
+import { useEscapeLayer } from '../../src/hooks/useEscapeLayer';
 
 type Props = {
   title?: string;
@@ -10,6 +11,7 @@ type Props = {
 };
 
 export default function AdminPasswordConfirmModal({ title = 'Admin password required', message = 'Enter admin password to continue.', verifyPassword, onConfirm, onCancel }: Props) {
+  useEscapeLayer(true, onCancel, { priority: 200 });
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);

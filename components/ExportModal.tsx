@@ -2,6 +2,7 @@
 import React from 'react';
 import { FileText, FileSpreadsheet, X } from 'lucide-react';
 import { Button, Card, CardContent, CardHeader, CardTitle } from './ui';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 interface ExportModalProps {
     isOpen: boolean;
@@ -18,6 +19,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     title = "Export Report", 
     description = "Select your preferred format to download the report." 
 }) => {
+    useEscapeLayer(isOpen, onClose, { priority: 100 });
     if (!isOpen) return null;
 
     return (

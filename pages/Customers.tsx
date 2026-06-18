@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
@@ -22,8 +22,9 @@ import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { analyzeCustomerLedgerBalances, buildCorrectCustomerLedgerPreview, getEffectiveTransactionType, repairCustomerLedgerBalancesDryRun } from '../services/customerLedger';
 import { CanonicalCustomerBalanceResult, assertCanonicalBalanceErrorDoesNotTrustSnapshot, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
-import { can } from '../src/auth/simplePermissions';
+import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 const normalizePhone = (v?: string) => String(v || '').replace(/\D/g, '');
 const normalizeName = (v?: string) => String(v || '').trim().toLowerCase();
@@ -228,6 +229,23 @@ export default function Customers() {
   const [editTxMethod, setEditTxMethod] = useState<'Cash' | 'Online'>('Cash');
   const [editTxNotes, setEditTxNotes] = useState('');
   const [editTxError, setEditTxError] = useState<string | null>(null);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  useEscapeLayer(isDeleteModalOpen && !!viewingCustomer, () => setIsDeleteModalOpen(false), { priority: 120 });
+  useEscapeLayer(paymentAuditOpen && !!viewingCustomer && !!paymentAuditResult, () => setPaymentAuditOpen(false), { priority: 110 });
+  useEscapeLayer(updatedViewOpen && !!viewingCustomer && !!updatedViewPreview, () => setUpdatedViewOpen(false), { priority: 110 });
+  useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
+  useEscapeLayer(Boolean(editingCustomerTx), () => { setEditingCustomerTx(null); setEditTxError(null); }, { priority: 110 });
+  useEscapeLayer(customerActionModalOpen && !!viewingCustomer, () => setCustomerActionModalOpen(false), { priority: 110 });
+  useEscapeLayer(isCollectPaymentModalOpen && !!selectedUpfrontOrder, () => setIsCollectPaymentModalOpen(false), { priority: 110 });
+  useEscapeLayer(isUpfrontOrderModalOpen && !!orderCustomer, () => setIsUpfrontOrderModalOpen(false), { priority: 105 });
+  useEscapeLayer(Boolean(viewingCustomer), () => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(null); }, { priority: 100 });
+  useEscapeLayer(Boolean(editingCustomer), () => {
+    setEditingCustomer(null);
+    setCustomerEditError(null);
+    setBatchEditCustomerIds([]);
+    setBatchEditCustomerIndex(0);
+  }, { priority: 100 });
+  useEscapeLayer(isAddModalOpen, () => setIsAddModalOpen(false), { priority: 100 });
 
   const refreshData = () => {
     try {
@@ -338,8 +356,8 @@ export default function Customers() {
   const filteredData = useMemo(() => {
     let processed = [...canonicalCustomers];
     
-    if (searchQuery) {
-        const lowerQ = searchQuery.toLowerCase();
+    if (deferredSearchQuery) {
+        const lowerQ = deferredSearchQuery.toLowerCase();
         processed = processed.filter(c => 
             c.name.toLowerCase().includes(lowerQ) || 
             c.phone.includes(lowerQ)
@@ -362,7 +380,7 @@ export default function Customers() {
 
     const totalDues = processed.reduce((acc, c) => acc + (canonicalDisplayBalanceByCustomerId.get(c.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(c.id)!.netReceivable : 0), 0);
     return { displayCustomers: processed, totalDues, totalCount: processed.length };
-  }, [canonicalCustomers, searchQuery, filterType, sortBy, sortOrder, highValueThreshold, canonicalDisplayBalanceByCustomerId]);
+  }, [canonicalCustomers, deferredSearchQuery, filterType, sortBy, sortOrder, highValueThreshold, canonicalDisplayBalanceByCustomerId]);
   const customerTotalPages = Math.max(1, Math.ceil(filteredData.displayCustomers.length / CUSTOMERS_PAGE_SIZE));
   const paginatedCustomers = useMemo(
     () => filteredData.displayCustomers.slice((customerPage - 1) * CUSTOMERS_PAGE_SIZE, customerPage * CUSTOMERS_PAGE_SIZE),
@@ -375,7 +393,7 @@ export default function Customers() {
   }, [showCorrectLedgerView, customers, transactions, upfrontOrders]);
 
   const filteredCorrectCustomerLedgerPreviews = useMemo(() => {
-    const lowerQ = searchQuery.trim().toLowerCase();
+    const lowerQ = deferredSearchQuery.trim().toLowerCase();
     return correctCustomerLedgerPreviews
       .filter((preview) => {
         const customer = preview.customer;
@@ -383,7 +401,7 @@ export default function Customers() {
         return customer.name.toLowerCase().includes(lowerQ) || customer.phone.includes(lowerQ);
       })
       .sort((a, b) => Math.abs(b.summary.difference) - Math.abs(a.summary.difference) || b.warnings.length - a.warnings.length || a.customer.name.localeCompare(b.customer.name));
-  }, [correctCustomerLedgerPreviews, searchQuery]);
+  }, [correctCustomerLedgerPreviews, deferredSearchQuery]);
 
   const correctLedgerViewSummary = useMemo(() => {
     return filteredCorrectCustomerLedgerPreviews.reduce((summary, preview) => ({
@@ -622,6 +640,8 @@ export default function Customers() {
   const customerLedgerDebugEnabled = useMemo(() => {
     if (typeof window === 'undefined') return false;
     try {
+      const allowDebugDiagnostics = import.meta.env.DEV || isAdmin();
+      if (!allowDebugDiagnostics) return false;
       const queryEnabled = new URLSearchParams(window.location.search).get('customerLedgerDebug') === '1';
       const storageEnabled = window.localStorage.getItem('CUSTOMER_LEDGER_DEBUG') === '1';
       return queryEnabled || storageEnabled;
@@ -1222,7 +1242,7 @@ export default function Customers() {
           )}
 
           {can('analytics') && filteredData.totalDues > 0 && (
-             <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex justify-between items-center animate-in slide-in-from-top-2">
+             <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 animate-in slide-in-from-top-2">
                  <div className="flex items-center gap-2 text-red-700">
                      <AlertCircle className="w-5 h-5" />
                      <span className="text-xs font-bold uppercase tracking-wider">Overall Outstanding Dues</span>
@@ -1231,12 +1251,12 @@ export default function Customers() {
              </div>
           )}
 
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Search name or phone..." className="pl-9 h-10 rounded-xl bg-slate-50 border-slate-200" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                <Input placeholder="Search name or phone..." className="h-9 rounded-lg border-slate-200 bg-slate-50 pl-9" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
             </div>
-            <div className="flex items-center bg-white rounded-xl px-2 border border-slate-200 shrink-0 shadow-sm">
+            <div className="flex items-center rounded-lg border border-slate-200 bg-white px-2 shrink-0">
                <Select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="h-full text-xs border-0 bg-transparent w-28 font-bold text-slate-700">
                    <option value="all_time">All</option>
                    <option value="has_due">Has Due</option>
@@ -1462,11 +1482,11 @@ export default function Customers() {
         </div>
       ) : (
         <>
-      <div className="border rounded-xl overflow-x-auto bg-white">
+      <div className="overflow-x-auto rounded-lg border bg-white">
         <table className="w-full text-sm">
           <thead className="bg-muted/40">
             <tr>
-              <th className="p-3 text-left w-12">
+              <th className="px-3 py-2.5 text-left w-12">
                 <input
                   type="checkbox"
                   checked={allFilteredCustomersSelected}
@@ -1475,21 +1495,21 @@ export default function Customers() {
                   className="h-4 w-4 rounded border-slate-300"
                 />
               </th>
-              <th className="p-3 text-left">Customer</th>
-              <th className="p-3 text-left">Phone</th>
-              <th className="p-3 text-left">Visits</th>
-              <th className="p-3 text-left">Total Spend</th>
-              <th className="p-3 text-left">Due</th>
-              <th className="p-3 text-left">Store Credit</th>
-              <th className="p-3 text-left">Last Visit</th>
-              <th className="p-3 text-left">Actions</th>
+              <th className="px-3 py-2.5 text-left">Customer</th>
+              <th className="px-3 py-2.5 text-left">Phone</th>
+              <th className="px-3 py-2.5 text-left">Visits</th>
+              <th className="px-3 py-2.5 text-left">Total Spend</th>
+              <th className="px-3 py-2.5 text-left">Due</th>
+              <th className="px-3 py-2.5 text-left">Store Credit</th>
+              <th className="px-3 py-2.5 text-left">Last Visit</th>
+              <th className="px-3 py-2.5 text-left">Actions</th>
             </tr>
           </thead>
           <tbody>
             {paginatedCustomers.map((customer) => {
               return (
               <tr key={customer.id} className="border-t hover:bg-muted/20">
-                <td className="p-3">
+                <td className="px-3 py-2.5 align-top">
                   <input
                     type="checkbox"
                     checked={selectedCustomerIds.includes(customer.id)}
@@ -1498,28 +1518,28 @@ export default function Customers() {
                     className="h-4 w-4 rounded border-slate-300"
                   />
                 </td>
-                <td className="p-3 font-medium">{customer.name}</td>
-                <td className="p-3">
+                <td className="px-3 py-2.5 align-top font-medium">{customer.name}</td>
+                <td className="px-3 py-2.5 align-top">
                   <div>{customer.phone}</div>
                   <div className="text-[11px] text-muted-foreground">{customer.gstNumber ? `GST: ${customer.gstNumber}` : 'GST details not added'}</div>
                 </td>
-                <td className="p-3">{customer.visitCount}</td>
-                <td className="p-3">₹{formatMoneyWhole(customer.totalSpend)}</td>
+                <td className="px-3 py-2.5 align-top">{customer.visitCount}</td>
+                <td className="px-3 py-2.5 align-top">₹{formatMoneyWhole(customer.totalSpend)}</td>
                 {(() => {
                   const balance = canonicalDisplayBalanceByCustomerId.get(customer.id);
                   if (!balance || balance.status !== 'ok') {
                     return <>
-                      <td className="p-3 font-semibold text-amber-700">Ledger calculation unavailable</td>
-                      <td className="p-3 font-semibold text-amber-700">Ledger calculation unavailable</td>
+                      <td className="px-3 py-2.5 align-top font-semibold text-amber-700">Ledger calculation unavailable</td>
+                      <td className="px-3 py-2.5 align-top font-semibold text-amber-700">Ledger calculation unavailable</td>
                     </>;
                   }
                   return <>
-                    <td className={`p-3 font-semibold ${balance.currentDue > 0 ? 'text-orange-700' : 'text-green-700'}`}>₹{formatMoneyWhole(balance.currentDue)}</td>
-                    <td className={`p-3 font-semibold ${balance.storeCredit > 0 ? 'text-emerald-600' : 'text-muted-foreground'}`}>₹{formatMoneyWhole(balance.storeCredit)}</td>
+                    <td className={`px-3 py-2.5 align-top font-semibold ${balance.currentDue > 0 ? 'text-orange-700' : 'text-green-700'}`}>₹{formatMoneyWhole(balance.currentDue)}</td>
+                    <td className={`px-3 py-2.5 align-top font-semibold ${balance.storeCredit > 0 ? 'text-emerald-600' : 'text-muted-foreground'}`}>₹{formatMoneyWhole(balance.storeCredit)}</td>
                   </>;
                 })()}
-                <td className="p-3">{new Date(customer.lastVisit).toLocaleDateString()}</td>
-                <td className="p-3">
+                <td className="px-3 py-2.5 align-top">{new Date(customer.lastVisit).toLocaleDateString()}</td>
+                <td className="px-3 py-2.5 align-top">
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(customer); }}>View Details</Button>
                     <Button size="sm" variant="outline" onClick={() => void handleShareCustomerLedger(customer)}>WhatsApp Ledger</Button>

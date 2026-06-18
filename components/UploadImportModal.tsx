@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button } from './ui';
 import { AlertTriangle, FileDown, Upload, X } from 'lucide-react';
 import { ImportIssue, ImportProgress, ImportResult } from '../services/importExcel';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 type Props = {
   title: string;
@@ -12,6 +13,7 @@ type Props = {
 };
 
 export function UploadImportModal({ title, open, onClose, onDownloadTemplate, onImportFile }: Props) {
+  useEscapeLayer(open, onClose, { priority: 90 });
   const inputRef = useRef<HTMLInputElement | null>(null);
   const resultRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(false);

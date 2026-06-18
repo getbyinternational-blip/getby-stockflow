@@ -21,6 +21,7 @@ import { auth } from '../services/firebase';
 import { getCanonicalCustomerBalanceView } from '../services/customerBalanceView';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { can } from '../src/auth/simplePermissions';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 const toMoneyCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100);
 const fromMoneyCents = (value: number) => value / 100;
@@ -279,6 +280,11 @@ export default function Sales() {
   const [selectedReturnTxId, setSelectedReturnTxId] = useState<string | null>(null);
   const [returnQtyByLine, setReturnQtyByLine] = useState<Record<string, number>>({});
   const [isReturnPopupOpen, setIsReturnPopupOpen] = useState(false);
+  useEscapeLayer(variantPicker.open, () => setVariantPicker({ open: false, product: null, rows: [] }), { priority: 80 });
+  useEscapeLayer(bulkModal.isOpen, () => setBulkModal({ isOpen: false, product: null }), { priority: 80 });
+  useEscapeLayer(isReturnPopupOpen, () => setIsReturnPopupOpen(false), { priority: 90 });
+  useEscapeLayer(isTaxModalOpen, () => setIsTaxModalOpen(false), { priority: 100 });
+  useEscapeLayer(isCustomerModalOpen, () => { setIsCustomerModalOpen(false); setSelectedTransactionDate(''); }, { priority: 100 });
   const [returnSubmitError, setReturnSubmitError] = useState<string | null>(null);
   const [mixedReturnChoice, setMixedReturnChoice] = useState<'refund_paid_method' | 'store_credit'>('refund_paid_method');
   const [productPage, setProductPage] = useState(1);

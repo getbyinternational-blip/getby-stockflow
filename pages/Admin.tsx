@@ -16,8 +16,10 @@ import { downloadInventoryData, downloadInventoryTemplate, importInventoryFromFi
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
 import { can } from '../src/auth/simplePermissions';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel = 'Confirm' }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void; confirmLabel?: string }) {
+  useEscapeLayer(open, onCancel, { priority: 120 });
   if (!open) return null;
   return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"><Card className="w-full max-w-md"><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">{message}</p><div className="flex justify-end gap-2"><Button variant="outline" onClick={onCancel}>Cancel</Button><Button className="bg-red-600 hover:bg-red-700" onClick={onConfirm}>{confirmLabel}</Button></div></CardContent></Card></div>;
 }
@@ -136,6 +138,30 @@ export default function Admin() {
   const [openActionMenuProductId, setOpenActionMenuProductId] = useState<string | null>(null);
   const [editingLocationProductId, setEditingLocationProductId] = useState<string | null>(null);
   const [locationDraft, setLocationDraft] = useState({ locationZone: '', locationRow: '', locationRack: '', locationShelf: '' });
+  useEscapeLayer(Boolean(openActionMenuProductId), () => setOpenActionMenuProductId(null), { priority: 70 });
+  useEscapeLayer(Boolean(previewImage), () => setPreviewImage(null), { priority: 200 });
+  useEscapeLayer(Boolean(barcodePreview), () => setBarcodePreview(null), { priority: 150 });
+  useEscapeLayer(Boolean(purchaseEditTarget), () => setPurchaseEditTarget(null), { priority: 130 });
+  useEscapeLayer(Boolean(pendingPurchaseReverse), () => setPendingPurchaseReverse(null), { priority: 120 });
+  useEscapeLayer(Boolean(pendingDeleteProductId), () => setPendingDeleteProductId(null), { priority: 120 });
+  useEscapeLayer(isBatchDeleteConfirmOpen, () => setIsBatchDeleteConfirmOpen(false), { priority: 120 });
+  useEscapeLayer(Boolean(deletingCategory), () => setDeletingCategory(null), { priority: 120 });
+  useEscapeLayer(isPhotoModalOpen && !!selectedPhotoProduct, () => setIsPhotoModalOpen(false), { priority: 120 });
+  useEscapeLayer(Boolean(purchaseTarget), () => setPurchaseTarget(null), { priority: 110 });
+  useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 110 });
+  useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 105 });
+  useEscapeLayer(Boolean(viewingProduct), () => setViewingProduct(null), { priority: 105 });
+  useEscapeLayer(isModalOpen, () => {
+    setEditingProduct(null);
+    setError(null);
+    setFormData(emptyProductForm);
+    setIsModalOpen(false);
+    setShowAddCategoryInline(false);
+    setNewInlineCategory('');
+    setSupplierPayableManuallyEdited(false);
+  }, { priority: 100 });
+  useEscapeLayer(isCategoryModalOpen, () => setIsCategoryModalOpen(false), { priority: 100 });
+  useEscapeLayer(isLowStockModalOpen, () => setIsLowStockModalOpen(false), { priority: 100 });
 
   const getProductImageUrl = (product?: any): string => {
     if (!product) return '';
@@ -238,6 +264,7 @@ export default function Admin() {
   const [lostDamageTarget, setLostDamageTarget] = useState<Product | null>(null);
   const [lostDamageQtyInput, setLostDamageQtyInput] = useState('');
   const [lostDamageError, setLostDamageError] = useState<string | null>(null);
+  useEscapeLayer(Boolean(lostDamageTarget), () => setLostDamageTarget(null), { priority: 130 });
 
   const refreshData = () => {
     const data = loadData();
@@ -266,21 +293,9 @@ export default function Admin() {
     // Listen for local changes (same-tab sync)
     window.addEventListener('local-storage-update', handleStorageChange);
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') {
-            setPreviewImage(null);
-            closeModal();
-            setIsCategoryModalOpen(false);
-            setIsLowStockModalOpen(false);
-            setBarcodePreview(null);
-        }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-
     return () => {
         window.removeEventListener('storage', handleStorageChange);
         window.removeEventListener('local-storage-update', handleStorageChange);
-        window.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
 

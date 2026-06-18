@@ -1,5 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
-import { HashRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import Auth from './pages/Auth';
 import VerificationRequired from './pages/VerificationRequired';
 import { getCurrentUser, logout } from './services/auth';
@@ -15,6 +15,9 @@ import { can as simpleCan, clearAccessSession, getCurrentOperatorName, getCurren
 import { RestrictedPage } from './components/auth/PermissionGuard';
 import { useVersionCheck } from './src/hooks/useVersionCheck';
 import Settings from './pages/Settings';
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import Terms from './pages/Terms';
+import DataDeletion from './pages/DataDeletion';
 const WhatsAppLogs = lazy(() => import('./pages/WhatsAppLogs'));
 
 const DEV_ACCESS_BYPASS_ENABLED = import.meta.env.DEV || import.meta.env.VITE_ENABLE_DEV_ACCESS_BYPASS === 'true';
@@ -81,6 +84,7 @@ const ProtectedRoute = ({ isVerified, permission, children }: { isVerified: bool
 };
 
 function AppContent() {
+  const location = useLocation();
   const currentBuildId = typeof APP_BUILD_ID === 'string' ? APP_BUILD_ID : 'unknown';
   const { updateAvailable, latestVersionData, dismissUpdate } = useVersionCheck(currentBuildId);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -249,8 +253,32 @@ function AppContent() {
     logout();
   };
 
+  const publicPaths = new Set(['/privacy-policy', '/terms', '/data-deletion']);
+  const isPublicRoute = publicPaths.has(location.pathname);
+
   if (authStatus === 'loading') {
+    if (isPublicRoute) {
+      return (
+        <Routes>
+          <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+          <Route path="/terms" element={<Terms />} />
+          <Route path="/data-deletion" element={<DataDeletion />} />
+          <Route path="*" element={<Navigate to="/privacy-policy" replace />} />
+        </Routes>
+      );
+    }
     return <div className="min-h-screen bg-background" />;
+  }
+
+  if (isPublicRoute) {
+    return (
+      <Routes>
+        <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+        <Route path="/terms" element={<Terms />} />
+        <Route path="/data-deletion" element={<DataDeletion />} />
+        <Route path="*" element={<Navigate to="/privacy-policy" replace />} />
+      </Routes>
+    );
   }
 
   if (authStatus === 'unauthenticated') {
@@ -266,9 +294,8 @@ function AppContent() {
   }
 
   const operatorName = getCurrentOperatorName();
-
   return (
-    <Router>
+      <>
       <RouteActivationObserver onRouteCommitted={clearOptimisticActivePath} />
       <MenuController setIsMenuOpen={setIsMenuOpen} />
       <div className="flex h-screen bg-background overflow-hidden">
@@ -478,10 +505,10 @@ function AppContent() {
           </div>
         </main>
       </div>
-    </Router>
+    </>
   );
 }
 
 export default function App() {
-  return <RoleSessionProvider><AppContent /></RoleSessionProvider>;
+  return <RoleSessionProvider><Router><AppContent /></Router></RoleSessionProvider>;
 }

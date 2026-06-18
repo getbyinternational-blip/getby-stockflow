@@ -13,6 +13,7 @@ import { normalizeTransactionItems } from '../utils/transactionItems';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { useRoleSession } from '../src/auth/roleSession';
 import { can, getCurrentRole } from '../src/auth/simplePermissions';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 type Expense = {
   id: string;
@@ -826,6 +827,11 @@ export default function Finance() {
   const [showReturnEffectDetails, setShowReturnEffectDetails] = useState(false);
   const [showFullCashbookColumns, setShowFullCashbookColumns] = useState(false);
   const [isExpectedClosingBreakdownOpen, setIsExpectedClosingBreakdownOpen] = useState(false);
+  useEscapeLayer(Boolean(activeHistoryDetailSessionId), () => setActiveHistoryDetailSessionId(null), { priority: 110 });
+  useEscapeLayer(isOpeningUnlockModalOpen, () => setIsOpeningUnlockModalOpen(false), { priority: 100 });
+  useEscapeLayer(Boolean(editingClosingSessionId), () => setEditingClosingSessionId(null), { priority: 100 });
+  useEscapeLayer(Boolean(deletingSessionId), () => setDeletingSessionId(null), { priority: 100 });
+  useEscapeLayer(isExpectedClosingBreakdownOpen, () => setIsExpectedClosingBreakdownOpen(false), { priority: 100 });
 
   const refreshData = () => setData(loadData());
   const refreshFinanceNonCriticalData = async () => {
@@ -901,17 +907,6 @@ export default function Finance() {
       setActiveHistoryDetailSessionId(null);
     }
   }, [activeHistoryDetailSessionId, activeHistorySession]);
-
-  useEffect(() => {
-    if (!activeHistoryDetailSessionId) return;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveHistoryDetailSessionId(null);
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeHistoryDetailSessionId]);
 
   const cashHistorySummary = useMemo(() => {
     const closed = filteredCashHistory.filter(session => session.status === 'closed');

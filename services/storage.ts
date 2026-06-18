@@ -3856,7 +3856,12 @@ export const safeFinancePersistState = async (patch: FinancePersistPatch, option
 export const saveData = async (data: AppState, options?: { throwOnError?: boolean; allowDestructive?: boolean; reason?: string; auditOperation?: AuditOperation; invariantOverride?: InvariantOverride }) => {
   const invariantResult = enforceAppStateInvariants(data, { operation: options?.reason || 'saveData', override: options?.invariantOverride });
   if (invariantResult.blocked) {
-    const err = new Error(invariantResult.requiresOverride ? 'Invariant violation requires admin override before saving.' : 'Critical invariant violation blocked save.');
+    const shortReason = invariantResult.shortReason || 'unknown critical corruption risk';
+    const err = new Error(
+      invariantResult.requiresOverride
+        ? `Save blocked because the data contains a critical corruption risk: ${shortReason}. Admin override reason is required. Please contact admin/support.`
+        : `Save blocked because the data contains a critical corruption risk: ${shortReason}. Please contact admin/support.`
+    );
     emitDataOpStatus({ phase: DATA_OP_PHASES.ERROR, op: options?.reason || 'saveData', entity: 'state', error: err.message });
     void writeAuditEvent('BLOCKED_WRITE', { reason: `${options?.reason || 'saveData'}_invariant_blocked`, invariantResult });
     if (options?.throwOnError) throw err;

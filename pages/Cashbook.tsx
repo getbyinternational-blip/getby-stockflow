@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { loadData, getSaleSettlementBreakdown, getCanonicalCustomerBalanceSnapshot, buildUpfrontOrderLedgerEffects, createManualCashbookEntry, refreshDeletedTransactionsFromCloud } from '../services/storage';
 import { CashAdjustment, Expense, ManualCashbookEntry, PurchaseOrder, Transaction, UpfrontOrder } from '../types';
 import { normalizeTransactionItems } from '../utils/transactionItems';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -238,6 +239,7 @@ export default function Cashbook() {
   const [manualAmount, setManualAmount] = useState('');
   const [manualDetails, setManualDetails] = useState('');
   const [manualError, setManualError] = useState<string | null>(null);
+  useEscapeLayer(isAddCashOpen, () => setIsAddCashOpen(false), { priority: 100 });
 
   const refreshCashbookData = async () => {
     try {

@@ -9,6 +9,7 @@ import { getConfiguredWhatsAppServerUrl, getWhatsAppHealth, getWhatsAppQr, getWh
 import { appendWhatsAppLog, getWhatsAppLogStats } from '../services/whatsappLogs';
 import { Button, Input, Card, CardContent, CardHeader, CardTitle, Label, Select } from '../components/ui';
 import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit } from 'lucide-react';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 const isValidOperatorPin = (value: string) => /^\d{6,8}$/.test(value.trim());
 
@@ -30,6 +31,7 @@ export default function Settings() {
   const [waStatus, setWaStatus] = useState<'checking' | 'connected' | 'not_connected' | 'server_unavailable'>('checking');
   const [waMessage, setWaMessage] = useState<string | null>(null);
   const [waModalOpen, setWaModalOpen] = useState(false);
+  useEscapeLayer(waModalOpen, () => setWaModalOpen(false), { priority: 100 });
   const [waQr, setWaQr] = useState<string>('');
   const waPollTimerRef = useRef<number | null>(null);
   const isInvoiceSendDebugEnabled = () => { try { return window.location.href.includes('invoiceSendDebug=1') || window.localStorage.getItem('INVOICE_SEND_DEBUG') === '1'; } catch { return false; } };

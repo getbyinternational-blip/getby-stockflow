@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from './ui';
 import { Product } from '../types';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 export type CustomerCatalogOptions = {
   selectedCategories: string[];
@@ -11,6 +12,7 @@ export type CustomerCatalogOptions = {
 };
 
 export function CustomerCatalogOptionsModal({ isOpen, onClose, products, onGenerate }: { isOpen: boolean; onClose: () => void; products: Product[]; onGenerate: (opts: CustomerCatalogOptions) => void; }) {
+  useEscapeLayer(isOpen, onClose, { priority: 90 });
   const categories = useMemo(() => Array.from(new Set(products.map(p => (p.category || 'Uncategorized').trim() || 'Uncategorized'))).sort(), [products]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>(categories);
   const [groupByCategory, setGroupByCategory] = useState(true);

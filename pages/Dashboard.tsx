@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, LightweightLoader } from '../components/ui';
 import { CashAdjustment, Customer, DeleteCompensationRecord, Expense, PartyCreditLedgerEntry, PurchaseOrder, PurchaseParty, SupplierPaymentLedgerEntry, Transaction, UpfrontOrder } from '../types';
@@ -14,8 +14,9 @@ import { CanonicalCustomerBalanceResult, getCanonicalCustomerBalanceResult } fro
 import { shareCustomerLedgerViaWhatsApp } from '../services/whatsappShare';
 import { appendWhatsAppLog } from '../services/whatsappLogs';
 import { auth } from '../services/firebase';
-import { can } from '../src/auth/simplePermissions';
+import { can, isAdmin } from '../src/auth/simplePermissions';
 import { Search } from 'lucide-react';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 type CustomerReceivableRow = Customer & { receivable: number; ledgerBalanceUnavailable?: boolean };
 type PartyPayableRow = PurchaseParty & { payable: number; dueOrders: PurchaseOrder[]; partyCredit: number };
@@ -84,10 +85,11 @@ const toDateTimeLocalValue = (date: Date) => {
 };
 
 function ActionModal({ open, title, onClose, children, zIndexClass = 'z-[90]' }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode; zIndexClass?: string }) {
+  useEscapeLayer(open, onClose, { priority: 90 });
   if (!open) return null;
   return (
     <div className={`fixed inset-0 ${zIndexClass} bg-black/40 flex items-center justify-center p-4`}>
-      <div className="w-full max-w-md rounded-xl border bg-white shadow-xl">
+      <div className="w-full max-w-md rounded-xl border bg-white">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h3 className="font-semibold">{title}</h3>
           <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
@@ -98,10 +100,11 @@ function ActionModal({ open, title, onClose, children, zIndexClass = 'z-[90]' }:
   );
 }
 function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel = 'Confirm', zIndexClass = 'z-[120]' }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void; confirmLabel?: string; zIndexClass?: string }) {
+  useEscapeLayer(open, onCancel, { priority: 120 });
   if (!open) return null;
   return (
     <div className={`fixed inset-0 ${zIndexClass} bg-black/40 flex items-center justify-center p-4`}>
-      <div className="w-full max-w-md rounded-xl border bg-white shadow-xl">
+      <div className="w-full max-w-md rounded-xl border bg-white">
         <div className="border-b px-4 py-3">
           <h3 className="font-semibold">{title}</h3>
         </div>
@@ -118,10 +121,11 @@ function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel
 }
 
 function StatementModal({ open, title, subtitle, onClose, children }: { open: boolean; title: string; subtitle?: string; onClose: () => void; children: React.ReactNode }) {
+  useEscapeLayer(open, onClose, { priority: 95 });
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 p-3 sm:p-4">
-      <div className="w-[90vw] max-w-6xl max-h-[90vh] overflow-hidden rounded-2xl border bg-white shadow-xl">
+      <div className="w-[90vw] max-w-6xl max-h-[90vh] overflow-hidden rounded-2xl border bg-white">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b bg-white px-4 py-3 sm:px-6 sm:py-4">
           <div>
             <h3 className="text-base sm:text-lg font-semibold">{title}</h3>
@@ -190,6 +194,8 @@ export default function Dashboard() {
   const [customerDashboardSearch, setCustomerDashboardSearch] = useState('');
   const [supplierDashboardSearch, setSupplierDashboardSearch] = useState('');
   const [dashboardDetailsReady, setDashboardDetailsReady] = useState(false);
+  const deferredCustomerDashboardSearch = useDeferredValue(customerDashboardSearch);
+  const deferredSupplierDashboardSearch = useDeferredValue(supplierDashboardSearch);
 
   const refresh = () => {
     const data = loadData();
@@ -399,7 +405,7 @@ export default function Dashboard() {
   const zeroDueCustomerRows = useMemo(() => allCustomerDashboardRows.filter((c) => c.receivable <= 0 && Math.max(0, Number(c.storeCredit || 0)) <= 0), [allCustomerDashboardRows]);
   const visibleCustomerDashboardRows = useMemo(() => {
     const rows = customerDashboardTab === 'receivable' ? receivableCustomerRows : customerDashboardTab === 'storeCredit' ? storeCreditCustomerRows : zeroDueCustomerRows;
-    const query = customerDashboardSearch.trim().toLowerCase();
+    const query = deferredCustomerDashboardSearch.trim().toLowerCase();
     if (!query) return rows;
     return rows.filter((customer) => [
       customer.name,
@@ -407,7 +413,7 @@ export default function Dashboard() {
       customer.gstName,
       customer.gstNumber,
     ].some((value) => String(value || '').toLowerCase().includes(query)));
-  }, [customerDashboardSearch, customerDashboardTab, receivableCustomerRows, storeCreditCustomerRows, zeroDueCustomerRows]);
+  }, [customerDashboardTab, deferredCustomerDashboardSearch, receivableCustomerRows, storeCreditCustomerRows, zeroDueCustomerRows]);
 
   const allPartyDashboardRows = useMemo<PartyPayableRow[]>(() => {
     if (!dashboardDetailsReady) return [];
@@ -465,7 +471,7 @@ export default function Dashboard() {
   const zeroDuePartyRows = useMemo(() => allPartyDashboardRows.filter((p) => p.payable <= 0 && Math.max(0, Number(p.partyCredit || 0)) <= 0), [allPartyDashboardRows]);
   const visibleSupplierDashboardRows = useMemo(() => {
     const rows = supplierDashboardTab === 'payable' ? payablePartyRows : supplierDashboardTab === 'credit' ? creditPartyRows : zeroDuePartyRows;
-    const query = supplierDashboardSearch.trim().toLowerCase();
+    const query = deferredSupplierDashboardSearch.trim().toLowerCase();
     if (!query) return rows;
     return rows.filter((party) => [
       party.name,
@@ -473,7 +479,7 @@ export default function Dashboard() {
       party.gst,
       party.contactPerson,
     ].some((value) => String(value || '').toLowerCase().includes(query)));
-  }, [creditPartyRows, payablePartyRows, supplierDashboardSearch, supplierDashboardTab, zeroDuePartyRows]);
+  }, [creditPartyRows, deferredSupplierDashboardSearch, payablePartyRows, supplierDashboardTab, zeroDuePartyRows]);
 
   const operatorRevenueBreakdown = useMemo(() => transactions.filter((tx) => tx.type === 'sale').reduce((acc, tx) => {
     const settlement = getSaleSettlementBreakdown(tx);
@@ -489,6 +495,8 @@ export default function Dashboard() {
   const isPayableTraceEnabled = useMemo(() => {
     if (typeof window === 'undefined') return false;
     try {
+      const allowDebugDiagnostics = import.meta.env.DEV || isAdmin();
+      if (!allowDebugDiagnostics) return false;
       return (
         window.location.href.includes('tracePayables=1')
         || window.location.search.includes('tracePayables=1')
@@ -720,6 +728,7 @@ export default function Dashboard() {
   }, [selectedParty, orders, supplierPayments, partyCreditLedger]);
   const isPurchaseLedgerDebugEnabled = useMemo(() => {
     if (typeof window === 'undefined') return false;
+    if (!(import.meta.env.DEV || isAdmin())) return false;
     const queryEnabled = new URLSearchParams(window.location.search).get('purchaseLedgerDebug') === '1';
     const storageEnabled = window.localStorage.getItem('PURCHASE_LEDGER_DEBUG') === '1';
     return queryEnabled || storageEnabled;
@@ -1188,10 +1197,10 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         <Card className="flex flex-col">
           <CardHeader><CardTitle>Customer Receivables</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2.5">
             <div className="flex gap-2 flex-wrap">
               <Button size="sm" variant={customerDashboardTab === 'receivable' ? 'default' : 'outline'} onClick={() => setCustomerDashboardTab('receivable')}>Receivables ({receivableCustomerRows.length})</Button>
               <Button size="sm" variant={customerDashboardTab === 'storeCredit' ? 'default' : 'outline'} onClick={() => setCustomerDashboardTab('storeCredit')}>Parties with Store Credit ({storeCreditCustomerRows.length})</Button>
@@ -1208,16 +1217,16 @@ export default function Dashboard() {
             </div>
             {!dashboardDetailsReady && <LightweightLoader label="Preparing dashboard…" className="min-h-[120px]" />}
             {dashboardDetailsReady && visibleCustomerDashboardRows.map((c) => (
-              <div key={c.id} className="flex items-center justify-between border rounded-lg p-3 gap-3">
+              <div key={c.id} className="flex flex-col gap-2 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="font-medium truncate">{c.name}</div>
                   <div className="text-xs text-muted-foreground">{c.phone || '-'}</div>
                 </div>
-                <div className="text-right shrink-0">
+                <div className="shrink-0 text-left sm:text-right">
                   <div className={`font-semibold ${customerDashboardTab === 'storeCredit' ? 'text-emerald-700' : customerDashboardTab === 'withoutDue' ? 'text-slate-600' : 'text-blue-700'}`}>
                     {customerDashboardTab === 'storeCredit' ? `Store Credit ${formatINRPrecise(c.storeCredit || 0)}` : customerDashboardTab === 'withoutDue' ? formatINRPrecise(0) : formatINRPrecise(c.receivable)}
                   </div>
-                  <div className="mt-2 flex gap-2 justify-end">
+                  <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementCustomerId(c.id)}>View Statement</Button>
                     <Button size="sm" variant="outline" disabled={!getWhatsAppNumber(c as any) || Boolean(sendingLedgerKey)} title={!getWhatsAppNumber(c as any) ? 'No WhatsApp number found.' : 'Send this customer ledger on WhatsApp'} onClick={() => void sendCustomerLedgerWhatsApp(c)}>
                       {!getWhatsAppNumber(c as any) ? 'No WhatsApp number' : sendingLedgerKey === `customer-${c.id}` ? 'Sending...' : 'Send Ledger WhatsApp'}
@@ -1236,7 +1245,7 @@ export default function Dashboard() {
 
         <Card className="flex flex-col">
           <CardHeader><CardTitle>Party/Supplier Payables</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-2.5">
             <div className="flex gap-2 flex-wrap">
               <Button size="sm" variant={supplierDashboardTab === 'payable' ? 'default' : 'outline'} onClick={() => setSupplierDashboardTab('payable')}>Payables ({payablePartyRows.length})</Button>
               <Button size="sm" variant={supplierDashboardTab === 'credit' ? 'default' : 'outline'} onClick={() => setSupplierDashboardTab('credit')}>Parties with Credit ({creditPartyRows.length})</Button>
@@ -1253,16 +1262,16 @@ export default function Dashboard() {
             </div>
             {!dashboardDetailsReady && <LightweightLoader label="Preparing dashboard…" className="min-h-[120px]" />}
             {dashboardDetailsReady && visibleSupplierDashboardRows.map((p) => (
-              <div key={p.id} className="flex items-center justify-between border rounded-lg p-3 gap-3">
+              <div key={p.id} className="flex flex-col gap-2 rounded-lg border px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
                   <div className="font-medium truncate">{p.name}</div>
                   <div className="text-xs text-muted-foreground">{p.phone || '-'}</div>
                 </div>
-                <div className="text-right shrink-0">
+                <div className="shrink-0 text-left sm:text-right">
                   <div className={`font-semibold ${supplierDashboardTab === 'credit' ? 'text-emerald-700' : supplierDashboardTab === 'withoutDue' ? 'text-slate-600' : 'text-orange-700'}`}>
                     {supplierDashboardTab === 'credit' ? `Party Credit ${formatINRPrecise(p.partyCredit || 0)}` : supplierDashboardTab === 'withoutDue' ? formatINRPrecise(0) : formatINRPrecise(p.payable)}
                   </div>
-                  <div className="mt-2 flex gap-2 justify-end">
+                  <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementPartyId(p.id)}>View Statement</Button>
                     <Button size="sm" variant="outline" disabled={!getWhatsAppNumber(p as any) || Boolean(sendingLedgerKey)} title={!getWhatsAppNumber(p as any) ? 'No WhatsApp number found.' : 'Send this supplier statement on WhatsApp'} onClick={() => void sendPartyLedgerWhatsApp(p)}>
                       {!getWhatsAppNumber(p as any) ? 'No WhatsApp number' : sendingLedgerKey === `party-${p.id}` ? 'Sending...' : 'Send Ledger WhatsApp'}
@@ -1386,13 +1395,13 @@ export default function Dashboard() {
             </div>
             {statementPdfError && <p className="text-xs text-red-600">{statementPdfError}</p>}
             <p className="text-xs text-muted-foreground">Latest transactions shown first. Balance means balance after that transaction.</p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="rounded-xl border bg-slate-50 p-3"><div className="text-[11px] uppercase tracking-wide text-muted-foreground">Credit Due Generated</div><div className="mt-1 text-lg font-semibold text-orange-700">{formatINRPrecise(customerStatement.totalCreditSales)}</div></div>
-              <div className="rounded-xl border bg-slate-50 p-3"><div className="text-[11px] uppercase tracking-wide text-muted-foreground">Payments Received</div><div className="mt-1 text-lg font-semibold text-blue-700">{formatINRPrecise(customerStatement.totalPayments)}</div></div>
-              <div className="rounded-xl border bg-slate-50 p-3"><div className="text-[11px] uppercase tracking-wide text-muted-foreground">Store Credit Applied / Added</div><div className="mt-1 text-lg font-semibold">{formatINRPrecise(customerStatement.totalStoreCreditUsed)} / {formatINRPrecise(customerStatement.totalStoreCreditAdded)}</div></div>
-              <div className="rounded-xl border bg-slate-50 p-3"><div className="text-[11px] uppercase tracking-wide text-muted-foreground">Current Receivable</div><div className="mt-1 text-lg font-semibold text-orange-700">{formatINRPrecise(customerStatement.balanceDue)}</div></div>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-md border bg-slate-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Credit Due Generated</div><div className="mt-1 text-base font-semibold text-orange-700">{formatINRPrecise(customerStatement.totalCreditSales)}</div></div>
+              <div className="rounded-md border bg-slate-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Payments Received</div><div className="mt-1 text-base font-semibold text-blue-700">{formatINRPrecise(customerStatement.totalPayments)}</div></div>
+              <div className="rounded-md border bg-slate-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Store Credit Applied / Added</div><div className="mt-1 text-base font-semibold">{formatINRPrecise(customerStatement.totalStoreCreditUsed)} / {formatINRPrecise(customerStatement.totalStoreCreditAdded)}</div></div>
+              <div className="rounded-md border bg-slate-50 px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Current Receivable</div><div className="mt-1 text-base font-semibold text-orange-700">{formatINRPrecise(customerStatement.balanceDue)}</div></div>
             </div>
-            <div className="max-h-[52vh] overflow-auto rounded-xl border">
+            <div className="max-h-[52vh] overflow-auto rounded-lg border">
               <table className="w-full min-w-[920px] text-sm">
                 <thead className="sticky top-0 bg-slate-50">
                   <tr>

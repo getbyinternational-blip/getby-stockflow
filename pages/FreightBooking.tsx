@@ -6,6 +6,7 @@ import { addCategory, convertConfirmedOrderToPurchase, convertInquiryToConfirmed
 import { FreightBroker, FreightConfirmedOrder, FreightInquiry, ProcurementLineSnapshot, Product } from '../types';
 import { getProductStockRows } from '../services/productVariants';
 import { AlertTriangle, ArrowLeft, ArrowRight, ArrowUpDown, Building2, CalendarDays, Check, ChevronRight, Clock3, Filter, IndianRupee, Package, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 type FreightTab = 'orders' | 'inquiries' | 'brokers';
 type WizardStep = 'source' | 'product' | 'variants' | 'pricing' | 'cartons' | 'review' | 'cbm' | 'newInquiry';
@@ -93,6 +94,7 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 }
 
 function Modal({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
+  useEscapeLayer(open, onClose, { priority: 80 });
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">

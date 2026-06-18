@@ -21,9 +21,11 @@ import { formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole 
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useRoleSession } from '../src/auth/roleSession';
-import { can } from '../src/auth/simplePermissions';
+import { can, isAdmin } from '../src/auth/simplePermissions';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void }) {
+  useEscapeLayer(open, onCancel, { priority: 120 });
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4">
@@ -109,6 +111,12 @@ export default function Transactions() {
   const [excelAmountMoreThan, setExcelAmountMoreThan] = useState('');
   const [excelAmountLessThan, setExcelAmountLessThan] = useState('');
   const [deleteTargetTx, setDeleteTargetTx] = useState<Transaction | null>(null);
+  useEscapeLayer(Boolean(deleteTargetTx), () => setDeleteTargetTx(null), { priority: 120 });
+  useEscapeLayer(Boolean(selectedDeletedTx), () => setSelectedDeletedTx(null), { priority: 110 });
+  useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
+  useEscapeLayer(Boolean(editingTx), () => setEditingTx(null), { priority: 110 });
+  useEscapeLayer(isProductPickerOpen && editingTx?.type === 'sale', () => setIsProductPickerOpen(false), { priority: 115 });
+  useEscapeLayer(isExcelFilterModalOpen, () => setIsExcelFilterModalOpen(false), { priority: 105 });
   const [deleteReason, setDeleteReason] = useState<'customer_cancelled' | 'created_by_mistake' | 'other'>('customer_cancelled');
   const [deleteReasonOther, setDeleteReasonOther] = useState('');
   const [transactionPage, setTransactionPage] = useState(1);
@@ -1122,7 +1130,8 @@ export default function Transactions() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const show = Boolean((import.meta as any)?.env?.DEV) || new URLSearchParams(window.location.search).get('debug') === '1';
+    const allowDebugDiagnostics = Boolean((import.meta as any)?.env?.DEV) || isAdmin();
+    const show = allowDebugDiagnostics && new URLSearchParams(window.location.search).get('debug') === '1';
     if (!show) return;
   }, [diagnostics]);
 

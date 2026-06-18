@@ -9,8 +9,9 @@ import { getProductStockRows } from '../services/productVariants';
 import { ArrowLeft, ArrowRight, ArrowUpDown, Building2, CalendarDays, Check, ChevronRight, ClipboardList, Filter, IndianRupee, Package, Pencil, Plus, Search, Trash2, Truck, User, X } from 'lucide-react';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { buildPurchasePartyLedger } from '../services/purchaseLedger';
-import { can } from '../src/auth/simplePermissions';
+import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
+import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 type PurchaseTab = 'orders' | 'parties';
 type WizardStep = 'source' | 'product' | 'variants' | 'pricing' | 'review' | 'newProduct';
@@ -380,6 +381,7 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
 }
 
 function Modal({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
+  useEscapeLayer(open, onClose, { priority: 80 });
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
@@ -466,6 +468,11 @@ export default function PurchasePanel() {
   const [deletePartyError, setDeletePartyError] = useState<string | null>(null);
   const [expandedPartyId, setExpandedPartyId] = useState<string | null>(null);
   const [receiveTargetOrder, setReceiveTargetOrder] = useState<PurchaseOrder | null>(null);
+  useEscapeLayer(isModalOpen, () => setIsModalOpen(false), { priority: 80 });
+  useEscapeLayer(showPartyPopup, () => setShowPartyPopup(false), { priority: 80 });
+  useEscapeLayer(showReceivePopup, () => setShowReceivePopup(false), { priority: 80 });
+  useEscapeLayer(showPartyPaymentPopup, () => setShowPartyPaymentPopup(false), { priority: 80 });
+  useEscapeLayer(showPaymentPopup, () => setShowPaymentPopup(false), { priority: 80 });
   const [receivePriceMethod, setReceivePriceMethod] = useState<ReceivePriceMethod>('no_change');
   const [partyCreditToApply, setPartyCreditToApply] = useState<number | ''>('');
   const [partyCreditTouched, setPartyCreditTouched] = useState(false);
@@ -1300,6 +1307,7 @@ export default function PurchasePanel() {
   }, [expandedPartyId, partyLedgers]);
   const isPurchaseLedgerDebugEnabled = useMemo(() => {
     if (typeof window === 'undefined') return false;
+    if (!(import.meta.env.DEV || isAdmin())) return false;
     const queryEnabled = new URLSearchParams(window.location.search).get('purchaseLedgerDebug') === '1';
     const storageEnabled = window.localStorage.getItem('PURCHASE_LEDGER_DEBUG') === '1';
     return queryEnabled || storageEnabled;
