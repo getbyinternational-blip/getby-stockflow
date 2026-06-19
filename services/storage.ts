@@ -5717,6 +5717,97 @@ export type PurchaseOrderProductHistoryTraceResult = {
   recommendedNextStep: string;
 };
 
+export type MissingProductPurchaseHistoryDryRunPatch = {
+  productId: string;
+  productName: string;
+  purchaseOrderId: string;
+  partyId: string;
+  partyName: string;
+  date: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+  historyRowToAdd: NonNullable<Product['purchaseHistory']>[number];
+  beforeHistoryCount: number;
+  afterHistoryCount: number;
+  orderSource: 'subcollection' | 'rootFallback' | 'unknown';
+  createdByOrSource: string;
+  orderIdPattern: 'po-admin-create' | 'po-admin' | 'other';
+  productIdPattern: 'PRID' | 'timestamp_like' | 'other';
+};
+
+export type MissingProductPurchaseHistoryDryRunIssue = {
+  purchaseOrderId: string;
+  productId: string;
+  productName: string;
+  partyId: string;
+  partyName: string;
+  date: string;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+  orderSource: 'subcollection' | 'rootFallback' | 'unknown';
+  createdByOrSource: string;
+  orderIdPattern: 'po-admin-create' | 'po-admin' | 'other';
+  productIdPattern: 'PRID' | 'timestamp_like' | 'other';
+  reasons: string[];
+};
+
+export type MissingProductPurchaseHistoryDryRunCorrelationCounts = {
+  byOrderSource: Record<string, number>;
+  byCreatedByOrSource: Record<string, number>;
+  byOrderIdPattern: Record<string, number>;
+  byProductIdPattern: Record<string, number>;
+  byDateRange: Record<string, number>;
+};
+
+export type MissingProductPurchaseHistoryDryRunResult = {
+  generatedAt: string;
+  missingCount: number;
+  safeCount: number;
+  unsafeCount: number;
+  totalAmountRepresented: number;
+  productsAffected: number;
+  safePatches: MissingProductPurchaseHistoryDryRunPatch[];
+  unsafePatches: MissingProductPurchaseHistoryDryRunIssue[];
+  rollbackPreview: Array<{
+    productId: string;
+    productName: string;
+    purchaseOrderId: string;
+    rowToRemove: NonNullable<Product['purchaseHistory']>[number];
+    currentPurchaseHistoryCount: number;
+  }>;
+  correlationCounts: MissingProductPurchaseHistoryDryRunCorrelationCounts;
+};
+
+const getPurchaseOrderSource = (purchaseOrderId: string): 'subcollection' | 'rootFallback' | 'unknown' => {
+  const normalizedId = String(purchaseOrderId || '').trim();
+  if (!normalizedId) return 'unknown';
+  const inSubcollection = subcollectionPurchaseOrdersCache.some((row) => String(row?.id || '').trim() === normalizedId);
+  if (inSubcollection) return 'subcollection';
+  const inRootFallback = legacyRootPurchaseOrdersCache.some((row) => String(row?.id || '').trim() === normalizedId);
+  return inRootFallback ? 'rootFallback' : 'unknown';
+};
+
+const classifyPurchaseOrderIdPattern = (orderId: string): 'po-admin-create' | 'po-admin' | 'other' => {
+  const normalizedId = String(orderId || '').trim().toLowerCase();
+  if (normalizedId.startsWith('po-admin-create')) return 'po-admin-create';
+  if (normalizedId.startsWith('po-admin-')) return 'po-admin';
+  return 'other';
+};
+
+const classifyProductIdPattern = (productId: string): 'PRID' | 'timestamp_like' | 'other' => {
+  const normalizedId = String(productId || '').trim();
+  if (normalizedId.startsWith('PRID_')) return 'PRID';
+  if (/\d{12,}/.test(normalizedId) || /^\d{10,}$/.test(normalizedId)) return 'timestamp_like';
+  return 'other';
+};
+
+const incrementCorrelationCount = (bucket: Record<string, number>, key: string) => {
+  const normalizedKey = String(key || 'unknown').trim() || 'unknown';
+  bucket[normalizedKey] = (bucket[normalizedKey] || 0) + 1;
+};
+
 export const analyzeMissingProductPurchaseHistoryRows = (): MissingProductPurchaseHistoryRowsAnalysis => {
   const data = loadData();
   const products = Array.isArray(data.products) ? data.products : [];
@@ -5867,6 +5958,151 @@ export const tracePurchaseOrderProductHistoryLink = (purchaseOrderId: string): P
     lines,
     verdict,
     recommendedNextStep,
+  };
+};
+
+export const repairMissingProductPurchaseHistoryRowsDryRun = (): MissingProductPurchaseHistoryDryRunResult => {
+  const data = loadData();
+  const products = Array.isArray(data.products) ? data.products : [];
+  const purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+  const parties = Array.isArray(data.purchaseParties) ? data.purchaseParties : [];
+  const productsById = new Map(products.map((product) => [String(product.id || '').trim(), product]));
+  const partiesById = new Map(parties.map((party) => [String(party.id || '').trim(), party]));
+  const safePatches: MissingProductPurchaseHistoryDryRunPatch[] = [];
+  const unsafePatches: MissingProductPurchaseHistoryDryRunIssue[] = [];
+  const affectedProducts = new Set<string>();
+  const correlationCounts: MissingProductPurchaseHistoryDryRunCorrelationCounts = {
+    byOrderSource: {},
+    byCreatedByOrSource: {},
+    byOrderIdPattern: {},
+    byProductIdPattern: {},
+    byDateRange: {},
+  };
+
+  purchaseOrders.forEach((order) => {
+    if (!order || order.status === 'cancelled') return;
+    const orderSource = getPurchaseOrderSource(order.id);
+    const createdByOrSource = String(order.createdBy || order.updatedBy || (order.lines || []).map((line) => String(line?.sourceType || '').trim()).find(Boolean) || 'unknown').trim() || 'unknown';
+    const orderIdPattern = classifyPurchaseOrderIdPattern(order.id);
+    const dateBucket = String(order.orderDate || order.createdAt || '').slice(0, 7) || 'unknown';
+    const partyFound = partiesById.has(String(order.partyId || '').trim());
+
+    (Array.isArray(order.lines) ? order.lines : []).forEach((line, lineIndex) => {
+      const productId = String(line?.productId || '').trim();
+      const product = productId ? productsById.get(productId) : undefined;
+      const productHistory = Array.isArray(product?.purchaseHistory) ? product.purchaseHistory : [];
+      const matchingHistoryRowExists = productHistory.some((historyRow) => String(historyRow.purchaseOrderId || '').trim() === String(order.id || '').trim());
+      if (matchingHistoryRowExists) return;
+
+      const quantity = Math.max(0, Number(line?.quantity || 0));
+      const unitPrice = Math.max(0, Number(line?.unitCost || 0));
+      const totalAmount = Math.max(0, Number(line?.totalCost || (quantity * unitPrice)));
+      const paidAmount = Math.max(0, Number(order.totalPaid || 0));
+      const paymentMethod = paidAmount > 0
+        ? ((order.paymentHistory || []).some((payment: any) => String(payment.method || '').toLowerCase() === 'online')
+            && !(order.paymentHistory || []).some((payment: any) => String(payment.method || '').toLowerCase() === 'cash')
+            ? 'online'
+            : 'cash')
+        : 'credit';
+      const orderProductName = String(line?.productName || product?.name || '').trim();
+      const productIdPattern = classifyProductIdPattern(productId);
+      const reasons: string[] = [];
+
+      if (!Array.isArray(order.lines) || !order.lines.length) reasons.push('purchase_order_has_no_lines');
+      if (!productId || !product) reasons.push('product_missing');
+      if (!partyFound) reasons.push('party_missing');
+      if (!Number.isFinite(quantity) || quantity <= 0) reasons.push('line_quantity_invalid');
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) reasons.push('line_unit_cost_invalid');
+      if (!Number.isFinite(totalAmount) || totalAmount <= 0) reasons.push('line_total_invalid');
+      if (Math.abs(totalAmount - (quantity * unitPrice)) > 0.01) reasons.push('reconstructed_total_mismatch');
+      if (matchingHistoryRowExists) reasons.push('matching_history_row_already_exists');
+      if (product && String(product.id || '').trim() !== productId) reasons.push('product_id_mismatch_cannot_be_resolved');
+
+      incrementCorrelationCount(correlationCounts.byOrderSource, orderSource);
+      incrementCorrelationCount(correlationCounts.byCreatedByOrSource, createdByOrSource);
+      incrementCorrelationCount(correlationCounts.byOrderIdPattern, orderIdPattern);
+      incrementCorrelationCount(correlationCounts.byProductIdPattern, productIdPattern);
+      incrementCorrelationCount(correlationCounts.byDateRange, dateBucket);
+
+      if (!product || reasons.length > 0) {
+        unsafePatches.push({
+          purchaseOrderId: order.id,
+          productId,
+          productName: orderProductName || 'Unknown product',
+          partyId: String(order.partyId || ''),
+          partyName: String(order.partyName || ''),
+          date: String(order.orderDate || order.createdAt || ''),
+          quantity,
+          unitPrice,
+          totalAmount,
+          orderSource,
+          createdByOrSource,
+          orderIdPattern,
+          productIdPattern,
+          reasons: reasons.length ? reasons : ['unknown'],
+        });
+        return;
+      }
+
+      const historyRowToAdd: NonNullable<Product['purchaseHistory']>[number] = {
+        id: `repair-preview-ph-${order.id}-${productId}-${lineIndex}`,
+        date: String(order.orderDate || order.createdAt || ''),
+        variant: String(line?.variant || ''),
+        color: String(line?.color || ''),
+        quantity,
+        unitPrice,
+        previousStock: Math.max(0, Number(product.stock || 0)),
+        previousBuyPrice: Math.max(0, Number(product.buyPrice || 0)),
+        nextBuyPrice: Math.max(0, Number(product.buyPrice || unitPrice || 0)),
+        purchaseOrderId: order.id,
+        paymentMethod,
+        paidAmount,
+        partyName: String(order.partyName || ''),
+        notes: order.notes,
+        reference: order.billNumber,
+      };
+
+      safePatches.push({
+        productId,
+        productName: orderProductName || product.name || 'Unknown product',
+        purchaseOrderId: order.id,
+        partyId: String(order.partyId || ''),
+        partyName: String(order.partyName || ''),
+        date: String(order.orderDate || order.createdAt || ''),
+        quantity,
+        unitPrice,
+        totalAmount,
+        historyRowToAdd,
+        beforeHistoryCount: productHistory.length,
+        afterHistoryCount: productHistory.length + 1,
+        orderSource,
+        createdByOrSource,
+        orderIdPattern,
+        productIdPattern,
+      });
+      affectedProducts.add(productId);
+    });
+  });
+
+  const rollbackPreview = safePatches.map((patch) => ({
+    productId: patch.productId,
+    productName: patch.productName,
+    purchaseOrderId: patch.purchaseOrderId,
+    rowToRemove: patch.historyRowToAdd,
+    currentPurchaseHistoryCount: patch.beforeHistoryCount,
+  }));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    missingCount: safePatches.length + unsafePatches.length,
+    safeCount: safePatches.length,
+    unsafeCount: unsafePatches.length,
+    totalAmountRepresented: [...safePatches, ...unsafePatches].reduce((sum, patch) => sum + Math.max(0, Number(patch.totalAmount || 0)), 0),
+    productsAffected: affectedProducts.size,
+    safePatches,
+    unsafePatches,
+    rollbackPreview,
+    correlationCounts,
   };
 };
 

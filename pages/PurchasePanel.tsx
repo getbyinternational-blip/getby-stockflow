@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
 import { PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, SupplierPaymentLedgerEntry } from '../types';
-import { applyConfirmedPurchasePartyOrderOnlyMerge, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, getPurchaseOrders, getPurchaseParties, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, updatePurchaseOrder, updatePurchaseParty } from '../services/storage';
+import { applyConfirmedPurchasePartyOrderOnlyMerge, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, getPurchaseOrders, getPurchaseParties, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, updatePurchaseOrder, updatePurchaseParty, MissingProductPurchaseHistoryDryRunResult } from '../services/storage';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadPurchaseData, downloadPurchaseTemplate, importPurchaseFromFile } from '../services/importExcel';
 import { getProductStockRows } from '../services/productVariants';
@@ -513,6 +513,7 @@ export default function PurchasePanel() {
   const [purchaseRowsTo, setPurchaseRowsTo] = useState('');
   const [purchaseRowsPage, setPurchaseRowsPage] = useState(1);
   const [purchaseViewProduct, setPurchaseViewProduct] = useState<Product | null>(null);
+  const [repairDryRunResult, setRepairDryRunResult] = useState<MissingProductPurchaseHistoryDryRunResult | null>(null);
   const [receiveTargetOrder, setReceiveTargetOrder] = useState<PurchaseOrder | null>(null);
   useEscapeLayer(isModalOpen, () => setIsModalOpen(false), { priority: 80 });
   useEscapeLayer(showPartyPopup, () => setShowPartyPopup(false), { priority: 80 });
@@ -520,6 +521,7 @@ export default function PurchasePanel() {
   useEscapeLayer(showPartyPaymentPopup, () => setShowPartyPaymentPopup(false), { priority: 80 });
   useEscapeLayer(showPaymentPopup, () => setShowPaymentPopup(false), { priority: 80 });
   useEscapeLayer(Boolean(purchaseViewProduct), () => setPurchaseViewProduct(null), { priority: 80 });
+  useEscapeLayer(Boolean(repairDryRunResult), () => setRepairDryRunResult(null), { priority: 80 });
   const [receivePriceMethod, setReceivePriceMethod] = useState<ReceivePriceMethod>('no_change');
   const [partyCreditToApply, setPartyCreditToApply] = useState<number | ''>('');
   const [partyCreditTouched, setPartyCreditTouched] = useState(false);
@@ -1510,9 +1512,53 @@ export default function PurchasePanel() {
     } catch {
     }
   };
+  const canUsePurchaseHistoryDryRun = import.meta.env.DEV || isAdmin();
   const openProductSnapshot = (productId: string) => {
     if (!productId) return;
     setPurchaseViewProduct(productById.get(productId) || null);
+  };
+  const openRepairDryRun = () => {
+    setRepairDryRunResult(repairMissingProductPurchaseHistoryRowsDryRun());
+  };
+  const downloadRepairDryRunJson = () => {
+    if (!repairDryRunResult) return;
+    const blob = new Blob([JSON.stringify({
+      reportType: 'repair_missing_product_purchase_history_rows_dry_run',
+      ...repairDryRunResult,
+      note: 'Read-only dry-run. No product, purchase order, ledger, or stock records were changed.',
+    }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `repair-missing-product-history-dry-run-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+  const downloadRepairRollbackPreviewJson = () => {
+    if (!repairDryRunResult) return;
+    const blob = new Blob([JSON.stringify({
+      reportType: 'repair_missing_product_purchase_history_rows_rollback_preview',
+      generatedAt: repairDryRunResult.generatedAt,
+      rollbackPreview: repairDryRunResult.rollbackPreview,
+      safePatches: repairDryRunResult.safePatches.map((patch) => ({
+        productId: patch.productId,
+        productName: patch.productName,
+        purchaseOrderId: patch.purchaseOrderId,
+        beforeHistoryCount: patch.beforeHistoryCount,
+        rowToRemove: patch.historyRowToAdd,
+      })),
+      note: 'Rollback preview only. No Firestore or product documents were modified.',
+    }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `repair-missing-product-history-rollback-preview-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   const partyLedgerRows = useMemo(() => {
@@ -1905,9 +1951,14 @@ export default function PurchasePanel() {
           </Card>
         )}
         <Card>
-          <CardHeader>
-            <CardTitle>Purchase Orders</CardTitle>
-            <p className="text-sm text-muted-foreground">All purchase transactions with supplier, product, payment, payable, credit, and linkage details.</p>
+          <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <CardTitle>Purchase Orders</CardTitle>
+              <p className="text-sm text-muted-foreground">All purchase transactions with supplier, product, payment, payable, credit, and linkage details.</p>
+            </div>
+            {canUsePurchaseHistoryDryRun && (
+              <Button size="sm" variant="outline" onClick={openRepairDryRun}>Dry-run Restore Product History</Button>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-7">
@@ -2166,6 +2217,136 @@ export default function PurchasePanel() {
           </div>
         </>
       )}
+
+      <Modal open={Boolean(repairDryRunResult)} onClose={() => setRepairDryRunResult(null)} title="Dry-run Restore Product History">
+        {repairDryRunResult ? (
+          <div className="space-y-4">
+            <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+              <SummaryCard label="Total Missing" value={`${repairDryRunResult.missingCount}`} />
+              <SummaryCard label="Safe Patches" value={`${repairDryRunResult.safeCount}`} />
+              <SummaryCard label="Unsafe Patches" value={`${repairDryRunResult.unsafeCount}`} />
+              <SummaryCard label="Total Amount" value={`₹${formatNumber(repairDryRunResult.totalAmountRepresented)}`} />
+              <SummaryCard label="Products Affected" value={`${repairDryRunResult.productsAffected}`} />
+              <SummaryCard label="Generated" value={new Date(repairDryRunResult.generatedAt).toLocaleString()} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={downloadRepairDryRunJson}>Download Dry-run JSON</Button>
+              <Button size="sm" variant="outline" onClick={downloadRepairRollbackPreviewJson}>Download Rollback Preview JSON</Button>
+            </div>
+            <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+              Read-only dry-run only. No products, purchase orders, ledgers, stock, expenses, or Firestore documents were changed.
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border bg-white p-3">
+                <div className="font-semibold text-slate-900">Correlation counts</div>
+                <div className="mt-2 space-y-2 text-xs text-slate-700">
+                  <div><span className="font-medium">By order source:</span> {Object.entries(repairDryRunResult.correlationCounts.byOrderSource).map(([key, value]) => `${key} ${value}`).join(' · ') || 'None'}</div>
+                  <div><span className="font-medium">By createdBy/source:</span> {Object.entries(repairDryRunResult.correlationCounts.byCreatedByOrSource).map(([key, value]) => `${key} ${value}`).join(' · ') || 'None'}</div>
+                  <div><span className="font-medium">By order id pattern:</span> {Object.entries(repairDryRunResult.correlationCounts.byOrderIdPattern).map(([key, value]) => `${key} ${value}`).join(' · ') || 'None'}</div>
+                  <div><span className="font-medium">By product id pattern:</span> {Object.entries(repairDryRunResult.correlationCounts.byProductIdPattern).map(([key, value]) => `${key} ${value}`).join(' · ') || 'None'}</div>
+                  <div><span className="font-medium">By date range:</span> {Object.entries(repairDryRunResult.correlationCounts.byDateRange).map(([key, value]) => `${key} ${value}`).join(' · ') || 'None'}</div>
+                </div>
+              </div>
+              <div className="rounded-xl border bg-white p-3">
+                <div className="font-semibold text-slate-900">Root-size / split-write audit</div>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-700">
+                  <li>Historically, `purchaseOrders`, `products`, `expenses`, `supplierPayments`, and `partyCreditLedger` had root-document storage paths during migration/fallback.</li>
+                  <li>Current purchase hydration merges subcollection data with legacy root fallback, and logs `purchaseOrders.emergency_root_fallback` when root-only orders are still being used.</li>
+                  <li>The root store write path blocks large array fields, while `syncToCloud` strips migrated arrays from the root payload.</li>
+                  <li>This makes a split-write failure plausible: purchase order persisted in subcollection/root fallback while embedded `product.purchaseHistory` was missed on a second write.</li>
+                </ul>
+              </div>
+            </div>
+            <div className="rounded-xl border bg-white">
+              <div className="border-b px-4 py-3 text-sm font-semibold">Safe patch preview</div>
+              <div className="overflow-auto">
+                <table className="w-full min-w-[1500px] text-xs">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="p-2 text-left">Purchase Order</th>
+                      <th className="p-2 text-left">Product</th>
+                      <th className="p-2 text-left">Party</th>
+                      <th className="p-2 text-left">Date</th>
+                      <th className="p-2 text-right">Qty</th>
+                      <th className="p-2 text-right">Unit</th>
+                      <th className="p-2 text-right">Total</th>
+                      <th className="p-2 text-right">History Count</th>
+                      <th className="p-2 text-left">Order Source</th>
+                      <th className="p-2 text-left">Created By / Source</th>
+                      <th className="p-2 text-left">Patterns</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {repairDryRunResult.safePatches.map((patch) => (
+                      <tr key={`${patch.purchaseOrderId}-${patch.productId}`} className="border-t align-top">
+                        <td className="p-2 font-mono">{patch.purchaseOrderId}</td>
+                        <td className="p-2">
+                          <div className="font-medium">{patch.productName}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{patch.productId}</div>
+                          <div className="text-[10px] text-muted-foreground">Preview row: {patch.historyRowToAdd.variant || 'No Variant'} / {patch.historyRowToAdd.color || 'No Color'}</div>
+                        </td>
+                        <td className="p-2">
+                          <div>{patch.partyName}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{patch.partyId}</div>
+                        </td>
+                        <td className="p-2">{patch.date ? new Date(patch.date).toLocaleString() : '—'}</td>
+                        <td className="p-2 text-right">{formatNumber(patch.quantity, 0)}</td>
+                        <td className="p-2 text-right">₹{formatNumber(patch.unitPrice)}</td>
+                        <td className="p-2 text-right">₹{formatNumber(patch.totalAmount)}</td>
+                        <td className="p-2 text-right">{patch.beforeHistoryCount} → {patch.afterHistoryCount}</td>
+                        <td className="p-2">{patch.orderSource}</td>
+                        <td className="p-2">{patch.createdByOrSource}</td>
+                        <td className="p-2">{patch.orderIdPattern} · {patch.productIdPattern}</td>
+                      </tr>
+                    ))}
+                    {!repairDryRunResult.safePatches.length && (
+                      <tr><td colSpan={11} className="p-4 text-center text-muted-foreground">No safe patches detected.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="rounded-xl border bg-white">
+              <div className="border-b px-4 py-3 text-sm font-semibold">Unsafe patch preview</div>
+              <div className="overflow-auto">
+                <table className="w-full min-w-[1300px] text-xs">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="p-2 text-left">Purchase Order</th>
+                      <th className="p-2 text-left">Product</th>
+                      <th className="p-2 text-left">Party</th>
+                      <th className="p-2 text-right">Total</th>
+                      <th className="p-2 text-left">Order Source</th>
+                      <th className="p-2 text-left">Reasons</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {repairDryRunResult.unsafePatches.map((patch) => (
+                      <tr key={`${patch.purchaseOrderId}-${patch.productId || patch.productName}`} className="border-t align-top">
+                        <td className="p-2 font-mono">{patch.purchaseOrderId}</td>
+                        <td className="p-2">
+                          <div className="font-medium">{patch.productName}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{patch.productId || '—'}</div>
+                        </td>
+                        <td className="p-2">
+                          <div>{patch.partyName}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{patch.partyId || '—'}</div>
+                        </td>
+                        <td className="p-2 text-right">₹{formatNumber(patch.totalAmount)}</td>
+                        <td className="p-2">{patch.orderSource}</td>
+                        <td className="p-2">{patch.reasons.join(', ')}</td>
+                      </tr>
+                    ))}
+                    {!repairDryRunResult.unsafePatches.length && (
+                      <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">No unsafe patches detected.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal open={Boolean(purchaseViewProduct)} onClose={() => setPurchaseViewProduct(null)} title={purchaseViewProduct ? `Product Snapshot · ${purchaseViewProduct.name}` : 'Product Snapshot'}>
         {purchaseViewProduct ? (
