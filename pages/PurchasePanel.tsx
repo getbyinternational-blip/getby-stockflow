@@ -117,6 +117,42 @@ type ManualMayurbhaiMergePreview = {
   validationMessages: string[];
 };
 
+type PurchaseOrderDiagnosticRow = {
+  rowId: string;
+  orderId: string;
+  orderDate: string;
+  orderStatus: PurchaseOrder['status'];
+  orderTotal: number;
+  orderPaid: number;
+  orderRemaining: number;
+  orderPartyId: string;
+  orderPartyName: string;
+  partyFound: boolean;
+  lineIndex: number;
+  lineId: string;
+  productId: string;
+  productName: string;
+  productImage: string;
+  productFound: boolean;
+  resolvedProductName: string;
+  resolvedProductStock: number | null;
+  productHistoryLinked: boolean;
+  variant: string;
+  color: string;
+  quantity: number;
+  qtyPerCtn: number | null;
+  totalCtn: number | null;
+  unitCost: number;
+  lineTotal: number;
+  creditApplied: number;
+  creditCreated: number;
+  paymentStatus: 'paid' | 'partial' | 'unpaid';
+  paymentMethodLabel: string;
+  createdBy: string;
+  source: string;
+  notes: string;
+};
+
 const normalizeSupplierNameForMatch = (value?: string) => normalizePartyName(value).replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 const normalizeSupplierPhoneForMatch = (value?: string) => String(value || '').replace(/\D/g, '');
 const normalizeSupplierGstForMatch = (value?: string) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -467,12 +503,23 @@ export default function PurchasePanel() {
   const [partyPaymentError, setPartyPaymentError] = useState<string | null>(null);
   const [deletePartyError, setDeletePartyError] = useState<string | null>(null);
   const [expandedPartyId, setExpandedPartyId] = useState<string | null>(null);
+  const [purchaseRowsSearch, setPurchaseRowsSearch] = useState('');
+  const [purchaseRowsPartyFilter, setPurchaseRowsPartyFilter] = useState('all');
+  const [purchaseRowsPaymentFilter, setPurchaseRowsPaymentFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid'>('all');
+  const [purchaseRowsRemainingFilter, setPurchaseRowsRemainingFilter] = useState<'all' | 'with_remaining' | 'cleared'>('all');
+  const [purchaseRowsCreditFilter, setPurchaseRowsCreditFilter] = useState<'all' | 'with_credit_applied' | 'with_credit_created'>('all');
+  const [purchaseRowsProductFilter, setPurchaseRowsProductFilter] = useState('all');
+  const [purchaseRowsFrom, setPurchaseRowsFrom] = useState('');
+  const [purchaseRowsTo, setPurchaseRowsTo] = useState('');
+  const [purchaseRowsPage, setPurchaseRowsPage] = useState(1);
+  const [purchaseViewProduct, setPurchaseViewProduct] = useState<Product | null>(null);
   const [receiveTargetOrder, setReceiveTargetOrder] = useState<PurchaseOrder | null>(null);
   useEscapeLayer(isModalOpen, () => setIsModalOpen(false), { priority: 80 });
   useEscapeLayer(showPartyPopup, () => setShowPartyPopup(false), { priority: 80 });
   useEscapeLayer(showReceivePopup, () => setShowReceivePopup(false), { priority: 80 });
   useEscapeLayer(showPartyPaymentPopup, () => setShowPartyPaymentPopup(false), { priority: 80 });
   useEscapeLayer(showPaymentPopup, () => setShowPaymentPopup(false), { priority: 80 });
+  useEscapeLayer(Boolean(purchaseViewProduct), () => setPurchaseViewProduct(null), { priority: 80 });
   const [receivePriceMethod, setReceivePriceMethod] = useState<ReceivePriceMethod>('no_change');
   const [partyCreditToApply, setPartyCreditToApply] = useState<number | ''>('');
   const [partyCreditTouched, setPartyCreditTouched] = useState(false);
@@ -548,6 +595,12 @@ export default function PurchasePanel() {
   useEffect(() => {
     setOrdersPage((prev) => Math.min(prev, orderTotalPages));
   }, [orderTotalPages]);
+  useEffect(() => {
+    setPurchaseRowsPage(1);
+  }, [purchaseRowsSearch, purchaseRowsPartyFilter, purchaseRowsPaymentFilter, purchaseRowsRemainingFilter, purchaseRowsCreditFilter, purchaseRowsProductFilter, purchaseRowsFrom, purchaseRowsTo]);
+  useEffect(() => {
+    setPurchaseRowsPage((prev) => Math.min(prev, purchaseDiagnosticTotalPages));
+  }, [purchaseDiagnosticTotalPages]);
 
   const selectableInventoryVariants = useMemo(() => {
     if (!selectedProduct) return [] as Array<{ key: string; label: string; stock: number; variant?: string; color?: string }>;
@@ -1018,6 +1071,153 @@ export default function PurchasePanel() {
     return map;
   }, [orders]);
 
+  const productById = useMemo(() => {
+    const map = new Map<string, Product>();
+    products.forEach((product) => {
+      if (product?.id) map.set(product.id, product);
+    });
+    return map;
+  }, [products]);
+  const partyById = useMemo(() => {
+    const map = new Map<string, PurchaseParty>();
+    parties.forEach((party) => {
+      if (party?.id) map.set(party.id, party);
+    });
+    return map;
+  }, [parties]);
+  const purchaseOrderDiagnosticRows = useMemo<PurchaseOrderDiagnosticRow[]>(() => {
+    return orders
+      .slice()
+      .sort((a, b) => new Date(b.orderDate || b.createdAt || '').getTime() - new Date(a.orderDate || a.createdAt || '').getTime())
+      .flatMap((order) => {
+        const orderPaid = Math.max(0, Number(order.totalPaid || 0));
+        const orderRemaining = Math.max(0, Number(order.remainingAmount ?? ((order.totalAmount || 0) - orderPaid)) || 0);
+        const orderTotal = Math.max(0, Number(order.totalAmount || 0));
+        const creditApplied = Math.max(0, (order.paymentHistory || []).reduce((sum, entry) => {
+          return sum + (String(entry.method || '').toLowerCase() === 'party_credit' ? Math.max(0, Number(entry.amount || 0)) : 0);
+        }, 0));
+        const paymentMethodLabel = Array.from(new Set((order.paymentHistory || []).map((entry) => String(entry.method || '').trim()).filter(Boolean))).join(', ') || (orderRemaining > 0 ? 'credit' : 'cash');
+        const partyFound = partyById.has(order.partyId);
+        return (order.lines || []).map((line, lineIndex) => {
+          const productId = String(line.productId || '').trim();
+          const resolvedProduct = productId ? productById.get(productId) : undefined;
+          const matchingHistoryRows = resolvedProduct?.purchaseHistory?.filter((row) => String(row.purchaseOrderId || '').trim() === String(order.id || '').trim()) || [];
+          const quantity = Math.max(0, Number(line.quantity || 0));
+          const lineTotal = Math.max(0, Number(line.totalCost || (quantity * Number(line.unitCost || 0))));
+          const qtyPerCtn = Number((line as any).piecesPerCartoon || (line as any).piecesPerCtn || (line as any).qtyPerCtn || 0);
+          const totalCtn = Number((line as any).numberOfCartoons || (line as any).totalCtn || (line as any).cartons || 0);
+          return {
+            rowId: `${order.id}-${line.id || lineIndex}`,
+            orderId: order.id,
+            orderDate: String(order.orderDate || order.createdAt || ''),
+            orderStatus: order.status,
+            orderTotal,
+            orderPaid,
+            orderRemaining,
+            orderPartyId: String(order.partyId || ''),
+            orderPartyName: String(order.partyName || ''),
+            partyFound,
+            lineIndex,
+            lineId: String(line.id || ''),
+            productId,
+            productName: String(line.productName || resolvedProduct?.name || 'Unknown product'),
+            productImage: String(line.image || resolvedProduct?.image || ''),
+            productFound: Boolean(resolvedProduct),
+            resolvedProductName: String(resolvedProduct?.name || ''),
+            resolvedProductStock: resolvedProduct ? Math.max(0, Number(resolvedProduct.stock || 0)) : null,
+            productHistoryLinked: matchingHistoryRows.length > 0,
+            variant: String(line.variant || ''),
+            color: String(line.color || ''),
+            quantity,
+            qtyPerCtn: Number.isFinite(qtyPerCtn) && qtyPerCtn > 0 ? qtyPerCtn : null,
+            totalCtn: Number.isFinite(totalCtn) && totalCtn > 0 ? totalCtn : null,
+            unitCost: Math.max(0, Number(line.unitCost || 0)),
+            lineTotal,
+            creditApplied,
+            creditCreated: Math.max(0, Number((line as any).creditCreated || 0)),
+            paymentStatus: orderRemaining <= 0 ? 'paid' : orderPaid > 0 ? 'partial' : 'unpaid',
+            paymentMethodLabel,
+            createdBy: String(order.createdBy || order.updatedBy || ''),
+            source: String(line.sourceType || ''),
+            notes: String(order.notes || ''),
+          } satisfies PurchaseOrderDiagnosticRow;
+        });
+      });
+  }, [orders, partyById, productById]);
+  const purchaseDiagnosticProductOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    purchaseOrderDiagnosticRows.forEach((row) => {
+      if (!row.productId || seen.has(row.productId)) return;
+      seen.set(row.productId, row.productName || row.resolvedProductName || row.productId);
+    });
+    return Array.from(seen.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [purchaseOrderDiagnosticRows]);
+  const filteredPurchaseDiagnosticRows = useMemo(() => {
+    const q = safeLower(purchaseRowsSearch.trim());
+    const fromMs = purchaseRowsFrom ? new Date(`${purchaseRowsFrom}T00:00:00`).getTime() : null;
+    const toMs = purchaseRowsTo ? new Date(`${purchaseRowsTo}T23:59:59.999`).getTime() : null;
+    return purchaseOrderDiagnosticRows.filter((row) => {
+      const rowDateMs = row.orderDate ? new Date(row.orderDate).getTime() : null;
+      const matchesSearch = !q || [
+        row.orderId,
+        row.orderPartyName,
+        row.productName,
+        row.productId,
+        row.orderPartyId,
+        row.orderTotal,
+        row.lineTotal,
+        row.orderPaid,
+        row.orderRemaining,
+      ].join(' ').toLowerCase().includes(q);
+      const matchesParty = purchaseRowsPartyFilter === 'all' || row.orderPartyId === purchaseRowsPartyFilter;
+      const matchesPayment = purchaseRowsPaymentFilter === 'all' || row.paymentStatus === purchaseRowsPaymentFilter;
+      const matchesRemaining = purchaseRowsRemainingFilter === 'all'
+        || (purchaseRowsRemainingFilter === 'with_remaining' && row.orderRemaining > 0)
+        || (purchaseRowsRemainingFilter === 'cleared' && row.orderRemaining <= 0);
+      const matchesCredit = purchaseRowsCreditFilter === 'all'
+        || (purchaseRowsCreditFilter === 'with_credit_applied' && row.creditApplied > 0)
+        || (purchaseRowsCreditFilter === 'with_credit_created' && row.creditCreated > 0);
+      const matchesProduct = purchaseRowsProductFilter === 'all' || row.productId === purchaseRowsProductFilter;
+      const matchesFrom = fromMs === null || (rowDateMs !== null && rowDateMs >= fromMs);
+      const matchesTo = toMs === null || (rowDateMs !== null && rowDateMs <= toMs);
+      return matchesSearch && matchesParty && matchesPayment && matchesRemaining && matchesCredit && matchesProduct && matchesFrom && matchesTo;
+    });
+  }, [purchaseOrderDiagnosticRows, purchaseRowsSearch, purchaseRowsPartyFilter, purchaseRowsPaymentFilter, purchaseRowsRemainingFilter, purchaseRowsCreditFilter, purchaseRowsProductFilter, purchaseRowsFrom, purchaseRowsTo]);
+  const filteredPurchaseDiagnosticSummary = useMemo(() => {
+    const uniqueOrders = new Set(filteredPurchaseDiagnosticRows.map((row) => row.orderId));
+    const seenOrders = new Set<string>();
+    let totalPurchaseAmount = 0;
+    let totalPaid = 0;
+    let totalRemaining = 0;
+    let totalCreditApplied = 0;
+    let totalCreditCreated = 0;
+    filteredPurchaseDiagnosticRows.forEach((row) => {
+      totalCreditApplied += row.creditApplied;
+      totalCreditCreated += row.creditCreated;
+      if (seenOrders.has(row.orderId)) return;
+      seenOrders.add(row.orderId);
+      totalPurchaseAmount += row.orderTotal;
+      totalPaid += row.orderPaid;
+      totalRemaining += row.orderRemaining;
+    });
+    return {
+      totalPurchaseAmount,
+      totalPaid,
+      totalRemaining,
+      totalCreditApplied,
+      totalCreditCreated,
+      orderCount: uniqueOrders.size,
+      lineCount: filteredPurchaseDiagnosticRows.length,
+    };
+  }, [filteredPurchaseDiagnosticRows]);
+  const purchaseDiagnosticTotalPages = useMemo(() => Math.max(1, Math.ceil(filteredPurchaseDiagnosticRows.length / 50)), [filteredPurchaseDiagnosticRows.length]);
+  const paginatedPurchaseDiagnosticRows = useMemo(() => {
+    const start = (purchaseRowsPage - 1) * 50;
+    return filteredPurchaseDiagnosticRows.slice(start, start + 50);
+  }, [filteredPurchaseDiagnosticRows, purchaseRowsPage]);
+
   const dataSnapshot = useMemo(() => loadData(), [orders, parties]);
   const supplierPayments = useMemo(() => dataSnapshot.supplierPayments || [], [dataSnapshot]);
   const partyCreditLedger = useMemo(() => dataSnapshot.partyCreditLedger || [], [dataSnapshot]);
@@ -1299,6 +1499,17 @@ export default function PurchasePanel() {
     }
     await deletePurchaseParty(party.id);
     refresh();
+  };
+  const copyText = async (value: string) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+    }
+  };
+  const openProductSnapshot = (productId: string) => {
+    if (!productId) return;
+    setPurchaseViewProduct(productById.get(productId) || null);
   };
 
   const partyLedgerRows = useMemo(() => {
@@ -1690,6 +1901,174 @@ export default function PurchasePanel() {
             </CardContent>
           </Card>
         )}
+        <Card>
+          <CardHeader>
+            <CardTitle>Purchase Orders</CardTitle>
+            <p className="text-sm text-muted-foreground">All purchase transactions with supplier, product, payment, payable, credit, and linkage details.</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-7">
+              <SummaryCard label="Total Purchase Amount" value={`₹${formatNumber(filteredPurchaseDiagnosticSummary.totalPurchaseAmount)}`} />
+              <SummaryCard label="Total Paid" value={`₹${formatNumber(filteredPurchaseDiagnosticSummary.totalPaid)}`} />
+              <SummaryCard label="Total Remaining" value={`₹${formatNumber(filteredPurchaseDiagnosticSummary.totalRemaining)}`} />
+              <SummaryCard label="Total Credit Applied" value={`₹${formatNumber(filteredPurchaseDiagnosticSummary.totalCreditApplied)}`} />
+              <SummaryCard label="Total Credit Created" value={`₹${formatNumber(filteredPurchaseDiagnosticSummary.totalCreditCreated)}`} />
+              <SummaryCard label="Number of Orders" value={`${filteredPurchaseDiagnosticSummary.orderCount}`} />
+              <SummaryCard label="Number of Lines" value={`${filteredPurchaseDiagnosticSummary.lineCount}`} />
+            </div>
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_repeat(4,minmax(0,1fr))]">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input value={purchaseRowsSearch} onChange={e => setPurchaseRowsSearch(e.target.value)} placeholder="Search order / supplier / product / ids / amount" className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-sm outline-none focus:border-slate-400" />
+              </div>
+              <select value={purchaseRowsPartyFilter} onChange={e => setPurchaseRowsPartyFilter(e.target.value)} className="h-10 rounded-xl border border-slate-200 px-3 text-sm">
+                <option value="all">All Parties</option>
+                {parties.map((party) => <option key={party.id} value={party.id}>{party.name}</option>)}
+              </select>
+              <select value={purchaseRowsPaymentFilter} onChange={e => setPurchaseRowsPaymentFilter(e.target.value as any)} className="h-10 rounded-xl border border-slate-200 px-3 text-sm">
+                <option value="all">All Payment Status</option>
+                <option value="paid">Paid</option>
+                <option value="partial">Partial</option>
+                <option value="unpaid">Unpaid</option>
+              </select>
+              <select value={purchaseRowsRemainingFilter} onChange={e => setPurchaseRowsRemainingFilter(e.target.value as any)} className="h-10 rounded-xl border border-slate-200 px-3 text-sm">
+                <option value="all">All Payable</option>
+                <option value="with_remaining">Has Remaining</option>
+                <option value="cleared">Cleared</option>
+              </select>
+              <select value={purchaseRowsCreditFilter} onChange={e => setPurchaseRowsCreditFilter(e.target.value as any)} className="h-10 rounded-xl border border-slate-200 px-3 text-sm">
+                <option value="all">All Credit</option>
+                <option value="with_credit_applied">Credit Applied</option>
+                <option value="with_credit_created">Credit Created</option>
+              </select>
+              <select value={purchaseRowsProductFilter} onChange={e => setPurchaseRowsProductFilter(e.target.value)} className="h-10 rounded-xl border border-slate-200 px-3 text-sm">
+                <option value="all">All Products</option>
+                {purchaseDiagnosticProductOptions.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+              </select>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="space-y-1">
+                <Label>From Date</Label>
+                <Input type="date" value={purchaseRowsFrom} onChange={e => setPurchaseRowsFrom(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label>To Date</Label>
+                <Input type="date" value={purchaseRowsTo} onChange={e => setPurchaseRowsTo(e.target.value)} />
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Showing {paginatedPurchaseDiagnosticRows.length} of {filteredPurchaseDiagnosticRows.length} lines
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Page {purchaseRowsPage} of {purchaseDiagnosticTotalPages}
+              </div>
+            </div>
+            <div className="overflow-auto rounded-xl border bg-white">
+              <table className="w-full min-w-[2200px] text-xs">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="p-2 text-left">Date / Time</th>
+                    <th className="p-2 text-left">Purchase Order ID</th>
+                    <th className="p-2 text-left">Supplier / Party</th>
+                    <th className="p-2 text-left">Product</th>
+                    <th className="p-2 text-left">Variant / Color</th>
+                    <th className="p-2 text-right">Quantity</th>
+                    <th className="p-2 text-right">Qty / CTN</th>
+                    <th className="p-2 text-right">Total CTN</th>
+                    <th className="p-2 text-right">Unit Cost</th>
+                    <th className="p-2 text-right">Line Total</th>
+                    <th className="p-2 text-right">Order Total</th>
+                    <th className="p-2 text-right">Paid</th>
+                    <th className="p-2 text-right">Remaining</th>
+                    <th className="p-2 text-left">Payment</th>
+                    <th className="p-2 text-right">Credit Applied</th>
+                    <th className="p-2 text-right">Credit Created</th>
+                    <th className="p-2 text-left">Current Party ID</th>
+                    <th className="p-2 text-left">Product ID</th>
+                    <th className="p-2 text-left">Created By / Source</th>
+                    <th className="p-2 text-left">Notes</th>
+                    <th className="p-2 text-left">Diagnostics</th>
+                    <th className="p-2 text-left">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedPurchaseDiagnosticRows.map((row) => (
+                    <tr key={row.rowId} className="border-t align-top">
+                      <td className="p-2 whitespace-nowrap">{row.orderDate ? new Date(row.orderDate).toLocaleString() : '—'}</td>
+                      <td className="p-2">
+                        <div className="font-medium">{row.orderId}</div>
+                        <div className="text-[10px] text-muted-foreground">Status: {row.orderStatus}</div>
+                      </td>
+                      <td className="p-2">
+                        <div className="font-medium">{row.orderPartyName || 'Unknown party'}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{row.orderPartyId || '—'}</div>
+                      </td>
+                      <td className="p-2">
+                        <div className="flex items-start gap-2">
+                          <div className="h-10 w-10 shrink-0 overflow-hidden rounded-lg border bg-slate-100 flex items-center justify-center">
+                            {row.productImage ? <img src={row.productImage} alt={row.productName} className="h-full w-full object-cover" loading="lazy" decoding="async" /> : <Package className="h-4 w-4 text-slate-400" />}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-medium">{row.productName || 'Unknown product'}</div>
+                            {row.resolvedProductName && row.resolvedProductName !== row.productName && <div className="text-[10px] text-muted-foreground">Resolved: {row.resolvedProductName}</div>}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-2">{row.variant || 'No Variant'} / {row.color || 'No Color'}</td>
+                      <td className="p-2 text-right">{formatNumber(row.quantity, 0)}</td>
+                      <td className="p-2 text-right">{row.qtyPerCtn ? formatNumber(row.qtyPerCtn, 0) : '—'}</td>
+                      <td className="p-2 text-right">{row.totalCtn ? formatNumber(row.totalCtn, 0) : '—'}</td>
+                      <td className="p-2 text-right">₹{formatNumber(row.unitCost)}</td>
+                      <td className="p-2 text-right">₹{formatNumber(row.lineTotal)}</td>
+                      <td className="p-2 text-right">₹{formatNumber(row.orderTotal)}</td>
+                      <td className="p-2 text-right">₹{formatNumber(row.orderPaid)}</td>
+                      <td className="p-2 text-right">₹{formatNumber(row.orderRemaining)}</td>
+                      <td className="p-2">
+                        <div className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.paymentStatus === 'paid' ? 'bg-emerald-100 text-emerald-700' : row.paymentStatus === 'partial' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{row.paymentStatus}</div>
+                        <div className="mt-1 text-[10px] text-muted-foreground">{row.paymentMethodLabel || '—'}</div>
+                      </td>
+                      <td className="p-2 text-right">₹{formatNumber(row.creditApplied)}</td>
+                      <td className="p-2 text-right">₹{formatNumber(row.creditCreated)}</td>
+                      <td className="p-2 font-mono text-[10px]">{row.orderPartyId || '—'}</td>
+                      <td className="p-2 font-mono text-[10px]">{row.productId || '—'}</td>
+                      <td className="p-2">
+                        <div>{row.createdBy || '—'}</div>
+                        <div className="text-[10px] text-muted-foreground">{row.source || '—'}</div>
+                      </td>
+                      <td className="p-2 max-w-[180px] whitespace-pre-wrap break-words">{row.notes || '—'}</td>
+                      <td className="p-2">
+                        <div className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.productFound ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{row.productFound ? 'Product found' : 'Product missing'}</div>
+                        <div className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.productHistoryLinked ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{row.productHistoryLinked ? 'History linked' : 'History missing'}</div>
+                        <div className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.partyFound ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{row.partyFound ? 'Party found' : 'Party missing'}</div>
+                        {row.resolvedProductStock !== null && <div className="mt-1 text-[10px] text-muted-foreground">Stock: {formatNumber(row.resolvedProductStock, 0)}</div>}
+                      </td>
+                      <td className="p-2">
+                        <div className="flex flex-col gap-1">
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setExpandedPartyId((prev) => prev === row.orderPartyId ? null : row.orderPartyId)} disabled={!row.partyFound}>View Ledger</Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => openProductSnapshot(row.productId)} disabled={!row.productFound}>View Product</Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => void copyText(row.orderId)}>Copy Order ID</Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => void copyText(row.productId)} disabled={!row.productId}>Copy Product ID</Button>
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => void copyText(row.orderPartyId)} disabled={!row.orderPartyId}>Copy Party ID</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!paginatedPurchaseDiagnosticRows.length && (
+                    <tr>
+                      <td colSpan={22} className="p-6 text-center text-muted-foreground">No purchase order lines match the current filters.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {filteredPurchaseDiagnosticRows.length > 50 && (
+              <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
+                <Button variant="outline" size="sm" onClick={() => setPurchaseRowsPage((prev) => Math.max(1, prev - 1))} disabled={purchaseRowsPage <= 1}>Previous</Button>
+                <div className="text-xs text-slate-500">Showing {(purchaseRowsPage - 1) * 50 + 1} to {Math.min(purchaseRowsPage * 50, filteredPurchaseDiagnosticRows.length)} of {filteredPurchaseDiagnosticRows.length} lines</div>
+                <Button variant="outline" size="sm" onClick={() => setPurchaseRowsPage((prev) => Math.min(purchaseDiagnosticTotalPages, prev + 1))} disabled={purchaseRowsPage >= purchaseDiagnosticTotalPages}>Next</Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
         </>
       ) : (
         <>
@@ -1784,6 +2163,34 @@ export default function PurchasePanel() {
           </div>
         </>
       )}
+
+      <Modal open={Boolean(purchaseViewProduct)} onClose={() => setPurchaseViewProduct(null)} title={purchaseViewProduct ? `Product Snapshot · ${purchaseViewProduct.name}` : 'Product Snapshot'}>
+        {purchaseViewProduct ? (
+          <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
+            <div className="overflow-hidden rounded-2xl border bg-slate-50">
+              {purchaseViewProduct.image ? (
+                <img src={purchaseViewProduct.image} alt={purchaseViewProduct.name} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+              ) : (
+                <div className="flex h-full min-h-[180px] items-center justify-center"><Package className="h-8 w-8 text-slate-400" /></div>
+              )}
+            </div>
+            <div className="space-y-3">
+              <div className="grid gap-2 sm:grid-cols-2">
+                <SummaryCard label="Product ID" value={purchaseViewProduct.id} />
+                <SummaryCard label="Current Stock" value={formatNumber(Math.max(0, Number(purchaseViewProduct.stock || 0)), 0)} />
+                <SummaryCard label="Buy Price" value={`₹${formatNumber(Math.max(0, Number(purchaseViewProduct.buyPrice || 0)))}`} />
+                <SummaryCard label="Purchase History Rows" value={`${purchaseViewProduct.purchaseHistory?.length || 0}`} />
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                <div><span className="font-semibold">Name:</span> {purchaseViewProduct.name}</div>
+                <div><span className="font-semibold">Barcode:</span> {getProductBarcode(purchaseViewProduct) || '—'}</div>
+                <div><span className="font-semibold">Category:</span> {getProductCategory(purchaseViewProduct) || '—'}</div>
+                <div><span className="font-semibold">Description:</span> {purchaseViewProduct.description || '—'}</div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       <UploadImportModal
         open={isImportModalOpen}
