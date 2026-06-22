@@ -15,6 +15,7 @@ import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadInventoryData, downloadInventoryTemplate, importInventoryFromFile } from '../services/importExcel';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
+import { ProductPurchaseHistoryDisplayRow, compareProductPurchaseHistoryForProduct, getProductPurchaseHistoryDisplayRowsForProduct, getProductPurchaseHistoryRowsFromPurchaseOrdersForProduct } from '../services/purchaseHistoryView';
 import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
@@ -439,40 +440,21 @@ export default function Admin() {
 
   const renderPurchaseHistoryCards = (
     productName: string,
-    rows: NonNullable<Product['purchaseHistory']>
+    rows: ProductPurchaseHistoryDisplayRow[]
   ) => (
     <div className="space-y-2">
       {rows.map((h) => (
         (() => {
-          const allOrders = loadData().purchaseOrders || [];
-          const normalizedHistoryOrderId = String((h as any).purchaseOrderId || (h as any).orderId || (h as any).poId || '').trim();
-          const normalizedReference = String(h.reference || '').trim().toLowerCase();
-          const poTokenInReference = normalizedReference.match(/\b(?:po|order)[-:\s#]*([a-z0-9-]{3,})\b/i)?.[1]?.toLowerCase() || '';
-          const linkedOrder = allOrders.find((order) => {
-            if (normalizedHistoryOrderId && order.id === normalizedHistoryOrderId) return true;
-            const orderRef = String(order.billNumber || order.id || '').trim().toLowerCase();
-            if (!orderRef) return false;
-            if (normalizedReference && (normalizedReference === orderRef || normalizedReference.includes(orderRef) || orderRef.includes(normalizedReference))) return true;
-            if (poTokenInReference && (orderRef === poTokenInReference || orderRef.includes(poTokenInReference))) return true;
-            return false;
-          });
           const lineQty = toNonNegativeNumber(h.quantity);
           const unitCost = toNonNegativeNumber(h.unitPrice);
-          const lineTotal = Number((lineQty * unitCost).toFixed(2));
-          const orderTotal = toNonNegativeNumber(linkedOrder?.totalAmount);
-          const orderPaid = toNonNegativeNumber(linkedOrder?.totalPaid);
-          const remainingPayable = toNonNegativeNumber(linkedOrder?.remainingAmount ?? (orderTotal - orderPaid));
-          const paymentHistory = Array.isArray(linkedOrder?.paymentHistory) ? linkedOrder?.paymentHistory : [];
-          const paymentSummary = paymentHistory.reduce((acc: { cash: number; online: number; partyCredit: number }, payment) => {
-            const amount = Math.max(0, Number(payment.amount || 0));
-            const method = String(payment.method || '').toLowerCase();
-            if (method === 'party_credit') acc.partyCredit += amount;
-            else if (method === 'online' || method === 'bank') acc.online += amount;
-            else acc.cash += amount;
-            return acc;
-          }, { cash: 0, online: 0, partyCredit: 0 });
-          const partyName = linkedOrder?.partyName || h.partyName || 'Not linked / Unknown';
-          const poLabel = linkedOrder?.billNumber || linkedOrder?.id || normalizedHistoryOrderId || '—';
+          const lineTotal = Number((toNonNegativeNumber(h.lineTotal || (lineQty * unitCost))).toFixed(2));
+          const orderTotal = h.orderTotal == null ? null : toNonNegativeNumber(h.orderTotal);
+          const orderPaid = h.orderPaid == null ? null : toNonNegativeNumber(h.orderPaid);
+          const remainingPayable = h.remainingPayable == null ? null : toNonNegativeNumber(h.remainingPayable);
+          const paymentSummary = h.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 };
+          const partyName = h.partyName || 'Not linked / Unknown';
+          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || '—';
+          const canUseLegacyActions = Boolean(h.legacyHistoryId);
 
           return (
         <div key={h.id} className="rounded-lg border bg-muted/10 p-3 text-xs space-y-2">
@@ -507,26 +489,26 @@ export default function Admin() {
               <div><span className="text-muted-foreground">Party:</span> <span className="font-medium">{partyName}</span></div>
               <div><span className="text-muted-foreground">PO:</span> <span className="font-medium">{poLabel}</span></div>
               <div><span className="text-muted-foreground">Line Total:</span> <span className="font-medium">₹{lineTotal.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{linkedOrder ? `₹${orderTotal.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{linkedOrder ? `₹${orderPaid.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{linkedOrder ? `₹${remainingPayable.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">{linkedOrder ? `₹${paymentSummary.partyCredit.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">{linkedOrder ? `₹${paymentSummary.cash.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">{linkedOrder ? `₹${paymentSummary.online.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `₹${orderTotal.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `₹${orderPaid.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `₹${remainingPayable.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">₹{paymentSummary.partyCredit.toFixed(2)}</span></div>
+              <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">₹{paymentSummary.cash.toFixed(2)}</span></div>
+              <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">₹{paymentSummary.online.toFixed(2)}</span></div>
             </div>
-            {!linkedOrder && (
+            {!h.purchaseOrderId && (
               <div className="text-[11px] text-muted-foreground">Order summary unavailable.</div>
             )}
           </div>
           <div className="pt-1">
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" onClick={() => openEditPurchaseHistoryEntry(h.id)}>Edit Purchase</Button>
+              <Button size="sm" variant="outline" disabled={!canUseLegacyActions} onClick={() => { if (canUseLegacyActions) openEditPurchaseHistoryEntry(h.legacyHistoryId!); }}>Edit Purchase</Button>
               <Button
                 size="sm"
                 variant="outline"
-                disabled={!h.purchaseOrderId}
-                onClick={() => void handleDeletePurchaseHistoryEntry(h.id)}
-                title={!h.purchaseOrderId ? 'Cannot delete legacy purchase entry without linked order metadata.' : 'Reverse purchase'}
+                disabled={!canUseLegacyActions || !h.purchaseOrderId}
+                onClick={() => { if (canUseLegacyActions) void handleDeletePurchaseHistoryEntry(h.legacyHistoryId!); }}
+                title={!canUseLegacyActions ? 'Legacy history row is not available yet for this canonical purchase row.' : !h.purchaseOrderId ? 'Cannot delete legacy purchase entry without linked order metadata.' : 'Reverse purchase'}
               >
                 Delete Purchase Entry
               </Button>
@@ -841,17 +823,35 @@ export default function Admin() {
     [purchaseVariantRows, selectedPurchaseVariantKey]
   );
 
+  const canonicalPurchaseHistoryRows = useMemo(
+    () => getProductPurchaseHistoryRowsFromPurchaseOrdersForProduct(purchaseTarget, loadData().purchaseOrders || []),
+    [purchaseTarget]
+  );
+  void canonicalPurchaseHistoryRows;
+  const mergedPurchaseHistoryDisplayRows = useMemo(
+    () => getProductPurchaseHistoryDisplayRowsForProduct(purchaseTarget, loadData().purchaseOrders || []),
+    [purchaseTarget]
+  );
+  const purchaseHistoryComparisonAudit = useMemo(
+    () => compareProductPurchaseHistoryForProduct(purchaseTarget, loadData().purchaseOrders || []),
+    [purchaseTarget]
+  );
+  // Target model freeze:
+  // Inventory purchase history is in transition to a purchase-order-derived view.
+  // Until the migration is complete, embedded `product.purchaseHistory` remains a
+  // compatibility snapshot for legacy display/fallback only. It should not be
+  // treated as the primary source of truth for purchase display data.
   const purchaseHistoryRows = useMemo(() => {
     if (!purchaseTarget) return [];
-    const rows = [...(purchaseTarget.purchaseHistory || [])].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    const rows = [...mergedPurchaseHistoryDisplayRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     if (purchaseHistoryVariantFilter === 'all') return rows;
     return rows.filter((row) => `${row.variant || NO_VARIANT}::${row.color || NO_COLOR}` === purchaseHistoryVariantFilter);
-  }, [purchaseTarget, purchaseHistoryVariantFilter]);
+  }, [purchaseTarget, purchaseHistoryVariantFilter, mergedPurchaseHistoryDisplayRows]);
 
   const purchaseHistoryVariantOptions = useMemo(() => {
     if (!purchaseTarget) return [];
     const map = new Map<string, { variant: string; color: string }>();
-    (purchaseTarget.purchaseHistory || []).forEach((row) => {
+    mergedPurchaseHistoryDisplayRows.forEach((row) => {
       const variant = row.variant || NO_VARIANT;
       const color = row.color || NO_COLOR;
       const key = `${variant}::${color}`;
@@ -860,7 +860,14 @@ export default function Admin() {
       }
     });
     return Array.from(map.entries()).map(([key, value]) => ({ key, ...value }));
-  }, [purchaseTarget]);
+  }, [purchaseTarget, mergedPurchaseHistoryDisplayRows]);
+
+  const filteredPurchaseHistoryComparisonIssues = useMemo(() => {
+    if (purchaseHistoryVariantFilter === 'all') return purchaseHistoryComparisonAudit.issues;
+    return purchaseHistoryComparisonAudit.issues.filter(
+      (issue) => `${issue.variant || NO_VARIANT}::${issue.color || NO_COLOR}` === purchaseHistoryVariantFilter
+    );
+  }, [purchaseHistoryComparisonAudit, purchaseHistoryVariantFilter]);
 
   const viewingPurchaseHistoryRows = useMemo(
     () => [...(viewingProduct?.purchaseHistory || [])].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
@@ -1060,6 +1067,9 @@ export default function Admin() {
         return false;
       }
     })();
+    // Keep dual writes during the migration: purchaseOrders are canonical for
+    // display, while embedded product.purchaseHistory remains a compatibility
+    // snapshot until the derived Inventory history path is proven stable.
     const savedOrder = await createPurchaseOrder(order);
     const latestData = loadData();
     const availablePartyCredit = (latestData.partyCreditLedger || [])
@@ -2652,6 +2662,77 @@ export default function Admin() {
                 </>
               ) : (
                 <div className="space-y-3">
+                  <div className={`rounded-lg border p-3 ${purchaseHistoryComparisonAudit.issueCount ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-2 font-semibold">
+                        <AlertTriangle className={`w-4 h-4 ${purchaseHistoryComparisonAudit.issueCount ? 'text-amber-600' : 'text-emerald-600'}`} />
+                        Purchase History Comparison Audit
+                      </div>
+                      <Badge variant={purchaseHistoryComparisonAudit.issueCount ? 'outline' : 'success'}>
+                        {purchaseHistoryComparisonAudit.issueCount ? `${purchaseHistoryComparisonAudit.issueCount} mismatch${purchaseHistoryComparisonAudit.issueCount === 1 ? '' : 'es'}` : 'In sync'}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Rollout-only audit comparing canonical purchase-order-derived rows against embedded product.purchaseHistory rows.
+                    </p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Canonical Rows</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.canonicalCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Embedded Rows</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.legacyCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Matched Rows</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.matchedCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Missing Links</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.missingLinkCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Missing Embedded Rows</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.missingLegacyCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Orphan Embedded Rows</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.orphanLegacyCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Qty Mismatches</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.quantityMismatchCount}</div>
+                      </div>
+                      <div className="rounded border bg-background p-2 text-xs">
+                        <div className="text-muted-foreground">Amount Mismatches</div>
+                        <div className="font-semibold">{purchaseHistoryComparisonAudit.amountMismatchCount}</div>
+                      </div>
+                    </div>
+                    {!!filteredPurchaseHistoryComparisonIssues.length && (
+                      <div className="mt-3 space-y-2">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          Current Audit Findings
+                        </div>
+                        <div className="max-h-52 overflow-y-auto rounded border bg-background">
+                          {filteredPurchaseHistoryComparisonIssues.map((issue) => (
+                            <div key={issue.id} className="border-b p-2 text-xs last:border-b-0">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="font-medium">{issue.message}</div>
+                                <Badge variant="outline">{issue.type}</Badge>
+                              </div>
+                              <div className="mt-1 text-muted-foreground">
+                                PO: {issue.purchaseOrderId || '—'} · Variant: {formatVariantColorValue(issue.variant, NO_VARIANT)} / {formatVariantColorValue(issue.color, NO_COLOR)}
+                              </div>
+                              <div className="mt-1 text-muted-foreground">
+                                Canonical Qty/Amount: {issue.canonicalQuantity ?? '—'} / {issue.canonicalAmount == null ? '—' : `₹${issue.canonicalAmount.toFixed(2)}`} · Embedded Qty/Amount: {issue.legacyQuantity ?? '—'} / {issue.legacyAmount == null ? '—' : `₹${issue.legacyAmount.toFixed(2)}`}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   {purchaseHistoryVariantOptions.length > 1 && (
                     <div className="space-y-1">
                       <Label>Filter by Variant / Color</Label>

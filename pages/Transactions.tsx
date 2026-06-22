@@ -19,6 +19,7 @@ import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadTransactionsData, downloadTransactionsTemplate, importHistoricalTransactionsFromFile } from '../services/importExcel';
 import { formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole } from '../services/numberFormat';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
+import { getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useRoleSession } from '../src/auth/roleSession';
 import { can, isAdmin } from '../src/auth/simplePermissions';
@@ -1009,6 +1010,14 @@ export default function Transactions() {
     };
     return getCanonicalReturnPreviewForDraft(draft, customers, transactions);
   }, [editingTx, editingItems, editingCustomerId, editingReturnMode, customers, transactions]);
+  const editingCustomer = useMemo(
+    () => customers.find(c => c.id === editingCustomerId) || null,
+    [customers, editingCustomerId]
+  );
+  const editingCustomerBalance = useMemo(
+    () => getCanonicalCustomerBalanceResult(editingCustomer, transactions, upfrontOrders),
+    [editingCustomer, transactions, upfrontOrders]
+  );
   const editingSaleLinkageInfo = useMemo(() => {
     if (!editingTx || editingTx.type !== 'sale') return null;
     const returnedQtyByKey = new Map<string, number>();
@@ -2421,7 +2430,7 @@ export default function Transactions() {
                       <div className="font-semibold text-[14px]">Payment Impact Preview</div>
                       <div>Collection: ₹{formatMoneyPrecise(Number(editingAmount || 0))} via {editingTxPaymentMethod}</div>
                       {editingCustomerId && (() => {
-                        const currentDue = customers.find(c => c.id === editingCustomerId)?.totalDue || 0;
+                        const currentDue = editingCustomerBalance.currentDue;
                         const dueAfter = Math.max(0, currentDue - Math.max(0, Number(editingAmount || 0)));
                         return <div>Due: ₹{formatMoneyPrecise(currentDue)} → ₹{formatMoneyPrecise(dueAfter)}</div>;
                       })()}

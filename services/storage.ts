@@ -140,6 +140,21 @@ const shouldTraceDevFlag = (flag: string) => {
   }
 };
 
+const STORAGE_HYDRATION_DEBUG_PREFIX = '[STORAGE_HYDRATION_DEBUG]';
+const isStorageHydrationDebugEnabled = () => {
+  if (typeof window === 'undefined') return Boolean((import.meta as any).env?.DEV);
+  try {
+    return Boolean((import.meta as any).env?.DEV)
+      || window.localStorage.getItem('STORAGE_HYDRATION_DEBUG') === '1';
+  } catch {
+    return Boolean((import.meta as any).env?.DEV);
+  }
+};
+const logStorageHydrationDebug = (event: string, payload: Record<string, unknown>) => {
+  if (!isStorageHydrationDebugEnabled()) return;
+  console.log(STORAGE_HYDRATION_DEBUG_PREFIX, JSON.stringify({ event, ...payload }, null, 2));
+};
+
 export const STORAGE_FLOW_REGISTRY = Object.freeze({
   events: APP_EVENTS,
   cloudSyncStatuses: CLOUD_SYNC_STATUSES,
@@ -2509,6 +2524,19 @@ const logKpiSnapshot = (_checkpoint: 'INIT' | 'AFTER_TX_CREATE' | 'AFTER_TX_UPDA
   // Intentionally silent: consolidated snapshots are emitted via utils/financeDebugLogger.ts.
 };
 
+export const getStorageDebugSnapshot = () => ({
+  hasInitialSynced,
+  hasCompletedInitialCloudLoad,
+  isCloudSynced,
+  storeDocumentExists,
+  activeSyncUid,
+  syncGeneration,
+  cloudSyncStatus,
+  memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+  memoryProductsCount: Array.isArray(memoryState.products) ? memoryState.products.length : 0,
+  memoryTransactionsCount: Array.isArray(memoryState.transactions) ? memoryState.transactions.length : 0,
+});
+
 const FINANCE_RECON_TRACE_ENABLED = String((import.meta as any).env?.VITE_FINANCE_RECON_TRACE || '').toLowerCase() === 'true';
 const FINANCE_ACTION_TRACE_ENABLED = String((import.meta as any).env?.VITE_FINANCE_ACTION_TRACE || '').toLowerCase() === 'true';
 
@@ -2567,6 +2595,7 @@ const unsubscribeCloudListeners = (uid: string | null, reason: string) => {
 };
 
 const resetCloudStateForUser = (uid: string | null, reason: string) => {
+  const previousCustomersCount = Array.isArray(memoryState.customers) ? memoryState.customers.length : 0;
   memoryState = { ...initialData };
   hasInitialSynced = false;
   isCloudSynced = false;
@@ -2594,6 +2623,16 @@ const resetCloudStateForUser = (uid: string | null, reason: string) => {
   syncInitInFlight = false;
   syncInitPromise = null;
   logStockFlowDataAudit('storage.state.reset', { uid, reason });
+  logStorageHydrationDebug('storage_state_reset', {
+    uid,
+    reason,
+    previousCustomersCount,
+    nextCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+    hasInitialSynced,
+    hasCompletedInitialCloudLoad,
+    isCloudSynced,
+    syncGeneration,
+  });
 };
 
 // Listen for auth state changes to trigger sync
@@ -2664,6 +2703,14 @@ const syncFromCloud = async (): Promise<void> => {
         }
         const syncRunGeneration = syncGeneration;
         logStockFlowDataAudit('storage.sync.start', { uid: user.uid, storeDocumentExists, hasCompletedInitialCloudLoad, syncGeneration: syncRunGeneration });
+        logStorageHydrationDebug('storage_sync_start', {
+          uid: user.uid,
+          storeDocumentExists,
+          hasCompletedInitialCloudLoad,
+          syncGeneration: syncRunGeneration,
+          memoryCustomersCountBeforeSync: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+          activeSyncUid,
+        });
         if (!user.emailVerified) {
           throw new Error('Email verification required before cloud access.');
         }
@@ -2713,6 +2760,19 @@ const syncFromCloud = async (): Promise<void> => {
               .map(docItem => ({ ...(docItem.data() as Customer), id: docItem.id }))
               .filter(c => !((c as any).isDeleted));
 
+            logStorageHydrationDebug('customers_snapshot_received', {
+              uid: user.uid,
+              customersCountBefore: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+              customersCountAfter: customers.length,
+              firstFiveCustomers: customers.slice(0, 5).map((customer) => ({
+                id: customer.id,
+                name: customer.name,
+                phone: customer.phone,
+                storeCredit: customer.storeCredit,
+              })),
+              hasCompletedInitialCloudLoad,
+              syncGeneration: syncRunGeneration,
+            });
             memoryState = { ...memoryState, customers };
             logLoadedState(memoryState);
             emitLocalStorageUpdate();
@@ -2844,6 +2904,14 @@ const syncFromCloud = async (): Promise<void> => {
                 logLoadedState(memoryState);
                 isCloudSynced = true;
                 hasCompletedInitialCloudLoad = true;
+                logStorageHydrationDebug('storage_sync_root_merge_complete', {
+                  uid: user.uid,
+                  hydratedCustomersCount: hydratedCustomers.length,
+                  memoryCustomersCountAfterMerge: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+                  hasCompletedInitialCloudLoad,
+                  isCloudSynced,
+                  syncGeneration: syncRunGeneration,
+                });
                 logStockFlowDataAudit('storage.sync.complete', {
                   uid: user.uid,
                   rootProductsCount: legacyRootProductsCache.length,
@@ -3556,9 +3624,25 @@ const syncToCloud = async (data: AppState) => {
 };
 
 export const loadData = (): AppState => {
+  logStorageHydrationDebug('loadData_called', {
+    hasDb: Boolean(db),
+    hasInitialSynced,
+    hasCompletedInitialCloudLoad,
+    isCloudSynced,
+    storeDocumentExists,
+    navigatorOnline: typeof navigator !== 'undefined' ? navigator.onLine : null,
+    memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+    activeSyncUid,
+    cloudSyncStatus,
+  });
   if (db && !hasInitialSynced && navigator.onLine) {
       hasInitialSynced = true;
       emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
+      logStorageHydrationDebug('loadData_trigger_sync', {
+        reason: 'db_present_and_not_initial_synced',
+        activeSyncUid,
+        memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+      });
       syncFromCloud();
   }
   if (db && !navigator.onLine) {
@@ -3567,10 +3651,20 @@ export const loadData = (): AppState => {
     if (!hasCompletedInitialCloudLoad) {
       const bootState = { ...initialData };
       logLoadedState(bootState);
+      logStorageHydrationDebug('loadData_return_bootState', {
+        reason: 'offline_before_initial_cloud_load',
+        customersCount: Array.isArray(bootState.customers) ? bootState.customers.length : 0,
+      });
       return bootState;
     }
   }
   logLoadedState(memoryState);
+  logStorageHydrationDebug('loadData_return_memoryState', {
+    customersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+    hasCompletedInitialCloudLoad,
+    isCloudSynced,
+    cloudSyncStatus,
+  });
   return memoryState;
 };
 

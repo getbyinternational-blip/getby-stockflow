@@ -1278,7 +1278,7 @@ export default function Finance() {
     return map;
   }, [data.customers, data.transactions, data.upfrontOrders]);
 
-  const creditCustomers = useMemo(() => data.customers.filter(c => (canonicalCustomerBalanceById.get(c.id)?.canonicalDue || 0) > 0).sort((a, b) => (canonicalCustomerBalanceById.get(b.id)?.canonicalDue || 0) - (canonicalCustomerBalanceById.get(a.id)?.canonicalDue || 0)), [data.customers, canonicalCustomerBalanceById]);
+  const creditCustomers = useMemo(() => data.customers.filter(c => (canonicalCustomerBalanceById.get(c.id)?.currentDue || 0) > 0).sort((a, b) => (canonicalCustomerBalanceById.get(b.id)?.currentDue || 0) - (canonicalCustomerBalanceById.get(a.id)?.currentDue || 0)), [data.customers, canonicalCustomerBalanceById]);
 
   const dueStoreCreditSummary = useMemo(() => {
     try {
@@ -3470,8 +3470,8 @@ export default function Finance() {
                     <p className="text-sm text-muted-foreground">Last Visit: {new Date(customer.lastVisit).toLocaleDateString()}</p>
                   </div>
                   <div className="text-right">
-                    <p className="font-bold text-red-700">Due: {formatINRSummary(canonicalCustomerBalanceById.get(customer.id)?.canonicalDue || 0)}</p>
-                    <Button size="sm" onClick={() => { const due = canonicalCustomerBalanceById.get(customer.id)?.canonicalDue || 0; setCollectingCustomer(customer); setPaymentAmount(due.toFixed(2)); }}>Collect Payment</Button>
+                    <p className="font-bold text-red-700">Due: {formatINRSummary(canonicalCustomerBalanceById.get(customer.id)?.currentDue || 0)}</p>
+                    <Button size="sm" onClick={() => { const due = canonicalCustomerBalanceById.get(customer.id)?.currentDue || 0; setCollectingCustomer(customer); setPaymentAmount(due.toFixed(2)); }}>Collect Payment</Button>
                   </div>
                 </div>
               ))}

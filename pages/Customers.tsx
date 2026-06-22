@@ -29,7 +29,6 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 const normalizePhone = (v?: string) => String(v || '').replace(/\D/g, '');
 const normalizeName = (v?: string) => String(v || '').trim().toLowerCase();
 const roundCorrectPreviewMoney = (value: number) => Math.round(value * 100) / 100;
-
 const hasCustomerDisplayBalanceMismatch = (balance?: CanonicalCustomerBalanceResult): boolean => !!balance && balance.status === 'ok' && (
   Math.abs(balance.snapshotDue - balance.currentDue) > 0.01
   || Math.abs(balance.snapshotStoreCredit - balance.storeCredit) > 0.01
@@ -535,9 +534,10 @@ export default function Customers() {
     return viewingCustomer;
   }, [viewingCustomer, canonicalCustomers]);
   const viewingCustomerDisplayBalance = viewingCustomerCanonical ? canonicalDisplayBalanceByCustomerId.get(viewingCustomerCanonical.id) : null;
-  const viewingCustomerTotalDue = Math.max(0, Number(viewingCustomerDisplayBalance?.status === 'ok' ? viewingCustomerDisplayBalance.currentDue : 0));
-  const viewingCustomerStoreCredit = Math.max(0, Number(viewingCustomerDisplayBalance?.status === 'ok' ? viewingCustomerDisplayBalance.storeCredit : 0));
-  const viewingCustomerNetReceivable = Math.max(0, Number(viewingCustomerDisplayBalance?.status === 'ok' ? viewingCustomerDisplayBalance.netReceivable : 0));
+  const viewingCustomerBalance = viewingCustomerDisplayBalance?.status === 'ok' ? viewingCustomerDisplayBalance : null;
+  const viewingCustomerTotalDue = Math.max(0, Number(viewingCustomerBalance?.currentDue || 0));
+  const viewingCustomerStoreCredit = Math.max(0, Number(viewingCustomerBalance?.storeCredit || 0));
+  const viewingCustomerNetReceivable = Math.max(0, Number(viewingCustomerBalance?.netReceivable || 0));
   const viewingCustomerBalanceMismatch = hasCustomerDisplayBalanceMismatch(viewingCustomerDisplayBalance);
   const viewingCustomerCorrectLedger = useMemo(() => {
     if (!viewingCustomerCanonical) return null;
@@ -886,7 +886,7 @@ export default function Customers() {
 
   const parsedPaymentAmount = Number(paymentAmount);
   const paymentAmountValid = Number.isFinite(parsedPaymentAmount) && parsedPaymentAmount > 0;
-  const currentDue = Math.max(0, Number(viewingCustomerCanonical?.totalDue || 0));
+  const currentDue = Math.max(0, Number(viewingCustomerBalance?.currentDue || 0));
   const paymentAppliedToDue = paymentAmountValid ? Math.min(parsedPaymentAmount, currentDue) : 0;
   const paymentExcessToCredit = paymentAmountValid ? Math.max(0, parsedPaymentAmount - currentDue) : 0;
 
@@ -1056,7 +1056,7 @@ export default function Customers() {
   const isCollectAmountValid = Number.isFinite(collectAmountNumber) && collectAmountNumber > 0;
   const selectedOrderRemaining = Math.max(0, Number(selectedUpfrontOrder?.remainingAmount || 0));
   const projectedRemainingAfterCollect = Math.max(0, selectedOrderRemaining - (isCollectAmountValid ? collectAmountNumber : 0));
-  const availableStoreCredit = Math.max(0, Number(viewingCustomerCanonical?.storeCredit || 0));
+  const availableStoreCredit = Math.max(0, Number(viewingCustomerBalance?.storeCredit || 0));
   const possibleCreditApplication = Math.min(availableStoreCredit, projectedRemainingAfterCollect);
   const isOrderFormDirty = Boolean(
     upfrontOrderForm.numberOfPieces || Number(upfrontOrderForm.numberOfCartons || 1) !== 1 ||

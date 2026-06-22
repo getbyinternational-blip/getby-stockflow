@@ -1098,6 +1098,11 @@ export default function PurchasePanel() {
     });
     return map;
   }, [diagnosticParties]);
+  // Target model freeze:
+  // `purchaseOrders` is the canonical source for purchase display data.
+  // Any product-linked purchase history shown elsewhere should be derived from
+  // purchase orders when possible. Embedded `product.purchaseHistory` is treated
+  // as a compatibility snapshot/fallback, not the primary source of truth.
   const purchaseOrderDiagnosticRows = useMemo<PurchaseOrderDiagnosticRow[]>(() => {
     return diagnosticOrders
       .slice()

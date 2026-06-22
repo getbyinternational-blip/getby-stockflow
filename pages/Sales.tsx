@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
@@ -17,7 +18,7 @@ import { Button, Input, Card, CardContent, CardHeader, CardTitle, Badge, Label }
 import { ShoppingCart, Trash2, X, Plus, Minus, Search, AlertCircle, CheckCircle, Printer, Package, FileText, Keyboard, ChevronRight, ChevronUp, Percent, Settings2, UserPlus, UserSearch, UserMinus, MessageCircle } from 'lucide-react';
 import { formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, roundMoneyWhole } from '../services/numberFormat';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
-import { auth } from '../services/firebase';
+import { auth, db } from '../services/firebase';
 import { getCanonicalCustomerBalanceView } from '../services/customerBalanceView';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { can } from '../src/auth/simplePermissions';
@@ -25,6 +26,10 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 const toMoneyCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100);
 const fromMoneyCents = (value: number) => value / 100;
+const safeNumber = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 const INVOICE_SEND_DEBUG_PREFIX = '[INVOICE_SEND_DEBUG]';
 const isInvoiceSendDebugEnabled = () => {
   try {
@@ -36,6 +41,13 @@ const isInvoiceSendDebugEnabled = () => {
 const logInvoiceSendDebug = (payload: unknown) => {
   if (!isInvoiceSendDebugEnabled()) return;
   console.log(INVOICE_SEND_DEBUG_PREFIX, JSON.stringify(payload, null, 2));
+};
+const isPosStoreCreditDebugEnabled = () => {
+  try {
+    return Boolean(import.meta.env.DEV) || window.localStorage.getItem('POS_STORE_CREDIT_DEBUG') === '1';
+  } catch {
+    return Boolean(import.meta.env.DEV);
+  }
 };
 const getProductCardImage = (product: Product): string | null => {
   const anyProduct = product as any;
@@ -209,7 +221,7 @@ export default function Sales() {
   const setActiveCartItems = (updater: (items: CartItem[]) => CartItem[]) => {
     setInvoiceCarts(prev => prev.map(c => c.id === activeCartId ? { ...c, items: updater(c.items), updatedAt: new Date().toISOString() } : c));
   };
-  const updateActiveCartMeta = (patch: Partial<InvoiceCart>) => {
+  const updateActiveCartMeta = (patch: Partial<InvoiceCart>, source = 'cart_update', stackHint = 'updateActiveCartMeta') => {
     setInvoiceCarts(prev => prev.map(c => c.id === activeCartId ? { ...c, ...patch, updatedAt: new Date().toISOString() } : c));
   };
   const removeCompletedCartAfterSuccess = (completedCartId: string) => {
@@ -246,7 +258,6 @@ export default function Sales() {
   const [variantPicker, setVariantPicker] = useState<{ open: boolean; product: Product | null; rows: Array<{ variant: string; color: string; stock: number; qty: number; sellPrice: number }> }>({ open: false, product: null, rows: [] });
   const [transactionComplete, setTransactionComplete] = useState<Transaction | null>(null);
   
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [customerSearch, setCustomerSearch] = useState('');
   const [newCustomerName, setNewCustomerName] = useState('');
   const [newCustomerPhone, setNewCustomerPhone] = useState('');
@@ -270,6 +281,10 @@ export default function Sales() {
   
   const [selectedTax, setSelectedTax] = useState(TAX_OPTIONS[0]);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isCustomerDetailsModalOpen, setIsCustomerDetailsModalOpen] = useState(false);
+  const [customerDetailsLoading, setCustomerDetailsLoading] = useState(false);
+  const [customerDetailsError, setCustomerDetailsError] = useState<string | null>(null);
+  const [customerDetailsRecord, setCustomerDetailsRecord] = useState<Record<string, unknown> | null>(null);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedTransactionDate, setSelectedTransactionDate] = useState('');
   const [prefilledTransactionDateTimeIso, setPrefilledTransactionDateTimeIso] = useState<string | null>(null);
@@ -294,6 +309,32 @@ export default function Sales() {
   const [sendInvoiceMessage, setSendInvoiceMessage] = useState<string | null>(null);
   const [waSendingStage, setWaSendingStage] = useState<string | null>(null);
   const activeCart = useMemo(() => invoiceCarts.find(c => c.id === activeCartId) || null, [invoiceCarts, activeCartId]);
+  // Freeze the selection model: the active cart owns customer identity.
+  // The selected customer object and all balance values must derive from this id.
+  const selectedCustomerId = (activeCart?.customerId || '').trim() || null;
+  const setSelectedCustomerId = (
+    nextCustomerId: string | null,
+    source: string,
+    action: 'set' | 'reset',
+    stackHint: string,
+  ) => {
+    writeActiveCartCustomerId(nextCustomerId || '', source, stackHint);
+  };
+  const writeActiveCartCustomerId = (nextCustomerId: string, source: string, stackHint: string) => {
+    updateActiveCartMeta(
+      { customerId: nextCustomerId },
+      source,
+      stackHint,
+    );
+  };
+  const mutateSelectedCustomer = (
+    nextCustomer: Customer | null,
+    source: string,
+    action: 'set' | 'reset',
+    stackHint: string,
+  ) => {
+    setSelectedCustomerId(nextCustomer?.id || null, source, action, stackHint);
+  };
 
   useEffect(() => {
     if (!activeCart) return;
@@ -305,9 +346,10 @@ export default function Sales() {
     setOnlineManuallyEdited(Boolean(activeCart.onlinePaidManuallyEdited));
     setAllCreditMode(Boolean(activeCart.allCreditMode));
     setCustomerSearch(activeCart.customerSearch || '');
-    const nextCustomer = customers.find(c => c.id === activeCart.customerId) || null;
-    setSelectedCustomer(nextCustomer);
-  }, [activeCartId, activeCart?.id, customers]);
+    if (activeCart.customerId && customers.length === 0) {
+      return;
+    }
+  }, [activeCartId, activeCart?.id, activeCart?.customerId, customers]);
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem('stockflow_customer_invoice_prefill');
@@ -324,7 +366,12 @@ export default function Sales() {
       }
       const prefCustomer = customers.find((c) => c.id === parsed.customerId) || customers.find((c) => c.phone === parsed.customerPhone);
       if (prefCustomer) {
-        setSelectedCustomer(prefCustomer);
+        setSelectedCustomerId(
+          prefCustomer.id,
+          'session_prefill_customer_hydration',
+          'set',
+          'sessionStorage stockflow_customer_invoice_prefill',
+        );
         setInvoiceGstName(prefCustomer.gstName || '');
         setInvoiceGstNumber(prefCustomer.gstNumber || '');
       }
@@ -446,7 +493,6 @@ export default function Sales() {
   useEffect(() => { updateActiveCartMeta({ onlinePaidManuallyEdited: onlineManuallyEdited }); }, [onlineManuallyEdited]);
   useEffect(() => { updateActiveCartMeta({ allCreditMode }); }, [allCreditMode]);
   useEffect(() => { updateActiveCartMeta({ customerSearch }); }, [customerSearch]);
-  useEffect(() => { updateActiveCartMeta({ customerId: selectedCustomer?.id || '' }); }, [selectedCustomer?.id]);
   useEffect(() => {
     const handleDataOpStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ phase?: 'start' | 'success' | 'error'; op?: string; message?: string; error?: string; transactionId?: string }>).detail;
@@ -797,7 +843,7 @@ export default function Sales() {
   const completeCheckout = () => {
       setCheckoutError(null);
       if (!validateOpenShiftForPos()) return;
-      let finalCustomer = selectedCustomer;
+      let finalCustomer = resolvedSelectedCustomer;
       const isGstApplied = !isReturnMode && Number(selectedTax.value || 0) > 0;
 
       if (customerTab === 'new') {
@@ -840,7 +886,12 @@ export default function Sales() {
           try {
               const createdCustomers = addCustomer(freshCustomer);
               finalCustomer = createdCustomers.find(c => c.id === freshCustomer.id) || freshCustomer;
-              setSelectedCustomer(finalCustomer);
+              mutateSelectedCustomer(
+                finalCustomer,
+                'checkout_new_customer_created',
+                'set',
+                'completeCheckout/createCustomer',
+              );
               setCustomerSearch(finalCustomer.name);
               setCustomerTab('search');
           } catch (error) {
@@ -864,7 +915,12 @@ export default function Sales() {
         if ((finalCustomer.gstName || '').trim() !== finalGstName || (finalCustomer.gstNumber || '').trim() !== finalGstNumber) {
           const updated = updateCustomer({ ...finalCustomer, gstName: finalGstName, gstNumber: finalGstNumber });
           finalCustomer = updated.find(c => c.id === finalCustomer!.id) || { ...finalCustomer, gstName: finalGstName, gstNumber: finalGstNumber };
-          setSelectedCustomer(finalCustomer);
+          mutateSelectedCustomer(
+            finalCustomer,
+            'checkout_gst_customer_refresh',
+            'set',
+            'completeCheckout/updateCustomer GST refresh',
+          );
         }
       }
 
@@ -879,20 +935,24 @@ export default function Sales() {
           }
       }
 
-      const availableCreditAtSubmit = Math.max(0, Number(finalCustomer?.storeCredit || 0));
+      const submitCustomerBalanceView = finalCustomer?.id === resolvedSelectedCustomer?.id
+        ? selectedCustomerBalanceView
+        : getCanonicalCustomerBalanceView(finalCustomer || null, safeCustomers, safeTransactions, safeUpfrontOrders);
+      const availableCreditAtSubmit = Math.max(0, safeNumber(submitCustomerBalanceView.storeCredit));
+      const hasCheckoutCustomer = Boolean(finalCustomer);
       const originalCheckoutAtSubmit = buildCheckoutMoney({
         cartItems: cart,
         taxRate: selectedTax.value,
         returnMode: isReturnMode,
         storeCreditRequested: 0,
         availableStoreCreditAmount: 0,
-        hasCustomer: Boolean(finalCustomer),
+        hasCustomer: hasCheckoutCustomer,
         cashInput: cashPaidInput,
         onlineInput: onlinePaidInput,
         creditInput: String(autoCreditDueValue),
       });
       const maxStoreCreditAtSubmit = Math.min(availableCreditAtSubmit, Math.max(0, Number(originalCheckoutAtSubmit.remainingPayable || 0)));
-      const requestedStoreCreditAtSubmit = (!isReturnMode && useStoreCreditApplied && finalCustomer)
+      const requestedStoreCreditAtSubmit = (!isReturnMode && useStoreCreditApplied && hasCheckoutCustomer)
         ? Math.min(Math.max(0, Number(storeCreditInput || 0)), maxStoreCreditAtSubmit)
         : 0;
       const checkoutMoney = buildCheckoutMoney({
@@ -901,7 +961,7 @@ export default function Sales() {
         returnMode: isReturnMode,
         storeCreditRequested: requestedStoreCreditAtSubmit,
         availableStoreCreditAmount: availableCreditAtSubmit,
-        hasCustomer: Boolean(finalCustomer),
+        hasCustomer: hasCheckoutCustomer,
         cashInput: cashPaidInput,
         onlineInput: onlinePaidInput,
         creditInput: String(autoCreditDueValue),
@@ -969,7 +1029,6 @@ export default function Sales() {
             if (hasCredit) return 'Credit';
             return 'Cash';
           })();
-
       let currentCashDetails: { cashReceived: number; changeReturned: number } | null = null;
       if (!isReturnMode && cashPaid > 0) {
           currentCashDetails = {
@@ -1007,7 +1066,12 @@ export default function Sales() {
         // Cleanup
         setIsCustomerModalOpen(false); 
         removeCompletedCartAfterSuccess(completedCartId);
-        setSelectedCustomer(null);
+        mutateSelectedCustomer(
+          null,
+          'completeCheckout_post_success_reset',
+          'reset',
+          'checkout modal cleanup after success',
+        );
         setNewCustomerName('');
         setNewCustomerPhone('');
         setCustomerSearch('');
@@ -1086,20 +1150,26 @@ export default function Sales() {
     }
   };
   const resolvedSelectedCustomer = useMemo(() => {
-    if (!selectedCustomer) return null;
-    const matchedCustomer = customers.find((c) => (
-      (selectedCustomer.id && c.id === selectedCustomer.id)
-      || (selectedCustomer.phone && c.phone === selectedCustomer.phone)
-      || (selectedCustomer.name && c.name === selectedCustomer.name)
-    ));
-    return matchedCustomer || selectedCustomer;
-  }, [selectedCustomer, customers]);
+    if (!selectedCustomerId) return null;
+    const idMatchedCustomer = customers.find((c) => c.id === selectedCustomerId);
+    return idMatchedCustomer || null;
+  }, [selectedCustomerId, customers]);
   const safeCustomers = Array.isArray(customers) ? customers : [];
   const safeTransactions = Array.isArray(transactions) ? transactions : [];
   const safeUpfrontOrders = Array.isArray(upfrontOrders) ? upfrontOrders : [];
-  const selectedCustomerBalanceView = useMemo(() => getCanonicalCustomerBalanceView(resolvedSelectedCustomer, safeCustomers, safeTransactions, safeUpfrontOrders), [resolvedSelectedCustomer, safeCustomers, safeTransactions, safeUpfrontOrders]);
-  const availableStoreCredit = selectedCustomerBalanceView.canonicalStoreCredit;
-  const selectedCustomerDue = selectedCustomerBalanceView.canonicalDue;
+  const getCustomerCanonicalBalanceView = (customer: Customer | null) =>
+    getCanonicalCustomerBalanceView(customer, safeCustomers, safeTransactions, safeUpfrontOrders);
+  const selectedCustomerBalanceView = useMemo(() => {
+    return getCustomerCanonicalBalanceView(resolvedSelectedCustomer);
+  }, [resolvedSelectedCustomer, safeCustomers, safeTransactions, safeUpfrontOrders]);
+  const availableStoreCredit = selectedCustomerBalanceView.storeCredit;
+  const normalizedAvailableStoreCredit = Math.max(0, safeNumber(availableStoreCredit));
+  const selectedCustomerDue = selectedCustomerBalanceView.currentDue;
+  const hasSelectedCustomer = Boolean(selectedCustomerId);
+  const hasResolvedSelectedCustomer = Boolean(resolvedSelectedCustomer);
+  const isSelectedCustomerPendingResolution = hasSelectedCustomer && !hasResolvedSelectedCustomer;
+  const selectedCustomerDisplayRecord = resolvedSelectedCustomer;
+  const showCustomerDetailsDebug = isPosStoreCreditDebugEnabled();
   const originalInvoiceTotal = Math.max(0, Number(buildCheckoutMoney({
     cartItems: cart,
     taxRate: selectedTax.value,
@@ -1111,10 +1181,14 @@ export default function Sales() {
     onlineInput: '0',
     creditInput: '0',
   }).remainingPayable || 0));
-  const maxUsableStoreCredit = Math.max(0, Math.min(availableStoreCredit, originalInvoiceTotal));
-  const requestedStoreCredit = Math.max(0, Number(storeCreditInput || 0));
-  const clampedRequestedStoreCredit = Math.min(requestedStoreCredit, maxUsableStoreCredit);
-  const appliedStoreCredit = !isReturnMode && useStoreCreditApplied && !!selectedCustomer
+  const normalizedOriginalInvoiceTotal = Math.max(0, safeNumber(originalInvoiceTotal));
+  const maxUsableStoreCredit = Math.max(
+    0,
+    Math.min(normalizedAvailableStoreCredit, normalizedOriginalInvoiceTotal),
+  );
+  const requestedStoreCredit = Math.max(0, safeNumber(Number(storeCreditInput || 0)));
+  const clampedRequestedStoreCredit = Math.min(requestedStoreCredit, safeNumber(maxUsableStoreCredit));
+  const appliedStoreCredit = !isReturnMode && useStoreCreditApplied && hasResolvedSelectedCustomer
     ? clampedRequestedStoreCredit
     : 0;
   const checkoutPreview = buildCheckoutMoney({
@@ -1122,8 +1196,8 @@ export default function Sales() {
     taxRate: selectedTax.value,
     returnMode: isReturnMode,
     storeCreditRequested: appliedStoreCredit,
-    availableStoreCreditAmount: availableStoreCredit,
-    hasCustomer: Boolean(selectedCustomer),
+    availableStoreCreditAmount: normalizedAvailableStoreCredit,
+    hasCustomer: hasResolvedSelectedCustomer,
     cashInput: cashPaidInput,
     onlineInput: onlinePaidInput,
     creditInput: creditDueInput,
@@ -1134,7 +1208,7 @@ export default function Sales() {
   const taxVal = checkoutPreview.taxAmount;
   const grandTotal = checkoutPreview.total;
   const storeCreditUsed = appliedStoreCredit;
-  const remainingStoreCreditAfterInvoice = Math.max(0, availableStoreCredit - appliedStoreCredit);
+  const remainingStoreCreditAfterInvoice = Math.max(0, normalizedAvailableStoreCredit - appliedStoreCredit);
   const cashPaidValue = checkoutPreview.cashPaid;
   const onlinePaidValue = checkoutPreview.onlinePaid;
   const payableAfterStoreCredit = roundMoneyWhole(checkoutPreview.remainingPayableWhole);
@@ -1148,16 +1222,20 @@ export default function Sales() {
   const cashChangeValue = storeOverpaymentAsCredit && resolvedSelectedCustomer ? 0 : cashChangeRawValue;
 
   const handleToggleStoreCredit = () => {
-    if (isReturnMode || !selectedCustomer) return;
+    if (isReturnMode || !hasResolvedSelectedCustomer) return;
     const enabling = !useStoreCreditApplied;
     setUseStoreCreditApplied(enabling);
     if (!enabling) {
       setStoreCreditInput('0');
       return;
     }
-    const maxCredit = Math.max(0, Math.min(availableStoreCredit, originalInvoiceTotal));
-    const payableAfterStoreCredit = Math.max(0, roundMoneyWhole(originalInvoiceTotal - maxCredit));
-    setStoreCreditInput(String(maxCredit));
+    const maxCredit = Math.max(
+      0,
+      Math.min(normalizedAvailableStoreCredit, normalizedOriginalInvoiceTotal),
+    );
+    const safeValue = Number.isFinite(maxCredit) ? maxCredit : 0;
+    const payableAfterStoreCredit = Math.max(0, roundMoneyWhole(normalizedOriginalInvoiceTotal - maxCredit));
+    setStoreCreditInput(String(safeValue));
     setCashPaidInput(String(payableAfterStoreCredit));
     setOnlinePaidInput('0');
     setCreditDueInput('0');
@@ -1167,20 +1245,59 @@ export default function Sales() {
     setCashReceivedDirty(false);
     setCashReceivedInput(String(payableAfterStoreCredit));
   };
+  const handleOpenCustomerDetails = async () => {
+    if (!showCustomerDetailsDebug) return;
+    const customerId = selectedCustomerId || '';
+    if (!customerId) {
+      setCustomerDetailsError('No customer selected.');
+      setCustomerDetailsRecord(null);
+      setIsCustomerDetailsModalOpen(true);
+      return;
+    }
+
+    setIsCustomerDetailsModalOpen(true);
+    setCustomerDetailsLoading(true);
+    setCustomerDetailsError(null);
+    setCustomerDetailsRecord(null);
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!db || !uid) {
+        throw new Error('Cloud database is not available for this session.');
+      }
+      const customerRef = doc(db, 'stores', uid, 'customers', customerId);
+      const snapshot = await getDoc(customerRef);
+      if (!snapshot.exists()) {
+        throw new Error('Customer record was not found in the database.');
+      }
+      setCustomerDetailsRecord({
+        id: snapshot.id,
+        ...snapshot.data(),
+      });
+    } catch (error) {
+      setCustomerDetailsError(error instanceof Error ? error.message : 'Failed to load customer details.');
+    } finally {
+      setCustomerDetailsLoading(false);
+    }
+  };
 
   useEffect(() => {
     setUseStoreCreditApplied(false);
     setStoreCreditInput('0');
     setStoreOverpaymentAsCredit(false);
-  }, [selectedCustomer?.id]);
+  }, [selectedCustomerId]);
   useEffect(() => {
-    if (!selectedCustomer || isReturnMode) {
+    if (!hasResolvedSelectedCustomer || isReturnMode) {
       if (storeCreditInput !== '0') setStoreCreditInput('0');
       return;
     }
-    const next = String(Math.min(Math.max(0, Number(storeCreditInput || 0)), maxUsableStoreCredit));
-    if (storeCreditInput !== next) setStoreCreditInput(next);
-  }, [selectedCustomer?.id, isReturnMode, maxUsableStoreCredit, storeCreditInput]);
+    const next = String(Math.min(
+      Math.max(0, safeNumber(Number(storeCreditInput || 0))),
+      safeNumber(maxUsableStoreCredit),
+    ));
+    if (storeCreditInput !== next) {
+      setStoreCreditInput(next);
+    }
+  }, [selectedCustomerId, hasResolvedSelectedCustomer, isReturnMode, maxUsableStoreCredit, storeCreditInput]);
   useEffect(() => {
     if (!isCustomerModalOpen || isReturnMode) return;
     const recalculated = buildCheckoutMoney({
@@ -1188,8 +1305,8 @@ export default function Sales() {
       taxRate: selectedTax.value,
       returnMode: false,
       storeCreditRequested: appliedStoreCredit,
-      availableStoreCreditAmount: availableStoreCredit,
-      hasCustomer: Boolean(selectedCustomer),
+      availableStoreCreditAmount: normalizedAvailableStoreCredit,
+      hasCustomer: hasResolvedSelectedCustomer,
       cashInput: '0',
       onlineInput: '0',
       creditInput: '0',
@@ -1300,6 +1417,10 @@ export default function Sales() {
   const selectedReturnCustomer = useMemo(
     () => (selectedReturnTx?.customerId ? customerById.get(selectedReturnTx.customerId) || null : null),
     [customerById, selectedReturnTx]
+  );
+  const selectedReturnCustomerBalanceView = useMemo(
+    () => getCanonicalCustomerBalanceView(selectedReturnCustomer, customers, transactions),
+    [selectedReturnCustomer, customers, transactions]
   );
   const selectedReturnLines = useMemo(() => {
     if (!selectedReturnTx) return [] as Array<{
@@ -1434,9 +1555,9 @@ export default function Sales() {
     if (Number(selectedSettlement.creditDue || 0) > 0) return 'reduce_due';
     if (Number(selectedSettlement.onlinePaid || 0) > 0 && Number(selectedSettlement.cashPaid || 0) <= 0) return 'refund_online';
     if (Number(selectedSettlement.cashPaid || 0) > 0 && Number(selectedSettlement.onlinePaid || 0) <= 0) return 'refund_cash';
-    if ((selectedReturnCustomer?.totalDue || 0) > 0) return 'reduce_due';
+    if (Number(selectedReturnCustomerBalanceView.currentDue || 0) > 0) return 'reduce_due';
     return originalPaidMethodKind === 'online' ? 'refund_online' : 'refund_cash';
-  }, [requiresMixedChoice, mixedReturnChoice, originalPaidMethodKind, selectedSettlement, selectedReturnCustomer]);
+  }, [requiresMixedChoice, mixedReturnChoice, originalPaidMethodKind, selectedSettlement, selectedReturnCustomerBalanceView.currentDue]);
   const returnDraftTransaction = useMemo<Transaction | null>(() => {
     if (!dueFirstDraftTransaction) return null;
     return {
@@ -1697,7 +1818,7 @@ export default function Sales() {
             {!isReturnMode && (
               <div className="flex items-center gap-1 overflow-auto">
                 {invoiceCarts.map((c) => (
-                  <Button key={c.id} size="sm" variant={c.id === activeCartId ? 'default' : 'outline'} onClick={() => setActiveCartId(c.id)} className="gap-1">
+                  <Button key={c.id} size="sm" variant={c.id === activeCartId ? 'default' : 'outline'} onClick={() => { setActiveCartId(c.id); }} className="gap-1">
                     <span>{c.label} ({c.items.length})</span>
                     <span
                       role="button"
@@ -1719,7 +1840,9 @@ export default function Sales() {
                         setInvoiceCarts(prev => {
                           let next = prev.filter(x => x.id !== c.id);
                           if (!next.length) next = [createEmptyInvoiceCart(1)];
-                          if (c.id === activeCartId) setActiveCartId(next[0].id);
+                          if (c.id === activeCartId) {
+                            setActiveCartId(next[0].id);
+                          }
                           return next;
                         });
                       }}
@@ -1926,28 +2049,28 @@ export default function Sales() {
             {customerTab === 'search' ? (
               <div className="space-y-2">
                 {/* POS DEBUG ACTIVE */}
-                {!selectedCustomer ? (
+                {!hasSelectedCustomer ? (
                   <Input placeholder="Search phone or name..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} />
                 ) : (
                   <div className="bg-muted p-2 rounded border">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-bold truncate">{resolvedSelectedCustomer?.name || selectedCustomer.name}</p>
-                        <p className="text-xs text-muted-foreground">{resolvedSelectedCustomer?.phone || selectedCustomer.phone}</p>
+                        <p className="text-sm font-bold truncate">{selectedCustomerDisplayRecord?.name || (isSelectedCustomerPendingResolution ? 'Resolving customer...' : 'Customer selected')}</p>
+                        <p className="text-xs text-muted-foreground">{selectedCustomerDisplayRecord?.phone || (selectedCustomerId || '')}</p>
                         {selectedCustomerDue > 0 && (
                           <p className="mt-1 text-xs font-semibold text-orange-700">
                             Existing Due: ₹{formatMoneyPrecise(selectedCustomerDue)}
                           </p>
                         )}
                       </div>
-                      <Button variant="ghost" size="sm" onClick={() => setSelectedCustomer(null)} className="shrink-0 self-center">Change</Button>
+                      <Button variant="ghost" size="sm" onClick={() => mutateSelectedCustomer(null, 'customer_change_button_desktop', 'reset', 'customer card change button')} className="shrink-0 self-center">Change</Button>
                     </div>
                   </div>
                 )}
-                {customerSearch && !selectedCustomer && filteredCustomers.length > 0 && (
+                {customerSearch && !hasSelectedCustomer && filteredCustomers.length > 0 && (
                   <div className="border rounded-lg max-h-40 overflow-auto divide-y">
                     {filteredCustomers.map(c => (
-                      <div key={c.id} className="p-2 hover:bg-muted cursor-pointer" onClick={() => { setSelectedCustomer(c); setInvoiceGstName(c.gstName || ''); setInvoiceGstNumber(c.gstNumber || ''); setCustomerSearch(''); }}>
+                      <div key={c.id} className="p-2 hover:bg-muted cursor-pointer" onClick={() => { mutateSelectedCustomer(c, 'customer_search_select_desktop', 'set', 'customer search result click'); setInvoiceGstName(c.gstName || ''); setInvoiceGstNumber(c.gstNumber || ''); setCustomerSearch(''); }}>
                         <p className="text-sm font-bold">{c.name}</p><p className="text-xs text-muted-foreground">{c.phone}</p>
                       </div>
                     ))}
@@ -1961,16 +2084,23 @@ export default function Sales() {
               </div>
             )}
 
-            {!isReturnMode && selectedCustomer && (
+            {!isReturnMode && hasResolvedSelectedCustomer && (
               <div className="rounded-lg border p-3 space-y-2 bg-muted/10">
                 <div className="text-xs space-y-1">
-                  <div className="flex items-center justify-between"><span className="font-semibold text-muted-foreground uppercase">Available Store Credit</span><span className="font-bold">₹{formatMoneyPrecise(availableStoreCredit)}</span></div>
+                  <div className="flex items-center justify-between"><span className="font-semibold text-muted-foreground uppercase">Available Store Credit</span><span className="font-bold">₹{formatMoneyPrecise(normalizedAvailableStoreCredit)}</span></div>
                   <div className="flex items-center justify-between"><span className="text-muted-foreground">Applied to this invoice</span><span className="font-semibold">₹{formatMoneyPrecise(appliedStoreCredit)}</span></div>
                   <div className="flex items-center justify-between"><span className="text-muted-foreground">Remaining after invoice</span><span className="font-semibold text-emerald-700">₹{formatMoneyPrecise(remainingStoreCreditAfterInvoice)}</span></div>
                 </div>
-                <Button size="sm" variant={useStoreCreditApplied ? 'default' : 'outline'} disabled={maxUsableStoreCredit <= 0} onClick={handleToggleStoreCredit}>
-                  {useStoreCreditApplied ? 'Remove Store Credit' : `Use Store Credit`}
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button size="sm" variant={useStoreCreditApplied ? 'default' : 'outline'} disabled={maxUsableStoreCredit <= 0} onClick={handleToggleStoreCredit}>
+                    {useStoreCreditApplied ? 'Remove Store Credit' : `Use Store Credit`}
+                  </Button>
+                  {showCustomerDetailsDebug && (
+                    <Button size="sm" variant="outline" onClick={() => void handleOpenCustomerDetails()}>
+                      See User Details
+                    </Button>
+                  )}
+                </div>
                 {useStoreCreditApplied && (
                   <div className="space-y-1">
                     <Label className="text-[11px] font-bold uppercase text-muted-foreground">Store Credit to Apply (Max ₹{formatMoneyPrecise(maxUsableStoreCredit)})</Label>
@@ -2273,7 +2403,7 @@ export default function Sales() {
 
                 {customerTab === 'search' ? (
                   <div className="space-y-3">
-                    {!selectedCustomer ? (
+                    {!hasSelectedCustomer ? (
                       <div className="relative">
                         <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                         <Input placeholder="Search phone or name..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="pl-9" />
@@ -2282,29 +2412,29 @@ export default function Sales() {
                       <div className="bg-muted p-3 rounded-lg border">
                         <div className="flex items-center justify-between gap-3">
                           <div className="text-sm min-w-0">
-                            <p className="font-bold truncate">{resolvedSelectedCustomer?.name || selectedCustomer.name}</p>
-                            <p className="text-xs text-muted-foreground">{resolvedSelectedCustomer?.phone || selectedCustomer.phone}</p>
+                            <p className="font-bold truncate">{selectedCustomerDisplayRecord?.name || (isSelectedCustomerPendingResolution ? 'Resolving customer...' : 'Customer selected')}</p>
+                            <p className="text-xs text-muted-foreground">{selectedCustomerDisplayRecord?.phone || (selectedCustomerId || '')}</p>
                             {selectedCustomerDue > 0 && (
                               <p className="mt-1 text-xs font-semibold text-orange-700">
                                 Existing Due: ₹{formatMoneyPrecise(selectedCustomerDue)}
                               </p>
                             )}
                           </div>
-                          <Button variant="ghost" size="sm" onClick={() => setSelectedCustomer(null)} className="shrink-0 self-center">Change</Button>
+                          <Button variant="ghost" size="sm" onClick={() => mutateSelectedCustomer(null, 'customer_change_button_mobile', 'reset', 'customer card change button')} className="shrink-0 self-center">Change</Button>
                         </div>
                       </div>
                     )}
-                    {customerSearch && !selectedCustomer && filteredCustomers.length > 0 && (
+                    {customerSearch && !hasSelectedCustomer && filteredCustomers.length > 0 && (
                       <div className="border rounded-lg max-h-40 overflow-auto divide-y">
                         {filteredCustomers.map(c => (
-                          <div key={c.id} className="p-3 hover:bg-muted cursor-pointer transition-colors" onClick={() => {setSelectedCustomer(c); setInvoiceGstName(c.gstName || ''); setInvoiceGstNumber(c.gstNumber || ''); setCustomerSearch('');}}>
+                          <div key={c.id} className="p-3 hover:bg-muted cursor-pointer transition-colors" onClick={() => { mutateSelectedCustomer(c, 'customer_search_select_mobile', 'set', 'customer search result click'); setInvoiceGstName(c.gstName || ''); setInvoiceGstNumber(c.gstNumber || ''); setCustomerSearch(''); }}>
                             <p className="text-sm font-bold">{c.name}</p>
                             <p className="text-xs text-muted-foreground">{c.phone}</p>
                           </div>
                         ))}
                       </div>
                     )}
-                    {customerSearch && !selectedCustomer && filteredCustomers.length === 0 && (
+                    {customerSearch && !hasSelectedCustomer && filteredCustomers.length === 0 && (
                       <div className="space-y-3">
                         <div className="flex flex-col items-center justify-center py-4 px-3 bg-destructive/10 border border-destructive/20 rounded-xl text-center space-y-2">
                           <UserMinus className="w-8 h-8 text-destructive opacity-80" />
@@ -2319,7 +2449,7 @@ export default function Sales() {
                         </div>
                       </div>
                     )}
-                    {!isReturnMode && selectedCustomer && Number(selectedTax.value || 0) > 0 && (
+                    {!isReturnMode && hasResolvedSelectedCustomer && Number(selectedTax.value || 0) > 0 && (
                       <div className="space-y-2 rounded-lg border p-3 bg-muted/10">
                         <Label className="text-[11px] font-bold uppercase text-muted-foreground">GST Name</Label>
                         <Input value={invoiceGstName} onChange={e => setInvoiceGstName(e.target.value)} placeholder="GST registered name" />
@@ -2347,10 +2477,10 @@ export default function Sales() {
                   </div>
                 )}
 
-                {!isReturnMode && selectedCustomer && (
+                {!isReturnMode && hasResolvedSelectedCustomer && (
                   <div className="rounded-lg border p-3 space-y-2 bg-muted/10">
                     <div className="text-xs space-y-1">
-                      <div className="flex items-center justify-between"><span className="font-semibold text-muted-foreground uppercase">Available Store Credit</span><span className="font-bold">₹{formatMoneyPrecise(availableStoreCredit)}</span></div>
+                      <div className="flex items-center justify-between"><span className="font-semibold text-muted-foreground uppercase">Available Store Credit</span><span className="font-bold">₹{formatMoneyPrecise(normalizedAvailableStoreCredit)}</span></div>
                       <div className="flex items-center justify-between"><span className="text-muted-foreground">Applied to this invoice</span><span className="font-semibold">₹{formatMoneyPrecise(appliedStoreCredit)}</span></div>
                       <div className="flex items-center justify-between"><span className="text-muted-foreground">Remaining after invoice</span><span className="font-semibold text-emerald-700">₹{formatMoneyPrecise(remainingStoreCreditAfterInvoice)}</span></div>
                     </div>
@@ -2358,6 +2488,11 @@ export default function Sales() {
                       <Button size="sm" variant={useStoreCreditApplied ? 'default' : 'outline'} disabled={maxUsableStoreCredit <= 0} onClick={handleToggleStoreCredit}>
                         {useStoreCreditApplied ? 'Remove Store Credit' : `Use Store Credit`}
                       </Button>
+                      {showCustomerDetailsDebug && (
+                        <Button size="sm" variant="outline" onClick={() => void handleOpenCustomerDetails()}>
+                          See User Details
+                        </Button>
+                      )}
                     </div>
                     {useStoreCreditApplied && (
                       <div className="space-y-1">
@@ -2394,7 +2529,7 @@ export default function Sales() {
                   </div>
                 )}
 
-                {!(customerSearch && !selectedCustomer && filteredCustomers.length === 0 && customerTab === 'search') && (
+                {!(customerSearch && !hasSelectedCustomer && filteredCustomers.length === 0 && customerTab === 'search') && (
                   <Button className={`w-full h-12 text-base font-bold ${isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} onClick={completeCheckout} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
                     {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing…' : (
                       <span className="flex flex-col items-center leading-tight">
@@ -2445,6 +2580,47 @@ export default function Sales() {
                   <p className="text-sm font-medium mb-2">{waSendingStage}</p>
                   <div className="h-2 w-full rounded bg-muted overflow-hidden"><div className="h-full w-2/3 animate-pulse bg-primary" /></div>
               </div>
+          </div>
+      )}
+
+      {isCustomerDetailsModalOpen && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[95] flex items-center justify-center p-4" onClick={() => setIsCustomerDetailsModalOpen(false)}>
+              <Card className="w-full max-w-3xl max-h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                  <CardHeader className="border-b py-3 px-5 flex flex-row items-center justify-between">
+                      <CardTitle>Customer DB Details</CardTitle>
+                      <Button variant="ghost" size="sm" onClick={() => setIsCustomerDetailsModalOpen(false)}>Close</Button>
+                  </CardHeader>
+                  <CardContent className="p-5 space-y-4 overflow-auto max-h-[calc(85vh-72px)]">
+                      {customerDetailsLoading && (
+                          <div className="text-sm text-muted-foreground">Loading customer data directly from the database...</div>
+                      )}
+                      {!customerDetailsLoading && customerDetailsError && (
+                          <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                              {customerDetailsError}
+                          </div>
+                      )}
+                      {!customerDetailsLoading && !customerDetailsError && customerDetailsRecord && (
+                          <>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                  {Object.entries(customerDetailsRecord).map(([key, value]) => (
+                                      <div key={key} className="rounded-lg border bg-muted/20 p-3">
+                                          <div className="text-[11px] font-bold uppercase text-muted-foreground">{key}</div>
+                                          <div className="mt-1 break-words">
+                                              {typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '')}
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                              <div className="space-y-2">
+                                  <Label className="text-[11px] font-bold uppercase text-muted-foreground">Raw DB JSON</Label>
+                                  <pre className="rounded-lg border bg-slate-950 text-slate-50 p-3 text-xs overflow-auto whitespace-pre-wrap">
+{JSON.stringify(customerDetailsRecord, null, 2)}
+                                  </pre>
+                              </div>
+                          </>
+                      )}
+                  </CardContent>
+              </Card>
           </div>
       )}
 
