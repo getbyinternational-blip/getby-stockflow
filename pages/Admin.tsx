@@ -140,7 +140,7 @@ export default function Admin() {
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [inventoryViewTab, setInventoryViewTab] = useState<'inventory' | 'lost-damage'>('inventory');
+  const [inventoryViewTab, setInventoryViewTab] = useState<'inventory' | 'lost-damage' | 'purchase-history-reconciliation'>('inventory');
   const [openActionMenuProductId, setOpenActionMenuProductId] = useState<string | null>(null);
   const [editingLocationProductId, setEditingLocationProductId] = useState<string | null>(null);
   const [locationDraft, setLocationDraft] = useState({ locationZone: '', locationRow: '', locationRack: '', locationShelf: '' });
@@ -2138,135 +2138,10 @@ export default function Admin() {
       <div className="flex items-center gap-2">
         <Button size="sm" variant={inventoryViewTab === 'inventory' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('inventory')}>Inventory</Button>
         <Button size="sm" variant={inventoryViewTab === 'lost-damage' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('lost-damage')}>Lost & Damage</Button>
+        <Button size="sm" variant={inventoryViewTab === 'purchase-history-reconciliation' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-reconciliation')}>Purchase History Reconciliation Dashboard</Button>
       </div>
       {inventoryViewTab === 'inventory' ? (
       <>
-      <Card className="border-slate-200 bg-slate-50/60">
-        <CardHeader className="pb-3">
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <CardTitle className="text-lg">Purchase History Reconciliation Dashboard</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Read-only comparison of canonical purchase-order-derived rows vs embedded product.purchaseHistory rows for the current Inventory filter set.
-              </p>
-            </div>
-            <Badge variant={inventoryPurchaseHistoryAuditSummary.totalIssues > 0 ? 'outline' : 'success'}>
-              {inventoryPurchaseHistoryAuditSummary.totalIssues > 0
-                ? `${inventoryPurchaseHistoryAuditSummary.productsWithIssues}/${inventoryPurchaseHistoryAuditSummary.productsScanned} products need review`
-                : 'All filtered products aligned'}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Products Scanned</div>
-              <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.productsScanned}</div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Products With Issues</div>
-              <div className="mt-1 text-2xl font-bold text-amber-700">{inventoryPurchaseHistoryAuditSummary.productsWithIssues}</div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Canonical Rows</div>
-              <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.canonicalRows}</div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Legacy Snapshot Rows</div>
-              <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.embeddedRows}</div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Needs Link Review</div>
-              <div className="mt-1 text-2xl font-bold text-amber-700">{inventoryPurchaseHistoryAuditSummary.needsLinkReviewRows}</div>
-            </div>
-            <div className="rounded-lg border bg-white p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Business Issues</div>
-              <div className="mt-1 text-2xl font-bold text-rose-700">
-                {inventoryPurchaseHistoryAuditSummary.productsWithLinkIssues + inventoryPurchaseHistoryAuditSummary.productsWithValueMismatch}
-              </div>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto rounded-lg border bg-white">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40">
-                <tr>
-                  <th className="p-3 text-left">Product</th>
-                  <th className="p-3 text-right">Canonical</th>
-                  <th className="p-3 text-right">Embedded</th>
-                  <th className="p-3 text-right">Issues</th>
-                  <th className="p-3 text-left">Primary Gap</th>
-                  <th className="p-3 text-left">Implication</th>
-                  <th className="p-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {inventoryPurchaseHistoryAuditTopRows.map(({ product, audit, implication }) => {
-                  const primaryGap = audit.brokenProductLinkCount > 0
-                    ? 'Needs product link review'
-                    : audit.missingPurchaseOrderCount > 0
-                      ? 'Missing purchase order'
-                      : audit.legacySnapshotMissingCount > 0
-                        ? 'Legacy snapshot missing'
-                        : audit.quantityMismatchCount > 0 || audit.amountMismatchCount > 0
-                          ? 'Value mismatch'
-                          : 'Aligned';
-
-                  return (
-                    <tr key={product.id} className="border-t align-top">
-                      <td className="p-3">
-                        <div className="font-medium">{getProductName(product)}</div>
-                        <div className="text-xs text-muted-foreground">{getProductBarcode(product)}</div>
-                      </td>
-                      <td className="p-3 text-right">{audit.canonicalCount}</td>
-                      <td className="p-3 text-right">{audit.legacyCount}</td>
-                      <td className="p-3 text-right font-semibold">{audit.issueCount}</td>
-                      <td className="p-3">
-                        <Badge variant={audit.issueCount > 0 ? 'outline' : 'success'}>{primaryGap}</Badge>
-                      </td>
-                      <td className="p-3 text-xs text-muted-foreground">{implication}</td>
-                      <td className="p-3 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setPurchaseTarget(product);
-                            setPurchaseQty('');
-                            setPurchasePrice('');
-                            setPurchaseNextBuyPrice('');
-                            setPurchaseReference('');
-                            setPurchaseNotes('');
-                            setPurchasePartyName('');
-                            setSelectedPurchasePartyId('');
-                            setPurchaseCashPaid('');
-                            setPurchaseBankPaid('');
-                            setPurchasePaymentNote('');
-                            setPurchaseModalTab('history');
-                            setPurchaseHistoryVariantFilter('all');
-                            setPurchaseError(null);
-                          }}
-                        >
-                          Open History
-                        </Button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!inventoryPurchaseHistoryAuditTopRows.length && (
-                  <tr>
-                    <td className="p-6 text-center text-muted-foreground" colSpan={7}>
-                      No products available for purchase-history comparison in the current filter set.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Showing the top 30 filtered products, ordered by highest mismatch count first. Use search/category filters above to narrow the audit scope.
-          </p>
-        </CardContent>
-      </Card>
       <div className="border rounded-xl bg-card overflow-visible">
         <div className="overflow-x-auto overflow-y-visible">
           <table className="w-full text-sm">
@@ -2405,6 +2280,133 @@ export default function Admin() {
         </div>
       )}
       </>
+	      ) : inventoryViewTab === 'purchase-history-reconciliation' ? (
+        <Card className="border-slate-200 bg-slate-50/60">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <CardTitle className="text-lg">Purchase History Reconciliation Dashboard</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Read-only comparison of canonical purchase-order-derived rows vs embedded product.purchaseHistory rows for the current Inventory filter set.
+                </p>
+              </div>
+              <Badge variant={inventoryPurchaseHistoryAuditSummary.totalIssues > 0 ? 'outline' : 'success'}>
+                {inventoryPurchaseHistoryAuditSummary.totalIssues > 0
+                  ? `${inventoryPurchaseHistoryAuditSummary.productsWithIssues}/${inventoryPurchaseHistoryAuditSummary.productsScanned} products need review`
+                  : 'All filtered products aligned'}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Products Scanned</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.productsScanned}</div>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Products With Issues</div>
+                <div className="mt-1 text-2xl font-bold text-amber-700">{inventoryPurchaseHistoryAuditSummary.productsWithIssues}</div>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Canonical Rows</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.canonicalRows}</div>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Legacy Snapshot Rows</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.embeddedRows}</div>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Needs Link Review</div>
+                <div className="mt-1 text-2xl font-bold text-amber-700">{inventoryPurchaseHistoryAuditSummary.needsLinkReviewRows}</div>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Business Issues</div>
+                <div className="mt-1 text-2xl font-bold text-rose-700">
+                  {inventoryPurchaseHistoryAuditSummary.productsWithLinkIssues + inventoryPurchaseHistoryAuditSummary.productsWithValueMismatch}
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-lg border bg-white">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className="p-3 text-left">Product</th>
+                    <th className="p-3 text-right">Canonical</th>
+                    <th className="p-3 text-right">Embedded</th>
+                    <th className="p-3 text-right">Issues</th>
+                    <th className="p-3 text-left">Primary Gap</th>
+                    <th className="p-3 text-left">Implication</th>
+                    <th className="p-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inventoryPurchaseHistoryAuditTopRows.map(({ product, audit, implication }) => {
+                    const primaryGap = audit.brokenProductLinkCount > 0
+                      ? 'Needs product link review'
+                      : audit.missingPurchaseOrderCount > 0
+                        ? 'Missing purchase order'
+                        : audit.legacySnapshotMissingCount > 0
+                          ? 'Legacy snapshot missing'
+                          : audit.quantityMismatchCount > 0 || audit.amountMismatchCount > 0
+                            ? 'Value mismatch'
+                            : 'Aligned';
+
+                    return (
+                      <tr key={product.id} className="border-t align-top">
+                        <td className="p-3">
+                          <div className="font-medium">{getProductName(product)}</div>
+                          <div className="text-xs text-muted-foreground">{getProductBarcode(product)}</div>
+                        </td>
+                        <td className="p-3 text-right">{audit.canonicalCount}</td>
+                        <td className="p-3 text-right">{audit.legacyCount}</td>
+                        <td className="p-3 text-right font-semibold">{audit.issueCount}</td>
+                        <td className="p-3">
+                          <Badge variant={audit.issueCount > 0 ? 'outline' : 'success'}>{primaryGap}</Badge>
+                        </td>
+                        <td className="p-3 text-xs text-muted-foreground">{implication}</td>
+                        <td className="p-3 text-right">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setPurchaseTarget(product);
+                              setPurchaseQty('');
+                              setPurchasePrice('');
+                              setPurchaseNextBuyPrice('');
+                              setPurchaseReference('');
+                              setPurchaseNotes('');
+                              setPurchasePartyName('');
+                              setSelectedPurchasePartyId('');
+                              setPurchaseCashPaid('');
+                              setPurchaseBankPaid('');
+                              setPurchasePaymentNote('');
+                              setPurchaseModalTab('history');
+                              setPurchaseHistoryVariantFilter('all');
+                              setPurchaseError(null);
+                            }}
+                          >
+                            Open History
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!inventoryPurchaseHistoryAuditTopRows.length && (
+                    <tr>
+                      <td className="p-6 text-center text-muted-foreground" colSpan={7}>
+                        No products available for purchase-history comparison in the current filter set.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Showing the top 30 filtered products, ordered by highest mismatch count first. Use search/category filters above to narrow the audit scope.
+            </p>
+          </CardContent>
+        </Card>
 	      ) : (
 	        <div className="space-y-3">
 	          <div className="border rounded-xl bg-card overflow-hidden">
