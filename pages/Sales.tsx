@@ -10,7 +10,7 @@ import { Product, CartItem, Transaction, Customer, UpfrontOrder, TAX_OPTIONS } f
 import { formatItemNameWithVariant, getAvailableStockForCombination, getProductStockRows, getResolvedBuyPriceForCombination, getResolvedSellPriceForCombination, NO_COLOR, NO_VARIANT, productHasCombinationStock } from '../services/productVariants';
 import { getStockBucketKey } from '../services/stockBuckets';
 import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft } from '../services/storage';
-import { generateReceiptPDF, generateReceiptPDFDataUrl } from '../services/pdf';
+import { generateReceiptPDF, generateReceiptPDFDataUrl, printReceipt } from '../services/pdf';
 import { shareTransactionInvoiceViaWhatsApp } from '../services/whatsappShare';
 import { ExportModal } from '../components/ExportModal';
 import { exportInvoiceToExcel } from '../services/excel';
@@ -243,7 +243,7 @@ export default function Sales() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const cartRef = useRef<CartItem[]>([]);
-  const pendingCheckoutRef = useRef<{ transactionId: string; cart: CartItem[]; transaction: Transaction; cashDetails: { cashReceived: number; changeReturned: number } | null } | null>(null);
+  const pendingCheckoutRef = useRef<{ transactionId: string; cart: CartItem[]; transaction: Transaction; cashDetails: { cashReceived: number; changeReturned: number } | null; printAfterSave: boolean } | null>(null);
 
   const [productSearch, setProductSearch] = useState('');
   const [isReturnMode, setIsReturnMode] = useState(false);
@@ -278,6 +278,7 @@ export default function Sales() {
   const [allCreditMode, setAllCreditMode] = useState(false);
   const [returnHandlingMode, setReturnHandlingMode] = useState<ReturnHandlingMode>('refund_cash');
   const [transactionCashDetails, setTransactionCashDetails] = useState<{ cashReceived: number; changeReturned: number } | null>(null);
+  const [receiptPrintToast, setReceiptPrintToast] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
   
   const [selectedTax, setSelectedTax] = useState(TAX_OPTIONS[0]);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -503,11 +504,17 @@ export default function Sales() {
       }
       if (detail.phase === 'success') {
         if (pendingCheckoutRef.current?.transactionId === detail.transactionId) {
-          setTransactionComplete(pendingCheckoutRef.current.transaction);
+          const completedTransaction = pendingCheckoutRef.current.transaction;
+          const completedCashDetails = pendingCheckoutRef.current.cashDetails;
+          const shouldPrintReceipt = pendingCheckoutRef.current.printAfterSave;
+          setTransactionComplete(completedTransaction);
           setSendInvoiceMessage(null);
-          setTransactionCashDetails(pendingCheckoutRef.current.cashDetails);
-          if (pendingCheckoutRef.current.transaction.type === 'sale' && loadData().profile?.autoSendInvoiceAfterCreation) {
-            void sendInvoicePreview(pendingCheckoutRef.current.transaction, 'auto');
+          setTransactionCashDetails(completedCashDetails);
+          if (completedTransaction.type === 'sale' && loadData().profile?.autoSendInvoiceAfterCreation) {
+            void sendInvoicePreview(completedTransaction, 'auto');
+          }
+          if (shouldPrintReceipt) {
+            void runReceiptPrint(completedTransaction, completedCashDetails, 'Payment saved, print failed.');
           }
           pendingCheckoutRef.current = null;
         }
@@ -527,6 +534,25 @@ export default function Sales() {
     window.addEventListener('data-op-status', handleDataOpStatus as EventListener);
     return () => window.removeEventListener('data-op-status', handleDataOpStatus as EventListener);
   }, []);
+
+  useEffect(() => {
+    if (!receiptPrintToast) return;
+    const timeout = window.setTimeout(() => setReceiptPrintToast(null), 2600);
+    return () => window.clearTimeout(timeout);
+  }, [receiptPrintToast]);
+
+  const runReceiptPrint = async (
+    transaction: Transaction,
+    cashDetails: { cashReceived: number; changeReturned: number } | null,
+    failureMessage = 'Print failed.',
+  ) => {
+    try {
+      return await printReceipt(transaction, loadData().customers || customers, cashDetails || undefined);
+    } catch (error) {
+      setReceiptPrintToast({ tone: 'error', message: failureMessage });
+      throw error;
+    }
+  };
 
   const getLineAvailableStock = (product: Product, variant?: string, color?: string) =>
     productHasCombinationStock(product)
@@ -840,7 +866,7 @@ export default function Sales() {
       return effective.toISOString();
   };
 
-  const completeCheckout = () => {
+  const completeCheckout = async ({ printAfterSave = false }: { printAfterSave?: boolean } = {}) => {
       setCheckoutError(null);
       if (!validateOpenShiftForPos()) return;
       let finalCustomer = resolvedSelectedCustomer;
@@ -1057,7 +1083,7 @@ export default function Sales() {
           }
       };
       const completedCartId = activeCartId;
-      pendingCheckoutRef.current = { transactionId: tx.id, cart: [...cart], transaction: tx, cashDetails: currentCashDetails };
+      pendingCheckoutRef.current = { transactionId: tx.id, cart: [...cart], transaction: tx, cashDetails: currentCashDetails, printAfterSave };
       setTransactionSyncStatus({ phase: 'pending', message: 'Saving sale locally…' });
       try {
         const newState = processTransaction(tx);
@@ -1090,15 +1116,16 @@ export default function Sales() {
         setPrefilledTransactionDateTimeIso(null);
         if(isReturnMode) setIsReturnMode(false);
       } catch (error) {
+        pendingCheckoutRef.current = null;
         const message = getFriendlyErrorMessage(error, 'sales.process_transaction');
         setCheckoutError(message);
         setTransactionSyncStatus({ phase: 'error', message });
       }
   };
 
-  const handlePrintReceipt = () => {
+  const handlePrintReceipt = async () => {
     if (!transactionComplete) return;
-    generateReceiptPDF(transactionComplete, customers, transactionCashDetails || undefined);
+    await runReceiptPrint(transactionComplete, transactionCashDetails, 'Print failed.');
   };
   const sendInvoicePreview = async (tx: Transaction, mode: 'manual' | 'auto' = 'manual') => {
     const customerPhone = (tx.customerPhone || customers.find(c => c.id === tx.customerId)?.phone || '').trim();
@@ -1144,7 +1171,7 @@ export default function Sales() {
   const handleExport = (format: 'pdf' | 'excel') => {
     if (!transactionComplete) return;
     if (format === 'pdf') {
-      generateReceiptPDF(transactionComplete, customers, transactionCashDetails || undefined);
+      void handlePrintReceipt();
     } else {
       exportInvoiceToExcel(transactionComplete);
     }
@@ -2119,7 +2146,8 @@ export default function Sales() {
               </div>
             )}
 
-            <Button className="w-full h-12 text-base font-bold" onClick={completeCheckout} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
+            <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-2">
+            <Button className="h-12 text-base font-bold" onClick={() => void completeCheckout()} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
               {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing…' : (
                 <span className="flex flex-col items-center leading-tight">
                   <span>Confirm & Pay ₹{formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
@@ -2127,6 +2155,15 @@ export default function Sales() {
                 </span>
               )}
             </Button>
+            <Button variant="secondary" className="h-12 text-sm font-bold" onClick={() => void completeCheckout({ printAfterSave: true })} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
+              {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processingâ€¦' : (
+                <span className="flex flex-col items-center leading-tight">
+                  <span>Pay & Print</span>
+                  <span className="text-[10px] font-semibold opacity-90">₹{formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
+                </span>
+              )}
+            </Button>
+            </div>
           </div>
         </div>
       )}
@@ -2444,7 +2481,7 @@ export default function Sales() {
                           </div>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
-                          <Button variant="secondary" className="h-10 text-xs font-bold" onClick={() => { setCustomerSearch(''); completeCheckout(); }} disabled={Number(selectedTax.value || 0) > 0}>Skip & Pay</Button>
+                          <Button variant="secondary" className="h-10 text-xs font-bold" onClick={() => { setCustomerSearch(''); void completeCheckout(); }} disabled={Number(selectedTax.value || 0) > 0}>Skip & Pay</Button>
                           <Button variant="outline" className="h-10 text-xs font-bold" onClick={() => setCustomerTab('new')}>Create New</Button>
                         </div>
                       </div>
@@ -2530,7 +2567,8 @@ export default function Sales() {
                 )}
 
                 {!(customerSearch && !hasSelectedCustomer && filteredCustomers.length === 0 && customerTab === 'search') && (
-                  <Button className={`w-full h-12 text-base font-bold ${isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} onClick={completeCheckout} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
+                  <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-2">
+                  <Button className={`h-12 text-base font-bold ${isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} onClick={() => void completeCheckout()} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
                     {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing…' : (
                       <span className="flex flex-col items-center leading-tight">
                         <span>Confirm & Pay ₹{formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
@@ -2538,6 +2576,15 @@ export default function Sales() {
                       </span>
                     )}
                   </Button>
+                  <Button variant="secondary" className="h-12 text-sm font-bold" onClick={() => void completeCheckout({ printAfterSave: true })} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
+                    {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processingâ€¦' : (
+                      <span className="flex flex-col items-center leading-tight">
+                        <span>Pay & Print</span>
+                        <span className="text-[10px] font-semibold opacity-90">₹{formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
+                      </span>
+                    )}
+                  </Button>
+                  </div>
                 )}
               </div>
 
@@ -2621,6 +2668,14 @@ export default function Sales() {
                       )}
                   </CardContent>
               </Card>
+          </div>
+      )}
+
+      {receiptPrintToast && (
+          <div className="fixed right-4 top-4 z-[120] max-w-sm">
+              <div className={`rounded-xl border px-4 py-3 text-sm shadow-2xl ${receiptPrintToast.tone === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-blue-200 bg-blue-50 text-blue-800'}`}>
+                  {receiptPrintToast.message}
+              </div>
           </div>
       )}
 

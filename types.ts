@@ -157,6 +157,7 @@ export interface StoreProfile {
   customerCatalogFirstPageName?: string;
   customerCatalogFirstPageMimeType?: string;
   invoiceFormat?: 'standard' | 'thermal';
+  thermalPaperWidth?: '58mm' | '80mm';
   autoSendInvoiceAfterCreation?: boolean;
   adminPin?: string;
 }

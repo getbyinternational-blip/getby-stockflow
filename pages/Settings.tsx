@@ -527,7 +527,7 @@ export default function Settings() {
               </div>
               <div className="p-3 bg-background rounded-lg border border-dashed text-[10px] text-muted-foreground">
                   {profile.invoiceFormat === 'thermal' ? (
-                      <p>Thermal format is optimized for roll printers and will open the browser print dialog directly.</p>
+                      <p>Thermal format is optimized for 58mm/80mm roll printers and will open the browser print dialog.</p>
                   ) : (
                       <p>Standard format generates a professional A4 PDF document for downloading or sharing.</p>
                   )}

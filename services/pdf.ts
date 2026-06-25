@@ -13,6 +13,86 @@ type ReceiptPaymentDetails = {
     changeReturned?: number;
 };
 
+export type ReceiptPrintResult = {
+  mode: 'browser' | 'download';
+  usedFallback: boolean;
+};
+
+type ThermalPaperWidth = '58mm' | '80mm';
+
+const escapeHtml = (value: unknown) => String(value || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const numberToReceiptWords = (num: number) => {
+    const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+
+    const convert = (n: number): string => {
+        if (n < 10) return ones[n];
+        if (n < 20) return teens[n - 10];
+        if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 !== 0 ? ` ${ones[n % 10]}` : '');
+        if (n < 1000) return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 !== 0 ? ` and ${convert(n % 100)}` : '');
+        if (n < 1000000) return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 !== 0 ? ` ${convert(n % 1000)}` : '');
+        return n.toString();
+    };
+
+    return `${convert(Math.floor(Math.abs(num)))} Rupees only`;
+};
+
+const getThermalPaperWidth = (profile?: Partial<StoreProfile> | null): ThermalPaperWidth => (
+  (profile?.thermalPaperWidth === '58mm' ? '58mm' : '80mm')
+);
+
+const printHtmlViaHiddenFrame = (html: string): Promise<void> => new Promise((resolve, reject) => {
+  const printFrame = document.createElement('iframe');
+  printFrame.name = 'stockflow_thermal_print_frame';
+  printFrame.style.position = 'fixed';
+  printFrame.style.width = '0';
+  printFrame.style.height = '0';
+  printFrame.style.border = '0';
+  printFrame.style.opacity = '0';
+  printFrame.style.pointerEvents = 'none';
+  printFrame.style.right = '0';
+  printFrame.style.bottom = '0';
+  document.body.appendChild(printFrame);
+
+  const cleanup = () => {
+    if (printFrame.parentNode) {
+      printFrame.parentNode.removeChild(printFrame);
+    }
+  };
+
+  const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
+  if (!frameDoc || !printFrame.contentWindow) {
+    cleanup();
+    reject(new Error('Browser print fallback could not initialize.'));
+    return;
+  }
+
+  frameDoc.open();
+  frameDoc.write(html);
+  frameDoc.close();
+
+  window.setTimeout(() => {
+    try {
+      printFrame.contentWindow?.focus();
+      printFrame.contentWindow?.print();
+      window.setTimeout(() => {
+        cleanup();
+        resolve();
+      }, 900);
+    } catch (error) {
+      cleanup();
+      reject(error instanceof Error ? error : new Error('Browser print fallback failed.'));
+    }
+  }, 180);
+});
+
 const isMeaningfulOptionValue = (value?: string, kind: 'variant' | 'color' = 'variant') => {
     const normalized = String(value || '').trim().toLowerCase();
     if (!normalized || normalized === '-') return false;
@@ -578,6 +658,283 @@ export const generateProductCatalogPDF = async (
     doc.save(options?.fileName ?? 'product-catalog.pdf');
 };
 
+const buildThermalInvoiceHtml = (
+  transaction: Transaction,
+  customers: Customer[],
+  paymentDetails?: ReceiptPaymentDetails,
+) => {
+    const data = loadData();
+    const { profile } = data;
+    const customer = customers.find((entry) => entry.id === transaction.customerId);
+    const canonicalBalance = customer ? getCanonicalCustomerBalanceResult(customer, data.transactions || [], data.upfrontOrders || []) : null;
+    const settlement = transaction.saleSettlement || { cashPaid: 0, onlinePaid: 0, creditDue: 0 };
+    const paidNow = Math.max(0, Number(settlement.cashPaid || 0)) + Math.max(0, Number(settlement.onlinePaid || 0));
+    const receivedAmount = transaction.type === 'sale'
+      ? Math.max(0, paymentDetails?.cashReceived ?? transaction.cashReceived ?? paidNow)
+      : Math.max(0, paidNow);
+    const balanceAmount = transaction.type === 'sale'
+      ? Math.max(0, Number(settlement.creditDue || 0))
+      : 0;
+    const changeAmount = transaction.type === 'sale'
+      ? Math.max(0, paymentDetails?.changeReturned ?? transaction.changeReturned ?? Math.max(0, receivedAmount - Math.abs(transaction.total || 0)))
+      : 0;
+    const currentBalanceValue = canonicalBalance?.status === 'ok' ? Math.max(0, Number(canonicalBalance.currentDue || 0)) : 0;
+    const previousBalanceValue = canonicalBalance?.status === 'ok'
+      ? Math.max(0, currentBalanceValue - Math.max(0, Number(settlement.creditDue || 0)))
+      : 0;
+    const previousBalanceLabel = canonicalBalance?.status === 'ok' ? `₹${formatMoneyWhole(previousBalanceValue)}` : 'Ledger unavailable';
+    const currentBalanceLabel = canonicalBalance?.status === 'ok' ? `₹${formatMoneyWhole(currentBalanceValue)}` : 'Ledger unavailable';
+    const paperWidth = getThermalPaperWidth(profile);
+    const currency = (value: number) => `₹${formatMoneyPrecise(Math.max(0, Number(value || 0)))}`;
+    const invoiceNo = transaction.type === 'return'
+      ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-6)}`)
+      : (transaction.invoiceNo || `IN-${transaction.id.slice(-6)}`);
+    const invoiceTitle = transaction.type === 'return' ? 'Credit Note' : 'Invoice';
+    const issuedAt = new Date(transaction.date);
+    const dateLabel = Number.isFinite(issuedAt.getTime()) ? issuedAt.toLocaleDateString('en-GB') : String(transaction.date || '');
+    const timeLabel = Number.isFinite(issuedAt.getTime()) ? issuedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const itemRows = normalizeTransactionItems(transaction.items).map((item, index) => {
+      const itemName = formatInvoiceItemName(item);
+      const amount = Math.max(0, (Number(item.sellPrice || 0) * Number(item.quantity || 0)) - Number(item.discountAmount || 0));
+      const metaBits = [
+        item.hsn ? `HSN ${item.hsn}` : '',
+        item.selectedVariant && item.selectedVariant !== NO_VARIANT ? item.selectedVariant : '',
+        item.selectedColor && item.selectedColor !== NO_COLOR ? item.selectedColor : '',
+      ].filter(Boolean);
+      return `
+        <tr>
+          <td class="num">${index + 1}</td>
+          <td class="item-cell">
+            <div class="item-name">${escapeHtml(itemName)}</div>
+            ${metaBits.length ? `<div class="item-meta">${escapeHtml(metaBits.join(' • '))}</div>` : ''}
+          </td>
+          <td class="num">${escapeHtml(String(item.quantity || 0))}</td>
+          <td class="amt">${escapeHtml(currency(Number(item.sellPrice || 0)))}</td>
+          <td class="amt">${escapeHtml(currency(amount))}</td>
+        </tr>`;
+    }).join('');
+
+    const totalsRows = [
+      { label: 'Subtotal', value: currency(Number(transaction.subtotal || transaction.total || 0)) },
+      Math.max(0, Number(transaction.discount || 0)) > 0 ? { label: 'Discount', value: currency(Number(transaction.discount || 0)) } : null,
+      Math.max(0, Number(transaction.tax || 0)) > 0 ? { label: transaction.taxLabel || 'Tax', value: currency(Number(transaction.tax || 0)) } : null,
+      { label: 'Total', value: currency(Math.abs(Number(transaction.total || 0))), strong: true },
+      { label: 'Received', value: currency(receivedAmount) },
+      { label: 'Balance', value: currency(balanceAmount) },
+      changeAmount > 0 ? { label: 'Change', value: currency(changeAmount) } : null,
+      { label: 'Previous Balance', value: previousBalanceLabel },
+      { label: 'Current Balance', value: currentBalanceLabel, strong: true },
+    ].filter(Boolean) as Array<{ label: string; value: string; strong?: boolean }>;
+
+    const totalsMarkup = totalsRows.map((row) => `
+      <div class="total-row${row.strong ? ' strong' : ''}">
+        <span>${escapeHtml(row.label)}</span>
+        <span>${escapeHtml(row.value)}</span>
+      </div>`).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(invoiceTitle)} ${escapeHtml(invoiceNo)}</title>
+  <style>
+    :root {
+      --paper-width: ${paperWidth};
+      --receipt-width: ${paperWidth === '58mm' ? '50mm' : '72mm'};
+      --receipt-padding: 4mm;
+      --font-size: ${paperWidth === '58mm' ? '10px' : '11px'};
+      --line-color: #1f2937;
+      --muted: #667085;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: var(--paper-width);
+      min-width: var(--paper-width);
+      max-width: var(--paper-width);
+      background: #fff;
+      color: #111827;
+      font-family: "Courier New", Courier, monospace;
+      font-size: var(--font-size);
+      line-height: 1.25;
+    }
+    body {
+      padding: 0;
+      overflow: visible;
+    }
+    .receipt {
+      width: var(--receipt-width);
+      padding: var(--receipt-padding);
+      margin: 0;
+    }
+    .center { text-align: center; }
+    .muted { color: var(--muted); }
+    .strong { font-weight: 700; }
+    .rule {
+      border-top: 1px dashed var(--line-color);
+      margin: 6px 0;
+    }
+    .header-title {
+      font-size: ${paperWidth === '58mm' ? '14px' : '16px'};
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      margin: 0;
+    }
+    .meta-grid, .customer-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px 10px;
+      margin-top: 4px;
+    }
+    .meta-grid div:nth-child(even), .customer-grid div:nth-child(even) {
+      text-align: right;
+    }
+    .customer-block {
+      padding: 4px 0 2px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    col.no { width: 8%; }
+    col.item { width: 46%; }
+    col.qty { width: 12%; }
+    col.rate { width: 17%; }
+    col.amount { width: 17%; }
+    thead th {
+      border-top: 1px solid var(--line-color);
+      border-bottom: 1px solid var(--line-color);
+      padding: 3px 1px;
+      text-align: left;
+      font-size: ${paperWidth === '58mm' ? '9px' : '10px'};
+    }
+    tbody td {
+      padding: 3px 1px;
+      vertical-align: top;
+      border-bottom: 1px dotted #d1d5db;
+      word-break: break-word;
+    }
+    .num, .amt { text-align: right; }
+    .item-cell { padding-right: 4px; }
+    .item-name { white-space: normal; }
+    .item-meta {
+      margin-top: 1px;
+      font-size: ${paperWidth === '58mm' ? '8px' : '9px'};
+      color: var(--muted);
+      white-space: normal;
+    }
+    .totals {
+      margin-top: 6px;
+      border-top: 1px solid var(--line-color);
+      padding-top: 4px;
+    }
+    .total-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      padding: 2px 0;
+      align-items: baseline;
+    }
+    .total-row.strong {
+      font-weight: 700;
+      font-size: ${paperWidth === '58mm' ? '10px' : '11px'};
+    }
+    .words, .footer {
+      margin-top: 6px;
+      font-size: ${paperWidth === '58mm' ? '9px' : '10px'};
+    }
+    @page {
+      margin: 0;
+      size: ${paperWidth} auto;
+    }
+    @media print {
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: var(--paper-width);
+        min-width: var(--paper-width);
+        max-width: var(--paper-width);
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      body {
+        overflow: visible;
+      }
+      .receipt {
+        width: var(--receipt-width);
+        margin: 0;
+        padding: var(--receipt-padding);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="receipt">
+    <div class="center">
+      <div class="header-title">${escapeHtml(profile.storeName || 'StockFlow')}</div>
+      ${profile.phone ? `<div>${escapeHtml(profile.phone)}</div>` : ''}
+      <div class="strong">${escapeHtml(invoiceTitle)}</div>
+    </div>
+
+    <div class="meta-grid">
+      <div>Invoice No</div><div>${escapeHtml(invoiceNo)}</div>
+      <div>Date</div><div>${escapeHtml(dateLabel)}</div>
+      <div>Time</div><div>${escapeHtml(timeLabel || '-')}</div>
+    </div>
+
+    <div class="rule"></div>
+
+    <div class="customer-block">
+      <div class="strong">Bill To</div>
+      <div class="customer-grid">
+        <div>${escapeHtml(transaction.customerName || 'Walk-in Customer')}</div>
+        <div>${escapeHtml((transaction.customerPhone || customer?.phone || '-').trim() || '-')}</div>
+      </div>
+    </div>
+
+    <table>
+      <colgroup>
+        <col class="no" />
+        <col class="item" />
+        <col class="qty" />
+        <col class="rate" />
+        <col class="amount" />
+      </colgroup>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Item</th>
+          <th class="num">Qty</th>
+          <th class="amt">Rate</th>
+          <th class="amt">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemRows}
+      </tbody>
+    </table>
+
+    <div class="totals">
+      ${totalsMarkup}
+    </div>
+
+    <div class="words">
+      <div class="strong">Amount in Words</div>
+      <div>${escapeHtml(numberToReceiptWords(Math.abs(Number(transaction.total || 0))))}</div>
+    </div>
+
+    <div class="footer center">
+      <div>Thank you for your business</div>
+      <div class="muted">Please keep this receipt for reference</div>
+    </div>
+  </div>
+</body>
+</html>`;
+};
+
 export const generateReceiptPDF = (
   transaction: Transaction,
   customers: Customer[],
@@ -597,7 +954,7 @@ export const generateReceiptPDF = (
     
     if (profile.invoiceFormat === 'thermal') {
         if (options?.returnDataUrl) throw new Error('Thermal invoice data URL preview is not supported yet.');
-        printThermalInvoice(transaction, customers, paymentDetails);
+        void printThermalInvoice(transaction, customers, paymentDetails);
         return;
     }
 
@@ -868,7 +1225,7 @@ export const generateReceiptPDFDataUrl = (
   return out;
 };
 
-export const printThermalInvoice = (transaction: Transaction, customers: Customer[], paymentDetails?: ReceiptPaymentDetails) => {
+const printThermalInvoiceLegacy = (transaction: Transaction, customers: Customer[], paymentDetails?: ReceiptPaymentDetails) => {
     const data = loadData();
     const { profile } = data;
     const customer = customers.find(c => c.id === transaction.customerId);
@@ -1124,4 +1481,27 @@ export const printThermalInvoice = (transaction: Transaction, customers: Custome
             }
         }, 250);
     }
+};
+
+export const printThermalInvoice = async (
+  transaction: Transaction,
+  customers: Customer[],
+  paymentDetails?: ReceiptPaymentDetails,
+): Promise<ReceiptPrintResult> => {
+  const html = buildThermalInvoiceHtml(transaction, customers, paymentDetails);
+  await printHtmlViaHiddenFrame(html);
+  return { mode: 'browser', usedFallback: false };
+};
+
+export const printReceipt = async (
+  transaction: Transaction,
+  customers: Customer[],
+  paymentDetails?: ReceiptPaymentDetails,
+): Promise<ReceiptPrintResult> => {
+  const { profile } = loadData();
+  if (profile.invoiceFormat === 'thermal') {
+    return printThermalInvoice(transaction, customers, paymentDetails);
+  }
+  generateReceiptPDF(transaction, customers, paymentDetails);
+  return { mode: 'download', usedFallback: false };
 };
