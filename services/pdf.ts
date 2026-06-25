@@ -49,7 +49,25 @@ const getThermalPaperWidth = (profile?: Partial<StoreProfile> | null): ThermalPa
 );
 
 const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((resolve, reject) => {
-  const printWindow = window.open('', '_blank', 'popup=yes,width=520,height=900');
+  const width = 900;
+  const height = 720;
+  const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+  const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+  const features = [
+    `width=${width}`,
+    `height=${height}`,
+    `left=${Math.round(left)}`,
+    `top=${Math.round(top)}`,
+    'resizable=yes',
+    'scrollbars=yes',
+    'menubar=no',
+    'toolbar=no',
+    'location=no',
+    'status=no',
+  ].join(',');
+  const titleMatch = html.match(/<title>(.*?)<\/title>/i);
+  const receiptTitle = titleMatch?.[1]?.trim() || 'StockFlow Receipt';
+  const printWindow = window.open('', receiptTitle, features);
   if (!printWindow) {
     reject(new Error('PRINT_POPUP_BLOCKED'));
     return;
@@ -62,11 +80,37 @@ const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((
     fn();
   };
 
+  let closeFallbackTimer: number | null = null;
+  const focusOpenerAndClose = () => {
+    if (closeFallbackTimer !== null) {
+      window.clearTimeout(closeFallbackTimer);
+      closeFallbackTimer = null;
+    }
+    try {
+      printWindow.opener?.focus();
+    } catch {}
+    try {
+      if (!printWindow.closed) {
+        printWindow.close();
+      }
+    } catch {}
+  };
+
+  const handleAfterPrint = () => {
+    window.setTimeout(() => {
+      focusOpenerAndClose();
+    }, 0);
+  };
+
   const triggerPrint = () => {
     try {
+      printWindow.addEventListener('afterprint', handleAfterPrint, { once: true });
       printWindow.focus();
       console.log('[PAY_PRINT_OPEN_BROWSER_PRINT]');
       printWindow.print();
+      closeFallbackTimer = window.setTimeout(() => {
+        focusOpenerAndClose();
+      }, 1000);
       resolve();
     } catch (error) {
       finish(() => reject(error instanceof Error ? error : new Error('Browser print failed.')));
