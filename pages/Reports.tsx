@@ -310,14 +310,29 @@ export default function Reports() {
         isOpen={isCatalogOptionsOpen}
         onClose={() => setIsCatalogOptionsOpen(false)}
         products={products}
+        enableNewArrival
         onGenerate={async (opts: CustomerCatalogOptions) => {
           setProgress({ show: true, label: 'Preparing catalog…', percent: 15 });
-          const filtered = products
-            .filter(p => opts.selectedCategories.includes((p.category || 'Uncategorized').trim() || 'Uncategorized'))
-            .filter(p => opts.includeOutOfStock || Number(p.stock || 0) > 0);
+          const filtered = opts.catalogMode === 'new_arrival'
+            ? (opts.selectedProductIds || [])
+                .map((id) => products.find((product) => product.id === id))
+                .filter(Boolean) as typeof products
+            : products
+                .filter(p => opts.selectedCategories.includes((p.category || 'Uncategorized').trim() || 'Uncategorized'))
+                .filter(p => opts.includeOutOfStock || Number(p.stock || 0) > 0);
           const profile = loadData().profile;
           setProgress({ show: true, label: 'Building pages…', percent: 60 });
-          await generateProductCatalogPDF(filtered, { fileName: 'stockflow-customer-report.pdf', groupByCategory: opts.groupByCategory, showInStockPrices: opts.showInStockPrices, showOutOfStockPrices: opts.showOutOfStockPrices, firstPageImage: profile.customerCatalogFirstPage });
+          await generateProductCatalogPDF(filtered, {
+            fileName: 'stockflow-customer-report.pdf',
+            groupByCategory: opts.catalogMode === 'new_arrival' ? false : opts.groupByCategory,
+            showInStockPrices: opts.showInStockPrices,
+            showOutOfStockPrices: opts.showOutOfStockPrices,
+            firstPageImage: opts.coverImage || profile.customerCatalogFirstPage,
+            catalogTitle: opts.catalogTitle,
+            catalogSubtitle: opts.catalogSubtitle,
+            flatListLabel: opts.catalogMode === 'new_arrival' ? (opts.catalogTitle || 'New Arrival') : undefined,
+            preserveProductOrder: opts.catalogMode === 'new_arrival',
+          });
           setProgress({ show: false, label: '', percent: 0 });
           setIsCatalogOptionsOpen(false);
         }}

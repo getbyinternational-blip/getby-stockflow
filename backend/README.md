@@ -38,6 +38,34 @@ From the `backend` folder:
 npm install
 ```
 
+## Quick Setup On Another Windows PC
+
+From the `backend` folder:
+
+```powershell
+.\scripts\setup-windows.ps1
+```
+
+Then:
+
+```powershell
+.\scripts\start-backend.ps1
+.\scripts\test-health.ps1
+.\scripts\start-cloudflare.ps1
+```
+
+Or open both backend + tunnel windows together:
+
+```powershell
+.\scripts\start-all.ps1
+```
+
+Important:
+
+- Quick tunnel URLs change whenever Cloudflare tunnel is restarted.
+- Keep `.env` local only. Do not commit it.
+- Do not paste or print your WhatsApp access token in shared logs.
+
 ## Environment Setup
 
 Create a `.env` file from `.env.example`.
@@ -58,6 +86,8 @@ WHATSAPP_TEMPLATE_LANGUAGE=en
 WHATSAPP_TEMPLATE_HAS_IMAGE_HEADER=true
 ```
 
+If `.env` is missing, `.\scripts\setup-windows.ps1` will create it from `.env.example`.
+
 ## Run Locally
 
 Development:
@@ -74,6 +104,27 @@ npm run start
 ```
 
 The backend listens on `http://localhost:3002`.
+
+## PowerShell Helpers
+
+These helpers are included for quick Windows deployment:
+
+- `.\scripts\setup-windows.ps1`
+  Installs dependencies, builds the backend, creates `.env` from `.env.example` if needed, and creates `logs\`.
+- `.\scripts\start-backend.ps1`
+  Starts the backend with `npm start` when `dist\index.js` exists, otherwise falls back to `npm run dev`.
+- `.\scripts\start-cloudflare.ps1`
+  Starts `cloudflared tunnel --url http://localhost:3002`.
+  It looks for `cloudflared.exe` in:
+  - `backend\cloudflared.exe`
+  - `C:\cloudflared.exe`
+  - `PATH`
+- `.\scripts\start-all.ps1`
+  Opens separate PowerShell windows for backend and Cloudflare tunnel.
+- `.\scripts\test-health.ps1`
+  Calls `GET /health` and prints the JSON response.
+- `.\scripts\send-invoice-json.ps1 .\examples\sample-invoice.json`
+  Sends a local JSON payload to `POST /api/whatsapp/send-invoice`.
 
 ## Test `GET /health`
 
@@ -232,3 +283,17 @@ Invoke-RestMethod `
 The preview route should work immediately after dependencies are installed.
 
 The send-invoice route may still fail until the WhatsApp template is approved in Meta. That is expected.
+
+## Sample Invoice JSON
+
+A ready-to-send sample payload is included at:
+
+```text
+backend/examples/sample-invoice.json
+```
+
+Usage:
+
+```powershell
+.\scripts\send-invoice-json.ps1 .\examples\sample-invoice.json
+```

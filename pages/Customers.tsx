@@ -3,8 +3,8 @@ import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { Customer, Transaction, Product, UpfrontOrder } from '../types';
-import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, allocateCustomerPaymentAgainstCompositeReceivable, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, loadData, processTransaction, deleteCustomer, addCustomer, addUpfrontOrder, updateUpfrontOrder, collectUpfrontPayment, updateCustomer, updateTransaction, auditCustomerPaymentAllocations, previewCustomerRepairedAllocationView, applyCustomerLedgerBalanceSnapshotPatch } from '../services/storage';
+import { Customer, RepairHistoryEntry, Transaction, Product, UpfrontOrder } from '../types';
+import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, allocateCustomerPaymentAgainstCompositeReceivable, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, loadData, processTransaction, deleteCustomer, addCustomer, addUpfrontOrder, updateUpfrontOrder, collectUpfrontPayment, updateCustomer, updateTransaction, auditCustomerPaymentAllocations, previewCustomerRepairedAllocationView, applyCustomerLedgerBalanceSnapshotPatch, appendRepairHistoryEntry, deleteTransaction, deleteUpfrontOrder, updateUpfrontOrderPayment, deleteUpfrontOrderPayment, recomputeUpfrontOrderPaymentState, getUpfrontOrderAccountingMode, getUpfrontOrderAdvancePaidAmount, getUpfrontOrderCurrentDueImpact, getUpfrontOrderLegacyDueImpact, getUpfrontOrderTotalAmount, buildReceivableOnlyRepairAdvanceEntries } from '../services/storage';
 import { generateLedgerStatementPDF, generateReceiptPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay } from '../services/ledgerStatements';
 import { shareCustomerLedgerViaWhatsApp } from '../services/whatsappShare';
@@ -84,8 +84,8 @@ const compactTypeLabel = (type: unknown, originalType?: string, referenceType?: 
   if (normalized === 'payment') return 'PAYMENT';
   if (normalized === 'return') return 'RETURN';
   if (normalized === 'custom order' || normalized === 'upfront order') return 'ORDER';
-  if (normalized === 'customer cash out') return 'CASH OUT';
-  if (normalized === 'customer credit') return 'CREDIT';
+  if (normalized === 'customer cash out') return 'CASH REFUND';
+  if (normalized === 'customer credit') return 'STORE CREDIT';
   return (normalized || 'entry').toUpperCase();
 };
 
@@ -109,7 +109,7 @@ const getMovementDisplay = (row: {
     return { label: `Credit Used -₹${formatMoneyWhole(row.storeCreditUsed)}`, className: 'text-blue-700' };
   }
   if (row.type === 'customer_cash_out') {
-    return { label: `Cash Out +₹${formatMoneyWhole(absMovement)}`, className: 'text-orange-700' };
+    return { label: `Cash Refund +₹${formatMoneyWhole(absMovement)}`, className: 'text-orange-700' };
   }
   if (row.type === 'payment') {
     return { label: `-₹${formatMoneyWhole(absMovement)}`, className: 'text-emerald-700' };
@@ -129,7 +129,464 @@ const getRunningBalanceDisplay = (runningBalance: number): { label: string; clas
 
 
 
-export default function Customers() {
+type CustomerDetailTab = 'ledger' | 'store_credit' | 'custom_orders' | 'notes' | 'repair_history';
+type RepairDraftKind = 'add_transaction' | 'edit_transaction' | 'delete_transaction';
+type RepairTransactionType = 'sale' | 'historical_sale' | 'payment' | 'historical_payment' | 'customer_credit' | 'customer_cash_out' | 'sale_return';
+type RepairEditMode = 'full' | 'settlement_only' | 'unsupported';
+type TransactionRepairCapability = {
+  add: boolean;
+  edit: boolean;
+  delete: boolean;
+  editMode: RepairEditMode;
+  editUnavailableReason?: string;
+};
+
+const UNSUPPORTED_REPAIR_EDIT_MESSAGE = 'Editing this transaction is not yet supported because it affects inventory and product-line reconciliation.';
+
+const TRANSACTION_REPAIR_CAPABILITIES: Record<RepairTransactionType, TransactionRepairCapability> = {
+  sale: { add: false, edit: true, delete: true, editMode: 'settlement_only' },
+  historical_sale: { add: false, edit: true, delete: true, editMode: 'settlement_only' },
+  payment: { add: true, edit: true, delete: true, editMode: 'full' },
+  historical_payment: { add: true, edit: true, delete: true, editMode: 'full' },
+  customer_credit: { add: true, edit: true, delete: true, editMode: 'full' },
+  customer_cash_out: { add: true, edit: true, delete: true, editMode: 'full' },
+  sale_return: { add: false, edit: false, delete: true, editMode: 'unsupported', editUnavailableReason: UNSUPPORTED_REPAIR_EDIT_MESSAGE },
+};
+
+const CUSTOMER_REPAIR_TYPE_ORDER: RepairTransactionType[] = [
+  'sale',
+  'historical_sale',
+  'payment',
+  'historical_payment',
+  'customer_credit',
+  'customer_cash_out',
+  'sale_return',
+];
+
+const CUSTOMER_REPAIR_ADD_TRANSACTION_TYPES = CUSTOMER_REPAIR_TYPE_ORDER.filter((type) => TRANSACTION_REPAIR_CAPABILITIES[type].add);
+
+const isSettlementOnlyRepairTransactionType = (type: RepairTransactionType): boolean =>
+  TRANSACTION_REPAIR_CAPABILITIES[type].editMode === 'settlement_only';
+
+const getRepairTransactionTypeForTransaction = (tx: Transaction): RepairTransactionType => {
+  const effectiveType = getEffectiveTransactionType(tx);
+  if (tx.type === 'historical_reference' && effectiveType === 'payment') return 'historical_payment';
+  if (tx.type === 'historical_reference') return 'historical_sale';
+  if (tx.type === 'return') return 'sale_return';
+  return tx.type as RepairTransactionType;
+};
+
+const getTransactionRepairCapability = (tx: Transaction | null | undefined): TransactionRepairCapability | null => {
+  if (!tx) return null;
+  return TRANSACTION_REPAIR_CAPABILITIES[getRepairTransactionTypeForTransaction(tx)];
+};
+
+type CustomerRepairDraft = {
+  kind: RepairDraftKind;
+  transactionType: RepairTransactionType;
+  transactionId?: string;
+  amount: string;
+  effectiveAt: string;
+  paymentMethod: 'Cash' | 'Online';
+  cashPaid: string;
+  onlinePaid: string;
+  creditDue: string;
+  invoiceNo: string;
+  referenceNo: string;
+  notes: string;
+  reason: string;
+};
+
+type CustomerRepairPreview = {
+  currentLedger: ReturnType<typeof buildCorrectCustomerLedgerPreview>;
+  nextLedger: ReturnType<typeof buildCorrectCustomerLedgerPreview>;
+  before: { totalDue: number; storeCredit: number; netReceivable: number };
+  after: { totalDue: number; storeCredit: number; netReceivable: number };
+  delta: { totalDue: number; storeCredit: number; netReceivable: number };
+  targetTransaction?: Transaction | null;
+  nextTransaction?: Transaction | null;
+  historicalShiftRepair: boolean;
+};
+
+type UpfrontOrderPaymentEntry = NonNullable<UpfrontOrder['paymentHistory']>[number];
+type UpfrontRepairKind = 'add_advance_order' | 'edit_advance_order' | 'delete_advance_order' | 'add_advance_payment' | 'edit_advance_payment' | 'delete_advance_payment';
+type UpfrontRepairDraft = {
+  kind: UpfrontRepairKind;
+  reason: string;
+  financialDate: string;
+  oldOrder?: UpfrontOrder | null;
+  newOrder?: UpfrontOrder | null;
+  targetPaymentId?: string;
+};
+type UpfrontRepairPreview = {
+  currentLedger: ReturnType<typeof buildCorrectCustomerLedgerPreview>;
+  nextLedger: ReturnType<typeof buildCorrectCustomerLedgerPreview>;
+  before: { totalDue: number; storeCredit: number; netReceivable: number };
+  after: { totalDue: number; storeCredit: number; netReceivable: number };
+  delta: { totalDue: number; storeCredit: number; netReceivable: number };
+  oldOrder?: UpfrontOrder | null;
+  newOrder?: UpfrontOrder | null;
+  customOrderAuditRows: Array<{
+    customerName: string;
+    orderNo: string;
+    orderTotal: number;
+    advancePaid: number;
+    oldDueImpact: number;
+    newDueImpact: number;
+    difference: number;
+  }>;
+  historicalShiftRepair: boolean;
+};
+
+const toDateTimeLocalNow = () => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+const toDateTimeLocalValue = (iso?: string) => {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return toDateTimeLocalNow();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+const parseDateTimeInput = (value: string) => {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const roundRepairMoney = (value: unknown) => Math.round((Number(value || 0) || 0) * 100) / 100;
+const getUpfrontOrderFinancialDate = (order?: UpfrontOrder | null) => order?.effectiveAt || order?.date || order?.createdAt || order?.updatedAt || new Date().toISOString();
+const getUpfrontPaymentFinancialDate = (payment?: UpfrontOrderPaymentEntry | null, order?: UpfrontOrder | null) => payment?.effectiveAt || payment?.paidAt || getUpfrontOrderFinancialDate(order);
+
+const getRepairKindLabel = (type: RepairTransactionType) => {
+  switch (type) {
+    case 'sale': return 'Sale';
+    case 'historical_sale': return 'Historical Sale';
+    case 'payment': return 'Payment';
+    case 'historical_payment': return 'Historical Payment';
+    case 'customer_credit': return 'Store Credit';
+    case 'customer_cash_out': return 'Cash Refund';
+    case 'sale_return': return 'Sale Return';
+    default: return 'Transaction';
+  }
+};
+
+const getRepairHistoryLabel = (kind: RepairHistoryEntry['repairKind']) => kind.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+
+const getRepairSalePaymentMethod = (cashPaid: number, onlinePaid: number, creditDue: number): Transaction['paymentMethod'] => {
+  if (creditDue > 0 && cashPaid <= 0 && onlinePaid <= 0) return 'Credit';
+  if (onlinePaid > 0 && cashPaid <= 0 && creditDue <= 0) return 'Online';
+  if (cashPaid > 0 && onlinePaid <= 0 && creditDue <= 0) return 'Cash';
+  return 'Mixed';
+};
+
+const getTransactionQuantitySummary = (tx?: Transaction | null): string => {
+  const items = normalizeTransactionItems(tx?.items);
+  if (!items.length) return 'No product lines';
+  const totalQuantity = items.reduce((sum, item: any) => sum + Number(item?.quantity || 0), 0);
+  return `${totalQuantity} unit(s) across ${items.length} line(s)`;
+};
+
+const createCustomerRepairAddDraft = (): CustomerRepairDraft => ({
+  kind: 'add_transaction',
+  transactionType: CUSTOMER_REPAIR_ADD_TRANSACTION_TYPES[0],
+  amount: '',
+  effectiveAt: toDateTimeLocalNow(),
+  paymentMethod: 'Cash',
+  cashPaid: '',
+  onlinePaid: '',
+  creditDue: '',
+  invoiceNo: '',
+  referenceNo: '',
+  notes: '',
+  reason: '',
+});
+
+const createCustomerRepairEditDraft = (tx: Transaction): CustomerRepairDraft => {
+  const transactionType = getRepairTransactionTypeForTransaction(tx);
+  const saleSettlement = tx.type === 'historical_reference'
+    ? getHistoricalAwareSaleSettlement(tx)
+    : getSaleSettlementBreakdown(tx);
+  return {
+    kind: 'edit_transaction',
+    transactionId: tx.id,
+    transactionType,
+    amount: String(Math.abs(Number(tx.total || 0))),
+    effectiveAt: toDateTimeLocalValue(tx.effectiveAt || tx.date),
+    paymentMethod: tx.paymentMethod === 'Online' ? 'Online' : 'Cash',
+    cashPaid: String(roundRepairMoney(saleSettlement.cashPaid)),
+    onlinePaid: String(roundRepairMoney(saleSettlement.onlinePaid)),
+    creditDue: String(roundRepairMoney(saleSettlement.creditDue)),
+    invoiceNo: tx.invoiceNo || tx.creditNoteNo || tx.receiptNo || '',
+    referenceNo: tx.sourceRef || '',
+    notes: tx.notes || '',
+    reason: '',
+  };
+};
+
+const createCustomerRepairDeleteDraft = (tx: Transaction): CustomerRepairDraft => ({
+  ...createCustomerRepairEditDraft(tx),
+  kind: 'delete_transaction',
+  reason: '',
+});
+
+const buildCustomerRepairPreview = (
+  customer: Customer,
+  draft: CustomerRepairDraft,
+  sourceTransactions: Transaction[],
+  upfrontOrders: UpfrontOrder[],
+  openSessionStart?: string,
+): CustomerRepairPreview => {
+  const currentLedger = buildCorrectCustomerLedgerPreview(customer, sourceTransactions, upfrontOrders || []);
+  const targetTransaction = draft.transactionId ? sourceTransactions.find((tx) => tx.id === draft.transactionId) || null : null;
+  const effectiveAt = parseDateTimeInput(draft.effectiveAt);
+  if (draft.kind !== 'delete_transaction' && !effectiveAt) throw new Error('Please enter a valid financial date and time.');
+
+  const nextTransaction = (() => {
+    if (draft.kind === 'delete_transaction') return null;
+    const amount = roundRepairMoney(draft.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than zero.');
+
+    const base: Transaction = targetTransaction
+      ? { ...targetTransaction }
+      : {
+          id: `repair-${customer.id}-${Date.now()}`,
+          items: [],
+          total: amount,
+          effectiveAt: effectiveAt as string,
+          date: effectiveAt as string,
+          type: 'payment',
+          customerId: customer.id,
+          customerName: customer.name,
+          customerPhone: customer.phone,
+        };
+
+    if (draft.transactionType === 'sale' || draft.transactionType === 'historical_sale') {
+      const cashPaid = roundRepairMoney(draft.cashPaid);
+      const onlinePaid = roundRepairMoney(draft.onlinePaid);
+      const creditDue = roundRepairMoney(draft.creditDue);
+      const settlementTotal = roundRepairMoney(cashPaid + onlinePaid + creditDue);
+      if (Math.abs(settlementTotal - amount) > 0.01) throw new Error(`Cash + online + credit due must equal sale total ₹${formatMoneyPrecise(amount)}.`);
+      return {
+        ...base,
+        total: amount,
+        effectiveAt: effectiveAt as string,
+        date: effectiveAt as string,
+        type: draft.transactionType === 'historical_sale' ? 'historical_reference' : 'sale',
+        referenceTransactionType: draft.transactionType === 'historical_sale' ? 'sale' : undefined,
+        paymentMethod: getRepairSalePaymentMethod(cashPaid, onlinePaid, creditDue),
+        saleSettlement: { cashPaid, onlinePaid, creditDue },
+        invoiceNo: draft.invoiceNo.trim() || base.invoiceNo,
+        sourceRef: draft.referenceNo.trim() || undefined,
+        notes: draft.notes.trim() || undefined,
+        items: base.items || [],
+      } as Transaction;
+    }
+
+    if (draft.transactionType === 'sale_return') {
+      return {
+        ...base,
+        total: amount,
+        effectiveAt: effectiveAt as string,
+        date: effectiveAt as string,
+        type: 'return',
+        creditNoteNo: draft.invoiceNo.trim() || base.creditNoteNo,
+        sourceRef: draft.referenceNo.trim() || undefined,
+        notes: draft.notes.trim() || undefined,
+        items: base.items || [],
+      } as Transaction;
+    }
+
+    const baseType: Transaction['type'] = draft.transactionType === 'historical_payment'
+      ? 'historical_reference'
+      : draft.transactionType;
+    return {
+      ...base,
+      total: amount,
+      effectiveAt: effectiveAt as string,
+      date: effectiveAt as string,
+      type: baseType,
+      referenceTransactionType: draft.transactionType === 'historical_payment' ? 'payment' : undefined,
+      paymentMethod: draft.transactionType === 'customer_credit' ? undefined : draft.paymentMethod,
+      receiptNo: targetTransaction?.receiptNo,
+      sourceRef: draft.referenceNo.trim() || undefined,
+      notes: draft.notes.trim() || undefined,
+      items: [],
+    } as Transaction;
+  })();
+
+  const nextTransactions = draft.kind === 'add_transaction'
+    ? [nextTransaction as Transaction, ...sourceTransactions]
+    : draft.kind === 'delete_transaction'
+      ? sourceTransactions.filter((tx) => tx.id !== draft.transactionId)
+      : sourceTransactions.map((tx) => tx.id === draft.transactionId ? (nextTransaction as Transaction) : tx);
+  const nextLedger = buildCorrectCustomerLedgerPreview(customer, nextTransactions, upfrontOrders || []);
+  const before = {
+    totalDue: currentLedger.summary.correctedCurrentDue,
+    storeCredit: currentLedger.summary.correctedStoreCredit,
+    netReceivable: currentLedger.summary.correctedNetReceivable,
+  };
+  const after = {
+    totalDue: nextLedger.summary.correctedCurrentDue,
+    storeCredit: nextLedger.summary.correctedStoreCredit,
+    netReceivable: nextLedger.summary.correctedNetReceivable,
+  };
+  const previewDate = draft.kind === 'delete_transaction'
+    ? targetTransaction?.effectiveAt || targetTransaction?.date
+    : nextTransaction?.effectiveAt || nextTransaction?.date;
+  return {
+    currentLedger,
+    nextLedger,
+    before,
+    after,
+    delta: {
+      totalDue: roundRepairMoney(after.totalDue - before.totalDue),
+      storeCredit: roundRepairMoney(after.storeCredit - before.storeCredit),
+      netReceivable: roundRepairMoney(after.netReceivable - before.netReceivable),
+    },
+    targetTransaction,
+    nextTransaction,
+    historicalShiftRepair: Boolean(openSessionStart && previewDate && new Date(previewDate).getTime() < new Date(openSessionStart).getTime()),
+  };
+};
+
+const buildCustomerRepairHistoryEntry = (
+  customer: Customer,
+  draft: CustomerRepairDraft,
+  preview: CustomerRepairPreview,
+): RepairHistoryEntry => ({
+  id: `repair-${Date.now()}`,
+  entityType: 'customer',
+  entityId: customer.id,
+  entityName: customer.name,
+  repairKind:
+    draft.kind === 'add_transaction'
+      ? (draft.transactionType === 'sale' || draft.transactionType === 'historical_sale' ? 'add_sale' : draft.transactionType === 'sale_return' ? 'add_return' : 'add_payment')
+      : draft.kind === 'delete_transaction'
+        ? (draft.transactionType === 'sale' || draft.transactionType === 'historical_sale' ? 'delete_sale' : draft.transactionType === 'sale_return' ? 'delete_return' : 'delete_payment')
+        : (draft.transactionType === 'sale' || draft.transactionType === 'historical_sale' ? 'edit_sale' : draft.transactionType === 'sale_return' ? 'edit_return' : 'edit_payment'),
+  targetTransactionId: preview.targetTransaction?.id || preview.nextTransaction?.id,
+  reason: draft.reason.trim(),
+  notes: draft.notes.trim(),
+  financialDate: draft.kind === 'delete_transaction'
+    ? preview.targetTransaction?.effectiveAt || preview.targetTransaction?.date
+    : preview.nextTransaction?.effectiveAt || preview.nextTransaction?.date,
+  adminUid: auth.currentUser?.uid || null,
+  adminEmail: auth.currentUser?.email || null,
+  createdAt: new Date().toISOString(),
+  before: preview.before,
+  after: preview.after,
+  delta: preview.delta,
+  oldTransaction: preview.targetTransaction || null,
+  newTransaction: preview.nextTransaction || null,
+});
+
+const buildUpfrontRepairPreview = (
+  customer: Customer,
+  draft: UpfrontRepairDraft,
+  sourceTransactions: Transaction[],
+  sourceOrders: UpfrontOrder[],
+  openSessionStart?: string,
+): UpfrontRepairPreview => {
+  const currentLedger = buildCorrectCustomerLedgerPreview(customer, sourceTransactions, sourceOrders || []);
+  const nextOrders = draft.kind === 'add_advance_order' && draft.newOrder
+    ? [...sourceOrders, draft.newOrder]
+    : draft.kind === 'delete_advance_order' && draft.oldOrder
+      ? sourceOrders.filter((order) => order.id !== draft.oldOrder!.id)
+      : draft.oldOrder && draft.newOrder
+        ? sourceOrders.map((order) => order.id === draft.oldOrder!.id ? draft.newOrder! : order)
+        : sourceOrders;
+  const buildCustomOrderAuditRows = () => {
+    const beforeMap = new Map(sourceOrders.map((order) => [order.id, order]));
+    const afterMap = new Map(nextOrders.map((order) => [order.id, order]));
+    const affectedIds = new Set<string>([
+      ...(draft.oldOrder?.id ? [draft.oldOrder.id] : []),
+      ...(draft.newOrder?.id ? [draft.newOrder.id] : []),
+    ]);
+    return Array.from(affectedIds)
+      .map((orderId) => {
+        const beforeOrder = beforeMap.get(orderId);
+        const afterOrder = afterMap.get(orderId);
+        const baseOrder = afterOrder || beforeOrder;
+        if (!baseOrder) return null;
+        const oldDueImpact = roundRepairMoney(getUpfrontOrderLegacyDueImpact(beforeOrder));
+        const newDueImpact = roundRepairMoney(getUpfrontOrderCurrentDueImpact(afterOrder));
+        return {
+          customerName: customer.name,
+          orderNo: baseOrder.id.slice(-6),
+          orderTotal: roundRepairMoney(getUpfrontOrderTotalAmount(baseOrder)),
+          advancePaid: roundRepairMoney(getUpfrontOrderAdvancePaidAmount(baseOrder)),
+          oldDueImpact,
+          newDueImpact,
+          difference: roundRepairMoney(newDueImpact - oldDueImpact),
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  };
+  const nextLedger = buildCorrectCustomerLedgerPreview(customer, sourceTransactions, nextOrders || []);
+  const before = {
+    totalDue: currentLedger.summary.correctedCurrentDue,
+    storeCredit: currentLedger.summary.correctedStoreCredit,
+    netReceivable: currentLedger.summary.correctedNetReceivable,
+  };
+  const after = {
+    totalDue: nextLedger.summary.correctedCurrentDue,
+    storeCredit: nextLedger.summary.correctedStoreCredit,
+    netReceivable: nextLedger.summary.correctedNetReceivable,
+  };
+  const previewDate = draft.financialDate || getUpfrontOrderFinancialDate(draft.newOrder || draft.oldOrder);
+  return {
+    currentLedger,
+    nextLedger,
+    before,
+    after,
+    delta: {
+      totalDue: roundRepairMoney(after.totalDue - before.totalDue),
+      storeCredit: roundRepairMoney(after.storeCredit - before.storeCredit),
+      netReceivable: roundRepairMoney(after.netReceivable - before.netReceivable),
+    },
+    oldOrder: draft.oldOrder || null,
+    newOrder: draft.newOrder || null,
+    customOrderAuditRows: buildCustomOrderAuditRows(),
+    historicalShiftRepair: Boolean(openSessionStart && previewDate && new Date(previewDate).getTime() < new Date(openSessionStart).getTime()),
+  };
+};
+
+const buildUpfrontRepairHistoryEntry = (
+  customer: Customer,
+  draft: UpfrontRepairDraft,
+  preview: UpfrontRepairPreview,
+): RepairHistoryEntry => ({
+  id: `repair-${Date.now()}`,
+  entityType: 'customer',
+  entityId: customer.id,
+  entityName: customer.name,
+  repairKind: draft.kind,
+  targetTransactionId: draft.targetPaymentId || draft.oldOrder?.id || draft.newOrder?.id,
+  reason: draft.reason.trim(),
+  notes: draft.targetPaymentId ? `Advance payment ${draft.targetPaymentId}` : undefined,
+  financialDate: draft.financialDate,
+  adminUid: auth.currentUser?.uid || null,
+  adminEmail: auth.currentUser?.email || null,
+  createdAt: new Date().toISOString(),
+  before: preview.before,
+  after: preview.after,
+  delta: preview.delta,
+  oldTransaction: null,
+  newTransaction: null,
+  oldUpfrontOrder: preview.oldOrder || null,
+  newUpfrontOrder: preview.newOrder || null,
+});
+
+type CustomersProps = {
+  repairMode?: boolean;
+  hideStandardHeaderActions?: boolean;
+};
+
+export default function Customers({ repairMode = false, hideStandardHeaderActions = false }: CustomersProps) {
   const { requestAdminOverride } = useRoleSession();
   const CUSTOMERS_PAGE_SIZE = 15;
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -141,7 +598,7 @@ export default function Customers() {
   const [viewingCustomer, setViewingCustomer] = useState<Customer | null>(null);
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [expandedCustomerHistoryId, setExpandedCustomerHistoryId] = useState<string | null>(null);
-  const [customerDetailTab, setCustomerDetailTab] = useState<'ledger' | 'store_credit' | 'custom_orders' | 'notes'>('ledger');
+  const [customerDetailTab, setCustomerDetailTab] = useState<CustomerDetailTab>('ledger');
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -149,6 +606,7 @@ export default function Customers() {
   const [isCollectPaymentModalOpen, setIsCollectPaymentModalOpen] = useState(false);
   const [editingUpfrontOrder, setEditingUpfrontOrder] = useState<UpfrontOrder | null>(null);
   const [selectedUpfrontOrder, setSelectedUpfrontOrder] = useState<UpfrontOrder | null>(null);
+  const [editingUpfrontPaymentId, setEditingUpfrontPaymentId] = useState<string | null>(null);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([]);
   const [batchEditCustomerIds, setBatchEditCustomerIds] = useState<string[]>([]);
@@ -197,6 +655,12 @@ export default function Customers() {
   const [allOrdersSort, setAllOrdersSort] = useState<'newest' | 'oldest'>('newest');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [collectAmount, setCollectAmount] = useState('');
+  const [collectPaymentMethod, setCollectPaymentMethod] = useState<'Cash' | 'Online'>('Cash');
+  const [collectPaymentNote, setCollectPaymentNote] = useState('');
+  const [collectPaymentFinancialDate, setCollectPaymentFinancialDate] = useState(toDateTimeLocalNow());
+  const [collectPaymentReason, setCollectPaymentReason] = useState('');
+  const [upfrontOrderFinancialDate, setUpfrontOrderFinancialDate] = useState(toDateTimeLocalNow());
+  const [upfrontOrderRepairReason, setUpfrontOrderRepairReason] = useState('');
 
   // Filter & Sort State
   const [searchQuery, setSearchQuery] = useState('');
@@ -228,6 +692,16 @@ export default function Customers() {
   const [editTxMethod, setEditTxMethod] = useState<'Cash' | 'Online'>('Cash');
   const [editTxNotes, setEditTxNotes] = useState('');
   const [editTxError, setEditTxError] = useState<string | null>(null);
+  const [repairDraft, setRepairDraft] = useState<CustomerRepairDraft | null>(null);
+  const [repairPreview, setRepairPreview] = useState<CustomerRepairPreview | null>(null);
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const [repairConfirmOpen, setRepairConfirmOpen] = useState(false);
+  const [repairSubmitting, setRepairSubmitting] = useState(false);
+  const [upfrontRepairDraft, setUpfrontRepairDraft] = useState<UpfrontRepairDraft | null>(null);
+  const [upfrontRepairPreview, setUpfrontRepairPreview] = useState<UpfrontRepairPreview | null>(null);
+  const [upfrontRepairError, setUpfrontRepairError] = useState<string | null>(null);
+  const [upfrontRepairConfirmOpen, setUpfrontRepairConfirmOpen] = useState(false);
+  const [upfrontRepairSubmitting, setUpfrontRepairSubmitting] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   useEscapeLayer(isDeleteModalOpen && !!viewingCustomer, () => setIsDeleteModalOpen(false), { priority: 120 });
   useEscapeLayer(paymentAuditOpen && !!viewingCustomer && !!paymentAuditResult, () => setPaymentAuditOpen(false), { priority: 110 });
@@ -235,6 +709,18 @@ export default function Customers() {
   useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(editingCustomerTx), () => { setEditingCustomerTx(null); setEditTxError(null); }, { priority: 110 });
   useEscapeLayer(customerActionModalOpen && !!viewingCustomer, () => setCustomerActionModalOpen(false), { priority: 110 });
+  useEscapeLayer(Boolean(repairDraft), () => {
+    setRepairDraft(null);
+    setRepairPreview(null);
+    setRepairError(null);
+    setRepairConfirmOpen(false);
+  }, { priority: 115 });
+  useEscapeLayer(Boolean(upfrontRepairDraft), () => {
+    setUpfrontRepairDraft(null);
+    setUpfrontRepairPreview(null);
+    setUpfrontRepairError(null);
+    setUpfrontRepairConfirmOpen(false);
+  }, { priority: 115 });
   useEscapeLayer(isCollectPaymentModalOpen && !!selectedUpfrontOrder, () => setIsCollectPaymentModalOpen(false), { priority: 110 });
   useEscapeLayer(isUpfrontOrderModalOpen && !!orderCustomer, () => setIsUpfrontOrderModalOpen(false), { priority: 105 });
   useEscapeLayer(Boolean(viewingCustomer), () => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(null); }, { priority: 100 });
@@ -835,11 +1321,6 @@ export default function Customers() {
       ? new Date(b.date || b.createdAt || 0).getTime() - new Date(a.date || a.createdAt || 0).getTime()
       : new Date(a.date || a.createdAt || 0).getTime() - new Date(b.date || b.createdAt || 0).getTime()), [popupCustomerOrders, allOrdersSearch, allOrdersStatus, allOrdersSort]);
 
-  const toDateTimeLocalNow = () => {
-    const d = new Date();
-    const p = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-  };
   const openCustomerActionModal = (type: 'payment' | 'customer_cash_out' | 'customer_credit' = 'payment') => {
     setCustomerActionType(type);
     setCustomerActionDateTime(toDateTimeLocalNow());
@@ -867,6 +1348,7 @@ export default function Customers() {
       id: Date.now().toString(),
       items: [],
       total: Math.abs(amount),
+      effectiveAt: actionDate,
       date: actionDate,
       type: customerActionType,
       customerId: viewingCustomer.id,
@@ -902,6 +1384,7 @@ export default function Customers() {
       const updatedRows = await updateTransaction({
         ...editingCustomerTx,
         total: Math.abs(amount),
+        effectiveAt: nextDate.toISOString(),
         date: nextDate.toISOString(),
         paymentMethod: editTxMethod,
         notes: editTxNotes.trim(),
@@ -911,6 +1394,145 @@ export default function Customers() {
       refreshData();
     } catch (error) {
       setEditTxError(getFriendlyErrorMessage(error, 'customers.update_transaction'));
+    }
+  };
+
+  const repairHistoryEntries = useMemo(
+    () => viewingCustomer ? (loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'customer' && entry.entityId === viewingCustomer.id) : [],
+    [viewingCustomer, customers, transactions, upfrontOrders],
+  );
+  const customerDetailPermissions = useMemo(() => ({
+    canAddTransactions: true,
+    canEditTransactions: repairMode,
+    canDeleteTransactions: repairMode,
+    canViewRepairHistory: repairMode,
+    requiresRepairReason: repairMode,
+    writesRepairHistory: repairMode,
+  }), [repairMode]);
+  const customerDetailTabs = useMemo(() => ([
+    { key: 'ledger' as const, label: 'Ledger' },
+    { key: 'store_credit' as const, label: 'Store Credit' },
+    { key: 'custom_orders' as const, label: 'Custom Orders' },
+    { key: 'notes' as const, label: 'Notes / Audit' },
+    ...(customerDetailPermissions.canViewRepairHistory ? [{ key: 'repair_history' as const, label: 'Repair History' }] : []),
+  ]), [customerDetailPermissions.canViewRepairHistory]);
+  const repairDraftTransaction = useMemo(
+    () => repairDraft?.transactionId ? transactions.find((tx) => tx.id === repairDraft.transactionId) || null : null,
+    [repairDraft, transactions],
+  );
+
+  const openRepairDraft = (draft: CustomerRepairDraft) => {
+    setRepairDraft(draft);
+    setRepairPreview(null);
+    setRepairError(null);
+    setRepairConfirmOpen(false);
+  };
+
+  const reviewRepairDraft = () => {
+    if (!viewingCustomer || !repairDraft) return;
+    if (customerDetailPermissions.requiresRepairReason && !repairDraft.reason.trim()) {
+      setRepairError('Repair reason is required.');
+      return;
+    }
+    try {
+      const openSession = (loadData().cashSessions || []).find((session: any) => session.status === 'open');
+      setRepairPreview(buildCustomerRepairPreview(viewingCustomer, repairDraft, transactions, upfrontOrders, openSession?.startTime));
+      setRepairError(null);
+      setRepairConfirmOpen(true);
+    } catch (error) {
+      setRepairPreview(null);
+      setRepairConfirmOpen(false);
+      setRepairError(getFriendlyErrorMessage(error, 'customers.repair.preview'));
+    }
+  };
+
+  const applyRepairDraft = async () => {
+    if (!viewingCustomer || !repairDraft || !repairPreview) return;
+    setRepairSubmitting(true);
+    try {
+      if (repairDraft.kind === 'add_transaction') processTransaction(repairPreview.nextTransaction as Transaction);
+      else if (repairDraft.kind === 'delete_transaction') {
+        deleteTransaction(repairDraft.transactionId!, {
+          reason: `repair_center:${repairDraft.reason.trim()}`,
+          reasonNote: repairDraft.notes.trim(),
+        });
+      } else {
+        await updateTransaction(repairPreview.nextTransaction as Transaction);
+      }
+      if (customerDetailPermissions.writesRepairHistory) {
+        await appendRepairHistoryEntry(buildCustomerRepairHistoryEntry(viewingCustomer, repairDraft, repairPreview));
+      }
+      setRepairDraft(null);
+      setRepairPreview(null);
+      setRepairError(null);
+      setRepairConfirmOpen(false);
+      setSelectedTx(null);
+      refreshData();
+    } catch (error) {
+      setRepairError(getFriendlyErrorMessage(error, 'customers.repair.confirm'));
+      setRepairConfirmOpen(false);
+    } finally {
+      setRepairSubmitting(false);
+    }
+  };
+
+  const applyUpfrontRepairDraft = async () => {
+    if (!upfrontRepairDraft || !upfrontRepairPreview) return;
+    const repairCustomer = viewingCustomer
+      || orderCustomer
+      || (() => {
+        const customerId = upfrontRepairDraft.newOrder?.customerId || upfrontRepairDraft.oldOrder?.customerId;
+        return customerId ? customers.find((customer) => customer.id === customerId) || null : null;
+      })();
+    if (!repairCustomer) {
+      setUpfrontRepairError('Customer context is required for advance-order repair confirm.');
+      return;
+    }
+    setUpfrontRepairSubmitting(true);
+    try {
+      switch (upfrontRepairDraft.kind) {
+        case 'add_advance_order':
+          addUpfrontOrder(upfrontRepairDraft.newOrder as UpfrontOrder);
+          break;
+        case 'edit_advance_order':
+          updateUpfrontOrder(upfrontRepairDraft.newOrder as UpfrontOrder);
+          break;
+        case 'delete_advance_order':
+          deleteUpfrontOrder(upfrontRepairDraft.oldOrder!.id);
+          break;
+        case 'add_advance_payment':
+        case 'edit_advance_payment': {
+          const nextOrder = upfrontRepairDraft.newOrder as UpfrontOrder;
+          const payment = (nextOrder.paymentHistory || []).find((entry) => entry.id === upfrontRepairDraft.targetPaymentId);
+          if (!payment) throw new Error('Advance payment preview is missing its target payment.');
+          updateUpfrontOrderPayment(nextOrder.id, upfrontRepairDraft.kind === 'edit_advance_payment' ? upfrontRepairDraft.targetPaymentId || null : null, {
+            amount: Number(payment.amount || 0),
+            method: payment.method || 'Cash',
+            note: payment.note,
+            kind: payment.kind,
+            paidAt: payment.paidAt,
+            effectiveAt: payment.effectiveAt || payment.paidAt,
+          });
+          break;
+        }
+        case 'delete_advance_payment':
+          deleteUpfrontOrderPayment(upfrontRepairDraft.oldOrder!.id, upfrontRepairDraft.targetPaymentId!);
+          break;
+      }
+      await appendRepairHistoryEntry(buildUpfrontRepairHistoryEntry(repairCustomer, upfrontRepairDraft, upfrontRepairPreview));
+      setUpfrontRepairDraft(null);
+      setUpfrontRepairPreview(null);
+      setUpfrontRepairError(null);
+      setUpfrontRepairConfirmOpen(false);
+      setUpfrontOrderRepairReason('');
+      setCollectPaymentReason('');
+      setEditingUpfrontPaymentId(null);
+      refreshData();
+    } catch (error) {
+      setUpfrontRepairError(getFriendlyErrorMessage(error, 'customers.upfront_repair.confirm'));
+      setUpfrontRepairConfirmOpen(false);
+    } finally {
+      setUpfrontRepairSubmitting(false);
     }
   };
 
@@ -968,13 +1590,14 @@ export default function Customers() {
       setProductSearch('');
       setOrderPopupTab('create');
       setEditingUpfrontOrder(null);
+      setUpfrontOrderFinancialDate(toDateTimeLocalNow());
+      setUpfrontOrderRepairReason('');
       setUpfrontOrderError(null);
       setIsUpfrontOrderModalOpen(true);
   };
 
-  const handleSaveUpfrontOrder = (saveAndNext = false) => {
-      if (!orderCustomer || !selectedOrderProduct) return;
-      setUpfrontOrderError(null);
+  const buildUpfrontOrderFromForm = () => {
+      if (!orderCustomer || !selectedOrderProduct) return null;
       const numberOfPieces = Number(upfrontOrderForm.numberOfPieces || 0);
       const numberOfCartons = Number(upfrontOrderForm.numberOfCartons || 0);
       const totalPieces = numberOfPieces * numberOfCartons;
@@ -987,11 +1610,16 @@ export default function Customers() {
       const paidNowCash = Math.max(0, Number(upfrontOrderForm.paidNowCash || 0));
       const paidNowOnline = Math.max(0, Number(upfrontOrderForm.paidNowOnline || 0));
       const advance = paidNowCash + paidNowOnline;
-      const remaining = Math.max(0, finalTotal - advance);
-      if (numberOfPieces <= 0 || numberOfCartons <= 0 || pricePerPiece <= 0 || pricePerPieceCustomer <= 0) return setUpfrontOrderError('Please enter valid positive values for pieces/cartons/prices.');
-      if (advance > finalTotal + 0.0001) return setUpfrontOrderError('Paid Now (Cash + Online) cannot exceed Customer Total + Expenses.');
-      
-      const order: UpfrontOrder = {
+      if (numberOfPieces <= 0 || numberOfCartons <= 0 || pricePerPiece <= 0 || pricePerPieceCustomer <= 0) throw new Error('Please enter valid positive values for pieces/cartons/prices.');
+      if (advance > finalTotal + 0.0001) throw new Error('Paid Now (Cash + Online) cannot exceed Customer Total + Expenses.');
+      const effectiveAt = repairMode ? parseDateTimeInput(upfrontOrderFinancialDate) : new Date().toISOString();
+      if (repairMode && !effectiveAt) throw new Error('Please enter a valid financial date and time.');
+      const preservedHistory = editingUpfrontOrder?.paymentHistory?.map((payment) => ({ ...payment })) || [];
+      const initialHistory = editingUpfrontOrder ? preservedHistory : [
+        ...(paidNowCash > 0 ? [{ id: `upfront-pay-${Date.now()}-cash`, paidAt: effectiveAt as string, effectiveAt: effectiveAt as string, amount: paidNowCash, method: 'Cash' as const, note: 'Initial advance (Cash)', kind: 'initial_advance' as const, remainingAfterPayment: Math.max(0, finalTotal - paidNowCash), advancePaidAfterPayment: paidNowCash }] : []),
+        ...(paidNowOnline > 0 ? [{ id: `upfront-pay-${Date.now()}-online`, paidAt: effectiveAt as string, effectiveAt: effectiveAt as string, amount: paidNowOnline, method: 'Online' as const, note: 'Initial advance (Online)', kind: 'initial_advance' as const, remainingAfterPayment: Math.max(0, finalTotal - paidNowCash - paidNowOnline), advancePaidAfterPayment: paidNowCash + paidNowOnline }] : []),
+      ];
+      const order: UpfrontOrder = recomputeUpfrontOrderPaymentState({
           id: editingUpfrontOrder?.id || Date.now().toString(),
           customerId: orderCustomer.id,
           productId: selectedOrderProduct.id,
@@ -1011,35 +1639,107 @@ export default function Customers() {
           finalTotal,
           profitAmount: (pricePerPieceCustomer - pricePerPiece) * totalPieces,
           profitPercent: pricePerPiece > 0 ? ((pricePerPieceCustomer - pricePerPiece) / pricePerPiece) * 100 : 0,
+          effectiveAt: effectiveAt as string,
           paidNowCash,
           paidNowOnline,
           cartonPriceAdmin: pricePerPiece,
           cartonPriceCustomer: pricePerPieceCustomer,
           totalCost: finalTotal,
-          advancePaid: advance,
-          remainingAmount: remaining,
-          date: editingUpfrontOrder?.date || new Date().toISOString(),
+          advancePaid: editingUpfrontOrder ? Number(editingUpfrontOrder.advancePaid || 0) : advance,
+          remainingAmount: Math.max(0, finalTotal - (editingUpfrontOrder ? Number(editingUpfrontOrder.advancePaid || 0) : advance)),
+          accountingMode: 'modern_receivable',
+          date: editingUpfrontOrder?.date || effectiveAt as string,
           reminderDate: upfrontOrderForm.reminderDate,
-          status: remaining <= 0 ? 'cleared' : 'unpaid',
+          status: 'unpaid',
           notes: upfrontOrderForm.notes,
           selectedVariant: upfrontOrderForm.selectedVariant || undefined,
           selectedColor: upfrontOrderForm.selectedColor || undefined,
           variantLabel: [upfrontOrderForm.selectedVariant, upfrontOrderForm.selectedColor].filter(Boolean).join(' / ') || undefined,
-          paymentHistory: [
-            ...(paidNowCash > 0 ? [{ id: `upfront-pay-${Date.now()}-cash`, paidAt: new Date().toISOString(), amount: paidNowCash, method: 'Cash' as const, note: 'Initial advance (Cash)', kind: 'initial_advance' as const, remainingAfterPayment: Math.max(0, finalTotal - paidNowCash), advancePaidAfterPayment: paidNowCash }] : []),
-            ...(paidNowOnline > 0 ? [{ id: `upfront-pay-${Date.now()}-online`, paidAt: new Date().toISOString(), amount: paidNowOnline, method: 'Online' as const, note: 'Initial advance (Online)', kind: 'initial_advance' as const, remainingAfterPayment: remaining, advancePaidAfterPayment: advance }] : []),
-          ],
-      };
+          paymentHistory: initialHistory,
+          createdAt: editingUpfrontOrder?.createdAt || effectiveAt as string,
+          updatedAt: new Date().toISOString(),
+      });
+      return order;
+  };
 
-      if (editingUpfrontOrder) {
-          updateUpfrontOrder(order);
-      } else {
-          addUpfrontOrder(order);
+  const previewCreateDueForRemainingAmount = (order: UpfrontOrder) => {
+    if (!repairMode) return;
+    if (getUpfrontOrderAccountingMode(order) === 'modern_receivable') {
+      setUpfrontOrderError('This custom order due is already created.');
+      return;
+    }
+    const customer = orderCustomer || viewingCustomer || customers.find((customerItem) => customerItem.id === order.customerId) || null;
+    if (!customer) {
+      setUpfrontOrderError('Customer context is required for advance-order due repair preview.');
+      return;
+    }
+    const reason = window.prompt('Repair reason for creating due from this custom order remaining amount?');
+    if (!reason || !reason.trim()) {
+      setUpfrontOrderError('Repair reason is required.');
+      return;
+    }
+    const repairedOrder: UpfrontOrder = {
+      ...order,
+      accountingMode: 'modern_receivable',
+      paymentHistory: Array.isArray(order.paymentHistory) && order.paymentHistory.length
+        ? order.paymentHistory.map((payment) => ({ ...payment }))
+        : buildReceivableOnlyRepairAdvanceEntries(order),
+      updatedAt: new Date().toISOString(),
+    };
+    const openSession = (loadData().cashSessions || []).find((session: any) => session.status === 'open');
+    const draft: UpfrontRepairDraft = {
+      kind: 'edit_advance_order',
+      reason: reason.trim(),
+      financialDate: getUpfrontOrderFinancialDate(repairedOrder),
+      oldOrder: { ...order, paymentHistory: order.paymentHistory?.map((payment) => ({ ...payment })) || [] },
+      newOrder: repairedOrder,
+    };
+    setUpfrontOrderError(null);
+    setUpfrontRepairDraft(draft);
+    setUpfrontRepairPreview(buildUpfrontRepairPreview(customer, draft, transactions, upfrontOrders, openSession?.startTime));
+    setUpfrontRepairError(null);
+    setUpfrontRepairConfirmOpen(true);
+  };
+
+  const handleSaveUpfrontOrder = (saveAndNext = false) => {
+      if (!orderCustomer || !selectedOrderProduct) return;
+      setUpfrontOrderError(null);
+      try {
+        const order = buildUpfrontOrderFromForm();
+        if (!order) return;
+        if (repairMode) {
+          if (!upfrontOrderRepairReason.trim()) return setUpfrontOrderError('Repair reason is required.');
+          const openSession = (loadData().cashSessions || []).find((session: any) => session.status === 'open');
+          const draft: UpfrontRepairDraft = {
+            kind: editingUpfrontOrder ? 'edit_advance_order' : 'add_advance_order',
+            reason: upfrontOrderRepairReason,
+            financialDate: order.effectiveAt || order.date,
+            oldOrder: editingUpfrontOrder ? { ...editingUpfrontOrder, paymentHistory: editingUpfrontOrder.paymentHistory?.map((payment) => ({ ...payment })) || [] } : null,
+            newOrder: order,
+          };
+          const repairCustomer = orderCustomer;
+          if (!repairCustomer) throw new Error('Customer context is required for order repair preview.');
+          setUpfrontRepairDraft(draft);
+          setUpfrontRepairPreview(buildUpfrontRepairPreview(repairCustomer, draft, transactions, upfrontOrders, openSession?.startTime));
+          setUpfrontRepairError(null);
+          setUpfrontRepairConfirmOpen(true);
+          return;
+        }
+        if (editingUpfrontOrder) {
+            updateUpfrontOrder(order);
+        } else {
+            addUpfrontOrder(order);
+        }
+      } catch (error) {
+        setUpfrontOrderError(error instanceof Error ? error.message : 'Could not save custom order.');
+        return;
       }
       
       refreshData();
       if (!saveAndNext) setIsUpfrontOrderModalOpen(false);
       setEditingUpfrontOrder(null);
+      setUpfrontOrderFinancialDate(toDateTimeLocalNow());
+      setUpfrontOrderRepairReason('');
       setUpfrontOrderForm({
           numberOfPieces: '',
           numberOfCartons: '1',
@@ -1069,8 +1769,70 @@ export default function Customers() {
           return;
       }
 
-      if (amount > selectedUpfrontOrder.remainingAmount + 0.01) {
-          setCollectPaymentError(`Cannot collect more than remaining balance (${formatINRPrecise(selectedUpfrontOrder.remainingAmount)})`);
+      const maxAllowedAmount = Math.max(0, selectedUpfrontOrder.remainingAmount + editablePaymentBaseAmount);
+      if (amount > maxAllowedAmount + 0.01) {
+          setCollectPaymentError(`Cannot collect more than allowed balance (${formatINRPrecise(maxAllowedAmount)})`);
+          return;
+      }
+
+      if (repairMode) {
+          if (!collectPaymentReason.trim()) {
+              setCollectPaymentError('Repair reason is required.');
+              return;
+          }
+          const financialDate = parseDateTimeInput(collectPaymentFinancialDate);
+          if (!financialDate) {
+              setCollectPaymentError('Please enter a valid financial date and time.');
+              return;
+          }
+          const nextOrder = recomputeUpfrontOrderPaymentState({
+            ...selectedUpfrontOrder,
+            paymentHistory: editingUpfrontPaymentId
+              ? (selectedUpfrontOrder.paymentHistory || []).map((payment) => payment.id === editingUpfrontPaymentId ? {
+                  ...payment,
+                  amount,
+                  method: collectPaymentMethod,
+                  note: collectPaymentNote.trim() || payment.note,
+                  paidAt: financialDate,
+                  effectiveAt: financialDate,
+                } : { ...payment })
+              : [
+                  ...((selectedUpfrontOrder.paymentHistory || []).map((payment) => ({ ...payment }))),
+                  {
+                    id: `upfront-pay-${selectedUpfrontOrder.id}-${Date.now()}`,
+                    amount,
+                    method: collectPaymentMethod,
+                    note: collectPaymentNote.trim() || 'Additional payment',
+                    paidAt: financialDate,
+                    effectiveAt: financialDate,
+                    kind: 'additional_payment',
+                    remainingAfterPayment: 0,
+                    advancePaidAfterPayment: 0,
+                  },
+                ],
+          });
+          if (nextOrder.advancePaid - nextOrder.totalCost > 0.01) {
+            setCollectPaymentError(`Cannot collect more than remaining balance (${formatINRPrecise(selectedUpfrontOrder.remainingAmount)})`);
+            return;
+          }
+          const openSession = (loadData().cashSessions || []).find((session: any) => session.status === 'open');
+          const draft: UpfrontRepairDraft = {
+            kind: editingUpfrontPaymentId ? 'edit_advance_payment' : 'add_advance_payment',
+            reason: collectPaymentReason,
+            financialDate,
+            oldOrder: { ...selectedUpfrontOrder, paymentHistory: selectedUpfrontOrder.paymentHistory?.map((payment) => ({ ...payment })) || [] },
+            newOrder: nextOrder,
+            targetPaymentId: editingUpfrontPaymentId || nextOrder.paymentHistory?.[nextOrder.paymentHistory.length - 1]?.id,
+          };
+          const repairCustomer = orderCustomer || viewingCustomer || customers.find((customer) => customer.id === selectedUpfrontOrder.customerId) || null;
+          if (!repairCustomer) {
+            setCollectPaymentError('Customer context is required for advance payment repair preview.');
+            return;
+          }
+          setUpfrontRepairDraft(draft);
+          setUpfrontRepairPreview(buildUpfrontRepairPreview(repairCustomer, draft, transactions, upfrontOrders, openSession?.startTime));
+          setUpfrontRepairError(null);
+          setUpfrontRepairConfirmOpen(true);
           return;
       }
 
@@ -1078,6 +1840,11 @@ export default function Customers() {
       refreshData();
       setIsCollectPaymentModalOpen(false);
       setCollectAmount('');
+      setCollectPaymentMethod('Cash');
+      setCollectPaymentNote('');
+      setCollectPaymentFinancialDate(toDateTimeLocalNow());
+      setCollectPaymentReason('');
+      setEditingUpfrontPaymentId(null);
       setSelectedUpfrontOrder(null);
       setCollectPaymentError(null);
   };
@@ -1085,7 +1852,11 @@ export default function Customers() {
   const collectAmountNumber = Number(collectAmount);
   const isCollectAmountValid = Number.isFinite(collectAmountNumber) && collectAmountNumber > 0;
   const selectedOrderRemaining = Math.max(0, Number(selectedUpfrontOrder?.remainingAmount || 0));
-  const projectedRemainingAfterCollect = Math.max(0, selectedOrderRemaining - (isCollectAmountValid ? collectAmountNumber : 0));
+  const editingUpfrontPayment = selectedUpfrontOrder && editingUpfrontPaymentId
+    ? ((selectedUpfrontOrder.paymentHistory || []).find((payment) => payment.id === editingUpfrontPaymentId) || null)
+    : null;
+  const editablePaymentBaseAmount = Math.max(0, Number(editingUpfrontPayment?.amount || 0));
+  const projectedRemainingAfterCollect = Math.max(0, selectedOrderRemaining + editablePaymentBaseAmount - (isCollectAmountValid ? collectAmountNumber : 0));
   const availableStoreCredit = Math.max(0, Number(viewingCustomerBalance?.storeCredit || 0));
   const possibleCreditApplication = Math.min(availableStoreCredit, projectedRemainingAfterCollect);
   const isOrderFormDirty = Boolean(
@@ -1105,6 +1876,20 @@ export default function Customers() {
 
   const openUpfrontOrderEditor = (order: UpfrontOrder) => {
     setEditingUpfrontOrder(order);
+    setOrderCustomer(customers.find((customer) => customer.id === order.customerId) || viewingCustomer || null);
+    setSelectedOrderProduct(products.find((product) => product.id === order.productId) || {
+      id: order.productId || order.id,
+      barcode: '',
+      name: order.productName,
+      description: '',
+      buyPrice: Number(order.pricePerPiece || order.cartonPriceAdmin || 0),
+      sellPrice: Number(order.customerPricePerPiece || order.cartonPriceCustomer || 0),
+      stock: 0,
+      image: order.productImage || '',
+      category: order.category || 'Uncategorized',
+    });
+    setOrderStage('form');
+    setOrderPopupTab('create');
     setUpfrontOrderForm({
       numberOfPieces: String(order.piecesPerCarton || order.quantity || ''),
       numberOfCartons: String(order.numberOfCartons || 1),
@@ -1118,8 +1903,71 @@ export default function Customers() {
       selectedVariant: order.selectedVariant || '',
       selectedColor: order.selectedColor || '',
     });
+    setUpfrontOrderFinancialDate(toDateTimeLocalValue(getUpfrontOrderFinancialDate(order)));
+    setUpfrontOrderRepairReason('');
     setIsUpfrontOrderModalOpen(true);
     setSelectedUpfrontOrder(null);
+  };
+
+  const openUpfrontPaymentModal = (order: UpfrontOrder, payment?: UpfrontOrderPaymentEntry | null) => {
+    setSelectedUpfrontOrder(order);
+    setEditingUpfrontPaymentId(payment?.id || null);
+    setCollectAmount(payment ? String(payment.amount || '') : '');
+    setCollectPaymentMethod(payment?.method === 'Online' ? 'Online' : 'Cash');
+    setCollectPaymentNote(payment?.note || '');
+    setCollectPaymentFinancialDate(toDateTimeLocalValue(getUpfrontPaymentFinancialDate(payment, order)));
+    setCollectPaymentReason('');
+    setCollectPaymentError(null);
+    setIsCollectPaymentModalOpen(true);
+  };
+
+  const previewDeleteUpfrontOrder = (order: UpfrontOrder) => {
+    if (!repairMode) return;
+    if (!orderCustomer && !viewingCustomer) return;
+    if (!upfrontOrderRepairReason.trim()) {
+      setUpfrontOrderError('Repair reason is required.');
+      return;
+    }
+    const customer = orderCustomer || viewingCustomer!;
+    const openSession = (loadData().cashSessions || []).find((session: any) => session.status === 'open');
+    const draft: UpfrontRepairDraft = {
+      kind: 'delete_advance_order',
+      reason: upfrontOrderRepairReason,
+      financialDate: getUpfrontOrderFinancialDate(order),
+      oldOrder: { ...order, paymentHistory: order.paymentHistory?.map((payment) => ({ ...payment })) || [] },
+      newOrder: null,
+    };
+    setUpfrontRepairDraft(draft);
+    setUpfrontRepairPreview(buildUpfrontRepairPreview(customer, draft, transactions, upfrontOrders, openSession?.startTime));
+    setUpfrontRepairError(null);
+    setUpfrontRepairConfirmOpen(true);
+  };
+
+  const previewDeleteUpfrontPayment = (order: UpfrontOrder, payment: UpfrontOrderPaymentEntry) => {
+    if (!repairMode) return;
+    const customer = orderCustomer || viewingCustomer || customers.find((customerItem) => customerItem.id === order.customerId) || null;
+    if (!customer) return;
+    if (!collectPaymentReason.trim()) {
+      setCollectPaymentError('Repair reason is required.');
+      return;
+    }
+    const nextOrder = recomputeUpfrontOrderPaymentState({
+      ...order,
+      paymentHistory: (order.paymentHistory || []).filter((entry) => entry.id !== payment.id).map((entry) => ({ ...entry })),
+    });
+    const openSession = (loadData().cashSessions || []).find((session: any) => session.status === 'open');
+    const draft: UpfrontRepairDraft = {
+      kind: 'delete_advance_payment',
+      reason: collectPaymentReason,
+      financialDate: getUpfrontPaymentFinancialDate(payment, order),
+      oldOrder: { ...order, paymentHistory: order.paymentHistory?.map((entry) => ({ ...entry })) || [] },
+      newOrder: nextOrder,
+      targetPaymentId: payment.id,
+    };
+    setUpfrontRepairDraft(draft);
+    setUpfrontRepairPreview(buildUpfrontRepairPreview(customer, draft, transactions, upfrontOrders, openSession?.startTime));
+    setUpfrontRepairError(null);
+    setUpfrontRepairConfirmOpen(true);
   };
 
   const handleDeleteCustomer = () => {
@@ -1237,6 +2085,7 @@ export default function Customers() {
                 <h1 className="text-xl md:text-3xl font-bold tracking-tight text-slate-900">Customers</h1>
                 <p className="text-xs md:text-sm text-muted-foreground hidden sm:block font-medium">Credit tracking and customer database.</p>
               </div>
+              {!hideStandardHeaderActions && (
               <div className="flex gap-2">
                   <Button variant="outline" size="sm" className="h-8 md:h-9" onClick={() => downloadCustomersData()}>Download Data</Button>
                   {selectedCustomerIds.length > 0 && (
@@ -1262,6 +2111,7 @@ export default function Customers() {
                       <FileText className="w-4 h-4 md:mr-2" /> <span className="hidden md:inline">Dues Report</span>
                   </Button>
               </div>
+              )}
           </div>
           
           {canonicalBalanceUnavailableSummary.count > 0 && (
@@ -1694,13 +2544,13 @@ export default function Customers() {
                                   <span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5" /> {viewingCustomer.phone}</span>
                                   <span>GST Name: <b className="text-slate-700">{viewingCustomer.gstName || 'Not added'}</b></span>
                                   <span>GST No: <b className="text-slate-700">{viewingCustomer.gstNumber || 'Not added'}</b></span>
+                                  {repairMode && <span className="font-semibold text-amber-700">Repair mode enabled</span>}
                               </div>
                           </div>
                           <div className="flex flex-wrap items-center justify-start gap-1.5 lg:justify-end [&_button]:h-[34px] [&_button]:rounded-lg [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:font-semibold">
-                              <Button size="sm" className="bg-emerald-700 text-white shadow-none hover:bg-emerald-800" onClick={() => handleRecordPayment()}><Coins className="mr-1.5 h-4 w-4" /> Receive Payment</Button>
+                              <Button size="sm" className={repairMode ? 'bg-amber-600 text-white shadow-none hover:bg-amber-700' : 'bg-emerald-700 text-white shadow-none hover:bg-emerald-800'} onClick={() => openRepairDraft(createCustomerRepairAddDraft())}>{repairMode ? <Plus className="mr-1.5 h-4 w-4" /> : <Coins className="mr-1.5 h-4 w-4" />}{repairMode ? 'Add Transaction' : 'Receive Payment'}</Button>
                               <Button size="sm" variant="outline" onClick={() => { setExportType('statement'); setIsExportModalOpen(true); }}><FileText className="mr-1.5 h-4 w-4" /> Statement</Button>
                               <Button size="sm" variant="outline" className="border-emerald-200 text-emerald-700" onClick={() => { if (viewingCustomer) void handleShareCustomerLedger(viewingCustomer); }}>WhatsApp Ledger</Button>
-                              <Button size="sm" variant="outline" onClick={() => openCustomerActionModal('payment')}><Plus className="mr-1.5 h-4 w-4" /> Transaction</Button>
                               {can('analytics') && <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px] font-medium text-slate-500 hover:bg-transparent hover:text-slate-700" onClick={() => { if (!viewingCustomer) return; setUpdatedViewPreview(previewCustomerRepairedAllocationView(viewingCustomer.id)); setUpdatedViewOpen(true); }}>Updated View</Button>}
                               {can('analytics') && customerLedgerDebugEnabled && (
                                   <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px] font-medium text-slate-500 hover:bg-transparent hover:text-amber-700" onClick={() => { if (!viewingCustomer) return; setPaymentAuditResult(auditCustomerPaymentAllocations(viewingCustomer.id)); setPaymentAuditOpen(true); }}>Audit</Button>
@@ -1752,6 +2602,7 @@ export default function Customers() {
                             ['store_credit', 'Store Credit'],
                             ['custom_orders', 'Custom Orders'],
                             ['notes', 'Notes / Audit'],
+                            ...(repairMode ? [['repair_history', 'Repair History'] as const] : []),
                           ] as const).map(([tab, label]) => (
                             <button key={tab} type="button" onClick={() => { setExpandedCustomerHistoryId(null); setCustomerDetailTab(tab); }} className={`h-9 whitespace-nowrap border-b-2 px-2.5 text-[13px] font-medium transition ${customerDetailTab === tab ? 'border-slate-900 text-slate-950' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>{label}</button>
                           ))}
@@ -1772,6 +2623,7 @@ export default function Customers() {
                                   <col className="w-[86px]" />
                                   <col />
                                   <col className="w-[100px]" />
+                                  {customerDetailPermissions.canEditTransactions && <col className="w-[128px]" />}
                                 </colgroup>
                                 <thead className="sticky top-0 z-10 bg-white text-[11px] uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_rgba(148,163,184,0.35)]">
                                   <tr>
@@ -1779,13 +2631,15 @@ export default function Customers() {
                                     <th className="px-2 py-2 text-left font-semibold">Type</th>
                                     <th className="px-2 py-2 text-left font-semibold">Product</th>
                                     <th className="px-2 py-2 text-right font-semibold">Amount</th>
+                                    {customerDetailPermissions.canEditTransactions && <th className="px-2 py-2 text-right font-semibold">Actions</th>}
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                   {businessTransactionRows.length === 0 ? (
-                                    <tr><td colSpan={4} className="px-3 py-8 text-center text-xs text-slate-400">No business transactions yet.</td></tr>
+                                    <tr><td colSpan={customerDetailPermissions.canEditTransactions ? 5 : 4} className="px-3 py-8 text-center text-xs text-slate-400">No business transactions yet.</td></tr>
                                   ) : businessTransactionRows.map((row, idx) => {
                                     const isTransactionRow = row.sourceKind === 'transaction';
+                                    const transaction = isTransactionRow ? transactions.find((tx) => tx.id === row.id) || null : null;
                                     return (
                                     <tr
                                       key={`business-${row.sourceKind}-${row.id}`}
@@ -1814,6 +2668,29 @@ export default function Customers() {
                                         </div>
                                       </td>
                                       <td className="whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold text-slate-800">₹{formatMoneyWhole(row.amount)}</td>
+                                      {customerDetailPermissions.canEditTransactions && (
+                                        <td className="px-2 py-1.5">
+                                          {transaction ? (
+                                            <div className="flex flex-col items-end gap-1">
+                                              <div className="flex justify-end gap-1">
+                                                {getTransactionRepairCapability(transaction)?.edit ? (
+                                                  <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairEditDraft(transaction)); }}>Edit</Button>
+                                                ) : (
+                                                  <span title={getTransactionRepairCapability(transaction)?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}>
+                                                    <Button size="sm" variant="outline" disabled className="pointer-events-none opacity-60">Edit</Button>
+                                                  </span>
+                                                )}
+                                                {getTransactionRepairCapability(transaction)?.delete && <Button size="sm" variant="outline" className="border-red-200 text-red-700 hover:bg-red-50" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairDeleteDraft(transaction)); }}>Delete</Button>}
+                                              </div>
+                                              {!getTransactionRepairCapability(transaction)?.edit && (
+                                                <div className="max-w-[180px] text-right text-[10px] leading-4 text-amber-700">
+                                                  {getTransactionRepairCapability(transaction)?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}
+                                                </div>
+                                              )}
+                                            </div>
+                                          ) : <div className="text-right text-[11px] text-slate-400">Read only</div>}
+                                        </td>
+                                      )}
                                     </tr>
                                   )})}
                                 </tbody>
@@ -1834,6 +2711,7 @@ export default function Customers() {
                                   <col className="w-[110px]" />
                                   <col className="w-[135px]" />
                                   <col className="w-[135px]" />
+                                  {customerDetailPermissions.canEditTransactions && <col className="w-[128px]" />}
                                 </colgroup>
                                 <thead className="sticky top-0 z-10 bg-white text-[11px] uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_rgba(148,163,184,0.35)]">
                                   <tr>
@@ -1842,15 +2720,18 @@ export default function Customers() {
                                     <th className="px-2 py-2 text-left font-semibold">Reference</th>
                                     <th className="px-2 py-2 text-right font-semibold">Movement</th>
                                     <th className="px-2 py-2 text-right font-semibold">Balance</th>
+                                    {customerDetailPermissions.canEditTransactions && <th className="px-2 py-2 text-right font-semibold">Actions</th>}
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                   {moneyBalanceLedgerRows.length === 0 ? (
-                                    <tr><td colSpan={5} className="px-3 py-8 text-center text-xs text-slate-400">No money ledger movements yet.</td></tr>
+                                    <tr><td colSpan={customerDetailPermissions.canEditTransactions ? 6 : 5} className="px-3 py-8 text-center text-xs text-slate-400">No money ledger movements yet.</td></tr>
                                   ) : moneyBalanceLedgerRows.map((row, idx) => {
                                     const movement = getMovementDisplay(row);
                                     const running = getRunningBalanceDisplay(row.runningBalance);
                                     const isTransactionRow = row.sourceKind !== 'upfront_order';
+                                    const transaction = isTransactionRow ? transactions.find((tx) => tx.id === row.id) || null : null;
+                                    const transactionRepairCapability = getTransactionRepairCapability(transaction);
                                     return (
                                       <tr
                                         key={`money-${row.sourceKind}-${row.id}`}
@@ -1875,6 +2756,118 @@ export default function Customers() {
                                         </td>
                                         <td className={`overflow-hidden truncate whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${movement.className}`}>{movement.label}</td>
                                         <td className={`whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${running.className}`}>{running.label}</td>
+                                        {customerDetailPermissions.canEditTransactions && (
+                                          <td className="px-2 py-1.5">
+                                            {transaction ? (
+                                              <div className="flex flex-col items-end gap-1">
+                                                <div className="flex justify-end gap-1">
+                                                  {transactionRepairCapability?.edit ? (
+                                                    <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairEditDraft(transaction)); }}>Edit</Button>
+                                                  ) : (
+                                                    <span title={transactionRepairCapability?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}>
+                                                      <Button size="sm" variant="outline" disabled className="pointer-events-none opacity-60">Edit</Button>
+                                                    </span>
+                                                  )}
+                                                  {transactionRepairCapability?.delete && <Button size="sm" variant="outline" className="border-red-200 text-red-700 hover:bg-red-50" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairDeleteDraft(transaction)); }}>Delete</Button>}
+                                                </div>
+                                                {!transactionRepairCapability?.edit && (
+                                                  <div className="max-w-[180px] text-right text-[10px] leading-4 text-amber-700">
+                                                    {transactionRepairCapability?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            ) : <div className="text-right text-[11px] text-slate-400">Read only</div>}
+                                          </td>
+                                        )}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </section>
+
+                          <section className="flex min-h-[360px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white">
+                            <div className="sticky top-0 z-10 border-b bg-slate-50/95 px-3 py-2 backdrop-blur">
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">Money / Balance Ledger</div>
+                              <div className="text-[10px] text-slate-500">Payments, credits, and running balance</div>
+                            </div>
+                            <div className="max-h-[520px] min-w-0 overflow-y-auto overflow-x-hidden">
+                              <table className="w-full table-fixed border-collapse text-[13px]">
+                                <colgroup>
+                                  <col className="w-[72px]" />
+                                  <col className="w-[82px]" />
+                                  <col className="w-[110px]" />
+                                  <col className="w-[135px]" />
+                                  <col className="w-[135px]" />
+                                  {customerDetailPermissions.canEditTransactions && <col className="w-[128px]" />}
+                                </colgroup>
+                                <thead className="sticky top-0 z-10 bg-white text-[11px] uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_rgba(148,163,184,0.35)]">
+                                  <tr>
+                                    <th className="px-2 py-2 text-left font-semibold">Date</th>
+                                    <th className="px-2 py-2 text-left font-semibold">Type</th>
+                                    <th className="px-2 py-2 text-left font-semibold">Reference</th>
+                                    <th className="px-2 py-2 text-right font-semibold">Movement</th>
+                                    <th className="px-2 py-2 text-right font-semibold">Balance</th>
+                                    {customerDetailPermissions.canEditTransactions && <th className="px-2 py-2 text-right font-semibold">Actions</th>}
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {moneyBalanceLedgerRows.length === 0 ? (
+                                    <tr><td colSpan={customerDetailPermissions.canEditTransactions ? 6 : 5} className="px-3 py-8 text-center text-xs text-slate-400">No money ledger movements yet.</td></tr>
+                                  ) : moneyBalanceLedgerRows.map((row, idx) => {
+                                    const movement = getMovementDisplay(row);
+                                    const running = getRunningBalanceDisplay(row.runningBalance);
+                                    const isTransactionRow = row.sourceKind !== 'upfront_order';
+                                    const transaction = isTransactionRow ? transactions.find((tx) => tx.id === row.id) || null : null;
+                                    const transactionRepairCapability = getTransactionRepairCapability(transaction);
+                                    return (
+                                      <tr
+                                        key={`money-${row.sourceKind}-${row.id}`}
+                                        className={`h-11 align-middle hover:bg-slate-50 ${isTransactionRow ? 'cursor-pointer' : ''} ${idx % 2 ? 'bg-slate-50/25' : 'bg-white'}`}
+                                        onClick={isTransactionRow ? () => openCustomerTransactionDetails(row.id) : undefined}
+                                        onKeyDown={isTransactionRow ? (event) => {
+                                          if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault();
+                                            openCustomerTransactionDetails(row.id);
+                                          }
+                                        } : undefined}
+                                        role={isTransactionRow ? 'button' : undefined}
+                                        tabIndex={isTransactionRow ? 0 : undefined}
+                                      >
+                                        <td className="whitespace-nowrap px-2 py-1.5 text-[13px] font-medium text-slate-600">{formatCompactDate(row.date)}</td>
+                                        <td className="px-2 py-1.5"><Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge></td>
+                                        <td className="min-w-0 px-2 py-1.5">
+                                          <div className="flex min-w-0 items-center gap-1.5">
+                                            <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
+                                            {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
+                                          </div>
+                                        </td>
+                                        <td className={`overflow-hidden truncate whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${movement.className}`}>{movement.label}</td>
+                                        <td className={`whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${running.className}`}>{running.label}</td>
+                                        {customerDetailPermissions.canEditTransactions && (
+                                          <td className="px-2 py-1.5">
+                                            {transaction ? (
+                                              <div className="flex flex-col items-end gap-1">
+                                                <div className="flex justify-end gap-1">
+                                                  {transactionRepairCapability?.edit ? (
+                                                    <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairEditDraft(transaction)); }}>Edit</Button>
+                                                  ) : (
+                                                    <span title={transactionRepairCapability?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}>
+                                                      <Button size="sm" variant="outline" disabled className="pointer-events-none opacity-60">Edit</Button>
+                                                    </span>
+                                                  )}
+                                                  <Button size="sm" variant="outline" className="border-red-200 text-red-700 hover:bg-red-50" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairDeleteDraft(transaction)); }}>Delete</Button>
+                                                </div>
+                                                {!transactionRepairCapability?.edit && (
+                                                  <div className="max-w-[180px] text-right text-[10px] leading-4 text-amber-700">
+                                                    {transactionRepairCapability?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            ) : <div className="text-right text-[11px] text-slate-400">Read only</div>}
+                                          </td>
+                                        )}
                                       </tr>
                                     );
                                   })}
@@ -1892,7 +2885,7 @@ export default function Customers() {
                       )}
                       {customerDetailTab === 'custom_orders' && (
                         <div className="space-y-3">
-                          {customerHistory.filter((item) => item.historyType === 'upfrontOrder').length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No custom orders for this customer.</div> : customerHistory.filter((item) => item.historyType === 'upfrontOrder').map((item) => { const order = item as UpfrontOrder; const orderHistoryId = `order-${order.id}`; const expanded = expandedCustomerHistoryId === orderHistoryId; return <div key={order.id} className="overflow-hidden rounded-2xl border bg-white shadow-sm"><button type="button" className="grid w-full gap-3 px-4 py-3 text-left hover:bg-slate-50 sm:grid-cols-[110px_minmax(0,1fr)_100px_100px_110px_100px] sm:items-center" onClick={() => setExpandedCustomerHistoryId(expanded ? null : orderHistoryId)}><div className="font-mono text-xs text-slate-500">#{order.id.slice(-6)}</div><div><div className="font-bold text-slate-900">{order.productName}</div><div className="text-xs text-slate-500">{new Date(order.date).toLocaleDateString()} • {order.quantity} {order.isCarton ? 'carton(s)' : 'unit(s)'}</div></div><div className="text-right text-xs font-bold">₹{formatMoneyWhole(order.totalCost)}</div><div className="text-right text-xs font-bold text-emerald-700">₹{formatMoneyWhole(order.advancePaid)}</div><div className="text-right text-xs font-bold text-orange-700">₹{formatMoneyWhole(order.remainingAmount)}</div><div className="text-right"><Badge className={order.status === 'cleared' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{order.status === 'cleared' ? 'Paid' : 'Pending'}</Badge></div></button>{expanded && <div className="border-t bg-amber-50/40 p-4 text-xs"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Custom Order</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Order ID</span><b>{order.id}</b></div><div className="flex justify-between"><span>Product</span><b>{order.productName}</b></div><div className="flex justify-between"><span>Status</span><b>{order.status}</b></div></div></div><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Balance</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Total</span><b>₹{formatMoneyWhole(order.totalCost)}</b></div><div className="flex justify-between"><span>Advance</span><b>₹{formatMoneyWhole(order.advancePaid)}</b></div><div className="flex justify-between text-orange-700"><span>Remaining</span><b>₹{formatMoneyWhole(order.remainingAmount)}</b></div></div></div></div><div className="mt-3 flex gap-2">{order.status !== 'cleared' && <Button size="sm" onClick={(e) => { e.stopPropagation(); setCollectPaymentError(null); setSelectedUpfrontOrder(order); setCollectAmount(''); setIsCollectPaymentModalOpen(true); }}>Collect Payment</Button>}{order.status !== 'cleared' && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openUpfrontOrderEditor(order); }}>Edit Order</Button>}</div></div>}</div>; })}
+                          {customerHistory.filter((item) => item.historyType === 'upfrontOrder').length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No custom orders for this customer.</div> : customerHistory.filter((item) => item.historyType === 'upfrontOrder').map((item) => { const order = item as UpfrontOrder; const orderHistoryId = `order-${order.id}`; const expanded = expandedCustomerHistoryId === orderHistoryId; const repairEligibleForDueCreation = repairMode && getUpfrontOrderAccountingMode(order) !== 'modern_receivable' && Math.max(0, Number(order.remainingAmount || 0)) > 0; return <div key={order.id} className="overflow-hidden rounded-2xl border bg-white shadow-sm"><button type="button" className="grid w-full gap-3 px-4 py-3 text-left hover:bg-slate-50 sm:grid-cols-[110px_minmax(0,1fr)_100px_100px_110px_100px] sm:items-center" onClick={() => setExpandedCustomerHistoryId(expanded ? null : orderHistoryId)}><div className="font-mono text-xs text-slate-500">#{order.id.slice(-6)}</div><div><div className="font-bold text-slate-900">{order.productName}</div><div className="text-xs text-slate-500">{new Date(order.date).toLocaleDateString()} • {order.quantity} {order.isCarton ? 'carton(s)' : 'unit(s)'}</div></div><div className="text-right text-xs font-bold">₹{formatMoneyWhole(order.totalCost)}</div><div className="text-right text-xs font-bold text-emerald-700">₹{formatMoneyWhole(order.advancePaid)}</div><div className="text-right text-xs font-bold text-orange-700">₹{formatMoneyWhole(order.remainingAmount)}</div><div className="text-right"><Badge className={order.status === 'cleared' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{order.status === 'cleared' ? 'Paid' : 'Pending'}</Badge></div></button>{expanded && <div className="border-t bg-amber-50/40 p-4 text-xs"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Custom Order</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Order ID</span><b>{order.id}</b></div><div className="flex justify-between"><span>Product</span><b>{order.productName}</b></div><div className="flex justify-between"><span>Status</span><b>{order.status}</b></div></div></div><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Balance</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Total</span><b>₹{formatMoneyWhole(order.totalCost)}</b></div><div className="flex justify-between"><span>Advance</span><b>₹{formatMoneyWhole(order.advancePaid)}</b></div><div className="flex justify-between text-orange-700"><span>Remaining</span><b>₹{formatMoneyWhole(order.remainingAmount)}</b></div>{repairMode && <div className="flex justify-between"><span>Accounting Mode</span><b>{getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? 'Modern receivable' : 'Legacy / untrusted'}</b></div>}</div></div></div><div className="mt-3 flex gap-2">{order.status !== 'cleared' && <Button size="sm" onClick={(e) => { e.stopPropagation(); setCollectPaymentError(null); openUpfrontPaymentModal(order); }}>Collect Payment</Button>}{order.status !== 'cleared' && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openUpfrontOrderEditor(order); }}>Edit Order</Button>}{repairEligibleForDueCreation && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); previewCreateDueForRemainingAmount(order); }}>Create Due for Remaining Amount</Button>}</div></div>}</div>; })}
                         </div>
                       )}
                       {customerDetailTab === 'notes' && (
@@ -1901,30 +2894,44 @@ export default function Customers() {
                           {(viewingCustomerCorrectLedger?.warnings || []).length > 0 ? viewingCustomerCorrectLedger?.warnings.map((warning, idx) => <div key={`${warning.code}-${idx}`} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800"><b>{warning.code}</b><div>{warning.message}</div></div>) : <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No canonical ledger review notes.</div>}
                         </div>
                       )}
+                      {customerDetailTab === 'repair_history' && customerDetailPermissions.canViewRepairHistory && (
+                        <div className="space-y-4">
+                          <div className="rounded-3xl border bg-white p-5 shadow-sm">
+                            <div className="text-sm font-black text-slate-900">Repair History</div>
+                            <p className="mt-1 text-sm text-slate-500">Every repair stores before, after, reason, user, timestamp, and affected transaction.</p>
+                          </div>
+                          <section className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+                            <div className="border-b px-4 py-3">
+                              <div className="text-sm font-semibold text-slate-900">Immutable Repair Log</div>
+                              <div className="text-xs text-slate-500">Customer repairs are appended after the financial mutation succeeds.</div>
+                            </div>
+                            <div className="max-h-[520px] overflow-auto">
+                              {repairHistoryEntries.length === 0 ? (
+                                <div className="px-4 py-12 text-center text-sm text-slate-400">No repair history yet for this customer.</div>
+                              ) : repairHistoryEntries.map((entry) => (
+                                <div key={entry.id} className="border-b border-slate-100 px-4 py-4 text-sm">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="font-semibold text-slate-900">{getRepairHistoryLabel(entry.repairKind)}</div>
+                                    <div className="text-xs text-slate-500">{new Date(entry.createdAt).toLocaleString()}</div>
+                                  </div>
+                                  <div className="mt-1 text-xs text-slate-500">User: {entry.adminEmail || 'Unknown'} • Reason: {entry.reason}</div>
+                                  <div className="mt-1 text-xs text-slate-500">Entity: {entry.entityName} • Transaction: {entry.targetTransactionId?.slice(-6) || 'N/A'} • Financial date: {entry.financialDate ? new Date(entry.financialDate).toLocaleString() : 'N/A'}</div>
+                                  <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+                                    <div className="rounded border bg-slate-50 px-3 py-2">Before: ₹{formatMoneyPrecise(entry.before.netReceivable)}</div>
+                                    <div className="rounded border bg-slate-50 px-3 py-2">After: ₹{formatMoneyPrecise(entry.after.netReceivable)}</div>
+                                    <div className="rounded border bg-slate-50 px-3 py-2">Delta: ₹{formatMoneyPrecise(entry.delta.netReceivable)}</div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </section>
+                        </div>
+                      )}
                   </CardContent>
               </Card>
           </div>
       )}
-      {editingCustomerTx && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4">
-          <Card className="w-full max-w-md">
-            <CardHeader>
-              <CardTitle>Edit Customer Payment</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div><Label>Amount</Label><Input type="number" min="0" step="0.01" value={editTxAmount} onChange={(e) => setEditTxAmount(e.target.value)} /></div>
-              <div><Label>Date & Time</Label><Input type="datetime-local" value={editTxDate} onChange={(e) => setEditTxDate(e.target.value)} /></div>
-              <div><Label>Method</Label><Select value={editTxMethod} onChange={(e) => setEditTxMethod(e.target.value as 'Cash' | 'Online')}><option value="Cash">Cash</option><option value="Online">Online</option></Select></div>
-              <div><Label>Notes</Label><Input value={editTxNotes} onChange={(e) => setEditTxNotes(e.target.value)} placeholder="Optional note" /></div>
-              {editTxError && <p className="text-xs text-red-600">{editTxError}</p>}
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setEditingCustomerTx(null)}>Cancel</Button>
-                <Button onClick={() => void handleSaveEditedCustomerTransaction()}>Save</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      
 
       {customerActionModalOpen && viewingCustomer && (
         <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
@@ -1933,8 +2940,8 @@ export default function Customers() {
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <Button size="sm" variant={customerActionType === 'payment' ? 'default' : 'outline'} onClick={() => setCustomerActionType('payment')}>Receive Payment</Button>
-                <Button size="sm" variant={customerActionType === 'customer_cash_out' ? 'default' : 'outline'} onClick={() => setCustomerActionType('customer_cash_out')}>Give Cash</Button>
-                <Button size="sm" variant={customerActionType === 'customer_credit' ? 'default' : 'outline'} onClick={() => setCustomerActionType('customer_credit')}>Create Credit</Button>
+                <Button size="sm" variant={customerActionType === 'customer_cash_out' ? 'default' : 'outline'} onClick={() => setCustomerActionType('customer_cash_out')}>Cash Refund</Button>
+                <Button size="sm" variant={customerActionType === 'customer_credit' ? 'default' : 'outline'} onClick={() => setCustomerActionType('customer_credit')}>Store Credit</Button>
               </div>
               <div><Label>Date & Time</Label><Input type="datetime-local" value={customerActionDateTime} onChange={(e) => setCustomerActionDateTime(e.target.value)} /></div>
               <div><Label>Amount</Label><Input type="number" min="0" step="0.01" onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()} value={customerActionAmount} onChange={(e) => setCustomerActionAmount(e.target.value)} /></div>
@@ -1946,6 +2953,289 @@ export default function Customers() {
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setCustomerActionModalOpen(false)}>Cancel</Button>
                 <Button onClick={handleSubmitCustomerAction}>Save</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {repairDraft && viewingCustomer && !repairConfirmOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-4">
+          <Card className="w-full max-w-2xl">
+            <CardHeader className="border-b">
+              <CardTitle>{repairDraft.kind === 'add_transaction' ? 'Add Transaction' : repairDraft.kind === 'delete_transaction' ? 'Delete Transaction' : 'Edit Transaction'}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-4">
+              {repairDraft.kind === 'add_transaction' && customerDetailPermissions.canViewRepairHistory && (
+                <div>
+                  <Label>Transaction Type</Label>
+                  <Select value={repairDraft.transactionType} onChange={(e) => setRepairDraft({ ...repairDraft, transactionType: e.target.value as RepairTransactionType })}>
+                    {CUSTOMER_REPAIR_ADD_TRANSACTION_TYPES.map((type) => (
+                      <option key={type} value={type}>{getRepairKindLabel(type)}</option>
+                    ))}
+                  </Select>
+                  <p className="mt-1 text-xs text-slate-500">Only transaction types with complete repair support are available.</p>
+                </div>
+              )}
+
+              {repairDraft.kind !== 'delete_transaction' && repairDraft.transactionType === 'customer_credit' && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                  Store Credit adds credit to the customer's balance using the existing store-credit repair flow.
+                </div>
+              )}
+
+              {repairDraft.kind !== 'delete_transaction' && repairDraft.transactionType === 'customer_cash_out' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  Cash Refund means the business gives cash to the customer. Existing logic consumes store credit first before increasing receivable.
+                </div>
+              )}
+
+              {repairDraft.kind !== 'delete_transaction' && (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <Label>Financial Date</Label>
+                      <Input type="datetime-local" value={repairDraft.effectiveAt} onChange={(e) => setRepairDraft({ ...repairDraft, effectiveAt: e.target.value })} />
+                    </div>
+                    <div>
+                      <Label>{repairDraft.kind === 'edit_transaction' && isSettlementOnlyRepairTransactionType(repairDraft.transactionType) ? 'Sale Total' : 'Amount'}</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={repairDraft.amount}
+                        onChange={(e) => setRepairDraft({ ...repairDraft, amount: e.target.value })}
+                        disabled={repairDraft.kind === 'edit_transaction' && isSettlementOnlyRepairTransactionType(repairDraft.transactionType)}
+                      />
+                    </div>
+                  </div>
+
+                  {repairDraft.kind === 'edit_transaction' && isSettlementOnlyRepairTransactionType(repairDraft.transactionType) && (
+                    <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-900">
+                      <div>
+                        <div className="font-semibold uppercase tracking-wide">Settlement Repair Only</div>
+                        <p className="mt-1 text-amber-800">This editor modifies only paid amount, credit due, payment method mix, and notes.</p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <div className="font-semibold text-amber-900">Modifies</div>
+                          <ul className="mt-1 list-disc pl-4 text-amber-800">
+                            <li>Paid Amount</li>
+                            <li>Credit Due</li>
+                            <li>Payment Method</li>
+                            <li>Notes</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-amber-900">Does Not Modify</div>
+                          <ul className="mt-1 list-disc pl-4 text-amber-800">
+                            <li>Products</li>
+                            <li>Quantities</li>
+                            <li>Inventory</li>
+                            <li>Sale Total</li>
+                          </ul>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div>
+                          <Label>Products</Label>
+                          <Input value={repairDraftTransaction ? getTransactionProductSummary(repairDraftTransaction, 3) : 'No product details'} readOnly disabled />
+                        </div>
+                        <div>
+                          <Label>Quantities</Label>
+                          <Input value={getTransactionQuantitySummary(repairDraftTransaction)} readOnly disabled />
+                        </div>
+                        <div>
+                          <Label>Inventory</Label>
+                          <Input value="Locked to original sale lines" readOnly disabled />
+                        </div>
+                        <div>
+                          <Label>Sale Total</Label>
+                          <Input value={repairDraft.amount} readOnly disabled />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {(repairDraft.transactionType === 'payment' || repairDraft.transactionType === 'historical_payment' || repairDraft.transactionType === 'customer_cash_out') && (
+                    <div>
+                      <Label>Method</Label>
+                      <Select value={repairDraft.paymentMethod} onChange={(e) => setRepairDraft({ ...repairDraft, paymentMethod: e.target.value as 'Cash' | 'Online' })}>
+                        <option value="Cash">Cash</option>
+                        <option value="Online">Online</option>
+                      </Select>
+                    </div>
+                  )}
+
+                  {(repairDraft.transactionType === 'sale' || repairDraft.transactionType === 'historical_sale') && (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div>
+                          <Label>Cash Paid</Label>
+                          <Input type="number" min="0" step="0.01" value={repairDraft.cashPaid} onChange={(e) => setRepairDraft({ ...repairDraft, cashPaid: e.target.value })} />
+                        </div>
+                        <div>
+                          <Label>Online Paid</Label>
+                          <Input type="number" min="0" step="0.01" value={repairDraft.onlinePaid} onChange={(e) => setRepairDraft({ ...repairDraft, onlinePaid: e.target.value })} />
+                        </div>
+                        <div>
+                          <Label>Credit Due</Label>
+                          <Input type="number" min="0" step="0.01" value={repairDraft.creditDue} onChange={(e) => setRepairDraft({ ...repairDraft, creditDue: e.target.value })} />
+                        </div>
+                      </div>
+                      <div>
+                        <Label>Invoice</Label>
+                        <Input value={repairDraft.invoiceNo} onChange={(e) => setRepairDraft({ ...repairDraft, invoiceNo: e.target.value })} placeholder="Optional invoice number" />
+                      </div>
+                    </>
+                  )}
+
+                  {repairDraft.transactionType === 'sale_return' && (
+                    <div>
+                      <Label>Credit Note</Label>
+                      <Input value={repairDraft.invoiceNo} onChange={(e) => setRepairDraft({ ...repairDraft, invoiceNo: e.target.value })} placeholder="Optional credit note number" />
+                    </div>
+                  )}
+
+                  <div>
+                    <Label>Reference</Label>
+                    <Input value={repairDraft.referenceNo} onChange={(e) => setRepairDraft({ ...repairDraft, referenceNo: e.target.value })} placeholder="Optional reference" />
+                  </div>
+                </>
+              )}
+
+              {repairDraft.kind === 'delete_transaction' && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-800">
+                  This will remove the selected transaction after preview and confirmation.
+                </div>
+              )}
+
+              <div>
+                <Label>Notes</Label>
+                <Input value={repairDraft.notes} onChange={(e) => setRepairDraft({ ...repairDraft, notes: e.target.value })} placeholder="Optional notes" />
+              </div>
+              {customerDetailPermissions.requiresRepairReason && <div><Label>Repair Reason</Label><Input value={repairDraft.reason} onChange={(e) => setRepairDraft({ ...repairDraft, reason: e.target.value })} placeholder="Required reason for this repair" /></div>}
+              {repairError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{repairError}</div>}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => { setRepairDraft(null); setRepairError(null); }}>Cancel</Button>
+                <Button onClick={reviewRepairDraft}>{repairDraft.kind === 'delete_transaction' ? 'Review Delete' : 'Review Changes'}</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {repairDraft && repairPreview && repairConfirmOpen && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/85 p-4">
+          <Card className="w-full max-w-3xl">
+            <CardHeader className="border-b">
+              <CardTitle>Confirm Repair</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-4">
+              <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm text-slate-700">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
+                <div className="font-semibold text-slate-900">{getRepairKindLabel(repairDraft.transactionType)}</div>
+                <div className="mt-1">Reason: {repairDraft.reason}</div>
+                {repairPreview.historicalShiftRepair && <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-2 text-amber-800">This repair is backdated before the current open shift start, so the transaction stays in its historical financial window.</div>}
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
+                  <div className="font-semibold text-slate-900">Before</div>
+                  <div className="mt-1">Due: ₹{formatMoneyPrecise(repairPreview.before.totalDue)}</div>
+                  <div>Store Credit: ₹{formatMoneyPrecise(repairPreview.before.storeCredit)}</div>
+                  <div>Net: ₹{formatMoneyPrecise(repairPreview.before.netReceivable)}</div>
+                </div>
+                <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
+                  <div className="font-semibold text-slate-900">After</div>
+                  <div className="mt-1">Due: ₹{formatMoneyPrecise(repairPreview.after.totalDue)}</div>
+                  <div>Store Credit: ₹{formatMoneyPrecise(repairPreview.after.storeCredit)}</div>
+                  <div>Net: ₹{formatMoneyPrecise(repairPreview.after.netReceivable)}</div>
+                </div>
+                <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
+                  <div className="font-semibold text-slate-900">Change</div>
+                  <div className="mt-1">Due: ₹{formatMoneyPrecise(repairPreview.delta.totalDue)}</div>
+                  <div>Store Credit: ₹{formatMoneyPrecise(repairPreview.delta.storeCredit)}</div>
+                  <div>Net: ₹{formatMoneyPrecise(repairPreview.delta.netReceivable)}</div>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setRepairConfirmOpen(false)}>Back</Button>
+                <Button onClick={() => void applyRepairDraft()} disabled={repairSubmitting}>{repairSubmitting ? 'Saving...' : 'Confirm Repair'}</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {upfrontRepairDraft && upfrontRepairPreview && upfrontRepairConfirmOpen && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/85 p-4">
+          <Card className="w-full max-w-3xl">
+            <CardHeader className="border-b">
+              <CardTitle>Confirm Repair</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-4">
+              <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm text-slate-700">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
+                <div className="font-semibold text-slate-900">{upfrontRepairDraft.kind.replace(/_/g, ' ')}</div>
+                <div className="mt-1">Reason: {upfrontRepairDraft.reason}</div>
+                {upfrontRepairPreview.historicalShiftRepair && <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-2 text-amber-800">This repair is backdated before the current open shift start, so the advance-order ledger stays in its historical financial window.</div>}
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
+                  <div className="font-semibold text-slate-900">Before</div>
+                  <div className="mt-1">Due: â‚¹{formatMoneyPrecise(upfrontRepairPreview.before.totalDue)}</div>
+                  <div>Store Credit: â‚¹{formatMoneyPrecise(upfrontRepairPreview.before.storeCredit)}</div>
+                  <div>Net: â‚¹{formatMoneyPrecise(upfrontRepairPreview.before.netReceivable)}</div>
+                </div>
+                <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
+                  <div className="font-semibold text-slate-900">After</div>
+                  <div className="mt-1">Due: â‚¹{formatMoneyPrecise(upfrontRepairPreview.after.totalDue)}</div>
+                  <div>Store Credit: â‚¹{formatMoneyPrecise(upfrontRepairPreview.after.storeCredit)}</div>
+                  <div>Net: â‚¹{formatMoneyPrecise(upfrontRepairPreview.after.netReceivable)}</div>
+                </div>
+                <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
+                  <div className="font-semibold text-slate-900">Change</div>
+                  <div className="mt-1">Due: â‚¹{formatMoneyPrecise(upfrontRepairPreview.delta.totalDue)}</div>
+                  <div>Store Credit: â‚¹{formatMoneyPrecise(upfrontRepairPreview.delta.storeCredit)}</div>
+                  <div>Net: â‚¹{formatMoneyPrecise(upfrontRepairPreview.delta.netReceivable)}</div>
+                </div>
+              </div>
+              {upfrontRepairPreview.customOrderAuditRows.length > 0 && (
+                <div className="rounded-lg border bg-white">
+                  <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Affected Custom Order Audit</div>
+                  <div className="overflow-auto">
+                    <table className="w-full min-w-[760px] text-sm">
+                      <thead className="bg-slate-50 text-slate-600">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Customer</th>
+                          <th className="px-3 py-2 text-left">Order No</th>
+                          <th className="px-3 py-2 text-right">Order Total</th>
+                          <th className="px-3 py-2 text-right">Advance Paid</th>
+                          <th className="px-3 py-2 text-right">Old Due Impact</th>
+                          <th className="px-3 py-2 text-right">New Due Impact</th>
+                          <th className="px-3 py-2 text-right">Difference</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {upfrontRepairPreview.customOrderAuditRows.map((row) => (
+                          <tr key={`${row.orderNo}-${row.newDueImpact}`} className="border-t">
+                            <td className="px-3 py-2">{row.customerName}</td>
+                            <td className="px-3 py-2 font-mono">#{row.orderNo}</td>
+                            <td className="px-3 py-2 text-right">Rs.{formatMoneyPrecise(row.orderTotal)}</td>
+                            <td className="px-3 py-2 text-right">Rs.{formatMoneyPrecise(row.advancePaid)}</td>
+                            <td className="px-3 py-2 text-right">Rs.{formatMoneyPrecise(row.oldDueImpact)}</td>
+                            <td className="px-3 py-2 text-right">Rs.{formatMoneyPrecise(row.newDueImpact)}</td>
+                            <td className={`px-3 py-2 text-right font-semibold ${row.difference > 0 ? 'text-orange-700' : row.difference < 0 ? 'text-emerald-700' : 'text-slate-500'}`}>Rs.{formatMoneyPrecise(row.difference)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setUpfrontRepairConfirmOpen(false)}>Back</Button>
+                <Button onClick={() => void applyUpfrontRepairDraft()} disabled={upfrontRepairSubmitting}>{upfrontRepairSubmitting ? 'Saving...' : 'Confirm Repair'}</Button>
               </div>
             </CardContent>
           </Card>
@@ -2111,6 +3401,41 @@ export default function Customers() {
                   <CardHeader className="border-b bg-slate-50/50 flex flex-row justify-between items-center py-4 px-6">
                       <CardTitle className="text-lg font-black">Order Review #{selectedTx.id.slice(-6)}</CardTitle>
                       <div className="flex items-center gap-1">
+                          {repairMode && (
+                            <>
+                              {getTransactionRepairCapability(selectedTx)?.edit ? (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 gap-1.5 text-xs font-bold"
+                                    onClick={() => openRepairDraft(createCustomerRepairEditDraft(selectedTx))}
+                                >
+                                    Edit
+                                </Button>
+                              ) : (
+                                <span title={getTransactionRepairCapability(selectedTx)?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}>
+                                  <Button
+                                      variant="outline"
+                                      size="sm"
+                                      disabled
+                                      className="pointer-events-none h-8 gap-1.5 text-xs font-bold opacity-60"
+                                  >
+                                      Edit
+                                  </Button>
+                                </span>
+                              )}
+                              {getTransactionRepairCapability(selectedTx)?.delete && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 gap-1.5 border-red-200 text-xs font-bold text-red-700"
+                                    onClick={() => openRepairDraft(createCustomerRepairDeleteDraft(selectedTx))}
+                                >
+                                    Delete
+                                </Button>
+                              )}
+                            </>
+                          )}
                           <Button 
                               variant="outline" 
                               size="sm" 
@@ -2124,6 +3449,11 @@ export default function Customers() {
                       </div>
                   </CardHeader>
                   <CardContent className="overflow-y-auto p-4 space-y-4">
+                      {repairMode && !getTransactionRepairCapability(selectedTx)?.edit && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          {getTransactionRepairCapability(selectedTx)?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}
+                        </div>
+                      )}
                       <div className="space-y-3">
                         {normalizeTransactionItems(selectedTx.items).map((item, i) => (
                             <div key={i} className="flex gap-4 items-center border-b border-slate-100 pb-4 last:border-0">
@@ -2196,7 +3526,7 @@ export default function Customers() {
               <Card className="w-full max-w-md shadow-2xl animate-in zoom-in border-t-4 border-t-primary overflow-hidden">
                   <CardHeader className="flex flex-row justify-between items-center border-b pb-4">
                       <CardTitle className="text-lg">{orderStage === 'picker' ? `Create Order • ${orderCustomer.name}` : `Order Form • ${selectedOrderProduct?.name || ''}`}</CardTitle>
-                      <Button variant="ghost" size="icon" onClick={() => { setIsUpfrontOrderModalOpen(false); setEditingUpfrontOrder(null); setUpfrontOrderError(null); setSelectedOrderProduct(null); }}><X className="w-4 h-4" /></Button>
+                      <Button variant="ghost" size="icon" onClick={() => { setIsUpfrontOrderModalOpen(false); setEditingUpfrontOrder(null); setUpfrontOrderError(null); setUpfrontRepairError(null); setSelectedOrderProduct(null); }}><X className="w-4 h-4" /></Button>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-6 max-h-[70vh] overflow-y-auto">
                       <div className="flex gap-2">
@@ -2207,6 +3537,12 @@ export default function Customers() {
                           <div className="bg-red-50 border border-red-200 text-red-600 text-[10px] font-bold p-2 rounded-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-1">
                               <AlertCircle className="w-3 h-3" />
                               {upfrontOrderError}
+                          </div>
+                      )}
+                      {upfrontRepairError && (
+                          <div className="bg-red-50 border border-red-200 text-red-600 text-[10px] font-bold p-2 rounded-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-1">
+                              <AlertCircle className="w-3 h-3" />
+                              {upfrontRepairError}
                           </div>
                       )}
                       <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-600">
@@ -2260,22 +3596,40 @@ export default function Customers() {
                         <div className="font-bold">Customer Total + Expenses: ₹{formatMoneyPrecise(((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0)) + Number(upfrontOrderForm.expenseAmount||0))}</div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
-                        <div><Label className="text-xs font-bold">Paid Now Cash</Label><Input type="number" min="0" value={upfrontOrderForm.paidNowCash} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, paidNowCash: e.target.value})} /></div>
-                        <div><Label className="text-xs font-bold">Paid Now Online</Label><Input type="number" min="0" value={upfrontOrderForm.paidNowOnline} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, paidNowOnline: e.target.value})} /></div>
+                        <div><Label className="text-xs font-bold">Paid Now Cash</Label><Input type="number" min="0" value={upfrontOrderForm.paidNowCash} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, paidNowCash: e.target.value})} readOnly={Boolean(editingUpfrontOrder)} disabled={Boolean(editingUpfrontOrder)} /></div>
+                        <div><Label className="text-xs font-bold">Paid Now Online</Label><Input type="number" min="0" value={upfrontOrderForm.paidNowOnline} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, paidNowOnline: e.target.value})} readOnly={Boolean(editingUpfrontOrder)} disabled={Boolean(editingUpfrontOrder)} /></div>
                       </div>
+                      {editingUpfrontOrder && (
+                        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                          Edit payments separately from Advance Payment actions.
+                        </div>
+                      )}
                       <div className="text-xs font-bold text-red-600">On Credit Remaining: ₹{formatMoneyPrecise(Math.max(0, (((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0)) + Number(upfrontOrderForm.expenseAmount||0)) - Number(upfrontOrderForm.paidNowCash||0) - Number(upfrontOrderForm.paidNowOnline||0)))}</div>
                       <div className="space-y-2">
                           <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Reminder Date (Optional)</Label>
                           <Input type="date" value={upfrontOrderForm.reminderDate} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, reminderDate: e.target.value})} />
                       </div>
+                      {repairMode && (
+                        <div className="space-y-2">
+                          <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Financial Date</Label>
+                          <Input type="datetime-local" value={upfrontOrderFinancialDate} onChange={e => setUpfrontOrderFinancialDate(e.target.value)} />
+                        </div>
+                      )}
                       <div className="space-y-2">
                           <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Notes</Label>
                           <Input value={upfrontOrderForm.notes} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, notes: e.target.value})} placeholder="Optional notes..." />
                       </div>
+                      {repairMode && (
+                        <div className="space-y-2">
+                          <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Repair Reason</Label>
+                          <Input value={upfrontOrderRepairReason} onChange={e => setUpfrontOrderRepairReason(e.target.value)} placeholder="Required reason for this repair" />
+                        </div>
+                      )}
                       <div className="flex gap-2">
                         <Button variant="outline" className="flex-1" onClick={() => { setOrderStage('picker'); }}>Back to Products</Button>
-                        <Button className="flex-1" onClick={() => handleSaveUpfrontOrder(false)}>Save and Exit</Button>
-                        <Button className="flex-1" onClick={() => handleSaveUpfrontOrder(true)}>Save and Next</Button>
+                        <Button className="flex-1" onClick={() => handleSaveUpfrontOrder(false)}>{repairMode ? (editingUpfrontOrder ? 'Preview Edit' : 'Preview Add') : 'Save and Exit'}</Button>
+                        {!repairMode && <Button className="flex-1" onClick={() => handleSaveUpfrontOrder(true)}>Save and Next</Button>}
+                        {repairMode && editingUpfrontOrder && <Button variant="outline" className="flex-1 text-red-600" onClick={() => previewDeleteUpfrontOrder(editingUpfrontOrder)}>Preview Delete</Button>}
                       </div>
                       </>
                       )) : (
@@ -2306,13 +3660,27 @@ export default function Customers() {
                                 <div>Paid Cash: ₹{formatMoneyWhole(order.paidNowCash ?? 0)} • Paid Online: ₹{formatMoneyWhole(order.paidNowOnline ?? 0)} • Advance Paid: ₹{formatMoneyWhole(paid)} • Remaining: ₹{formatMoneyWhole(rem)}</div>
                                 <div className={`font-bold ${status === 'Paid in Full' ? 'text-emerald-700' : 'text-amber-700'}`}>Status: {isOverdue ? 'Overdue' : status}{order.reminderDate ? ` • Reminder: ${new Date(order.reminderDate).toLocaleDateString()}` : ''}</div>
                                 {order.notes ? <div>Notes: {order.notes}</div> : <div>Notes: —</div>}
-                                <div className="flex gap-2">
+                                <div className="flex gap-2 flex-wrap">
                                   <Button size="sm" variant="outline" onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}>View Details</Button>
-                                  {rem > 0 && <Button size="sm" onClick={() => { setSelectedUpfrontOrder(order); setCollectAmount(''); setCollectPaymentError(null); setIsCollectPaymentModalOpen(true); }}>Collect Payment</Button>}
+                                  {rem > 0 && <Button size="sm" onClick={() => openUpfrontPaymentModal(order)}>{repairMode ? 'Add Advance Payment' : 'Collect Payment'}</Button>}
+                                  {repairMode && <Button size="sm" variant="outline" onClick={() => openUpfrontOrderEditor(order)}>Edit Order</Button>}
                                 </div>
                                 {expandedOrderId === order.id && (
                                   <div className="mt-2 border rounded p-2 bg-slate-50">
                                     {(order.paymentHistory || []).length > 0 ? (order.paymentHistory || []).map((p) => <div key={p.id} className="flex justify-between"><span>{new Date(p.paidAt).toLocaleString()} • {p.kind === 'initial_advance' ? 'Initial Advance' : 'Additional Payment'} • {p.method || 'Advance'}</span><span>₹{formatMoneyWhole(p.amount)} (Rem ₹{formatMoneyWhole(p.remainingAfterPayment)})</span></div>) : <div>Legacy order — payment breakdown not available.</div>}
+                                  </div>
+                                )}
+                                {repairMode && expandedOrderId === order.id && (order.paymentHistory || []).length > 0 && (
+                                  <div className="mt-2 space-y-2">
+                                    {(order.paymentHistory || []).map((p) => (
+                                      <div key={`repair-${p.id}`} className="flex items-center justify-between rounded border border-slate-200 bg-white px-2 py-2">
+                                        <div className="text-[11px] text-slate-600">{new Date(getUpfrontPaymentFinancialDate(p, order)).toLocaleString()} • ₹{formatMoneyWhole(p.amount)} • {p.method || 'Advance'}</div>
+                                        <div className="flex gap-2">
+                                          <Button size="sm" variant="outline" onClick={() => openUpfrontPaymentModal(order, p)}>Edit Payment</Button>
+                                          <Button size="sm" variant="outline" className="text-red-600" onClick={() => { openUpfrontPaymentModal(order, p); setCollectPaymentError('Enter repair reason, then preview delete.'); }}>Delete Payment</Button>
+                                        </div>
+                                      </div>
+                                    ))}
                                   </div>
                                 )}
                               </div>;
@@ -2333,7 +3701,7 @@ export default function Customers() {
                       <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-3 shadow-sm border border-emerald-200">
                           <Coins className="w-6 h-6" />
                       </div>
-                      <CardTitle className="text-lg">Collect Order Balance</CardTitle>
+                      <CardTitle className="text-lg">{editingUpfrontPaymentId ? 'Edit Advance Payment' : 'Collect Order Balance'}</CardTitle>
                       <p className="text-xs text-muted-foreground">Order: <b>{selectedUpfrontOrder.productName}</b></p>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-6">
@@ -2341,6 +3709,12 @@ export default function Customers() {
                           <div className="bg-red-50 border border-red-200 text-red-600 text-[10px] font-bold p-2 rounded-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-1">
                               <AlertCircle className="w-3 h-3" />
                               {collectPaymentError}
+                          </div>
+                      )}
+                      {upfrontRepairError && (
+                          <div className="bg-red-50 border border-red-200 text-red-600 text-[10px] font-bold p-2 rounded-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-1">
+                              <AlertCircle className="w-3 h-3" />
+                              {upfrontRepairError}
                           </div>
                       )}
                       <div className="bg-slate-50 p-3 rounded-lg border space-y-1">
@@ -2373,6 +3747,29 @@ export default function Customers() {
                             autoFocus 
                         />
                       </div>
+                      {repairMode && (
+                        <>
+                          <div className="space-y-2">
+                            <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Payment Method</Label>
+                            <Select value={collectPaymentMethod} onChange={(e) => setCollectPaymentMethod(e.target.value as 'Cash' | 'Online')}>
+                              <option value="Cash">Cash</option>
+                              <option value="Online">Online</option>
+                            </Select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Financial Date</Label>
+                            <Input type="datetime-local" value={collectPaymentFinancialDate} onChange={e => setCollectPaymentFinancialDate(e.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Payment Note</Label>
+                            <Input value={collectPaymentNote} onChange={e => setCollectPaymentNote(e.target.value)} placeholder="Optional note" />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Repair Reason</Label>
+                            <Input value={collectPaymentReason} onChange={e => setCollectPaymentReason(e.target.value)} placeholder="Required reason for this repair" />
+                          </div>
+                        </>
+                      )}
                       {isCollectAmountValid && (
                         <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] space-y-1">
                           <div className="flex justify-between"><span className="text-muted-foreground">Remaining after this collection</span><span className="font-black text-slate-700">₹{formatMoneyWhole(projectedRemainingAfterCollect)}</span></div>
@@ -2381,8 +3778,9 @@ export default function Customers() {
                         </div>
                       )}
                       <div className="flex gap-2 pt-4 border-t">
-                          <Button variant="ghost" className="flex-1 font-bold text-xs" onClick={() => { setIsCollectPaymentModalOpen(false); setSelectedUpfrontOrder(null); setCollectPaymentError(null); }}>Cancel</Button>
-                          <Button className="flex-1 bg-emerald-700 font-bold text-xs shadow-md" onClick={handleCollectUpfrontPayment}>Collect Balance</Button>
+                          <Button variant="ghost" className="flex-1 font-bold text-xs" onClick={() => { setIsCollectPaymentModalOpen(false); setSelectedUpfrontOrder(null); setEditingUpfrontPaymentId(null); setCollectPaymentError(null); setUpfrontRepairError(null); }}>Cancel</Button>
+                          <Button className="flex-1 bg-emerald-700 font-bold text-xs shadow-md" onClick={handleCollectUpfrontPayment}>{repairMode ? (editingUpfrontPaymentId ? 'Preview Payment Edit' : 'Preview Payment Add') : 'Collect Balance'}</Button>
+                          {repairMode && editingUpfrontPaymentId && <Button variant="outline" className="flex-1 text-red-600 font-bold text-xs" onClick={() => { const payment = (selectedUpfrontOrder.paymentHistory || []).find((entry) => entry.id === editingUpfrontPaymentId); if (payment) previewDeleteUpfrontPayment(selectedUpfrontOrder, payment); }}>Preview Delete</Button>}
                       </div>
                   </CardContent>
               </Card>
@@ -2568,3 +3966,4 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
     return String(a.tx.id).localeCompare(String(b.tx.id));
   });
 };
+

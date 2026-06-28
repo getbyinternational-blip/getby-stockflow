@@ -492,7 +492,18 @@ export const generateLedgerStatementPDF = async ({
 
 export const generateProductCatalogPDF = async (
     products: Product[],
-    options?: { fileName?: string; generatedLabel?: string; groupByCategory?: boolean; showInStockPrices?: boolean; showOutOfStockPrices?: boolean; firstPageImage?: string },
+    options?: {
+      fileName?: string;
+      generatedLabel?: string;
+      groupByCategory?: boolean;
+      showInStockPrices?: boolean;
+      showOutOfStockPrices?: boolean;
+      firstPageImage?: string;
+      catalogTitle?: string;
+      catalogSubtitle?: string;
+      flatListLabel?: string;
+      preserveProductOrder?: boolean;
+    },
 ) => {
     const doc = new jsPDF();
     const pageHeight = doc.internal.pageSize.getHeight();
@@ -513,7 +524,7 @@ export const generateProductCatalogPDF = async (
     const imageBlockHeight = Math.max(24, Math.min(cardHeight * 0.48, 34));
     const imageCache = new Map<string, string | null>();
     const { profile } = loadData();
-    const storeCatalogTitle = `${(profile?.storeName || '').trim() || 'Product'} Catalog`;
+    const storeCatalogTitle = (options?.catalogTitle || '').trim() || `${(profile?.storeName || '').trim() || 'Product'} Catalog`;
     const formatOrdinalDate = (d: Date) => {
         const day = d.getDate();
         const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
@@ -558,6 +569,8 @@ export const generateProductCatalogPDF = async (
     }
 
     const renderPageHeader = (categoryName: string, continuation: boolean) => {
+        const headerSubline = (options?.catalogSubtitle || '').trim()
+          || (options?.generatedLabel ? options.generatedLabel.trim() : `Generated: ${nowLabel}`);
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(18);
         doc.setTextColor(40, 40, 40);
@@ -565,7 +578,7 @@ export const generateProductCatalogPDF = async (
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(10);
         doc.setTextColor(100, 100, 100);
-        doc.text(`Generated: ${nowLabel}`, pageWidth / 2, 22, { align: 'center' });
+        doc.text(headerSubline, pageWidth / 2, 22, { align: 'center' });
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(13);
         doc.setTextColor(31, 41, 55);
@@ -575,7 +588,9 @@ export const generateProductCatalogPDF = async (
         doc.line(margin, headerBottomY, pageWidth - margin, headerBottomY);
     };
 
-    const sortedFlatProducts = [...products].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+    const sortedFlatProducts = options?.preserveProductOrder
+      ? [...products]
+      : [...products].sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
     const groupedProducts = sortedFlatProducts.reduce<Record<string, Product[]>>((acc, product) => {
         const normalized = (product.category || '').trim() || 'Uncategorized';
         if (!acc[normalized]) acc[normalized] = [];
@@ -586,7 +601,7 @@ export const generateProductCatalogPDF = async (
     const sortedCategories = Object.keys(groupedProducts).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: 'base' }),
     );
-    const categoryLoop = options?.groupByCategory === false ? ['All Products'] : sortedCategories;
+    const categoryLoop = options?.groupByCategory === false ? [options?.flatListLabel || 'All Products'] : sortedCategories;
     for (let categoryIndex = 0; categoryIndex < categoryLoop.length; categoryIndex += 1) {
         const categoryName = categoryLoop[categoryIndex];
         const categoryProducts = options?.groupByCategory === false ? sortedFlatProducts : [...groupedProducts[categoryName]].sort((a, b) => {
@@ -729,7 +744,11 @@ const buildThermalInvoiceHtml = (
     const invoiceTitle = transaction.type === 'return' ? 'Credit Note' : 'Invoice';
     const issuedAt = new Date(transaction.date);
     const dateLabel = Number.isFinite(issuedAt.getTime()) ? issuedAt.toLocaleDateString('en-GB') : String(transaction.date || '');
-    const timeLabel = Number.isFinite(issuedAt.getTime()) ? issuedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    const timeLabel = Number.isFinite(issuedAt.getTime())
+      ? issuedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
+      : '';
+    const customerName = (transaction.customerName || 'Walk-in Customer').trim() || 'Walk-in Customer';
+    const customerPhone = (transaction.customerPhone || customer?.phone || '').trim();
     const itemRows = normalizeTransactionItems(transaction.items).map((item, index) => {
       const itemName = formatInvoiceItemName(item);
       const amount = Math.max(0, (Number(item.sellPrice || 0) * Number(item.quantity || 0)) - Number(item.discountAmount || 0));
@@ -745,11 +764,18 @@ const buildThermalInvoiceHtml = (
             <div class="item-name">${escapeHtml(itemName)}</div>
             ${metaBits.length ? `<div class="item-meta">${escapeHtml(metaBits.join(' • '))}</div>` : ''}
           </td>
-          <td class="num">${escapeHtml(String(item.quantity || 0))}</td>
+          <td class="qty-col">${escapeHtml(String(item.quantity || 0))}</td>
           <td class="amt">${escapeHtml(currency(Number(item.sellPrice || 0)))}</td>
           <td class="amt">${escapeHtml(currency(amount))}</td>
         </tr>`;
     }).join('');
+
+    const balanceRows = canonicalBalance?.status === 'ok'
+      ? [
+          { label: 'Previous Balance', value: previousBalanceLabel },
+          { label: 'Current Balance', value: currentBalanceLabel, strong: true },
+        ]
+      : [];
 
     const totalsRows = [
       { label: 'Subtotal', value: currency(Number(transaction.subtotal || transaction.total || 0)) },
@@ -759,15 +785,47 @@ const buildThermalInvoiceHtml = (
       { label: 'Received', value: currency(receivedAmount) },
       { label: 'Balance', value: currency(balanceAmount) },
       changeAmount > 0 ? { label: 'Change', value: currency(changeAmount) } : null,
-      { label: 'Previous Balance', value: previousBalanceLabel },
-      { label: 'Current Balance', value: currentBalanceLabel, strong: true },
+      ...balanceRows,
     ].filter(Boolean) as Array<{ label: string; value: string; strong?: boolean }>;
 
-    const totalsMarkup = totalsRows.map((row) => `
+    const infoRows = [
+      [
+        { label: transaction.type === 'return' ? 'Credit Note' : 'Invoice No', value: invoiceNo },
+        { label: 'Bill To', value: customerName },
+      ],
+      [
+        { label: 'Date', value: dateLabel },
+        { label: 'Time', value: timeLabel || '-' },
+      ],
+      customerPhone
+        ? [
+            { label: 'Phone', value: customerPhone },
+            { label: '', value: '' },
+          ]
+        : null,
+    ].filter(Boolean) as Array<Array<{ label: string; value: string }>>;
+
+    const infoMarkup = infoRows.map((row) => `
+      <div class="info-row${row[1]?.label ? '' : ' single'}">
+        <div class="info-cell">
+          <span class="info-label">${escapeHtml(row[0].label)}</span>
+          <span class="info-sep">:</span>
+          <span class="info-value">${escapeHtml(row[0].value)}</span>
+        </div>
+        ${row[1]?.label ? `
+        <div class="info-cell align-right">
+          <span class="info-label">${escapeHtml(row[1].label)}</span>
+          <span class="info-sep">:</span>
+          <span class="info-value">${escapeHtml(row[1].value)}</span>
+        </div>` : '<div class="info-cell empty"></div>'}
+      </div>`).join('');
+
+    const totalsMarkup = totalsRows.map((row, index) => `
+      ${index === 0 || row.strong ? '<div class="rule solid"></div>' : ''}
       <div class="total-row${row.strong ? ' strong' : ''}">
         <span>${escapeHtml(row.label)}</span>
         <span>${escapeHtml(row.value)}</span>
-      </div>`).join('');
+      </div>`).join('') + '<div class="rule solid"></div>';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -778,11 +836,15 @@ const buildThermalInvoiceHtml = (
   <style>
     :root {
       --paper-width: ${paperWidth};
-      --receipt-width: ${paperWidth === '58mm' ? '50mm' : '72mm'};
-      --receipt-padding: 4mm;
-      --font-size: ${paperWidth === '58mm' ? '10px' : '11px'};
+      --receipt-width: ${paperWidth === '58mm' ? '54mm' : '76mm'};
+      --receipt-padding-x: ${paperWidth === '58mm' ? '1.5mm' : '2mm'};
+      --receipt-padding-y: 1.5mm;
+      --font-size: ${paperWidth === '58mm' ? '9px' : '10px'};
+      --header-size: ${paperWidth === '58mm' ? '14px' : '16px'};
+      --title-size: ${paperWidth === '58mm' ? '10px' : '11px'};
+      --small-size: ${paperWidth === '58mm' ? '8px' : '9px'};
       --line-color: #1f2937;
-      --muted: #667085;
+      --muted: #4b5563;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -803,7 +865,7 @@ const buildThermalInvoiceHtml = (
     }
     .receipt {
       width: var(--receipt-width);
-      padding: var(--receipt-padding);
+      padding: var(--receipt-padding-y) var(--receipt-padding-x);
       margin: 0;
     }
     .center { text-align: center; }
@@ -811,77 +873,139 @@ const buildThermalInvoiceHtml = (
     .strong { font-weight: 700; }
     .rule {
       border-top: 1px dashed var(--line-color);
-      margin: 6px 0;
+      margin: 3px 0;
+    }
+    .rule.solid {
+      border-top-style: solid;
+      margin: 2px 0;
     }
     .header-title {
-      font-size: ${paperWidth === '58mm' ? '14px' : '16px'};
+      font-size: var(--header-size);
       font-weight: 700;
-      letter-spacing: 0.2px;
+      letter-spacing: 0.15px;
       margin: 0;
+      line-height: 1.15;
     }
-    .meta-grid, .customer-grid {
+    .header-subtext {
+      margin-top: 1px;
+      line-height: 1.15;
+    }
+    .document-title {
+      margin-top: 2px;
+      font-size: var(--title-size);
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+    }
+    .info-block {
+      margin-top: 3px;
+    }
+    .info-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 2px 10px;
-      margin-top: 4px;
+      gap: 0 8px;
+      align-items: start;
     }
-    .meta-grid div:nth-child(even), .customer-grid div:nth-child(even) {
+    .info-row.single {
+      grid-template-columns: 1fr;
+    }
+    .info-cell {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr);
+      column-gap: 3px;
+      align-items: baseline;
+      line-height: 1.2;
+      padding: 1px 0;
+    }
+    .info-cell.align-right {
       text-align: right;
     }
-    .customer-block {
-      padding: 4px 0 2px;
+    .info-cell.empty {
+      display: block;
+    }
+    .info-label, .info-sep {
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .info-value {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
     table {
       width: 100%;
       border-collapse: collapse;
       table-layout: fixed;
     }
-    col.no { width: 8%; }
-    col.item { width: 46%; }
-    col.qty { width: 12%; }
-    col.rate { width: 17%; }
-    col.amount { width: 17%; }
+    col.no { width: 7%; }
+    col.item { width: 47%; }
+    col.qty { width: 10%; }
+    col.rate { width: 18%; }
+    col.amount { width: 18%; }
     thead th {
       border-top: 1px solid var(--line-color);
       border-bottom: 1px solid var(--line-color);
-      padding: 3px 1px;
+      padding: 2px 1px;
       text-align: left;
-      font-size: ${paperWidth === '58mm' ? '9px' : '10px'};
+      font-size: var(--small-size);
+      font-weight: 700;
     }
     tbody td {
-      padding: 3px 1px;
+      padding: 2px 1px;
       vertical-align: top;
       border-bottom: 1px dotted #d1d5db;
-      word-break: break-word;
+      word-break: normal;
+      overflow-wrap: anywhere;
+    }
+    tbody tr:last-child td {
+      border-bottom: none;
     }
     .num, .amt { text-align: right; }
-    .item-cell { padding-right: 4px; }
-    .item-name { white-space: normal; }
+    th.num, th.amt { text-align: right; }
+    th.qty-col, td.qty-col { text-align: center; }
+    .item-cell {
+      padding-right: 4px;
+      text-align: left;
+    }
+    .item-name {
+      white-space: normal;
+      line-height: 1.15;
+    }
     .item-meta {
       margin-top: 1px;
-      font-size: ${paperWidth === '58mm' ? '8px' : '9px'};
+      font-size: var(--small-size);
       color: var(--muted);
       white-space: normal;
+      line-height: 1.1;
     }
     .totals {
-      margin-top: 6px;
-      border-top: 1px solid var(--line-color);
-      padding-top: 4px;
+      margin-top: 2px;
     }
     .total-row {
       display: grid;
       grid-template-columns: 1fr auto;
-      gap: 12px;
-      padding: 2px 0;
+      gap: 8px;
+      padding: 1px 0;
       align-items: baseline;
+      line-height: 1.2;
     }
     .total-row.strong {
       font-weight: 700;
-      font-size: ${paperWidth === '58mm' ? '10px' : '11px'};
+      font-size: var(--font-size);
     }
-    .words, .footer {
-      margin-top: 6px;
-      font-size: ${paperWidth === '58mm' ? '9px' : '10px'};
+    .words {
+      margin-top: 4px;
+      font-size: var(--small-size);
+      line-height: 1.2;
+    }
+    .words-title {
+      font-weight: 700;
+      margin-bottom: 1px;
+    }
+    .footer {
+      margin-top: 4px;
+      font-size: var(--small-size);
+      line-height: 1.2;
     }
     @page {
       margin: 0;
@@ -903,7 +1027,10 @@ const buildThermalInvoiceHtml = (
       .receipt {
         width: var(--receipt-width);
         margin: 0;
-        padding: var(--receipt-padding);
+        padding: var(--receipt-padding-y) var(--receipt-padding-x);
+      }
+      table, thead, tbody, tr, td, th {
+        page-break-inside: avoid;
       }
     }
   </style>
@@ -912,25 +1039,15 @@ const buildThermalInvoiceHtml = (
   <div class="receipt">
     <div class="center">
       <div class="header-title">${escapeHtml(profile.storeName || 'StockFlow')}</div>
-      ${profile.phone ? `<div>${escapeHtml(profile.phone)}</div>` : ''}
-      <div class="strong">${escapeHtml(invoiceTitle)}</div>
+      ${profile.phone ? `<div class="header-subtext">${escapeHtml(profile.phone)}</div>` : ''}
+      <div class="document-title">${escapeHtml(invoiceTitle)}</div>
     </div>
 
-    <div class="meta-grid">
-      <div>Invoice No</div><div>${escapeHtml(invoiceNo)}</div>
-      <div>Date</div><div>${escapeHtml(dateLabel)}</div>
-      <div>Time</div><div>${escapeHtml(timeLabel || '-')}</div>
+    <div class="info-block">
+      ${infoMarkup}
     </div>
 
     <div class="rule"></div>
-
-    <div class="customer-block">
-      <div class="strong">Bill To</div>
-      <div class="customer-grid">
-        <div>${escapeHtml(transaction.customerName || 'Walk-in Customer')}</div>
-        <div>${escapeHtml((transaction.customerPhone || customer?.phone || '-').trim() || '-')}</div>
-      </div>
-    </div>
 
     <table>
       <colgroup>
@@ -944,7 +1061,7 @@ const buildThermalInvoiceHtml = (
         <tr>
           <th>#</th>
           <th>Item</th>
-          <th class="num">Qty</th>
+          <th class="qty-col">Qty</th>
           <th class="amt">Rate</th>
           <th class="amt">Amount</th>
         </tr>
@@ -959,7 +1076,7 @@ const buildThermalInvoiceHtml = (
     </div>
 
     <div class="words">
-      <div class="strong">Amount in Words</div>
+      <div class="words-title">Amount in Words</div>
       <div>${escapeHtml(numberToReceiptWords(Math.abs(Number(transaction.total || 0))))}</div>
     </div>
 

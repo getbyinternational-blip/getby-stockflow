@@ -7,7 +7,7 @@ import { auth } from './services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { loadData } from './services/storage';
 import { emitFinanceSnapshot } from './utils/financeDebugLogger';
-import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, Truck, ClipboardList, BarChart3, Lock } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, Truck, ClipboardList, BarChart3, Lock, Wrench } from 'lucide-react';
 import { Button, LightweightLoader } from './components/ui';
 import { RoleSessionProvider, useRoleSession } from './src/auth/roleSession';
 import { can as simpleCan, clearAccessSession, getCurrentOperatorId, getCurrentOperatorName, getCurrentRole, installRoleTestHelpers, isAccessUnlocked, isAccessUnlockedForUser, lockAccess, setAccessSession, SimplePermission } from './src/auth/simplePermissions';
@@ -27,11 +27,14 @@ const Reports = lazy(() => import('./pages/Reports'));
 const Transactions = lazy(() => import('./pages/Transactions'));
 const Customers = lazy(() => import('./pages/Customers'));
 const Finance = lazy(() => import('./pages/Finance'));
+const ExpenseRepair = lazy(() => import('./pages/ExpenseRepair'));
 const FreightBooking = lazy(() => import('./pages/FreightBooking'));
 const PurchasePanel = lazy(() => import('./pages/PurchasePanel'));
+const PurchasePartyRepair = lazy(() => import('./pages/PurchasePartyRepair'));
 const ProductAnalytics = lazy(() => import('./pages/ProductAnalytics'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Cashbook = lazy(() => import('./pages/Cashbook'));
+const RepairCenter = lazy(() => import('./pages/RepairCenter'));
 
 // --- Components ---
 
@@ -227,6 +230,7 @@ function AppContent() {
     '/product-analytics': 'analytics',
     '/pdf': 'reports',
     '/settings': 'settings',
+    '/repair-center': 'settings',
     '/whatsapp-logs': 'settings',
     '/cashbook': 'cashbook',
     '/freight-booking': 'freight',
@@ -372,6 +376,7 @@ function AppContent() {
             {showNav('/product-analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             <NavItem to="/customers" icon={Users} label="Customers" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
             {showNav('/pdf') && <NavItem to="/pdf" icon={FileText} label="Reports" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
+            {showNav('/repair-center') && getCurrentRole() === 'admin' && <NavItem to="/repair-center" icon={Wrench} label="Repair Center" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             {showNav('/settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             {showNav('/cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" labelClassName="text-red-600" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             <NavItem to="/finance" icon={Landmark} label="Finance" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
@@ -472,6 +477,12 @@ function AppContent() {
                               </div>
                               <span className="font-medium text-sm">Settings</span>
                          </Link>}
+                         {showNav('/repair-center') && getCurrentRole() === 'admin' && <Link to="/repair-center" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
+                              <div className="p-3 bg-amber-100 text-amber-700 rounded-full mb-2">
+                                  <Wrench className="w-6 h-6" />
+                              </div>
+                              <span className="font-medium text-sm">Repair Center</span>
+                         </Link>}
                          <button onClick={handleFullLogout} className="flex flex-col items-center justify-center p-4 bg-red-50 rounded-xl hover:bg-red-100 transition-colors border border-red-200">
                               <div className="p-3 bg-white text-red-600 rounded-full mb-2 shadow-sm">
                                   <LogOut className="w-6 h-6" />
@@ -494,12 +505,15 @@ function AppContent() {
                 <Route path="/product-analytics" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="analytics"><ProductAnalytics /></ProtectedRoute>} />
                 <Route path="/customers" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Customers /></ProtectedRoute>} />
                 <Route path="/pdf" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="reports"><Reports /></ProtectedRoute>} />
+                <Route path="/repair-center" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="settings"><RepairCenter /></ProtectedRoute>} />
                 <Route path="/settings" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/whatsapp-logs" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="settings"><WhatsAppLogs /></ProtectedRoute>} />
                 <Route path="/cashbook" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="cashbook"><Cashbook /></ProtectedRoute>} />
                 <Route path="/finance" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Finance /></ProtectedRoute>} />
+                <Route path="/expense-repair" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="settings"><ExpenseRepair /></ProtectedRoute>} />
                 <Route path="/freight-booking" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="freight"><FreightBooking /></ProtectedRoute>} />
                 <Route path="/purchase-panel" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="purchases"><PurchasePanel /></ProtectedRoute>} />
+                <Route path="/purchase-party-repair" element={<ProtectedRoute isVerified={authStatus === "authenticated"} permission="settings"><PurchasePartyRepair /></ProtectedRoute>} />
                 
                 {/* Unprotected Route (POS) */}
                 <Route path="/sales" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Sales /></ProtectedRoute>} />

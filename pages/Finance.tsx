@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import jsPDF from 'jspdf';
 import * as XLSX from 'xlsx';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
-import { buildUpfrontOrderLedgerEffects, getCanonicalCustomerBalanceSnapshot, getCanonicalReturnAllocation, loadData, safeFinancePersistState, processTransaction, getSaleSettlementBreakdown, saveExpenseToSubcollection, saveExpenseActivityToSubcollection, deleteExpenseFromSubcollection, isExpenseStoredInSubcollection, refreshDeletedTransactionsFromCloud, refreshExpenseActivitiesFromCloud } from '../services/storage';
+import { appendRepairHistoryEntry, buildUpfrontOrderLedgerEffects, getCanonicalCustomerBalanceSnapshot, getCanonicalReturnAllocation, loadData, safeFinancePersistState, processTransaction, getSaleSettlementBreakdown, saveExpenseToSubcollection, saveExpenseActivityToSubcollection, deleteExpenseFromSubcollection, isExpenseStoredInSubcollection, refreshDeletedTransactionsFromCloud, refreshExpenseActivitiesFromCloud } from '../services/storage';
 import { financeLog } from '../services/financeLogger';
-import { AppState, CartItem, CashAdjustment, CashSession, Customer, DeleteCompensationRecord, DeletedTransactionRecord, ExpenseActivity, ManualCashbookEntry, PurchaseOrder, Transaction, UpdatedTransactionRecord, UpfrontOrder } from '../types';
+import { AppState, CartItem, CashAdjustment, CashSession, Customer, DeleteCompensationRecord, DeletedTransactionRecord, Expense as CanonicalExpense, ExpenseActivity, ManualCashbookEntry, PurchaseOrder, RepairHistoryEntry, Transaction, UpdatedTransactionRecord, UpfrontOrder } from '../types';
 import { AlertCircle, DollarSign, Wallet, ReceiptIndianRupee, BarChart3, Lock, Unlock } from 'lucide-react';
 import { getCurrentUser } from '../services/auth';
 import { formatINRPrecise, formatINRWhole } from '../services/numberFormat';
@@ -14,15 +14,9 @@ import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { useRoleSession } from '../src/auth/roleSession';
 import { can, getCurrentRole } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
+import { auth } from '../services/firebase';
 
-type Expense = {
-  id: string;
-  title: string;
-  amount: number;
-  category: string;
-  note?: string;
-  createdAt: string;
-};
+type Expense = CanonicalExpense;
 
 type FinanceTabKey = 'cash' | 'expense';
 type ExpenseDatePreset = 'today' | '7d' | '15d' | 'month' | 'custom';
@@ -89,6 +83,22 @@ const dateKeyFromDate = (date: Date) => {
 };
 
 const todayISO = () => dateKeyFromDate(new Date());
+const toDateTimeLocalNow = () => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const toDateTimeLocalValue = (iso?: string) => {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return toDateTimeLocalNow();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const parseDateTimeInput = (value: string) => {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
 
 
 const getTxType = (tx: Transaction) => String((tx as Transaction & { type?: string }).type || '').toLowerCase();
@@ -103,6 +113,7 @@ const monthKeyOf = (iso: string) => {
   return `${yyyy}-${mm}`;
 };
 
+const getExpenseEffectiveDate = (expense: CanonicalExpense) => expense.effectiveAt || expense.createdAt;
 const formatINR = (value: number) => formatINRPrecise(value);
 const formatINRSummary = (value: number) => formatINRWhole(value);
 const toFiniteMoney = (value: unknown) => {
@@ -275,9 +286,15 @@ const getTimestampFromTransactionId = (transactionId: string) => {
 };
 
 const resolveTransactionTimeForSession = (transaction: Transaction) => {
+  const effectiveMs = new Date(transaction.effectiveAt || '').getTime();
+  if (Number.isFinite(effectiveMs)) return effectiveMs;
+
+  const transactionDateMs = new Date(transaction.date || '').getTime();
+  if (Number.isFinite(transactionDateMs)) return transactionDateMs;
+
   const idMs = getTimestampFromTransactionId(transaction.id);
   if (Number.isFinite(idMs)) return idMs;
-  return new Date(transaction.date).getTime();
+  return Number.NaN;
 };
 
 const getReturnFinancialEffectsForFinance = (transaction: Transaction) => {
@@ -386,7 +403,7 @@ const buildCanonicalFinanceBreakdown = (
   const cogs = roundMoney(cogsFromSales - cogsReversalFromReturns);
   const grossProfit = roundMoney(netSales - cogs);
   const scopedExpenses = expenses.filter(e => {
-    const expenseTime = new Date(e.createdAt).getTime();
+    const expenseTime = new Date(getExpenseEffectiveDate(e)).getTime();
     return Number.isFinite(expenseTime) && expenseTime >= windowStart && expenseTime <= windowEnd;
   });
   const deletedByOriginalId = new Map<string, DeletedTransactionRecord>(
@@ -462,7 +479,7 @@ const getSessionCashTotals = (
   });
 
   const windowExpenses = expenses.filter(e => {
-    const expTime = new Date(e.createdAt).getTime();
+    const expTime = new Date(getExpenseEffectiveDate(e)).getTime();
     return expTime >= start && expTime <= end;
   });
 
@@ -620,9 +637,9 @@ const buildShiftCashMovementBreakdown = (
     if (entry.type === 'cash_withdrawal') pushRow({ id: `adj-out-${entry.id}`, date: entry.createdAt, type: 'Cash Withdrawal', direction: 'out', name: 'Manual', ref: entry.id.slice(-6), description: entry.note || 'Cash withdrawal', amount: Math.max(0, Number(entry.amount) || 0), source: 'cashWithdrawals' });
   });
   (state.expenses || []).forEach((e) => {
-    const at = new Date(e.createdAt).getTime();
+    const at = new Date(getExpenseEffectiveDate(e)).getTime();
     if (!Number.isFinite(at) || at < start || at > end) return;
-    pushRow({ id: `exp-${e.id}`, date: e.createdAt, type: 'Expense', direction: 'out', name: e.title, ref: e.id.slice(-6), description: e.note || 'Expense', amount: Math.max(0, Number(e.amount) || 0), source: 'expenses' });
+    pushRow({ id: `exp-${e.id}`, date: getExpenseEffectiveDate(e), type: 'Expense', direction: 'out', name: e.title, ref: e.id.slice(-6), description: e.note || 'Expense', amount: Math.max(0, Number(e.amount) || 0), source: 'expenses' });
   });
   (state.deleteCompensations || []).forEach((d) => {
     const at = new Date(d.createdAt).getTime();
@@ -738,11 +755,32 @@ function MoneyTile({ label, value, tone = 'neutral' }: { label: string; value: s
   );
 }
 
-export default function Finance() {
+type FinanceProps = {
+  repairMode?: boolean;
+  initialTab?: FinanceTabKey;
+  lockedTab?: FinanceTabKey;
+  embeddedExpenseRepair?: boolean;
+};
+
+type ExpenseRepairDraftKind = 'add_expense' | 'edit_expense' | 'delete_expense';
+type ExpenseRepairDraft = {
+  kind: ExpenseRepairDraftKind;
+  reason: string;
+  financialDate: string;
+  nextExpense?: Expense | null;
+  oldExpense?: Expense | null;
+};
+type ExpenseRepairPreview = {
+  beforeExpenseTotal: number;
+  afterExpenseTotal: number;
+  changeExpenseTotal: number;
+};
+
+export default function Finance({ repairMode = false, initialTab = 'cash', lockedTab, embeddedExpenseRepair = false }: FinanceProps) {
   const { session: roleSession, requestAdminOverride } = useRoleSession();
   const formatExpenseLoggedDate = (expense: Expense) => {
     const rawExpense = expense as Expense & { date?: unknown; timestamp?: unknown; expenseDate?: unknown };
-    const pick = rawExpense.createdAt ?? rawExpense.date ?? rawExpense.timestamp ?? rawExpense.expenseDate;
+    const pick = rawExpense.effectiveAt ?? rawExpense.createdAt ?? rawExpense.date ?? rawExpense.timestamp ?? rawExpense.expenseDate;
     if (!pick) return 'Date not available';
     const normalize = (value: unknown): Date | null => {
       if (!value) return null;
@@ -771,10 +809,14 @@ export default function Finance() {
 
   const [data, setData] = useState<AppState>(loadData());
   const [errors, setErrors] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<FinanceTabKey>('cash');
+  const [activeTab, setActiveTab] = useState<FinanceTabKey>(lockedTab || initialTab);
   useEffect(() => {
-    if (!['cash', 'expense'].includes(activeTab)) setActiveTab('cash');
-  }, [activeTab]);
+    if (lockedTab && activeTab !== lockedTab) {
+      setActiveTab(lockedTab);
+      return;
+    }
+    if (!['cash', 'expense'].includes(activeTab)) setActiveTab(lockedTab || initialTab);
+  }, [activeTab, initialTab, lockedTab]);
   // Cash tab summary cards depend on the same canonical cashbook rows used by cashbook/profit tabs.
   // Keep derivation gated to tabs that actually render those metrics so other tabs stay lightweight.
   const shouldComputeDetailedCashbook = activeTab === 'cash';
@@ -800,6 +842,14 @@ export default function Finance() {
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('General');
   const [expenseNote, setExpenseNote] = useState('');
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [expenseFinancialDate, setExpenseFinancialDate] = useState(toDateTimeLocalNow());
+  const [expenseRepairReason, setExpenseRepairReason] = useState('');
+  const [expenseRepairDraft, setExpenseRepairDraft] = useState<ExpenseRepairDraft | null>(null);
+  const [expenseRepairPreview, setExpenseRepairPreview] = useState<ExpenseRepairPreview | null>(null);
+  const [expenseRepairConfirmOpen, setExpenseRepairConfirmOpen] = useState(false);
+  const [expenseRepairSubmitting, setExpenseRepairSubmitting] = useState(false);
+  const [embeddedExpenseEditorOpen, setEmbeddedExpenseEditorOpen] = useState(false);
   const [newCategory, setNewCategory] = useState('');
   const [expenseDateFilter, setExpenseDateFilter] = useState(todayISO());
   const [expensePreset, setExpensePreset] = useState<ExpenseDatePreset>('today');
@@ -832,6 +882,12 @@ export default function Finance() {
   useEscapeLayer(Boolean(editingClosingSessionId), () => setEditingClosingSessionId(null), { priority: 100 });
   useEscapeLayer(Boolean(deletingSessionId), () => setDeletingSessionId(null), { priority: 100 });
   useEscapeLayer(isExpectedClosingBreakdownOpen, () => setIsExpectedClosingBreakdownOpen(false), { priority: 100 });
+  useEscapeLayer(Boolean(expenseRepairDraft), () => {
+    setExpenseRepairDraft(null);
+    setExpenseRepairPreview(null);
+    setExpenseRepairConfirmOpen(false);
+  }, { priority: 105 });
+  useEscapeLayer(embeddedExpenseEditorOpen, () => setEmbeddedExpenseEditorOpen(false), { priority: 104 });
 
   const refreshData = () => setData(loadData());
   const refreshFinanceNonCriticalData = async () => {
@@ -1240,25 +1296,25 @@ export default function Finance() {
     startOfToday.setHours(0, 0, 0, 0);
 
     if (expensePreset === 'today') {
-      return expenses.filter(e => new Date(e.createdAt) >= startOfToday);
+      return expenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= startOfToday);
     }
 
     if (expensePreset === '7d' || expensePreset === '15d') {
       const daysBack = expensePreset === '7d' ? 7 : 15;
       const cutoff = new Date(startOfToday);
       cutoff.setDate(cutoff.getDate() - (daysBack - 1));
-      return expenses.filter(e => new Date(e.createdAt) >= cutoff);
+      return expenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= cutoff);
     }
 
     if (expensePreset === 'month') {
-      return expenses.filter(e => monthKeyOf(e.createdAt) === monthKeyOf(now.toISOString()));
+      return expenses.filter(e => monthKeyOf(getExpenseEffectiveDate(e)) === monthKeyOf(now.toISOString()));
     }
 
     if (expensePreset === 'custom' && expenseCustomFrom && expenseCustomTo) {
       const from = new Date(`${expenseCustomFrom}T00:00:00`).getTime();
       const to = new Date(`${expenseCustomTo}T23:59:59`).getTime();
       return expenses.filter(e => {
-        const t = new Date(e.createdAt).getTime();
+        const t = new Date(getExpenseEffectiveDate(e)).getTime();
         return t >= from && t <= to;
       });
     }
@@ -1303,7 +1359,7 @@ export default function Finance() {
     };
     const events: Array<{ date: string; kind: 'tx' | 'expense' | 'deleted' | 'delete_compensation' | 'updated'; tx?: Transaction; expense?: Expense; deleted?: DeletedTransactionRecord; compensation?: DeleteCompensationRecord; updated?: UpdatedTransactionRecord }> = [
       ...scopedCashbookTransactions.map(tx => ({ date: tx.date, kind: 'tx' as const, tx })),
-      ...expenses.map(expense => ({ date: expense.createdAt, kind: 'expense' as const, expense })),
+      ...expenses.map(expense => ({ date: getExpenseEffectiveDate(expense), kind: 'expense' as const, expense })),
       ...((data.deletedTransactions || []).map(deleted => ({ date: deleted.deletedAt, kind: 'deleted' as const, deleted }))),
       ...((data.deleteCompensations || []).map(compensation => ({ date: compensation.createdAt, kind: 'delete_compensation' as const, compensation }))),
       ...((data.updatedTransactionEvents || []).map(updated => ({ date: updated.updatedAt, kind: 'updated' as const, updated }))),
@@ -1506,7 +1562,7 @@ export default function Finance() {
         const expense = event.expense;
         rows.push({
           id: `expense-${expense.id}`,
-          date: expense.createdAt,
+          date: getExpenseEffectiveDate(expense),
           billNo: expense.id,
           type: 'expense',
           eventType: 'transaction',
@@ -2238,19 +2294,120 @@ export default function Finance() {
     createdAt: new Date().toISOString(),
   });
 
+  const buildExpenseRepairPreview = (draft: ExpenseRepairDraft): ExpenseRepairPreview => {
+    const currentTotal = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+    const nextExpenses = draft.kind === 'add_expense' && draft.nextExpense
+      ? [draft.nextExpense, ...expenses]
+      : draft.kind === 'edit_expense' && draft.nextExpense
+        ? expenses.map((expense) => expense.id === draft.nextExpense!.id ? draft.nextExpense! : expense)
+        : draft.kind === 'delete_expense' && draft.oldExpense
+          ? expenses.filter((expense) => expense.id !== draft.oldExpense!.id)
+          : expenses;
+    const nextFiltered = (() => {
+      if (expensePreset === 'today') {
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        return nextExpenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= startOfToday);
+      }
+      if (expensePreset === '7d') {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 6);
+        cutoff.setHours(0, 0, 0, 0);
+        return nextExpenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= cutoff);
+      }
+      if (expensePreset === '15d') {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 14);
+        cutoff.setHours(0, 0, 0, 0);
+        return nextExpenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= cutoff);
+      }
+      if (expensePreset === 'month') {
+        const now = new Date();
+        return nextExpenses.filter(e => monthKeyOf(getExpenseEffectiveDate(e)) === monthKeyOf(now.toISOString()));
+      }
+      if (expensePreset === 'custom' && expenseCustomFrom && expenseCustomTo) {
+        const from = new Date(`${expenseCustomFrom}T00:00:00`).getTime();
+        const to = new Date(`${expenseCustomTo}T23:59:59.999`).getTime();
+        return nextExpenses.filter(e => {
+          const t = new Date(getExpenseEffectiveDate(e)).getTime();
+          return t >= from && t <= to;
+        });
+      }
+      return nextExpenses;
+    })();
+    const nextTotal = nextFiltered.reduce((sum, e) => sum + e.amount, 0);
+    return {
+      beforeExpenseTotal: roundMoney(currentTotal),
+      afterExpenseTotal: roundMoney(nextTotal),
+      changeExpenseTotal: roundMoney(nextTotal - currentTotal),
+    };
+  };
+
+  const buildExpenseRepairHistoryEntry = (draft: ExpenseRepairDraft, preview: ExpenseRepairPreview): RepairHistoryEntry => ({
+    id: `repair-${Date.now()}`,
+    entityType: 'expense',
+    entityId: draft.oldExpense?.id || draft.nextExpense?.id || 'expense',
+    entityName: draft.nextExpense?.title || draft.oldExpense?.title || 'Expense',
+    repairKind: draft.kind,
+    targetTransactionId: draft.oldExpense?.id || draft.nextExpense?.id,
+    reason: draft.reason.trim(),
+    financialDate: draft.financialDate,
+    adminUid: auth.currentUser?.uid || null,
+    adminEmail: auth.currentUser?.email || null,
+    createdAt: new Date().toISOString(),
+    before: { totalDue: preview.beforeExpenseTotal, storeCredit: 0, netReceivable: preview.beforeExpenseTotal },
+    after: { totalDue: preview.afterExpenseTotal, storeCredit: 0, netReceivable: preview.afterExpenseTotal },
+    delta: { totalDue: preview.changeExpenseTotal, storeCredit: 0, netReceivable: preview.changeExpenseTotal },
+    oldTransaction: null,
+    newTransaction: null,
+    oldExpense: draft.oldExpense || null,
+    newExpense: draft.nextExpense || null,
+  });
+
+  const resetExpenseForm = () => {
+    setExpenseTitle('');
+    setExpenseAmount('');
+    setExpenseCategory('General');
+    setExpenseNote('');
+    setEditingExpenseId(null);
+    setExpenseFinancialDate(toDateTimeLocalNow());
+    setExpenseRepairReason('');
+  };
+
 
   const addExpense = async () => {
     const amount = Number(expenseAmount);
     if (!expenseTitle.trim() || !expenseCategory.trim() || !Number.isFinite(amount) || amount <= 0) return setErrors('Please enter valid expense details.');
+    const financialDate = repairMode ? parseDateTimeInput(expenseFinancialDate) : new Date().toISOString();
+    if (repairMode && !financialDate) return setErrors('Please enter a valid financial date and time.');
 
     const expense: Expense = {
-      id: Date.now().toString(),
+      id: editingExpenseId || Date.now().toString(),
       title: expenseTitle.trim(),
       amount,
       category: expenseCategory.trim(),
       note: expenseNote.trim() || undefined,
-      createdAt: new Date().toISOString()
+      effectiveAt: financialDate || new Date().toISOString(),
+      createdAt: financialDate || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
+    if (repairMode) {
+      if (!expenseRepairReason.trim()) return setErrors('Repair reason is required.');
+      const oldExpense = editingExpenseId ? expenses.find((item) => item.id === editingExpenseId) || null : null;
+      const draft: ExpenseRepairDraft = {
+        kind: editingExpenseId ? 'edit_expense' : 'add_expense',
+        reason: expenseRepairReason,
+        financialDate: expense.effectiveAt || expense.createdAt,
+        oldExpense,
+        nextExpense: expense,
+      };
+      setExpenseRepairDraft(draft);
+      setExpenseRepairPreview(buildExpenseRepairPreview(draft));
+      setExpenseRepairConfirmOpen(true);
+      setEmbeddedExpenseEditorOpen(false);
+      setErrors(null);
+      return;
+    }
     financeLog.expense('CREATE', { amount, category: expense.category, affectsCash: true });
     financeLog.cash('OUTFLOW', { txId: expense.id, amount, reason: expense.title, paymentMode: 'Cash', source: 'expense' });
 
@@ -2265,9 +2422,7 @@ export default function Finance() {
     try {
       await saveExpenseToSubcollection(expense);
       await saveExpenseActivityToSubcollection(activity);
-      setExpenseTitle('');
-      setExpenseAmount('');
-      setExpenseNote('');
+      resetExpenseForm();
       setErrors(null);
     } catch (error) {
       setData(data);
@@ -2319,6 +2474,21 @@ export default function Finance() {
   const removeExpense = async (id: string) => {
     const item = expenses.find(e => e.id === id);
     if (!item) return;
+    if (repairMode) {
+      if (!expenseRepairReason.trim()) return setErrors('Repair reason is required.');
+      const draft: ExpenseRepairDraft = {
+        kind: 'delete_expense',
+        reason: expenseRepairReason,
+        financialDate: parseDateTimeInput(expenseFinancialDate) || item.effectiveAt || item.createdAt,
+        oldExpense: item,
+      };
+      setExpenseRepairDraft(draft);
+      setExpenseRepairPreview(buildExpenseRepairPreview(draft));
+      setExpenseRepairConfirmOpen(true);
+      setEmbeddedExpenseEditorOpen(false);
+      setErrors(null);
+      return;
+    }
     if (!isExpenseStoredInSubcollection(id)) {
       setErrors('Old expense needs migration before it can be deleted.');
       return;
@@ -2340,6 +2510,69 @@ export default function Finance() {
       setData(data);
       console.error('[finance.removeExpense] Failed to delete expense subcollection doc', error);
       setErrors(getFriendlyErrorMessage(error, 'finance.delete_expense'));
+    }
+  };
+
+  const startEditExpense = (expense: Expense) => {
+    setEditingExpenseId(expense.id);
+    setExpenseTitle(expense.title);
+    setExpenseAmount(String(expense.amount));
+    setExpenseCategory(expense.category);
+    setExpenseNote(expense.note || '');
+    setExpenseFinancialDate(toDateTimeLocalValue(expense.effectiveAt || expense.createdAt));
+    setExpenseRepairReason('');
+    setErrors(null);
+  };
+
+  const startDeleteExpenseRepair = (expense: Expense) => {
+    setEditingExpenseId(expense.id);
+    setExpenseTitle(expense.title);
+    setExpenseAmount(String(expense.amount));
+    setExpenseCategory(expense.category);
+    setExpenseNote(expense.note || '');
+    setExpenseFinancialDate(toDateTimeLocalValue(expense.effectiveAt || expense.createdAt));
+    setErrors('Enter repair reason, then confirm delete preview.');
+  };
+
+  const applyExpenseRepairDraft = async () => {
+    if (!expenseRepairDraft || !expenseRepairPreview) return;
+    if (!expenseRepairDraft.reason.trim()) {
+      setErrors('Repair reason is required.');
+      return;
+    }
+    setExpenseRepairSubmitting(true);
+    try {
+      if (expenseRepairDraft.kind === 'delete_expense' && expenseRepairDraft.oldExpense) {
+        if (!isExpenseStoredInSubcollection(expenseRepairDraft.oldExpense.id)) throw new Error('Old expense needs migration before it can be deleted.');
+        const activity = createExpenseActivity('delete_expense', `Deleted ${expenseRepairDraft.oldExpense.title} (${formatINR(expenseRepairDraft.oldExpense.amount)})`);
+        await deleteExpenseFromSubcollection(expenseRepairDraft.oldExpense);
+        await saveExpenseActivityToSubcollection(activity);
+      } else if (expenseRepairDraft.nextExpense) {
+        const action: ExpenseActivity['action'] = expenseRepairDraft.kind === 'edit_expense' ? 'add_expense' : 'add_expense';
+        const activity = createExpenseActivity(action, `${expenseRepairDraft.kind === 'edit_expense' ? 'Edited' : 'Added'} ${expenseRepairDraft.nextExpense.title} (${formatINR(expenseRepairDraft.nextExpense.amount)}) in ${expenseRepairDraft.nextExpense.category}`);
+        await saveExpenseToSubcollection(expenseRepairDraft.nextExpense);
+        await saveExpenseActivityToSubcollection(activity);
+      }
+      await appendRepairHistoryEntry(buildExpenseRepairHistoryEntry(expenseRepairDraft, expenseRepairPreview));
+      setData(loadData());
+      setExpenseRepairDraft(null);
+      setExpenseRepairPreview(null);
+      setExpenseRepairConfirmOpen(false);
+      resetExpenseForm();
+      setErrors(null);
+    } catch (error) {
+      setErrors(getFriendlyErrorMessage(error, 'finance.expense_repair'));
+    } finally {
+      setExpenseRepairSubmitting(false);
+    }
+  };
+
+  const expenseRepairOperationLabel = (kind?: ExpenseRepairDraftKind) => {
+    switch (kind) {
+      case 'add_expense': return 'Add Expense';
+      case 'edit_expense': return 'Edit Expense';
+      case 'delete_expense': return 'Delete Expense';
+      default: return 'Expense Repair';
     }
   };
 
@@ -2370,6 +2603,194 @@ export default function Finance() {
       console.error('[finance.deleteExpenseCategory] Failed to save activity subcollection doc', error);
     }
   };
+
+  if (embeddedExpenseRepair) {
+    const expenseRepairHistory = (loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 12);
+    const allTimeExpenses = [...expenses].sort((a, b) => {
+      const left = a as Expense & { date?: string };
+      const right = b as Expense & { date?: string };
+      return new Date(right.effectiveAt || right.createdAt || right.date || 0).getTime() - new Date(left.effectiveAt || left.createdAt || left.date || 0).getTime();
+    });
+    return (
+      <div className="space-y-4">
+        <Card>
+          <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <CardTitle>Expense Repair</CardTitle>
+              <p className="text-sm text-muted-foreground">All-time expense repair table with full details, edit, delete, and backdated preview flow.</p>
+            </div>
+            <div className="flex flex-col items-stretch gap-3 md:items-end">
+              <Button
+                type="button"
+                onClick={() => {
+                  resetExpenseForm();
+                  setErrors(null);
+                  setEmbeddedExpenseEditorOpen(true);
+                }}
+              >
+                Add Expense
+              </Button>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-right">
+                <div className="text-[11px] font-semibold text-slate-600">All-Time Total</div>
+                <div className="text-lg font-semibold text-slate-900">{formatINR(allTimeExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0))}</div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="overflow-auto rounded-2xl border">
+              <table className="w-full min-w-[1080px] text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="p-3 text-left">Date</th>
+                    <th className="p-3 text-left">Category</th>
+                    <th className="p-3 text-left">Title/Description</th>
+                    <th className="p-3 text-right">Amount</th>
+                    <th className="p-3 text-left">Payment Method</th>
+                    <th className="p-3 text-left">Financial Date</th>
+                    <th className="p-3 text-left">Repair Trail</th>
+                    <th className="p-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allTimeExpenses.map((expense) => {
+                    const expenseHistory = expenseRepairHistory.filter((entry) => entry.entityId === expense.id);
+                    return (
+                      <tr key={expense.id} className="border-t align-top">
+                        <td className="p-3 text-slate-600">{formatExpenseLoggedDate(expense)}</td>
+                        <td className="p-3">{expense.category}</td>
+                        <td className="p-3">
+                          <div className="font-medium text-slate-900">{expense.title}</div>
+                          <div className="text-xs text-slate-500">{expense.note || '—'}</div>
+                          <div className="text-[11px] text-slate-400">{expense.id}</div>
+                        </td>
+                        <td className="p-3 text-right font-semibold">{formatINR(expense.amount)}</td>
+                        <td className="p-3 text-slate-500">{(expense as Expense & { paymentMethod?: string }).paymentMethod || '—'}</td>
+                        <td className="p-3 text-slate-600">{expense.effectiveAt ? new Date(expense.effectiveAt).toLocaleString() : '—'}</td>
+                        <td className="p-3 text-xs text-slate-500">
+                          {expenseHistory[0] ? `${expenseHistory[0].repairKind.replace(/_/g, ' ')} · ${expenseHistory[0].reason}` : '—'}
+                        </td>
+                        <td className="p-3">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                startEditExpense(expense);
+                                setEmbeddedExpenseEditorOpen(true);
+                              }}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="text-rose-600"
+                              onClick={() => {
+                                startDeleteExpenseRepair(expense);
+                                setEmbeddedExpenseEditorOpen(true);
+                              }}
+                            >
+                              Delete
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!allTimeExpenses.length && (
+                    <tr>
+                      <td colSpan={8} className="p-6 text-center text-sm text-slate-500">No expenses found.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+
+        {embeddedExpenseEditorOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setEmbeddedExpenseEditorOpen(false)}>
+            <Card className="w-full max-w-xl border-slate-200 shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <CardHeader>
+                <CardTitle>{editingExpenseId ? 'Edit Expense' : 'Add Expense'}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <Label>Title</Label>
+                    <Input value={expenseTitle} onChange={e => setExpenseTitle(e.target.value)} placeholder="Expense title" />
+                  </div>
+                  <div>
+                    <Label>Amount</Label>
+                    <Input value={expenseAmount} onChange={e => setExpenseAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="0.00" inputMode="decimal" />
+                  </div>
+                  <div>
+                    <Label>Category</Label>
+                    <select className="h-10 w-full rounded-md border px-3 text-sm" value={expenseCategory} onChange={e => setExpenseCategory(e.target.value)}>
+                      {expenseCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                    </select>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Title/Description</Label>
+                    <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional note" />
+                  </div>
+                  <div>
+                    <Label>Financial Date</Label>
+                    <Input type="datetime-local" value={expenseFinancialDate} onChange={e => setExpenseFinancialDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <Label>Repair Reason</Label>
+                    <Input value={expenseRepairReason} onChange={e => setExpenseRepairReason(e.target.value)} placeholder="Required reason for this repair" />
+                  </div>
+                </div>
+                {errors && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{errors}</div>}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button variant="outline" onClick={() => setEmbeddedExpenseEditorOpen(false)}>Cancel</Button>
+                  {editingExpenseId && (
+                    <Button variant="outline" className="text-rose-600" onClick={() => void removeExpense(editingExpenseId)}>
+                      Preview Delete
+                    </Button>
+                  )}
+                  <Button onClick={() => void addExpense()}>
+                    {editingExpenseId ? 'Preview Edit' : 'Preview Add'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {expenseRepairConfirmOpen && expenseRepairDraft && expenseRepairPreview && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !expenseRepairSubmitting && setExpenseRepairConfirmOpen(false)}>
+            <Card className="w-full max-w-lg border-slate-200 shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <CardHeader><CardTitle>Confirm Repair</CardTitle></CardHeader>
+              <CardContent className="space-y-4 text-sm">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
+                  <div className="mt-1 font-semibold text-slate-900">{expenseRepairOperationLabel(expenseRepairDraft.kind)}</div>
+                  <div className="mt-1 text-xs text-slate-600">{expenseRepairDraft.reason}</div>
+                  <div className="mt-1 text-xs text-slate-600">{new Date(expenseRepairDraft.financialDate).toLocaleString()}</div>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-2xl border border-slate-200 p-3"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Before</div><div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.beforeExpenseTotal)}</div></div>
+                  <div className="rounded-2xl border border-slate-200 p-3"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">After</div><div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.afterExpenseTotal)}</div></div>
+                  <div className="rounded-2xl border border-slate-200 p-3"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Change</div><div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.changeExpenseTotal)}</div></div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setExpenseRepairConfirmOpen(false)} disabled={expenseRepairSubmitting}>Cancel</Button>
+                  <Button onClick={() => void applyExpenseRepairDraft()} disabled={expenseRepairSubmitting}>
+                    {expenseRepairSubmitting ? 'Applying...' : 'Confirm Repair'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   const exportExpensePDF = () => {
     const doc = new jsPDF();
@@ -2506,7 +2927,7 @@ export default function Finance() {
           </div>
         )}
 
-        <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+        {!lockedTab && <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
           {tabs.map(tab => {
             const isActive = activeTab === tab.key;
             return (
@@ -2521,7 +2942,7 @@ export default function Finance() {
               </button>
             );
           })}
-        </div>
+        </div>}
 
 
 
@@ -3081,7 +3502,7 @@ export default function Finance() {
               const soldItems = Array.from(soldItemMap.values());
               const soldQtyTotal = soldItems.reduce((sum, i) => sum + i.qty, 0);
               const sessionExpenses = expenses.filter(e => {
-                const expTime = new Date(e.createdAt).getTime();
+                const expTime = new Date(getExpenseEffectiveDate(e)).getTime();
                 return expTime >= sessionStartTs && expTime <= sessionEndTs;
               });
               const expenseTotal = sessionExpenses.reduce((sum, e) => sum + e.amount, 0);
@@ -3349,7 +3770,25 @@ export default function Finance() {
                           <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional" />
                         </div>
 
-                        <Button className="w-full rounded-2xl py-3 text-base" onClick={addExpense} disabled={!(expenseTitle.trim().length > 0 && Number(expenseAmount) > 0)}>Add Expense</Button>
+                        {repairMode && (
+                          <>
+                            <div className="space-y-1">
+                              <Label>Financial Date</Label>
+                              <Input type="datetime-local" value={expenseFinancialDate} onChange={e => setExpenseFinancialDate(e.target.value)} />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Repair Reason</Label>
+                              <Input value={expenseRepairReason} onChange={e => setExpenseRepairReason(e.target.value)} placeholder="Required reason for this repair" />
+                            </div>
+                          </>
+                        )}
+
+                        <Button className="w-full rounded-2xl py-3 text-base" onClick={addExpense} disabled={!(expenseTitle.trim().length > 0 && Number(expenseAmount) > 0)}>{repairMode ? (editingExpenseId ? 'Preview Edit Expense' : 'Preview Add Expense') : 'Add Expense'}</Button>
+                        {repairMode && editingExpenseId && (
+                          <Button variant="outline" className="w-full rounded-2xl py-3 text-base text-rose-600" onClick={() => void removeExpense(editingExpenseId)}>
+                            Preview Delete Expense
+                          </Button>
+                        )}
                         {can('cashWithdrawal') && (
                         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 space-y-2">
                           <div className="text-sm font-semibold text-amber-900">Withdraw Cash</div>
@@ -3439,7 +3878,14 @@ export default function Finance() {
                                 <div className="col-span-2"><span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">{e.category}</span></div>
                                 <div className="col-span-2 text-right text-sm font-semibold text-slate-900">{formatINR(e.amount)}</div>
                                 <div className="col-span-1 flex justify-end">
-                                  <Button type="button" variant="ghost" onClick={() => removeExpense(e.id)} className="h-8 w-8 p-0 text-rose-600">✕</Button>
+                                  {repairMode ? (
+                                    <div className="flex gap-1">
+                                      <Button type="button" variant="ghost" onClick={() => startEditExpense(e)} className="h-8 px-2 text-slate-700">Edit</Button>
+                                      <Button type="button" variant="ghost" onClick={() => startDeleteExpenseRepair(e)} className="h-8 px-2 text-rose-600">Delete</Button>
+                                    </div>
+                                  ) : (
+                                    <Button type="button" variant="ghost" onClick={() => removeExpense(e.id)} className="h-8 w-8 p-0 text-rose-600">✕</Button>
+                                  )}
                                 </div>
                               </div>
                             ))}
@@ -3452,6 +3898,20 @@ export default function Finance() {
                       <span>Activity log: </span>
                       {expenseActivities[0] ? `${expenseActivities[0].message} • ${new Date(expenseActivities[0].createdAt).toLocaleString()}` : 'No recent activity'}
                     </div>
+                    {repairMode && (
+                      <div className="border-t border-slate-200 px-4 py-3">
+                        <div className="text-xs font-semibold text-slate-700">Repair History</div>
+                        <div className="mt-2 space-y-2 text-xs text-slate-500">
+                          {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 8).map((entry) => (
+                            <div key={entry.id} className="rounded-xl border border-slate-200 px-3 py-2">
+                              <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
+                              <div>{entry.entityName} • {entry.reason} • {new Date(entry.createdAt).toLocaleString()}</div>
+                            </div>
+                          ))}
+                          {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').length === 0 && <div>No repair history yet.</div>}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3591,6 +4051,41 @@ export default function Finance() {
                 <div>Net Cash Movement: <b>{formatINR(expectedClosingBreakdown.netCashMovement)}</b></div>
                 <div className="pt-2 border-t">Expected Closing = Opening + Net Cash Movement = <b>{formatINR(expectedClosingBreakdown.expectedClosing)}</b></div>
                 <div className="pt-2 flex justify-end"><Button variant="outline" onClick={() => setIsExpectedClosingBreakdownOpen(false)}>Close</Button></div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+        {repairMode && expenseRepairConfirmOpen && expenseRepairDraft && expenseRepairPreview && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !expenseRepairSubmitting && setExpenseRepairConfirmOpen(false)}>
+            <Card className="w-full max-w-lg border-slate-200 shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <CardHeader><CardTitle>Confirm Repair</CardTitle></CardHeader>
+              <CardContent className="space-y-4 text-sm">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
+                  <div className="mt-1 font-semibold text-slate-900">{expenseRepairOperationLabel(expenseRepairDraft.kind)}</div>
+                  <div className="mt-1 text-xs text-slate-600">{expenseRepairDraft.reason}</div>
+                  <div className="mt-1 text-xs text-slate-600">{new Date(expenseRepairDraft.financialDate).toLocaleString()}</div>
+                </div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-2xl border border-slate-200 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Before</div>
+                    <div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.beforeExpenseTotal)}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">After</div>
+                    <div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.afterExpenseTotal)}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Change</div>
+                    <div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.changeExpenseTotal)}</div>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setExpenseRepairConfirmOpen(false)} disabled={expenseRepairSubmitting}>Cancel</Button>
+                  <Button onClick={() => void applyExpenseRepairDraft()} disabled={expenseRepairSubmitting}>
+                    {expenseRepairSubmitting ? 'Applying...' : 'Confirm Repair'}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </div>

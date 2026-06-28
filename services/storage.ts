@@ -25,6 +25,7 @@ import {
   ExpenseActivity,
   UpfrontOrderLedgerEffect,
   ManualCashbookEntry,
+  RepairHistoryEntry,
   OperatorUser,
 } from '../types';
 import { db, auth } from './firebase';
@@ -643,7 +644,7 @@ export const getCustomerCompositeReceivableBreakdown = (
   transactions: Transaction[],
   upfrontOrders: UpfrontOrder[],
 ) => {
-  const snapshot = getCanonicalCustomerBalanceSnapshot(customers, transactions);
+  const snapshot = getCanonicalCustomerBalanceSnapshot(customers, transactions, upfrontOrders);
   const canonicalDue = Math.max(0, Number(snapshot.balances.get(customerId)?.totalDue || 0));
   const storeCredit = Math.max(0, Number(snapshot.balances.get(customerId)?.storeCredit || 0));
   const customOrderDueFromUpfrontEffects = buildUpfrontOrderLedgerEffects(
@@ -2404,7 +2405,8 @@ const initialData: AppState = {
   },
   variantsMaster: [],
   colorsMaster: [],
-  operatorUsers: []
+  operatorUsers: [],
+  repairHistoryEntries: [],
 };
 
 const computeCashEstimateFromTransactions = (transactions: Transaction[], deleteCompensations: DeleteCompensationRecord[] = []) => {
@@ -4076,6 +4078,25 @@ export const saveData = async (data: AppState, options?: { throwOnError?: boolea
   }
 };
 
+export const appendRepairHistoryEntry = async (entry: RepairHistoryEntry): Promise<RepairHistoryEntry[]> => {
+  const data = loadData();
+  const next = [entry, ...(data.repairHistoryEntries || [])]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  await saveData(
+    { ...data, repairHistoryEntries: next },
+    { throwOnError: true, reason: 'appendRepairHistoryEntry', auditOperation: 'CREATE' }
+  );
+  void writeAuditEvent('CREATE', {
+    reason: 'appendRepairHistoryEntry',
+    repairHistoryEntryId: entry.id,
+    entityType: entry.entityType,
+    entityId: entry.entityId,
+    repairKind: entry.repairKind,
+    targetTransactionId: entry.targetTransactionId || null,
+  });
+  return next;
+};
+
 export const requestStoreProvisioning = async (context?: string) => {
   await writeAuditEvent('SECURITY_EVENT', {
     reason: 'store_provisioning_required',
@@ -4802,6 +4823,40 @@ const sanitizeUpfrontOrderForPersist = (order: UpfrontOrder): UpfrontOrder => {
   return next;
 };
 
+export const getUpfrontOrderTotalAmount = (order?: Partial<UpfrontOrder> | null): number => Math.max(0, Number(order?.finalTotal ?? order?.totalCost ?? (((order?.orderTotalCustomer || 0) + (order?.expenseAmount || 0)) || 0)));
+export const getUpfrontOrderAdvancePaidAmount = (order?: Partial<UpfrontOrder> | null): number => Math.max(0, Number(order?.advancePaid || 0));
+export const getUpfrontOrderRemainingAmount = (order?: Partial<UpfrontOrder> | null): number => Math.max(0, Number(order?.remainingAmount ?? (getUpfrontOrderTotalAmount(order) - getUpfrontOrderAdvancePaidAmount(order))));
+export const getUpfrontOrderAccountingMode = (order?: Partial<UpfrontOrder> | null): 'legacy_untrusted' | 'modern_receivable' => {
+  if (order?.accountingMode === 'modern_receivable') return 'modern_receivable';
+  if (order?.accountingMode === 'legacy_untrusted') return 'legacy_untrusted';
+  return Array.isArray(order?.paymentHistory) && order.paymentHistory.length > 0 ? 'modern_receivable' : 'legacy_untrusted';
+};
+export const getUpfrontOrderLegacyDueImpact = (order?: Partial<UpfrontOrder> | null): number => (
+  Array.isArray(order?.paymentHistory) && order.paymentHistory.length > 0 ? getUpfrontOrderRemainingAmount(order) : 0
+);
+export const getUpfrontOrderCurrentDueImpact = (order?: Partial<UpfrontOrder> | null): number => (
+  getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? getUpfrontOrderRemainingAmount(order) : 0
+);
+
+export const buildReceivableOnlyRepairAdvanceEntries = (order?: Partial<UpfrontOrder> | null): NonNullable<UpfrontOrder['paymentHistory']> => {
+  const totalAmount = getUpfrontOrderTotalAmount(order);
+  const advancePaid = getUpfrontOrderAdvancePaidAmount(order);
+  if (advancePaid <= 0 || totalAmount <= 0) return [];
+  const effectiveAt = String(order?.effectiveAt || order?.date || order?.createdAt || order?.updatedAt || new Date().toISOString());
+  return [{
+    id: `upfront-repair-${String(order?.id || 'unknown')}-advance`,
+    paidAt: effectiveAt,
+    effectiveAt,
+    amount: advancePaid,
+    method: 'Advance',
+    note: 'Receivable-only advance repair',
+    kind: 'initial_advance',
+    receivableOnlyRepair: true,
+    remainingAfterPayment: Math.max(0, Number((totalAmount - advancePaid).toFixed(2))),
+    advancePaidAfterPayment: advancePaid,
+  }];
+};
+
 const shouldLogUpfrontOrderSanitization = () => {
   if (import.meta.env?.DEV) return true;
   if (typeof window === 'undefined') return false;
@@ -4843,14 +4898,17 @@ export const buildUpfrontOrderLedgerEffects = (
   const effects: UpfrontOrderLedgerEffect[] = [];
 
   safeOrders.forEach((order) => {
-    const orderDate = order.date || order.createdAt || order.updatedAt || new Date(0).toISOString();
+    const orderDate = order.effectiveAt || order.date || order.createdAt || order.updatedAt || new Date(0).toISOString();
     const customerName = (order as any).customerName || customerMap.get(order.customerId) || 'Unknown Customer';
     const productName = String(order.productName || 'Custom Order').trim() || 'Custom Order';
-    const totalAmount = Math.max(0, Number(order.finalTotal ?? order.totalCost ?? (((order.orderTotalCustomer || 0) + (order.expenseAmount || 0)) || 0)));
-    const remainingAmount = Math.max(0, Number(order.remainingAmount || 0));
-    const history = Array.isArray(order.paymentHistory) ? order.paymentHistory : [];
+    const totalAmount = getUpfrontOrderTotalAmount(order);
+    const remainingAmount = getUpfrontOrderRemainingAmount(order);
+    const accountingMode = getUpfrontOrderAccountingMode(order);
+    const history = Array.isArray(order.paymentHistory) && order.paymentHistory.length
+      ? order.paymentHistory
+      : (accountingMode === 'modern_receivable' ? buildReceivableOnlyRepairAdvanceEntries(order) : []);
 
-    if (!history.length) {
+    if (!history.length && accountingMode !== 'modern_receivable') {
       effects.push({
         id: `upfront-ledger-${order.id}-legacy`,
         orderId: order.id,
@@ -4897,25 +4955,27 @@ export const buildUpfrontOrderLedgerEffects = (
     history.forEach((payment, idx) => {
       const amount = Math.max(0, Number(payment.amount || 0));
       const method = normalizeUpfrontPaymentMethod(payment.method);
+      const isReceivableOnlyRepair = Boolean(payment.receivableOnlyRepair);
       effects.push({
         id: `upfront-ledger-${order.id}-payment-${payment.id || idx}`,
         orderId: order.id,
         paymentId: payment.id || `${idx}`,
-        date: payment.paidAt || orderDate,
+        date: payment.effectiveAt || payment.paidAt || orderDate,
         customerId: order.customerId,
         customerName,
         productName,
         description: `${payment.kind === 'initial_advance' ? 'Custom Order Advance' : 'Custom Order Payment'} — ${productName}`,
         type: 'custom_order_payment',
         paymentMethod: method,
-        cashIn: method === 'Cash' ? amount : 0,
-        bankIn: method === 'Online' ? amount : 0,
+        cashIn: isReceivableOnlyRepair ? 0 : method === 'Cash' ? amount : 0,
+        bankIn: isReceivableOnlyRepair ? 0 : method === 'Online' ? amount : 0,
         receivableIncrease: 0,
         receivableDecrease: amount,
         totalAmount,
         paidAmount: amount,
         remainingAmount: Math.max(0, Number(payment.remainingAfterPayment ?? remainingAmount)),
         source: 'upfront_order',
+        isReceivableOnlyRepair,
       });
     });
   });
@@ -4926,9 +4986,11 @@ export const buildUpfrontOrderLedgerEffects = (
 export const addUpfrontOrder = (order: UpfrontOrder): AppState => {
     const data = loadData();
     assertUpfrontOrderPayload(order, new Set(data.customers.map(c => c.id)));
-    const createdAt = order.createdAt || order.date || new Date().toISOString();
+    const createdAt = order.createdAt || order.effectiveAt || order.date || new Date().toISOString();
     const normalizedOrder: UpfrontOrder = {
       ...order,
+      accountingMode: order.accountingMode || 'modern_receivable',
+      effectiveAt: order.effectiveAt || order.date || createdAt,
       createdAt,
       updatedAt: new Date().toISOString(),
       initialAdvancePaid: Number.isFinite(order.initialAdvancePaid as any) ? order.initialAdvancePaid : Math.max(0, Number(order.advancePaid || 0)),
@@ -4937,6 +4999,7 @@ export const addUpfrontOrder = (order: UpfrontOrder): AppState => {
           ? [{
             id: `upfront-pay-${order.id}-initial`,
             paidAt: createdAt,
+            effectiveAt: order.effectiveAt || createdAt,
             amount: Math.max(0, Number(order.advancePaid || 0)),
             method: 'Advance',
             note: 'Initial advance',
@@ -5009,6 +5072,7 @@ export const collectUpfrontPayment = (orderId: string, amount: number): AppState
           {
             id: `upfront-pay-${order.id}-${Date.now()}`,
             paidAt: new Date().toISOString(),
+            effectiveAt: new Date().toISOString(),
             amount,
             method: 'Advance',
             note: 'Additional payment',
@@ -5025,6 +5089,101 @@ export const collectUpfrontPayment = (orderId: string, amount: number): AppState
     void saveData(newState, { reason: 'collectUpfrontPayment', auditOperation: 'UPDATE' });
     emitBehaviorStateChange({ type: 'payment_collected', entityId: orderId, from: order.status, to: newStatus, metadata: { amount, remainingAmount: Math.max(0, newRemaining) } });
     return newState;
+};
+
+export const recomputeUpfrontOrderPaymentState = (order: UpfrontOrder): UpfrontOrder => {
+    const paymentHistory = Array.isArray(order.paymentHistory) ? [...order.paymentHistory] : [];
+    let runningAdvance = 0;
+    const totalCost = Math.max(0, Number(order.finalTotal ?? order.totalCost ?? (((order.orderTotalCustomer || 0) + (order.expenseAmount || 0)) || 0)));
+    const normalizedHistory = paymentHistory.map((payment) => {
+      const amount = Math.max(0, Number(payment.amount || 0));
+      runningAdvance = Number((runningAdvance + amount).toFixed(2));
+      const remainingAfterPayment = Math.max(0, Number((totalCost - runningAdvance).toFixed(2)));
+      return {
+        ...payment,
+        paidAt: payment.paidAt || payment.effectiveAt || order.effectiveAt || order.date || new Date().toISOString(),
+        effectiveAt: payment.effectiveAt || payment.paidAt || order.effectiveAt || order.date || new Date().toISOString(),
+        amount,
+        remainingAfterPayment,
+        advancePaidAfterPayment: runningAdvance,
+      };
+    });
+    const advancePaid = Number(runningAdvance.toFixed(2));
+    const remainingAmount = Math.max(0, Number((totalCost - advancePaid).toFixed(2)));
+    return {
+      ...order,
+      advancePaid,
+      remainingAmount,
+      status: remainingAmount <= 0 ? 'cleared' : 'unpaid',
+      paymentHistory: normalizedHistory,
+      updatedAt: new Date().toISOString(),
+    };
+};
+
+export const deleteUpfrontOrder = (orderId: string): AppState => {
+    const data = loadData();
+    const order = data.upfrontOrders.find((item) => item.id === orderId);
+    if (!order) failValidation('UPFRONT_ORDER_NOT_FOUND', 'Upfront order not found.', { orderId });
+    const newOrders = sanitizeUpfrontOrdersForPersist(data.upfrontOrders.filter((item) => item.id !== orderId), 'deleteUpfrontOrder');
+    const newCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, newOrders, [order.customerId]);
+    const newState = { ...data, customers: newCustomers, upfrontOrders: newOrders };
+    void saveData(newState, { reason: 'deleteUpfrontOrder', auditOperation: 'DELETE' });
+    emitBehaviorStateChange({ type: 'order_status_updated', entityId: orderId, from: order.status, to: 'deleted', metadata: { customerId: order.customerId } });
+    return newState;
+};
+
+export const updateUpfrontOrderPayment = (
+  orderId: string,
+  paymentId: string | null,
+  payment: {
+    amount: number;
+    method: 'Cash' | 'Online' | 'Advance' | string;
+    note?: string;
+    kind?: 'initial_advance' | 'additional_payment';
+    paidAt: string;
+    effectiveAt?: string;
+  },
+): AppState => {
+    const data = loadData();
+    const order = data.upfrontOrders.find((item) => item.id === orderId);
+    if (!order) failValidation('UPFRONT_ORDER_NOT_FOUND', 'Upfront order not found.', { orderId });
+    if (!Number.isFinite(payment.amount) || payment.amount <= 0) {
+      failValidation('INVALID_UPFRONT_PAYMENT_AMOUNT', 'Upfront payment amount must be greater than zero.', { amount: payment.amount });
+    }
+    const nextPayment = {
+      id: paymentId || `upfront-pay-${orderId}-${Date.now()}`,
+      paidAt: payment.paidAt,
+      effectiveAt: payment.effectiveAt || payment.paidAt,
+      amount: Math.max(0, Number(payment.amount || 0)),
+      method: payment.method,
+      note: payment.note,
+      kind: payment.kind || 'additional_payment',
+      remainingAfterPayment: 0,
+      advancePaidAfterPayment: 0,
+    };
+    const existingHistory = Array.isArray(order.paymentHistory) ? [...order.paymentHistory] : [];
+    const nextHistory = paymentId
+      ? existingHistory.map((entry) => entry.id === paymentId ? { ...entry, ...nextPayment } : entry)
+      : [...existingHistory, nextPayment];
+    const sortedHistory = nextHistory.sort((a, b) => new Date(a.effectiveAt || a.paidAt).getTime() - new Date(b.effectiveAt || b.paidAt).getTime() || String(a.id).localeCompare(String(b.id)));
+    const updatedOrder = recomputeUpfrontOrderPaymentState({ ...order, paymentHistory: sortedHistory });
+    if (updatedOrder.advancePaid - (updatedOrder.totalCost || 0) > MONEY_EPSILON) {
+      failValidation('UPFRONT_PAYMENT_EXCEEDS_TOTAL', 'Total advance payments cannot exceed custom order total.', { orderId, advancePaid: updatedOrder.advancePaid, totalCost: updatedOrder.totalCost });
+    }
+    return updateUpfrontOrder(updatedOrder);
+};
+
+export const deleteUpfrontOrderPayment = (orderId: string, paymentId: string): AppState => {
+    const data = loadData();
+    const order = data.upfrontOrders.find((item) => item.id === orderId);
+    if (!order) failValidation('UPFRONT_ORDER_NOT_FOUND', 'Upfront order not found.', { orderId });
+    const history = Array.isArray(order.paymentHistory) ? order.paymentHistory : [];
+    if (!history.some((entry) => entry.id === paymentId)) {
+      failValidation('UPFRONT_PAYMENT_NOT_FOUND', 'Upfront payment not found.', { orderId, paymentId });
+    }
+    const nextHistory = history.filter((entry) => entry.id !== paymentId);
+    const updatedOrder = recomputeUpfrontOrderPaymentState({ ...order, paymentHistory: nextHistory });
+    return updateUpfrontOrder(updatedOrder);
 };
 
 export const deleteCustomer = (id: string): Customer[] => {

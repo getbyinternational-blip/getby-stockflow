@@ -460,6 +460,7 @@ export default function Cashbook() {
     ];
     const upfrontRows: Row[] = buildUpfrontOrderLedgerEffects(safeUpfrontOrders, safeCustomers).flatMap<Row>((effect): Row[] => {
       if (effect.type === 'legacy_custom_order_info') return [];
+      if (effect.isReceivableOnlyRepair) return [];
       if (effect.type === 'custom_order_receivable') {
         return [{
           id: effect.id,

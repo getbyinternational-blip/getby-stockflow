@@ -1,0 +1,26 @@
+{
+  "to": "9023950250",
+  "customerName": "Sample Customer",
+  "customerPhone": "9023950250",
+  "storeName": "GetBy International",
+  "storePhone": "+91 9000000000",
+  "storeAddress": "Surat, Gujarat",
+  "storeGstin": "",
+  "invoiceNo": "INV-344",
+  "invoiceDate": "22/06/2026",
+  "invoiceAmount": 600,
+  "paymentMethod": "Credit",
+  "creditDue": 600,
+  "items": [
+    {
+      "name": "HMD 2009 Quiet Cool 1000ml Square Humidifier",
+      "qty": 1,
+      "rate": 265,
+      "amount": 265
+    }
+  ],
+  "subtotal": 600,
+  "discount": 0,
+  "tax": 0,
+  "total": 600
+}

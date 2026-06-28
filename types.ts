@@ -86,6 +86,7 @@ export interface Transaction {
   id: string;
   items: CartItem[];
   total: number;
+  effectiveAt?: string;
   storeCreditUsed?: number;
   storeCreditCreated?: number;
   paymentAppliedToReceivable?: number;
@@ -202,6 +203,7 @@ export interface UpfrontOrder {
   finalTotal?: number;
   profitAmount?: number;
   profitPercent?: number;
+  effectiveAt?: string;
   paidNowCash?: number;
   paidNowOnline?: number;
   cartonPriceAdmin: number;
@@ -209,6 +211,7 @@ export interface UpfrontOrder {
   totalCost: number;
   advancePaid: number;
   remainingAmount: number;
+  accountingMode?: 'legacy_untrusted' | 'modern_receivable';
   date: string;
   reminderDate?: string;
   status: 'unpaid' | 'cleared';
@@ -219,10 +222,12 @@ export interface UpfrontOrder {
   paymentHistory?: Array<{
     id: string;
     paidAt: string;
+    effectiveAt?: string;
     amount: number;
     method?: 'Cash' | 'Online' | 'Credit' | 'Advance' | string;
     note?: string;
     kind: 'initial_advance' | 'additional_payment';
+    receivableOnlyRepair?: boolean;
     remainingAfterPayment: number;
     advancePaidAfterPayment: number;
   }>;
@@ -248,6 +253,7 @@ export interface UpfrontOrderLedgerEffect {
   remainingAmount: number;
   source: 'upfront_order';
   isLegacyInfoOnly?: boolean;
+  isReceivableOnlyRepair?: boolean;
 }
 
 
@@ -281,7 +287,9 @@ export interface Expense {
   amount: number;
   category: string;
   note?: string;
+  effectiveAt?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 
@@ -565,6 +573,7 @@ export interface PurchaseOrder {
   gstAmount?: number;
   status: 'draft' | 'ordered' | 'partially_received' | 'received' | 'cancelled';
   orderDate: string;
+  effectiveAt?: string;
   notes?: string;
   lines: PurchaseOrderLine[];
   totalQuantity: number;
@@ -621,6 +630,7 @@ export interface SupplierPaymentLedgerEntry {
   amount: number;
   method: 'cash' | 'online';
   paidAt: string;
+  effectiveAt?: string;
   note?: string;
   createdAt: string;
   updatedAt?: string;
@@ -745,6 +755,46 @@ export interface ManualCashbookEntry {
   isDeleted?: boolean;
 }
 
+export interface RepairHistoryEntry {
+  id: string;
+  entityType: 'customer' | 'purchase_party' | 'expense';
+  entityId: string;
+  entityName: string;
+  repairKind: 'add_payment' | 'edit_payment' | 'delete_payment' | 'edit_sale' | 'add_sale' | 'delete_sale' | 'add_return' | 'edit_return' | 'delete_return' | 'add_purchase' | 'edit_purchase' | 'delete_purchase' | 'add_supplier_payment' | 'edit_supplier_payment' | 'delete_supplier_payment' | 'add_expense' | 'edit_expense' | 'delete_expense' | 'add_advance_order' | 'edit_advance_order' | 'delete_advance_order' | 'add_advance_payment' | 'edit_advance_payment' | 'delete_advance_payment';
+  targetTransactionId?: string;
+  reason: string;
+  notes?: string;
+  financialDate?: string;
+  adminUid?: string | null;
+  adminEmail?: string | null;
+  createdAt: string;
+  before: {
+    totalDue: number;
+    storeCredit: number;
+    netReceivable: number;
+  };
+  after: {
+    totalDue: number;
+    storeCredit: number;
+    netReceivable: number;
+  };
+  delta: {
+    totalDue: number;
+    storeCredit: number;
+    netReceivable: number;
+  };
+  oldTransaction?: Transaction | null;
+  newTransaction?: Transaction | null;
+  oldPurchaseOrder?: PurchaseOrder | null;
+  newPurchaseOrder?: PurchaseOrder | null;
+  oldSupplierPayment?: SupplierPaymentLedgerEntry | null;
+  newSupplierPayment?: SupplierPaymentLedgerEntry | null;
+  oldExpense?: Expense | null;
+  newExpense?: Expense | null;
+  oldUpfrontOrder?: UpfrontOrder | null;
+  newUpfrontOrder?: UpfrontOrder | null;
+}
+
 export interface AppState {
   products: Product[];
   transactions: Transaction[];
@@ -780,6 +830,7 @@ export interface AppState {
   variantsMaster?: string[];
   colorsMaster?: string[];
   migrationMarkers?: MigrationMarkers;
+  repairHistoryEntries?: RepairHistoryEntry[];
 }
 
 export const TAX_OPTIONS = [

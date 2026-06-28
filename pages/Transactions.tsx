@@ -830,6 +830,7 @@ export default function Transactions() {
       const customerId = selectedCustomer?.id;
       const customerName = selectedCustomer?.name;
       let nextTransaction: Transaction = { ...editingTx, date: nextDate, notes: nextNotes, customerId, customerName };
+      nextTransaction = { ...nextTransaction, effectiveAt: nextDate };
 
       if (editingTx.type === 'sale') {
         if (!editingItems.length) {
