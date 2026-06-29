@@ -751,7 +751,7 @@ export default function Admin() {
           const remainingPayable = h.remainingPayable == null ? null : toNonNegativeNumber(h.remainingPayable);
           const paymentSummary = h.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 };
           const partyName = h.partyName || 'Not linked / Unknown';
-          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || '—';
+          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || 'â€”';
           const isReviewRow = h.linkStatus === 'needs_review';
           const purchaseOrderActionHelp = 'Edit/delete for purchase-order history will be handled from Purchase Orders.';
 
@@ -770,17 +770,17 @@ export default function Admin() {
             </div>
           )}
           <div className="text-muted-foreground">
-            <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(h.variant, NO_VARIANT)} &nbsp;•&nbsp;
+            <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(h.variant, NO_VARIANT)} &nbsp;â€¢&nbsp;
             <span className="font-medium text-foreground">Color:</span> {formatVariantColorValue(h.color, NO_COLOR)}
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Qty</div><div className="font-semibold">{toNonNegativeNumber(h.quantity)}</div></div>
-            <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Unit Cost</div><div className="font-semibold">₹{toNonNegativeNumber(h.unitPrice).toFixed(2)}</div></div>
-            <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">₹{lineTotal.toFixed(2)}</div></div>
+            <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Unit Cost</div><div className="font-semibold">â‚¹{toNonNegativeNumber(h.unitPrice).toFixed(2)}</div></div>
+            <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">â‚¹{lineTotal.toFixed(2)}</div></div>
           </div>
           <div className="space-y-1 text-[11px]">
-            <div><span className="text-muted-foreground">Reference:</span> {h.reference || '—'}</div>
-            <div><span className="text-muted-foreground">Notes:</span> {h.notes || '—'}</div>
+            <div><span className="text-muted-foreground">Reference:</span> {h.reference || 'â€”'}</div>
+            <div><span className="text-muted-foreground">Notes:</span> {h.notes || 'â€”'}</div>
             {isReviewRow && (
               <div className="text-amber-700">
                 <span className="font-medium">Review:</span> {h.reviewReason || 'Purchase order line needs a product link review.'}
@@ -792,13 +792,13 @@ export default function Admin() {
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-[11px]">
               <div><span className="text-muted-foreground">Party:</span> <span className="font-medium">{partyName}</span></div>
               <div><span className="text-muted-foreground">PO:</span> <span className="font-medium">{poLabel}</span></div>
-              <div><span className="text-muted-foreground">Line Total:</span> <span className="font-medium">₹{lineTotal.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `₹${orderTotal.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `₹${orderPaid.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `₹${remainingPayable.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">₹{paymentSummary.partyCredit.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">₹{paymentSummary.cash.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">₹{paymentSummary.online.toFixed(2)}</span></div>
+              <div><span className="text-muted-foreground">Line Total:</span> <span className="font-medium">â‚¹{lineTotal.toFixed(2)}</span></div>
+              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `â‚¹${orderTotal.toFixed(2)}` : 'â€”'}</span></div>
+              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `â‚¹${orderPaid.toFixed(2)}` : 'â€”'}</span></div>
+              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `â‚¹${remainingPayable.toFixed(2)}` : 'â€”'}</span></div>
+              <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">â‚¹{paymentSummary.partyCredit.toFixed(2)}</span></div>
+              <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">â‚¹{paymentSummary.cash.toFixed(2)}</span></div>
+              <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">â‚¹{paymentSummary.online.toFixed(2)}</span></div>
             </div>
             {!h.purchaseOrderId && (
               <div className="text-[11px] text-muted-foreground">Order summary unavailable.</div>
@@ -835,22 +835,22 @@ export default function Admin() {
               <div className="text-muted-foreground">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
             </div>
             <div className="rounded border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-900">
-              Legacy-only history row — not part of canonical purchase ledger.
+              Legacy-only history row â€” not part of canonical purchase ledger.
             </div>
             <div className="text-muted-foreground">
-              <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(row.variant, NO_VARIANT)} &nbsp;â€¢&nbsp;
+              <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(row.variant, NO_VARIANT)} &nbsp;Ã¢â‚¬Â¢&nbsp;
               <span className="font-medium text-foreground">Color:</span> {formatVariantColorValue(row.color, NO_COLOR)}
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
               <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Qty</div><div className="font-semibold">{toNonNegativeNumber(row.quantity)}</div></div>
-              <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Unit Cost</div><div className="font-semibold">â‚¹{toNonNegativeNumber(row.unitPrice).toFixed(2)}</div></div>
-              <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">â‚¹{lineTotal.toFixed(2)}</div></div>
+              <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Unit Cost</div><div className="font-semibold">{"\u20B9"}{toNonNegativeNumber(row.unitPrice).toFixed(2)}</div></div>
+              <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">{"\u20B9"}{lineTotal.toFixed(2)}</div></div>
             </div>
             <div className="space-y-1 text-[11px]">
-              <div><span className="text-muted-foreground">Reference:</span> {row.reference || 'â€”'}</div>
-              <div><span className="text-muted-foreground">Notes:</span> {row.notes || 'â€”'}</div>
+              <div><span className="text-muted-foreground">Reference:</span> {row.reference || 'Ã¢â‚¬â€'}</div>
+              <div><span className="text-muted-foreground">Notes:</span> {row.notes || 'Ã¢â‚¬â€'}</div>
               <div><span className="text-muted-foreground">Linked Purchase Order:</span> {row.purchaseOrderLabel || row.purchaseOrderId || 'Not linked'}</div>
-              <div><span className="text-muted-foreground">Party:</span> {row.partyName || 'â€”'}</div>
+              <div><span className="text-muted-foreground">Party:</span> {row.partyName || 'Ã¢â‚¬â€'}</div>
             </div>
           </div>
         );
@@ -984,8 +984,8 @@ export default function Admin() {
     const supplierPaid = supplierPaidRaw === '' ? 0 : Number(supplierPaidRaw);
     if (supplierSectionTouched) {
       if (!supplierName) return setError('Party / supplier name is required when supplier details are entered.');
-      if (!Number.isFinite(supplierPayable) || supplierPayable < 0) return setError('Total payable must be a valid number ≥ 0.');
-      if (!Number.isFinite(supplierPaid) || supplierPaid < 0) return setError('Total paid must be a valid number ≥ 0.');
+      if (!Number.isFinite(supplierPayable) || supplierPayable < 0) return setError('Total payable must be a valid number â‰¥ 0.');
+      if (!Number.isFinite(supplierPaid) || supplierPaid < 0) return setError('Total paid must be a valid number â‰¥ 0.');
       if (supplierPaid > supplierPayable) return setError('Total paid cannot exceed total payable.');
       if ((supplierPaid > 0 || supplierPayable > 0) && !supplierMethod) return setError('Payment method is required when payable/paid amount is entered.');
       if (supplierMethod === 'credit' && supplierPaid > 0) return setError('Credit purchase requires total paid = 0.');
@@ -1416,7 +1416,7 @@ export default function Admin() {
         if (appliedAmount <= 0) {
           setNotice({ type: 'error', message: 'Purchase was saved, but party credit could not be applied. Use Apply Party Credit from Party Statement to repair this purchase.' });
         } else if (Math.abs(appliedAmount - creditToApply) > 0.01) {
-          setNotice({ type: 'info', message: `Purchase was saved, but only ₹${appliedAmount.toFixed(2)} of ₹${creditToApply.toFixed(2)} party credit was applied. Use Apply Party Credit from Party Statement if needed.` });
+          setNotice({ type: 'info', message: `Purchase was saved, but only â‚¹${appliedAmount.toFixed(2)} of â‚¹${creditToApply.toFixed(2)} party credit was applied. Use Apply Party Credit from Party Statement if needed.` });
         }
       } catch (creditApplyError) {
         setNotice({ type: 'error', message: 'Purchase was saved, but party credit could not be applied. Use Apply Party Credit from Party Statement to repair this purchase.' });
@@ -2321,10 +2321,10 @@ export default function Admin() {
           <Input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search products" />
           <Select value={operatorSortOption} onChange={(e) => setOperatorSortOption(e.target.value as any)}>
             <option value="name">Product Name</option>
-            <option value="stock-desc">Stock High → Low</option>
-            <option value="stock-asc">Stock Low → High</option>
-            <option value="sell-desc">Sell Price High → Low</option>
-            <option value="sell-asc">Sell Price Low → High</option>
+            <option value="stock-desc">Stock High â†’ Low</option>
+            <option value="stock-asc">Stock Low â†’ High</option>
+            <option value="sell-desc">Sell Price High â†’ Low</option>
+            <option value="sell-asc">Sell Price Low â†’ High</option>
             <option value="category">Category</option>
           </Select>
           <Select value={operatorStockFilter} onChange={(e) => setOperatorStockFilter(e.target.value as any)}>
@@ -2350,20 +2350,20 @@ export default function Admin() {
                 <div className="min-w-0"><div className="truncate font-semibold">{getProductName(product)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(product)}</div></div>
                 <div>{renderLocationDisplay(product)}</div>
                 <div className="text-right font-bold">{product.stock}</div>
-                <div className="text-right font-bold">₹{product.sellPrice}</div>
+                <div className="text-right font-bold">â‚¹{product.sellPrice}</div>
               </div>
             ))}
             {operatorPaginatedProducts.length === 0 && <div className="p-10 text-center text-sm text-muted-foreground">No products found.</div>}
             {operatorFilteredProducts.length > OPERATOR_INVENTORY_PAGE_SIZE && (
               <div className="flex items-center justify-between gap-2 p-3 text-sm">
                 <Button variant="outline" size="sm" onClick={() => setOperatorInventoryPage((prev) => Math.max(1, prev - 1))} disabled={operatorInventoryPage === 1}>Previous</Button>
-                <span className="text-xs text-muted-foreground">Showing {operatorPaginatedProducts.length} of {operatorFilteredProducts.length} products · Page {operatorInventoryPage} of {operatorInventoryTotalPages}</span>
+                <span className="text-xs text-muted-foreground">Showing {operatorPaginatedProducts.length} of {operatorFilteredProducts.length} products Â· Page {operatorInventoryPage} of {operatorInventoryTotalPages}</span>
                 <Button variant="outline" size="sm" onClick={() => setOperatorInventoryPage((prev) => Math.min(operatorInventoryTotalPages, prev + 1))} disabled={operatorInventoryPage === operatorInventoryTotalPages}>Next</Button>
               </div>
             )}
           </CardContent>
         </Card>
-        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || '—'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">₹{p.sellPrice}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
+        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || 'â€”'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">â‚¹{p.sellPrice}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
 
       </div>
     );
@@ -2386,7 +2386,7 @@ export default function Admin() {
                <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
                    <div>
                        <p className="text-xs font-bold text-blue-600 uppercase tracking-widest">Inventory Value (Cost)</p>
-                       <p className="text-2xl font-bold text-blue-900 mt-1">₹{stats.totalInventoryValue.toLocaleString()}</p>
+                       <p className="text-2xl font-bold text-blue-900 mt-1">â‚¹{stats.totalInventoryValue.toLocaleString()}</p>
                    </div>
                    <div className="absolute right-2 top-2 p-2 bg-blue-100 rounded-lg text-blue-600 opacity-50 group-hover:opacity-100 transition-opacity">
                        <Coins className="w-5 h-5" />
@@ -2398,7 +2398,7 @@ export default function Admin() {
                <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
                    <div>
                        <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest">Total Investment till date</p>
-                       <p className="text-2xl font-bold text-emerald-900 mt-1">₹{stats.totalInvestmentTillDate.toLocaleString()}</p>
+                       <p className="text-2xl font-bold text-emerald-900 mt-1">â‚¹{stats.totalInvestmentTillDate.toLocaleString()}</p>
                    </div>
                    <div className="absolute right-2 top-2 p-2 bg-emerald-100 rounded-lg text-emerald-600 opacity-50 group-hover:opacity-100 transition-opacity">
                        <TrendingUp className="w-5 h-5" />
@@ -2446,14 +2446,14 @@ export default function Admin() {
                 <CardContent className="p-4">
                   <p className="text-xs font-bold uppercase tracking-widest text-sky-600">Open Advance Orders</p>
                   <p className="mt-1 text-2xl font-bold text-sky-950">{customerBalanceAudit.summary.openAdvanceOrders}</p>
-                  <div className="mt-1 text-xs text-sky-800">Open value ₹{customerBalanceAudit.summary.totalOpenOrderValue.toFixed(2)}</div>
+                  <div className="mt-1 text-xs text-sky-800">Open value â‚¹{customerBalanceAudit.summary.totalOpenOrderValue.toFixed(2)}</div>
                 </CardContent>
               </Card>
               <Card className="bg-emerald-50/60 border-emerald-100 shadow-sm">
                 <CardContent className="p-4">
                   <p className="text-xs font-bold uppercase tracking-widest text-emerald-600">Advance Paid</p>
-                  <p className="mt-1 text-2xl font-bold text-emerald-950">₹{customerBalanceAudit.summary.totalAdvancePaid.toFixed(2)}</p>
-                  <div className="mt-1 text-xs text-emerald-800">Remaining ₹{customerBalanceAudit.summary.totalRemaining.toFixed(2)}</div>
+                  <p className="mt-1 text-2xl font-bold text-emerald-950">â‚¹{customerBalanceAudit.summary.totalAdvancePaid.toFixed(2)}</p>
+                  <div className="mt-1 text-xs text-emerald-800">Remaining â‚¹{customerBalanceAudit.summary.totalRemaining.toFixed(2)}</div>
                 </CardContent>
               </Card>
               <Card className="bg-rose-50/60 border-rose-100 shadow-sm">
@@ -2478,7 +2478,7 @@ export default function Admin() {
 	               <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
 	                   <div>
 	                       <p className="text-xs font-bold text-red-600 uppercase tracking-widest">Total Loss Amount</p>
-	                       <p className="text-2xl font-bold text-red-900 mt-1">₹{lostDamageStats.totalAmount.toFixed(2)}</p>
+	                       <p className="text-2xl font-bold text-red-900 mt-1">â‚¹{lostDamageStats.totalAmount.toFixed(2)}</p>
 	                   </div>
 	               </CardContent>
 		          </Card>
@@ -2626,7 +2626,7 @@ export default function Admin() {
                             {product.stockByVariantColor.map((row, idx) => (
                               <div key={`${row.variant}-${row.color}-${idx}`} className="rounded border p-2 text-[11px]">
                                 <div className="font-semibold">{row.variant || NO_VARIANT} / {row.color || NO_COLOR}</div>
-                                <div className="text-muted-foreground">Stock: {toNonNegativeNumber(row.stock)} • Buy: ₹{toNonNegativeNumber(row.buyPrice)} • Sell: ₹{toNonNegativeNumber(row.sellPrice)}</div>
+                                <div className="text-muted-foreground">Stock: {toNonNegativeNumber(row.stock)} â€¢ Buy: â‚¹{toNonNegativeNumber(row.buyPrice)} â€¢ Sell: â‚¹{toNonNegativeNumber(row.sellPrice)}</div>
                               </div>
                             ))}
                           </div>
@@ -2652,7 +2652,7 @@ export default function Admin() {
                 </td>
                 <td className="p-3">{toNonNegativeNumber(metrics.totalPurchase)} / {toNonNegativeNumber(metrics.totalSold)}</td>
                 <td className="p-3 font-semibold">{product.stock}</td>
-                <td className="p-3">₹{metrics.combinedAvgBuyPrice.toFixed(2)} / ₹{metrics.combinedAvgSellPrice.toFixed(2)}</td>
+                <td className="p-3">â‚¹{metrics.combinedAvgBuyPrice.toFixed(2)} / â‚¹{metrics.combinedAvgSellPrice.toFixed(2)}</td>
                 <td className="p-3">
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => { setPurchaseTarget(product); setPurchaseQty(''); setPurchasePrice(''); setPurchaseNextBuyPrice(''); setPurchaseReference(''); setPurchaseNotes(''); setPurchasePartyName(''); setSelectedPurchasePartyId(''); setPurchaseCashPaid(''); setPurchaseBankPaid(''); setPurchasePaymentNote(''); setPurchaseModalTab('add'); setPurchaseHistoryVariantFilter('all'); setPurchaseError(null); }}>Add Purchase</Button>
@@ -2737,10 +2737,10 @@ export default function Admin() {
               <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
                 <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customers</div><div className="mt-1 text-xl font-black">{customerBalancePolicyDryRun.totalCustomers}</div></div>
                 <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Affected</div><div className="mt-1 text-xl font-black text-amber-700">{customerBalancePolicyDryRun.affectedCustomers}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Current Due</div><div className="mt-1 text-xl font-black">₹{customerBalancePolicyDryRun.totalCurrentDue.toFixed(2)}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Due</div><div className="mt-1 text-xl font-black text-blue-700">₹{customerBalancePolicyDryRun.totalNewDue.toFixed(2)}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Current Store Credit</div><div className="mt-1 text-xl font-black">₹{customerBalancePolicyDryRun.totalCurrentStoreCredit.toFixed(2)}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Store Credit</div><div className="mt-1 text-xl font-black text-emerald-700">₹{customerBalancePolicyDryRun.totalNewStoreCredit.toFixed(2)}</div></div>
+                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Current Due</div><div className="mt-1 text-xl font-black">â‚¹{customerBalancePolicyDryRun.totalCurrentDue.toFixed(2)}</div></div>
+                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Due</div><div className="mt-1 text-xl font-black text-blue-700">â‚¹{customerBalancePolicyDryRun.totalNewDue.toFixed(2)}</div></div>
+                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Current Store Credit</div><div className="mt-1 text-xl font-black">â‚¹{customerBalancePolicyDryRun.totalCurrentStoreCredit.toFixed(2)}</div></div>
+                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Store Credit</div><div className="mt-1 text-xl font-black text-emerald-700">â‚¹{customerBalancePolicyDryRun.totalNewStoreCredit.toFixed(2)}</div></div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] text-xs">
@@ -2760,13 +2760,13 @@ export default function Admin() {
                     {customerBalancePolicyDryRun.rows.slice(0, 20).map((row) => (
                       <tr key={row.customerId} className="border-t bg-white">
                         <td className="p-2 font-semibold">{row.customerName}</td>
-                        <td className="p-2 text-right">₹{row.currentDue.toFixed(2)}</td>
-                        <td className="p-2 text-right">₹{row.currentStoreCredit.toFixed(2)}</td>
-                        <td className="p-2 text-right">₹{row.currentNetReceivable.toFixed(2)}</td>
-                        <td className="p-2 text-right text-blue-700">₹{row.newDue.toFixed(2)}</td>
-                        <td className="p-2 text-right text-emerald-700">₹{row.newStoreCredit.toFixed(2)}</td>
-                        <td className="p-2 text-right font-semibold">₹{row.newNetReceivable.toFixed(2)}</td>
-                        <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>₹{row.difference.toFixed(2)}</td>
+                        <td className="p-2 text-right">â‚¹{row.currentDue.toFixed(2)}</td>
+                        <td className="p-2 text-right">â‚¹{row.currentStoreCredit.toFixed(2)}</td>
+                        <td className="p-2 text-right">â‚¹{row.currentNetReceivable.toFixed(2)}</td>
+                        <td className="p-2 text-right text-blue-700">â‚¹{row.newDue.toFixed(2)}</td>
+                        <td className="p-2 text-right text-emerald-700">â‚¹{row.newStoreCredit.toFixed(2)}</td>
+                        <td className="p-2 text-right font-semibold">â‚¹{row.newNetReceivable.toFixed(2)}</td>
+                        <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>â‚¹{row.difference.toFixed(2)}</td>
                       </tr>
                     ))}
                     {customerBalancePolicyDryRun.rows.length === 0 && (
@@ -2808,12 +2808,12 @@ export default function Admin() {
                               <div className="font-semibold">{row.customerName}</div>
                               <div className="text-[11px] text-muted-foreground">{row.phone || 'No phone'}</div>
                             </td>
-                            <td className="p-2 text-right">₹{row.storedDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-emerald-700">₹{row.storedStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">₹{row.canonicalDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">₹{row.canonicalStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">₹{row.canonicalNet.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>₹{row.difference.toFixed(2)}</td>
+                            <td className="p-2 text-right">â‚¹{row.storedDue.toFixed(2)}</td>
+                            <td className="p-2 text-right text-emerald-700">â‚¹{row.storedStoreCredit.toFixed(2)}</td>
+                            <td className="p-2 text-right text-blue-700">â‚¹{row.canonicalDue.toFixed(2)}</td>
+                            <td className="p-2 text-right text-blue-700">â‚¹{row.canonicalStoreCredit.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold">â‚¹{row.canonicalNet.toFixed(2)}</td>
+                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>â‚¹{row.difference.toFixed(2)}</td>
                             <td className="p-2 text-right">
                               <Button
                                 size="sm"
@@ -2833,7 +2833,7 @@ export default function Admin() {
                                 <div className="grid gap-2 md:grid-cols-3">
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Stored Net</div>
-                                    <div className="mt-1 text-muted-foreground">₹{Math.max(0, row.storedDue - row.storedStoreCredit).toFixed(2)}</div>
+                                    <div className="mt-1 text-muted-foreground">â‚¹{Math.max(0, row.storedDue - row.storedStoreCredit).toFixed(2)}</div>
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Open Advance Orders</div>
@@ -2886,9 +2886,9 @@ export default function Admin() {
                             <td className="p-2 font-semibold">{order.customerName}</td>
                             <td className="p-2">{order.orderNo}</td>
                             <td className="p-2"><Badge variant="outline">{order.status}</Badge></td>
-                            <td className="p-2 text-right">₹{order.orderTotal.toFixed(2)}</td>
-                            <td className="p-2 text-right">₹{order.advancePaid.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold text-amber-700">₹{order.remaining.toFixed(2)}</td>
+                            <td className="p-2 text-right">â‚¹{order.orderTotal.toFixed(2)}</td>
+                            <td className="p-2 text-right">â‚¹{order.advancePaid.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold text-amber-700">â‚¹{order.remaining.toFixed(2)}</td>
                             <td className="p-2 text-right">{order.paymentHistoryCount}</td>
                           </tr>
                           {expanded && (
@@ -2943,7 +2943,7 @@ export default function Admin() {
                             <td className="p-2 font-semibold">{group.label}</td>
                             <td className="p-2 text-right">{group.count}</td>
                             <td className="p-2 text-right">{group.customerCount}</td>
-                            <td className="p-2 text-right font-semibold">₹{group.totalAmount.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold">â‚¹{group.totalAmount.toFixed(2)}</td>
                           </tr>
                           {expanded && (
                             <tr className="border-t bg-slate-50/60">
@@ -2959,7 +2959,7 @@ export default function Admin() {
                                           <div className="text-muted-foreground">{entry.description}</div>
                                         </div>
                                         <div className="text-right">
-                                          <div className="font-semibold">₹{entry.amount.toFixed(2)}</div>
+                                          <div className="font-semibold">â‚¹{entry.amount.toFixed(2)}</div>
                                           <div className="text-muted-foreground">{entry.ref}</div>
                                         </div>
                                       </div>
@@ -3009,13 +3009,13 @@ export default function Admin() {
                               <div className="font-semibold">{row.customerName}</div>
                               <div className="text-[11px] text-muted-foreground">{row.phone || 'No phone'}</div>
                             </td>
-                            <td className="p-2 text-right">₹{row.currentDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-emerald-700">₹{row.currentStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">₹{row.currentNet.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">₹{row.simulatedDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">₹{row.simulatedStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">₹{row.simulatedNet.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>₹{row.difference.toFixed(2)}</td>
+                            <td className="p-2 text-right">â‚¹{row.currentDue.toFixed(2)}</td>
+                            <td className="p-2 text-right text-emerald-700">â‚¹{row.currentStoreCredit.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold">â‚¹{row.currentNet.toFixed(2)}</td>
+                            <td className="p-2 text-right text-blue-700">â‚¹{row.simulatedDue.toFixed(2)}</td>
+                            <td className="p-2 text-right text-blue-700">â‚¹{row.simulatedStoreCredit.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold">â‚¹{row.simulatedNet.toFixed(2)}</td>
+                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>â‚¹{row.difference.toFixed(2)}</td>
                             <td className="p-2 text-right">
                               <Badge variant={row.risk === 'Safe' ? 'success' : 'outline'}>{row.risk}</Badge>
                             </td>
@@ -3030,11 +3030,11 @@ export default function Admin() {
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Advance-Order Credit</div>
-                                    <div className="mt-1 text-muted-foreground">₹{row.advanceOrderCreditTotal.toFixed(2)}</div>
+                                    <div className="mt-1 text-muted-foreground">â‚¹{row.advanceOrderCreditTotal.toFixed(2)}</div>
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Unknown Credit</div>
-                                    <div className="mt-1 text-muted-foreground">₹{row.unknownCreditTotal.toFixed(2)}</div>
+                                    <div className="mt-1 text-muted-foreground">â‚¹{row.unknownCreditTotal.toFixed(2)}</div>
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Warnings</div>
@@ -3084,7 +3084,7 @@ export default function Admin() {
               <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Needs Supplier Review</div><div className="mt-1 text-2xl font-black text-amber-700">{legacyPurchaseHistoryConversionDryRun.summary.needsSupplierReviewRows}</div></div>
               <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Needs Value Review</div><div className="mt-1 text-2xl font-black text-rose-700">{legacyPurchaseHistoryConversionDryRun.summary.needsValueReviewRows}</div></div>
               <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Duplicate Candidates</div><div className="mt-1 text-2xl font-black text-amber-700">{legacyPurchaseHistoryConversionDryRun.summary.duplicateCandidateRows}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Proposed Amount</div><div className="mt-1 text-2xl font-black">₹{legacyPurchaseHistoryConversionDryRun.summary.totalProposedPurchaseAmount.toFixed(2)}</div></div>
+              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Proposed Amount</div><div className="mt-1 text-2xl font-black">â‚¹{legacyPurchaseHistoryConversionDryRun.summary.totalProposedPurchaseAmount.toFixed(2)}</div></div>
             </CardContent>
           </Card>
 
@@ -3133,9 +3133,9 @@ export default function Admin() {
                             <td className="p-2"><div>{row.partyName || 'Unknown supplier'}</div><div className="text-[11px] text-muted-foreground">{row.suggestedPartyName && row.suggestedPartyName !== row.partyName ? `Suggested: ${row.suggestedPartyName}` : row.partyId || row.suggestedPartyId || ''}</div></td>
                             <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
                             <td className="p-2 text-right">{row.quantity}</td>
-                            <td className="p-2 text-right">₹{row.unitCost.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">₹{row.lineTotal.toFixed(2)}</td>
-                            <td className="p-2">{row.reference || row.purchaseOrderId || row.legacyHistoryId || '—'}</td>
+                            <td className="p-2 text-right">â‚¹{row.unitCost.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold">â‚¹{row.lineTotal.toFixed(2)}</td>
+                            <td className="p-2">{row.reference || row.purchaseOrderId || row.legacyHistoryId || 'â€”'}</td>
                             <td className="p-2"><div className="font-medium">{row.suggestedAction}</div><div className="text-[11px] text-muted-foreground">{row.reviewReason}</div></td>
                           </tr>
                         ))}
@@ -3218,21 +3218,21 @@ export default function Admin() {
                         <React.Fragment key={row.id}>
                           <tr className="cursor-pointer border-t align-top hover:bg-slate-50/70" onClick={() => toggleExpandedValue(row.id, setExpandedPurchaseHistoryReviewIds)}>
                             <td className="p-2"><Badge variant="outline">{row.source}</Badge></td>
-                            <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.reference || row.notes || '—'}</div></td>
-                            <td className="p-2">{row.productId || '—'}</td>
-                            <td className="p-2">{row.productCode || '—'}</td>
-                            <td className="p-2">{row.partyName || '—'}</td>
-                            <td className="p-2">{row.partyId || row.suggestedPartyId || '—'}</td>
+                            <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.reference || row.notes || 'â€”'}</div></td>
+                            <td className="p-2">{row.productId || 'â€”'}</td>
+                            <td className="p-2">{row.productCode || 'â€”'}</td>
+                            <td className="p-2">{row.partyName || 'â€”'}</td>
+                            <td className="p-2">{row.partyId || row.suggestedPartyId || 'â€”'}</td>
                             <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
                             <td className="p-2 text-right">{row.quantity}</td>
-                            <td className="p-2 text-right">₹{row.unitCost.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">₹{row.lineTotal.toFixed(2)}</td>
+                            <td className="p-2 text-right">â‚¹{row.unitCost.toFixed(2)}</td>
+                            <td className="p-2 text-right font-semibold">â‚¹{row.lineTotal.toFixed(2)}</td>
                             <td className="p-2">{row.paymentStatus}</td>
-                            <td className="p-2 text-right">{row.paidAmount == null ? '—' : `₹${row.paidAmount.toFixed(2)}`}</td>
-                            <td className="p-2 text-right">{row.remainingAmount == null ? '—' : `₹${row.remainingAmount.toFixed(2)}`}</td>
-                            <td className="p-2">{row.paymentMethod || '—'}</td>
-                            <td className="p-2">{row.purchaseOrderId || '—'}</td>
-                            <td className="p-2">{row.legacyHistoryId || '—'}</td>
+                            <td className="p-2 text-right">{row.paidAmount == null ? 'â€”' : `â‚¹${row.paidAmount.toFixed(2)}`}</td>
+                            <td className="p-2 text-right">{row.remainingAmount == null ? 'â€”' : `â‚¹${row.remainingAmount.toFixed(2)}`}</td>
+                            <td className="p-2">{row.paymentMethod || 'â€”'}</td>
+                            <td className="p-2">{row.purchaseOrderId || 'â€”'}</td>
+                            <td className="p-2">{row.legacyHistoryId || 'â€”'}</td>
                             <td className="p-2"><Badge variant="outline">{row.matchStatus}</Badge></td>
                             <td className="p-2">{row.matchConfidence}</td>
                             <td className="p-2">{row.suggestedAction}</td>
@@ -3248,18 +3248,18 @@ export default function Admin() {
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Reference Detail</div>
-                                    <div className="mt-1 text-muted-foreground">Reference: {row.reference || '—'}</div>
-                                    <div className="mt-1 text-muted-foreground">Notes: {row.notes || '—'}</div>
-                                    <div className="mt-1 text-muted-foreground">Matched row: {row.matchedRowId || '—'}</div>
+                                    <div className="mt-1 text-muted-foreground">Reference: {row.reference || 'â€”'}</div>
+                                    <div className="mt-1 text-muted-foreground">Notes: {row.notes || 'â€”'}</div>
+                                    <div className="mt-1 text-muted-foreground">Matched row: {row.matchedRowId || 'â€”'}</div>
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Conversion Preview</div>
                                     {row.proposedPurchaseOrder ? (
                                       <div className="mt-1 space-y-1 text-muted-foreground">
                                         <div>Proposed PO ID: {row.proposedPurchaseOrder.id}</div>
-                                        <div>Supplier: {row.proposedPurchaseOrder.partyName || '—'}</div>
-                                        <div>Total: ₹{Number(row.proposedPurchaseOrder.totalAmount || 0).toFixed(2)}</div>
-                                        <div>Created By: {row.proposedPurchaseOrder.createdBy || '—'}</div>
+                                        <div>Supplier: {row.proposedPurchaseOrder.partyName || 'â€”'}</div>
+                                        <div>Total: â‚¹{Number(row.proposedPurchaseOrder.totalAmount || 0).toFixed(2)}</div>
+                                        <div>Created By: {row.proposedPurchaseOrder.createdBy || 'â€”'}</div>
                                       </div>
                                     ) : (
                                       <div className="mt-1 text-muted-foreground">No conversion preview for this row.</div>
@@ -3402,7 +3402,7 @@ export default function Admin() {
                   const unit = Math.max(0, Number(p.lostDamageUnitCost || p.buyPrice || 0));
                   return (
                     <tr key={p.id} className="border-t">
-                      <td className="p-3"><div className="flex items-center gap-2"><div className="h-10 w-10 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{p.image ? <img src={p.image} alt={getProductName(p)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div><div><div className="font-medium">{getProductName(p)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(p)}</div></div></div></td><td className="p-3">{getProductBarcode(p)}</td><td className="p-3">{p.stock}</td><td className="p-3">{qty}</td><td className="p-3">₹{unit.toFixed(2)}</td><td className="p-3">₹{(qty * unit).toFixed(2)}</td><td className="p-3">{p.lostDamageUpdatedAt ? new Date(p.lostDamageUpdatedAt).toLocaleString() : '-'}</td>
+                      <td className="p-3"><div className="flex items-center gap-2"><div className="h-10 w-10 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{p.image ? <img src={p.image} alt={getProductName(p)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div><div><div className="font-medium">{getProductName(p)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(p)}</div></div></div></td><td className="p-3">{getProductBarcode(p)}</td><td className="p-3">{p.stock}</td><td className="p-3">{qty}</td><td className="p-3">â‚¹{unit.toFixed(2)}</td><td className="p-3">â‚¹{(qty * unit).toFixed(2)}</td><td className="p-3">{p.lostDamageUpdatedAt ? new Date(p.lostDamageUpdatedAt).toLocaleString() : '-'}</td>
                       <td className="p-3"><Button size="sm" variant="outline" onClick={() => openLostDamageModal(p)}>Edit</Button></td>
                     </tr>
                   );
@@ -3589,7 +3589,7 @@ export default function Admin() {
                       <div className="space-y-2">
                         <Label>Purchase / Buy Price</Label>
                         <div className="relative">
-                          <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs">₹</span>
+                          <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs">â‚¹</span>
                           <Input type="number" className="pl-6" value={formData.buyPrice ?? ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
                         </div>
                       </div>
@@ -3597,7 +3597,7 @@ export default function Admin() {
                       <div className="space-y-2">
                         <Label>Sell Price</Label>
                         <div className="relative">
-                          <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs">₹</span>
+                          <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs">â‚¹</span>
                           <Input type="number" className="pl-6 font-bold text-primary" value={formData.sellPrice ?? ''} onChange={e => setFormData({ ...formData, sellPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
                         </div>
                       </div>
@@ -3630,7 +3630,7 @@ export default function Admin() {
                           <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowAddSupplierPartyModal(true); }}>+ Add Party</Button>
                         </div>
                       </div>
-                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity × purchase price. You can edit it.</p></div>
+                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity Ã— purchase price. You can edit it.</p></div>
                       <div className="space-y-2"><Label>Total Paid</Label><Input type="number" min="0" value={formData.supplierTotalPaid ?? ''} onChange={e => setFormData({ ...formData, supplierTotalPaid: e.target.value })} placeholder="0" /></div>
                       <div className="space-y-2">
                         <Label>Payment Method</Label>
@@ -3666,7 +3666,7 @@ export default function Admin() {
             <CardContent className="space-y-3">
               <Input value={supplierPartySearch} onChange={e => setSupplierPartySearch(e.target.value)} placeholder="Search party by name / phone / GST" />
               <div className="max-h-[50vh] overflow-y-auto border rounded-md">
-                {getPurchaseParties().filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? `• GST ${p.gst}` : ''}</div></button>)}
+                {getPurchaseParties().filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? `â€¢ GST ${p.gst}` : ''}</div></button>)}
                 {!getPurchaseParties().filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).length && (
                   <div className="p-4 text-sm text-muted-foreground">No parties found. <button type="button" className="text-primary" onClick={() => { setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(true); }}>Add Party</button></div>
                 )}
@@ -3715,12 +3715,12 @@ export default function Admin() {
                   </div>
                   <div>
                     <div className="font-semibold text-base">{purchaseTarget.name}</div>
-                    <div className="text-xs text-muted-foreground">{purchaseTarget.category} • HSN: {purchaseTarget.hsn || 'N/A'}</div>
+                    <div className="text-xs text-muted-foreground">{purchaseTarget.category} â€¢ HSN: {purchaseTarget.hsn || 'N/A'}</div>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Stock</div><div className="font-semibold">{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.stock) : purchaseTarget.stock}</div></div>
-                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Buy Price</div><div className="font-semibold">₹{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : purchaseTarget.buyPrice}</div></div>
+                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Buy Price</div><div className="font-semibold">â‚¹{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : purchaseTarget.buyPrice}</div></div>
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Purchase</div><div className="font-semibold">{toNonNegativeNumber(purchaseTarget.totalPurchase)}</div></div>
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Sold</div><div className="font-semibold">{toNonNegativeNumber(purchaseTarget.totalSold)}</div></div>
                 </div>
@@ -3736,7 +3736,7 @@ export default function Admin() {
                   >
                     {purchaseVariantRows.map((row) => (
                       <option key={row.key} value={row.key}>
-                        {row.variant || NO_VARIANT} / {row.color || NO_COLOR} • Stock {toNonNegativeNumber(row.stock)} • Buy ₹{toNonNegativeNumber(row.buyPrice)}
+                        {row.variant || NO_VARIANT} / {row.color || NO_COLOR} â€¢ Stock {toNonNegativeNumber(row.stock)} â€¢ Buy â‚¹{toNonNegativeNumber(row.buyPrice)}
                       </option>
                     ))}
                   </select>
@@ -3777,7 +3777,7 @@ export default function Admin() {
                               }}
                             >
                               <div className="text-sm font-medium">{party.name}</div>
-                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` • GST ${party.gst}` : ''}</div>
+                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` â€¢ GST ${party.gst}` : ''}</div>
                             </button>
                           ))}
                         </div>
@@ -3799,26 +3799,26 @@ export default function Admin() {
                   <div><Label>Remaining Due Before Party Credit</Label><Input value={purchaseRemainingDue.toFixed(2)} readOnly className="bg-muted/30 font-medium" /></div>
                   <div><Label>Payment Note (optional)</Label><Input value={purchasePaymentNote} onChange={(e) => setPurchasePaymentNote(e.target.value)} /></div>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs pt-2">
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Purchase</div><div className="font-semibold">₹{purchaseTotalCost.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Paid</div><div className="font-semibold">₹{purchaseEffectiveCashPaid.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Bank Paid</div><div className="font-semibold">₹{purchaseEffectiveBankPaid.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Amount Paid</div><div className="font-semibold">₹{purchaseEffectivePaidAmount.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Due Before Party Credit</div><div className="font-semibold">₹{purchaseRemainingDue.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Available</div><div className="font-semibold">₹{purchaseAvailablePartyCredit.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Applied</div><div className="font-semibold">₹{purchaseCreditAppliedPreview.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Final Payable After Credit</div><div className="font-semibold">₹{purchaseFinalPayableAfterCredit.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Purchase</div><div className="font-semibold">â‚¹{purchaseTotalCost.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Paid</div><div className="font-semibold">â‚¹{purchaseEffectiveCashPaid.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Bank Paid</div><div className="font-semibold">â‚¹{purchaseEffectiveBankPaid.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Amount Paid</div><div className="font-semibold">â‚¹{purchaseEffectivePaidAmount.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Due Before Party Credit</div><div className="font-semibold">â‚¹{purchaseRemainingDue.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Available</div><div className="font-semibold">â‚¹{purchaseAvailablePartyCredit.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Applied</div><div className="font-semibold">â‚¹{purchaseCreditAppliedPreview.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Final Payable After Credit</div><div className="font-semibold">â‚¹{purchaseFinalPayableAfterCredit.toFixed(2)}</div></div>
                   </div>
                 </div>
               </div>
               <div className="flex gap-2">
-                <Button type="button" variant="outline" onClick={() => setPurchaseNextBuyPrice(purchaseAveragePrice.toFixed(2))}>Average Price: ₹{purchaseAveragePrice.toFixed(2)}</Button>
+                <Button type="button" variant="outline" onClick={() => setPurchaseNextBuyPrice(purchaseAveragePrice.toFixed(2))}>Average Price: â‚¹{purchaseAveragePrice.toFixed(2)}</Button>
                 <Input type="number" placeholder="New buy price (you can edit)" value={purchaseNextBuyPrice} onChange={(e) => setPurchaseNextBuyPrice(e.target.value)} />
               </div>
               <p className="text-xs text-muted-foreground">Click Average Price to auto-fill, or edit manually before applying.</p>
               {purchaseError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{purchaseError}</div>}
               <div className="sticky bottom-0 mt-2 flex flex-col gap-2 rounded-lg border bg-background/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm">
-                  <span className="font-semibold">Total:</span> ₹{purchaseTotalCost.toFixed(2)} · <span className="font-semibold">Paid:</span> ₹{purchaseEffectivePaidAmount.toFixed(2)} · <span className="font-semibold">Due:</span> ₹{purchaseRemainingDue.toFixed(2)}
+                  <span className="font-semibold">Total:</span> â‚¹{purchaseTotalCost.toFixed(2)} Â· <span className="font-semibold">Paid:</span> â‚¹{purchaseEffectivePaidAmount.toFixed(2)} Â· <span className="font-semibold">Due:</span> â‚¹{purchaseRemainingDue.toFixed(2)}
                 </div>
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={() => setPurchaseTarget(null)}>Cancel</Button>
@@ -3934,12 +3934,12 @@ export default function Admin() {
                           </td>
                           <td className="p-3">{row.date ? new Date(row.date).toLocaleString() : 'N/A'}</td>
                           <td className="p-3 text-right">{row.quantity}</td>
-                          <td className="p-3 text-right">₹{row.unitPrice.toFixed(2)}</td>
-                          <td className="p-3 text-right">₹{row.total.toFixed(2)}</td>
+                          <td className="p-3 text-right">â‚¹{row.unitPrice.toFixed(2)}</td>
+                          <td className="p-3 text-right">â‚¹{row.total.toFixed(2)}</td>
                           <td className="p-3">
                             <div className="font-medium">{row.reason === 'product_not_found' ? 'Product doc missing' : 'History row missing'}</div>
                             <div className="text-xs text-muted-foreground">
-                              Preview payment: {row.expectedHistoryRowPreview.paymentMethod || 'N/A'} · Paid ₹{Number(row.expectedHistoryRowPreview.paidAmount || 0).toFixed(2)}
+                              Preview payment: {row.expectedHistoryRowPreview.paymentMethod || 'N/A'} Â· Paid â‚¹{Number(row.expectedHistoryRowPreview.paidAmount || 0).toFixed(2)}
                             </div>
                           </td>
                         </tr>
@@ -3993,7 +3993,7 @@ export default function Admin() {
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">₹{Number(purchaseTraceResult.purchaseOrder?.total || 0).toFixed(2)}</div>
+                  <div className="mt-1 text-lg font-bold text-slate-900">â‚¹{Number(purchaseTraceResult.purchaseOrder?.total || 0).toFixed(2)}</div>
                 </div>
               </div>
               {purchaseTraceResult.purchaseOrder ? (
@@ -4030,8 +4030,8 @@ export default function Admin() {
                           </td>
                           <td className="p-3">
                             <div>Qty: {line.quantity}</div>
-                            <div>Unit Price: ₹{line.unitPrice.toFixed(2)}</div>
-                            <div>Total: ₹{line.lineTotal.toFixed(2)}</div>
+                            <div>Unit Price: â‚¹{line.unitPrice.toFixed(2)}</div>
+                            <div>Total: â‚¹{line.lineTotal.toFixed(2)}</div>
                           </td>
                           <td className="p-3">
                             <div className="font-medium">{line.productFound ? 'Product found' : 'Product missing'}</div>
@@ -4046,7 +4046,7 @@ export default function Admin() {
                               <div key={row.id} className="mt-1 rounded border bg-slate-50 px-2 py-1 text-xs text-muted-foreground">
                                 <div>ID: {row.id}</div>
                                 <div>Date: {row.date ? new Date(row.date).toLocaleString() : 'N/A'}</div>
-                                <div>Qty: {Number(row.quantity || 0)} · Unit: ₹{Number(row.unitPrice || 0).toFixed(2)}</div>
+                                <div>Qty: {Number(row.quantity || 0)} Â· Unit: â‚¹{Number(row.unitPrice || 0).toFixed(2)}</div>
                               </div>
                             ))}
                           </td>
@@ -4145,7 +4145,7 @@ export default function Admin() {
                     <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Current stock</div><div className="font-semibold">{viewingProduct.stock}</div></div>
                     <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Total purchase (variants)</div><div className="font-semibold">{viewingVariantDetails.totalPurchase}</div></div>
                     <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Total sold (variants)</div><div className="font-semibold">{viewingVariantDetails.totalSold}</div></div>
-                    <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Avg Buy / Sell</div><div className="font-semibold">₹{viewingVariantDetails.avgBuyPrice.toFixed(2)} / ₹{viewingVariantDetails.avgSellPrice.toFixed(2)}</div></div>
+                    <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Avg Buy / Sell</div><div className="font-semibold">â‚¹{viewingVariantDetails.avgBuyPrice.toFixed(2)} / â‚¹{viewingVariantDetails.avgSellPrice.toFixed(2)}</div></div>
                     <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Lost & Damage</div><div className="font-semibold">{Math.max(0, Number(viewingProduct.lostDamageQty || 0))} pcs</div></div>
                   </div>
                   <div>
@@ -4167,8 +4167,8 @@ export default function Admin() {
                               <td className="p-2">{row.variant || NO_VARIANT}</td>
                               <td className="p-2">{row.color || NO_COLOR}</td>
                               <td className="p-2">{toNonNegativeNumber(row.stock)}</td>
-                              <td className="p-2">₹{toNonNegativeNumber(row.buyPrice)}</td>
-                              <td className="p-2">₹{toNonNegativeNumber(row.sellPrice)}</td>
+                              <td className="p-2">â‚¹{toNonNegativeNumber(row.buyPrice)}</td>
+                              <td className="p-2">â‚¹{toNonNegativeNumber(row.sellPrice)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -4410,7 +4410,7 @@ export default function Admin() {
                                           <h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4>
                                           <p className="text-[9px] text-muted-foreground font-mono truncate">{getProductBarcode(p)}</p>
                                           <div className="flex items-center justify-between mt-2">
-                                              <span className="text-xs font-bold">₹{p.sellPrice}</span>
+                                              <span className="text-xs font-bold">â‚¹{p.sellPrice}</span>
                                               <Badge variant={p.stock === 0 ? "destructive" : "secondary"} className="h-5 px-1.5 text-[10px]">
                                                   Qty: {p.stock}
                                               </Badge>
@@ -4462,14 +4462,14 @@ export default function Admin() {
             <Card className="w-full max-w-lg">
               <CardHeader><CardTitle>Edit Purchase Entry</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <div>Product: <span className="font-medium">{targetProduct?.name || '—'}</span></div>
-                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || '—'}</span></div>
-                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || '—'}</span></div>
+                <div>Product: <span className="font-medium">{targetProduct?.name || 'â€”'}</span></div>
+                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || 'â€”'}</span></div>
+                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || 'â€”'}</span></div>
                 <div className="grid grid-cols-2 gap-2 text-xs rounded border p-2">
                   <div>Old quantity: {oldQty}</div>
-                  <div>Old unit price: ₹{oldUnitPrice.toFixed(2)}</div>
-                  <div>Old total: ₹{oldTotal.toFixed(2)}</div>
-                  <div>Covered amount: ₹{coveredPaid.toFixed(2)}</div>
+                  <div>Old unit price: â‚¹{oldUnitPrice.toFixed(2)}</div>
+                  <div>Old total: â‚¹{oldTotal.toFixed(2)}</div>
+                  <div>Covered amount: â‚¹{coveredPaid.toFixed(2)}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div><Label>Quantity</Label><Input type="number" min="0" value={purchaseEditQuantity} onChange={(e) => setPurchaseEditQuantity(e.target.value)} /></div>
@@ -4477,11 +4477,11 @@ export default function Admin() {
                 </div>
                 <div className="rounded border p-2 text-xs">
                   <div className="font-medium">payable impact</div>
-                  <div>New total: ₹{newTotal.toFixed(2)}</div>
-                  <div>Difference: ₹{(newTotal - oldTotal).toFixed(2)}</div>
+                  <div>New total: â‚¹{newTotal.toFixed(2)}</div>
+                  <div>Difference: â‚¹{(newTotal - oldTotal).toFixed(2)}</div>
                   <div>stock delta: {stockDelta >= 0 ? '+' : ''}{stockDelta}</div>
-                  <div>Estimated remaining payable after edit: ₹{estimatedRemaining.toFixed(2)}</div>
-                  {estimatedOverpaymentCredit > 0 && <div>Overpayment will become Our Credit: ₹{estimatedOverpaymentCredit.toFixed(2)}</div>}
+                  <div>Estimated remaining payable after edit: â‚¹{estimatedRemaining.toFixed(2)}</div>
+                  {estimatedOverpaymentCredit > 0 && <div>Overpayment will become Our Credit: â‚¹{estimatedOverpaymentCredit.toFixed(2)}</div>}
                 </div>
                 {purchaseEditError && <div className="text-xs text-red-600">{purchaseEditError}</div>}
                 <div className="flex justify-end gap-2">
@@ -4504,14 +4504,14 @@ export default function Admin() {
               <div className="text-sm"><span className="font-medium">{lostDamageTarget.name}</span></div>
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="rounded border p-2">Current Stock: <span className="font-semibold">{Math.max(0, Number(lostDamageTarget.stock || 0))}</span></div>
-                <div className="rounded border p-2">Purchase Price: <span className="font-semibold">₹{Math.max(0, Number(lostDamageTarget.buyPrice || 0)).toFixed(2)}</span></div>
+                <div className="rounded border p-2">Purchase Price: <span className="font-semibold">â‚¹{Math.max(0, Number(lostDamageTarget.buyPrice || 0)).toFixed(2)}</span></div>
               </div>
               <div className="text-xs text-muted-foreground">Existing Lost & Damage Qty: {Math.max(0, Number(lostDamageTarget.lostDamageQty || 0))}</div>
               <div>
                 <Label>Final Lost & Damage Quantity</Label>
                 <Input type="number" min={0} step={1} value={lostDamageQtyInput} inputMode="numeric" onWheel={e => (e.currentTarget as HTMLInputElement).blur()} onChange={(e) => setLostDamageQtyInput(e.target.value.replace(/[^\d]/g, ''))} />
               </div>
-              <div className="text-sm">Total Loss Amount: <span className="font-semibold">₹{(Math.max(0, Number(lostDamageQtyInput || 0)) * Math.max(0, Number(lostDamageTarget.buyPrice || 0))).toFixed(2)}</span></div>
+              <div className="text-sm">Total Loss Amount: <span className="font-semibold">â‚¹{(Math.max(0, Number(lostDamageQtyInput || 0)) * Math.max(0, Number(lostDamageTarget.buyPrice || 0))).toFixed(2)}</span></div>
               {lostDamageError && <div className="text-sm text-red-600">{lostDamageError}</div>}
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="outline" onClick={() => { setLostDamageTarget(null); setLostDamageError(null); }}>Cancel</Button>

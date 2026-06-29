@@ -1,5 +1,7 @@
 const EPSILON = 1e-9;
 
+export const INR_SYMBOL = '\u20B9';
+
 export const toSafeNumber = (value: number) => (Number.isFinite(value) ? value : 0);
 
 export const normalizeMoney = (value: number) => {
@@ -35,9 +37,9 @@ export const formatMoneyWhole = (value: number) => {
 
 export const roundMoneyWhole = (value: number) => roundByHalfRule(value);
 
-export const formatINRPrecise = (value: number) => `₹${formatMoneyPrecise(value)}`;
+export const formatINRPrecise = (value: number) => `${INR_SYMBOL}${formatMoneyPrecise(value)}`;
 
-export const formatINRWhole = (value: number) => `₹${formatMoneyWhole(value)}`;
+export const formatINRWhole = (value: number) => `${INR_SYMBOL}${formatMoneyWhole(value)}`;
 
 export const formatMoneyFixed2 = (value: number) => roundTo(value, 2).toFixed(2);
 
