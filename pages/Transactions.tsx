@@ -4,7 +4,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, UpfrontOrder, SupplierPaymentLedgerEntry } from '../types';
+import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry } from '../types';
 import { NO_COLOR, NO_VARIANT } from '../services/productVariants';
 import { auth } from '../services/firebase';
 import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadTransactionsPage, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
@@ -66,6 +66,7 @@ export default function Transactions() {
   const [deletedTransactions, setDeletedTransactions] = useState<DeletedTransactionRecord[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
   const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>([]);
   const [filterType, setFilterType] = useState('today');
@@ -259,6 +260,7 @@ export default function Transactions() {
         setDeletedTransactions(deletedWindow.rows);
         setCustomers(data.customers);
         setProducts(data.products || []);
+        setPurchaseOrders(data.purchaseOrders || []);
         setUpfrontOrders(data.upfrontOrders || []);
         setSupplierPayments((data as any).supplierPayments || []);
         setTransactionsWindowCursor(txWindow.nextCursor);
@@ -467,6 +469,106 @@ export default function Transactions() {
       });
     });
   }, [dateFilteredTransactions, searchTerm, customerPhoneById, productsById]);
+
+  const matchesCurrentDateFilter = (rawDate?: string) => {
+    const parsed = rawDate ? new Date(rawDate) : null;
+    if (!parsed || !Number.isFinite(parsed.getTime())) return false;
+    parsed.setHours(0, 0, 0, 0);
+
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    switch (filterType) {
+      case 'today':
+        return parsed.getTime() === now.getTime();
+      case 'yesterday': {
+        const yest = new Date(now);
+        yest.setDate(yest.getDate() - 1);
+        return parsed.getTime() === yest.getTime();
+      }
+      case '7days': {
+        const week = new Date(now);
+        week.setDate(week.getDate() - 7);
+        return parsed >= week;
+      }
+      case '15days': {
+        const days15 = new Date(now);
+        days15.setDate(days15.getDate() - 15);
+        return parsed >= days15;
+      }
+      case '30days': {
+        const days30 = new Date(now);
+        days30.setDate(days30.getDate() - 30);
+        return parsed >= days30;
+      }
+      case '6months': {
+        const months6 = new Date(now);
+        months6.setMonth(months6.getMonth() - 6);
+        return parsed >= months6;
+      }
+      case '1year': {
+        const year1 = new Date(now);
+        year1.setFullYear(year1.getFullYear() - 1);
+        return parsed >= year1;
+      }
+      case 'custom': {
+        if (!customStart) return true;
+        const start = new Date(customStart);
+        start.setHours(0, 0, 0, 0);
+        if (parsed < start) return false;
+        if (customEnd) {
+          const end = new Date(customEnd);
+          end.setHours(23, 59, 59, 999);
+          if (parsed > end) return false;
+        }
+        return true;
+      }
+      default:
+        return true;
+    }
+  };
+
+  const filteredPurchaseOrders = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+
+    return (purchaseOrders || []).filter((order) => {
+      if (!order || order.status === 'cancelled') return false;
+      if (!matchesCurrentDateFilter(order.effectiveAt || order.orderDate || order.createdAt)) return false;
+      if (!query) return true;
+
+      const haystack = [
+        order.id,
+        order.partyName || '',
+        order.partyId || '',
+        order.billNumber || '',
+        order.notes || '',
+      ].join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }, [purchaseOrders, searchTerm, filterType, customStart, customEnd]);
+
+  const filteredCashSupplierPayments = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+
+    return (supplierPayments || []).filter((payment) => {
+      if (!payment || payment.deletedAt) return false;
+      if (String(payment.method || '').trim().toLowerCase() !== 'cash') return false;
+      if (!matchesCurrentDateFilter(payment.effectiveAt || payment.paidAt || payment.createdAt)) return false;
+      if (!query) return true;
+
+      const haystack = [
+        payment.id,
+        payment.partyName || '',
+        payment.partyId || '',
+        payment.voucherNo || '',
+        payment.note || '',
+      ].join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }, [supplierPayments, searchTerm, filterType, customStart, customEnd]);
+
   const getDisplayPaymentMethod = (tx: Transaction) => {
     if (tx.id.startsWith('upfront-')) return 'Advance';
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
@@ -1204,8 +1306,7 @@ export default function Transactions() {
       let totalCash = 0;
       let totalCredit = 0;
       let totalOnline = 0;
-      let totalPurchaseCash = 0;
-      let totalPurchaseCredit = 0;
+      let cashReceivedOnCreditDue = 0;
       let totalCashIn = 0;
       let totalCashOut = 0;
 
@@ -1232,15 +1333,15 @@ export default function Transactions() {
           if (txType === 'payment') {
               if (isSupplierPayment) {
                   if (paymentMethod === 'cash') {
-                      totalPurchaseCash += amount;
                       totalCashOut += amount;
-                  } else {
-                      totalPurchaseCredit += amount;
                   }
                   return;
               }
 
-              if (paymentMethod === 'cash') totalCashIn += amount;
+              if (paymentMethod === 'cash') {
+                  totalCashIn += amount;
+                  cashReceivedOnCreditDue += amount;
+              }
               return;
           }
 
@@ -1254,6 +1355,22 @@ export default function Transactions() {
           }
       });
 
+      const totalPurchaseCash =
+          filteredPurchaseOrders.reduce((sum, order) => (
+              sum + (Array.isArray(order.paymentHistory) ? order.paymentHistory.reduce((historySum, payment) => {
+                  const method = String(payment?.method || '').trim().toLowerCase();
+                  if (method !== 'cash') return historySum;
+                  if (payment?.supplierPaymentId) return historySum;
+                  return historySum + Math.max(0, Number(payment.amount || 0));
+              }, 0) : 0)
+          ), 0)
+          + filteredCashSupplierPayments.reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+
+      const totalPurchaseCredit = filteredPurchaseOrders.reduce(
+          (sum, order) => sum + Math.max(0, Number(order.remainingAmount || 0)),
+          0,
+      );
+
       return {
           totalRevenue,
           totalCash,
@@ -1262,10 +1379,11 @@ export default function Transactions() {
           totalCombined: totalCash + totalCredit + totalOnline,
           totalPurchaseCash,
           totalPurchaseCredit,
+          cashReceivedOnCreditDue,
           totalCashIn,
           totalCashOut,
       };
-  }, [filteredTransactions]);
+  }, [filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments]);
 
   const getSaleSettlementText = (tx: Transaction) => {
     if (tx.id.startsWith('upfront-')) {
@@ -1567,7 +1685,7 @@ export default function Transactions() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-9">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-10">
         {[
           { label: 'Total Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/70', labelClass: 'text-blue-700/80', valueClass: 'text-blue-950' },
           { label: 'Total Cash', value: transactionKpis.totalCash, cardClass: 'border-green-200 bg-green-50/70', labelClass: 'text-green-700/80', valueClass: 'text-green-950' },
@@ -1576,6 +1694,7 @@ export default function Transactions() {
           { label: 'Cash + Credit + Online', value: transactionKpis.totalCombined, cardClass: 'border-indigo-200 bg-indigo-50/70', labelClass: 'text-indigo-700/80', valueClass: 'text-indigo-950' },
           { label: 'Total Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-red-200 bg-red-50/70', labelClass: 'text-red-700/80', valueClass: 'text-red-950' },
           { label: 'Total Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/80', labelClass: 'text-orange-700/80', valueClass: 'text-orange-950' },
+          { label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-teal-200 bg-teal-50/80', labelClass: 'text-teal-700/80', valueClass: 'text-teal-950' },
           { label: 'Total Cash In', value: transactionKpis.totalCashIn, cardClass: 'border-emerald-200 bg-emerald-50/70', labelClass: 'text-emerald-700/80', valueClass: 'text-emerald-950' },
           { label: 'Total Cash Out', value: transactionKpis.totalCashOut, cardClass: 'border-rose-200 bg-rose-50/70', labelClass: 'text-rose-700/80', valueClass: 'text-rose-950' },
         ].map(({ label, value, cardClass, labelClass, valueClass }) => (

@@ -16,6 +16,7 @@ import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadInventoryData, downloadInventoryTemplate, importInventoryFromFile } from '../services/importExcel';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { formatCurrency, formatCurrencyWhole } from '../services/numberFormat';
+import { createTelegramProductPost } from '../services/telegram';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
 import {
   buildLegacyPurchaseHistoryConversionDryRun,
@@ -73,6 +74,12 @@ export default function Admin() {
   const [exportType, setExportType] = useState<'inventory' | 'low-stock'>('inventory');
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [isTelegramModalOpen, setIsTelegramModalOpen] = useState(false);
+  const [telegramTemplate, setTelegramTemplate] = useState('{productName}\nPrice: ₹{price}\n{notes}');
+  const [telegramNotes, setTelegramNotes] = useState('');
+  const [telegramScheduleMode, setTelegramScheduleMode] = useState<'none' | 'every_hour_random' | 'every_morning' | 'every_2_minutes_batch'>('none');
+  const [telegramStatus, setTelegramStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [isTelegramSubmitting, setIsTelegramSubmitting] = useState(false);
   const [batchEditProductIds, setBatchEditProductIds] = useState<string[]>([]);
   const [batchEditIndex, setBatchEditIndex] = useState(0);
   
@@ -193,6 +200,10 @@ export default function Admin() {
   useEscapeLayer(isBatchDeleteConfirmOpen, () => setIsBatchDeleteConfirmOpen(false), { priority: 120 });
   useEscapeLayer(Boolean(deletingCategory), () => setDeletingCategory(null), { priority: 120 });
   useEscapeLayer(isPhotoModalOpen && !!selectedPhotoProduct, () => setIsPhotoModalOpen(false), { priority: 120 });
+  useEscapeLayer(isTelegramModalOpen, () => {
+    setIsTelegramModalOpen(false);
+    setTelegramStatus(null);
+  }, { priority: 115 });
   useEscapeLayer(Boolean(purchaseTarget), () => setPurchaseTarget(null), { priority: 110 });
   useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 110 });
   useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 105 });
@@ -1958,6 +1969,66 @@ export default function Admin() {
 
     return result;
   }, [products, searchTerm, sortOption, categoryFilter]);
+  const telegramProducts = useMemo(
+    () => (selectedProducts.length > 0 ? selectedProducts : filteredProducts),
+    [selectedProducts, filteredProducts]
+  );
+  const renderTelegramCaption = (product: Product) => telegramTemplate
+    .replace(/\{productName\}/g, displayProductText(product.name))
+    .replace(/\{price\}/g, String(Math.max(0, Number(product.sellPrice || 0)).toFixed(2)))
+    .replace(/\{notes\}/g, telegramNotes.trim())
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const openTelegramModal = () => {
+    if (telegramProducts.length <= 0) {
+      setNotice({ type: 'error', message: 'Select at least one product or adjust the current product list first.' });
+      return;
+    }
+    setTelegramStatus(null);
+    setIsTelegramModalOpen(true);
+  };
+  const handleSubmitTelegramPost = async (mode: 'post_now' | 'schedule') => {
+    if (telegramProducts.length <= 0) {
+      setTelegramStatus({ type: 'error', message: 'At least one product is required.' });
+      return;
+    }
+    if (!telegramTemplate.trim()) {
+      setTelegramStatus({ type: 'error', message: 'Caption template is required.' });
+      return;
+    }
+    if (mode === 'schedule' && telegramScheduleMode === 'none') {
+      setTelegramStatus({ type: 'error', message: 'Choose a schedule mode before scheduling.' });
+      return;
+    }
+
+    setIsTelegramSubmitting(true);
+    setTelegramStatus({ type: 'info', message: mode === 'post_now' ? 'Sending Telegram post request...' : 'Scheduling Telegram post request...' });
+    try {
+      await createTelegramProductPost({
+        mode,
+        scheduleMode: mode === 'schedule' ? telegramScheduleMode : 'none',
+        products: telegramProducts.map((product) => ({
+          id: product.id,
+          name: displayProductText(product.name),
+          price: Math.max(0, Number(product.sellPrice || 0)),
+          image: getProductImageUrl(product),
+          category: displayProductText(product.category, ''),
+          stock: Math.max(0, Number(product.stock || 0)),
+        })),
+        template: telegramTemplate,
+        notes: telegramNotes.trim(),
+      });
+      const successMessage = mode === 'post_now' ? 'Telegram post request sent successfully.' : 'Telegram schedule request sent successfully.';
+      setTelegramStatus({ type: 'success', message: successMessage });
+      setNotice({ type: 'success', message: successMessage });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Telegram request failed.';
+      setTelegramStatus({ type: 'error', message });
+      setNotice({ type: 'error', message });
+    } finally {
+      setIsTelegramSubmitting(false);
+    }
+  };
   const purchaseOrderRowsForAudit = useMemo(
     () => purchaseOrders,
     [purchaseOrders]
@@ -2524,6 +2595,9 @@ export default function Admin() {
                    </Button>
                    <Button variant="outline" size="icon" onClick={() => { setExportType('inventory'); setIsExportModalOpen(true); }} title="Download Catalog" className="shrink-0">
                        <FileDown className="w-4 h-4" />
+                   </Button>
+                   <Button variant="outline" onClick={openTelegramModal} className="h-9">
+                       Telegram Post
                    </Button>
                    <Button variant="outline" onClick={() => downloadInventoryData()} className="h-9">Download Data</Button>
                    {selectedProductIds.length > 0 && (
@@ -4444,6 +4518,121 @@ export default function Admin() {
             onExport={handleExport}
             title={exportType === 'inventory' ? "Export Inventory" : "Export Low Stock Report"}
         />
+      {isTelegramModalOpen && (
+        <div className="fixed inset-0 z-[125] flex items-center justify-center bg-black/50 p-4">
+          <Card className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden">
+            <CardHeader className="flex flex-row items-center justify-between gap-4 border-b">
+              <div>
+                <CardTitle>Telegram Product Post</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  {selectedProducts.length > 0 ? `Using ${selectedProducts.length} checked product${selectedProducts.length === 1 ? '' : 's'}.` : `Using ${telegramProducts.length} product${telegramProducts.length === 1 ? '' : 's'} from the current product list.`}
+                </p>
+              </div>
+              <Button variant="ghost" onClick={() => setIsTelegramModalOpen(false)}>Close</Button>
+            </CardHeader>
+            <CardContent className="grid gap-4 overflow-y-auto p-4 md:grid-cols-[320px_minmax(0,1fr)]">
+              <div className="space-y-4">
+                <div className="rounded-lg border bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Selected Products</Label>
+                    <Badge variant="secondary">{telegramProducts.length}</Badge>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">Checked products are used first. If none are checked, the current filtered product list is used.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-template">Caption Template</Label>
+                  <textarea
+                    id="telegram-template"
+                    value={telegramTemplate}
+                    onChange={(e) => setTelegramTemplate(e.target.value)}
+                    className="min-h-[140px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    placeholder={'{productName}\nPrice: ₹{price}\n{notes}'}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-notes">Notes</Label>
+                  <Input
+                    id="telegram-notes"
+                    value={telegramNotes}
+                    onChange={(e) => setTelegramNotes(e.target.value)}
+                    placeholder="Optional note used in {notes}"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="telegram-schedule-mode">Schedule Mode</Label>
+                  <Select
+                    id="telegram-schedule-mode"
+                    value={telegramScheduleMode}
+                    onChange={(e) => setTelegramScheduleMode(e.target.value as 'none' | 'every_hour_random' | 'every_morning' | 'every_2_minutes_batch')}
+                  >
+                    <option value="none">none</option>
+                    <option value="every_hour_random">every_hour_random</option>
+                    <option value="every_morning">every_morning</option>
+                    <option value="every_2_minutes_batch">every_2_minutes_batch</option>
+                  </Select>
+                </div>
+                {telegramStatus && (
+                  <div className={`rounded-lg border px-3 py-2 text-sm ${
+                    telegramStatus.type === 'error'
+                      ? 'border-red-200 bg-red-50 text-red-700'
+                      : telegramStatus.type === 'success'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-slate-200 bg-slate-50 text-slate-700'
+                  }`}>
+                    {telegramStatus.message}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => void handleSubmitTelegramPost('post_now')} disabled={isTelegramSubmitting || telegramProducts.length === 0}>
+                    {isTelegramSubmitting ? 'Sending...' : 'Post Now'}
+                  </Button>
+                  <Button variant="outline" onClick={() => void handleSubmitTelegramPost('schedule')} disabled={isTelegramSubmitting || telegramProducts.length === 0}>
+                    {isTelegramSubmitting ? 'Scheduling...' : 'Schedule'}
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold">Preview</h3>
+                    <p className="text-xs text-muted-foreground">Showing up to 8 products.</p>
+                  </div>
+                  <Badge variant="outline">{selectedProducts.length > 0 ? 'Checked products' : 'Current filtered list'}</Badge>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {telegramProducts.slice(0, 8).map((product) => (
+                    <Card key={product.id} className="overflow-hidden border shadow-sm">
+                      <div className="aspect-[4/3] w-full bg-slate-50">
+                        {getProductImageUrl(product) ? (
+                          <img src={getProductImageUrl(product)} alt={displayProductText(product.name)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">No image</div>
+                        )}
+                      </div>
+                      <CardContent className="space-y-2 p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate font-semibold">{displayProductText(product.name)}</div>
+                            <div className="text-xs text-muted-foreground">{displayProductText(product.category, 'Uncategorized')}</div>
+                          </div>
+                          <Badge variant={Math.max(0, Number(product.stock || 0)) > 0 ? 'secondary' : 'destructive'}>
+                            Stock {Math.max(0, Number(product.stock || 0))}
+                          </Badge>
+                        </div>
+                        <div className="text-sm font-semibold">{formatCurrency(product.sellPrice)}</div>
+                        <pre className="whitespace-pre-wrap rounded-md bg-slate-50 p-2 text-xs text-slate-700">{renderTelegramCaption(product)}</pre>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+                {telegramProducts.length > 8 && (
+                  <p className="text-xs text-muted-foreground">Preview limited to first 8 products. The request still includes all {telegramProducts.length} selected products.</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
       {purchaseEditTarget && (() => {
         const targetProduct = products.find((p) => p.id === purchaseEditTarget.productId) || purchaseTarget;
         const targetHistory = (targetProduct?.purchaseHistory || []).find((h) => h.id === purchaseEditTarget.historyId);

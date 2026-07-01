@@ -89,7 +89,7 @@ export function UploadImportModal({ title, open, onClose, onDownloadTemplate, on
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={onDownloadTemplate}><FileDown className="mr-2 h-4 w-4" /> Download Example File</Button>
             <Button onClick={() => inputRef.current?.click()} disabled={loading}><Upload className="mr-2 h-4 w-4" /> {loading ? 'Processing...' : 'Upload File'}</Button>
-            <input ref={inputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={onFilePick} />
+            <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv,text/csv" className="hidden" onChange={onFilePick} />
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
@@ -97,7 +97,7 @@ export function UploadImportModal({ title, open, onClose, onDownloadTemplate, on
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li><strong>Download Example File</strong>: blank sample format with field guide.</li>
               <li><strong>Download Data</strong> (from the page toolbar): exports your current records plus Instructions.</li>
-              <li><strong>Upload Existing File</strong>: validates and imports by module rules; not every exported column is freely editable.</li>
+              <li><strong>Upload Existing File</strong>: accepts Excel or CSV, then validates and imports by module rules; not every exported column is freely editable.</li>
             </ul>
             {!!notes.length && (
               <>

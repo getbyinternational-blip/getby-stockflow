@@ -135,8 +135,11 @@ const resolveImportedImageValue = async (rawValue: string): Promise<{ image: str
 };
 
 const readRows = async (file: File, sheetName: string): Promise<Row[]> => {
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: 'array' });
+  const fileName = toStr(file.name).toLowerCase();
+  const isCsv = fileName.endsWith('.csv') || toStr(file.type).toLowerCase().includes('csv');
+  const workbook = isCsv
+    ? XLSX.read(await file.text(), { type: 'string' })
+    : XLSX.read(await file.arrayBuffer(), { type: 'array' });
   const name = workbook.SheetNames.includes(sheetName) ? sheetName : workbook.SheetNames[0];
   const sheet = workbook.Sheets[name];
   return XLSX.utils.sheet_to_json<Row>(sheet, { defval: '' });
