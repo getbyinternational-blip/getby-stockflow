@@ -5,6 +5,7 @@ import { CashAdjustment, Expense, ManualCashbookEntry, PurchaseOrder, Transactio
 import { formatCurrency } from '../services/numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
+import { BanknoteArrowDown, BanknoteArrowUp, CreditCard, Receipt, ShoppingCart, Store, Truck, Wallet, X } from 'lucide-react';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -233,14 +234,25 @@ export default function Cashbook() {
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [full, setFull] = useState(false); const [visibleRowCount, setVisibleRowCount] = useState(100);
   const [visibleRegisterRowCount, setVisibleRegisterRowCount] = useState(50);
-  const [activeTab, setActiveTab] = useState<'ledger' | 'register'>('ledger');
+  const [activeTab, setActiveTab] = useState<'ledger' | 'register' | 'daily_breakdown'>('ledger');
+  const [selectedDailyBreakdownKey, setSelectedDailyBreakdownKey] = useState<string | null>(null);
   const [isAddCashOpen, setIsAddCashOpen] = useState(false);
   const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
   const [manualType, setManualType] = useState<'cash_in' | 'cash_out'>('cash_in');
   const [manualAmount, setManualAmount] = useState('');
   const [manualDetails, setManualDetails] = useState('');
   const [manualError, setManualError] = useState<string | null>(null);
+  const dailyBreakdownModalRef = React.useRef<HTMLDivElement | null>(null);
+  const dailyBreakdownCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const dailyBreakdownTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  function closeDailyBreakdownModal() {
+    setSelectedDailyBreakdownKey(null);
+    window.setTimeout(() => {
+      dailyBreakdownTriggerRef.current?.focus();
+    }, 0);
+  }
   useEscapeLayer(isAddCashOpen, () => setIsAddCashOpen(false), { priority: 100 });
+  useEscapeLayer(Boolean(selectedDailyBreakdownKey), closeDailyBreakdownModal, { priority: 110 });
 
   const refreshCashbookData = async () => {
     try {
@@ -732,6 +744,243 @@ export default function Cashbook() {
   }, [activeTab, buildRegisterRows]);
   const visibleRegisterRows = useMemo(() => registerRows.slice(0, visibleRegisterRowCount), [registerRows, visibleRegisterRowCount]);
 
+  const getLocalDayKey = (value: string) => {
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) return '';
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const formatDayLabel = (dayKey: string) => {
+    const parsed = new Date(`${dayKey}T00:00:00`);
+    if (!Number.isFinite(parsed.getTime())) return dayKey;
+    return parsed.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+  };
+
+  const formatTimeLabel = (value: string) => {
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) return 'Invalid time';
+    return parsed.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const getDailyCategoryLabel = (row: Row) => {
+    switch (row.type) {
+      case 'sale': return 'Sales';
+      case 'payment': return 'Customer Payments';
+      case 'purchase': return 'Purchase Added';
+      case 'supplier_payment': return 'Supplier Payments';
+      case 'expense': return 'Expenses';
+      case 'return': return 'Returns';
+      case 'credit':
+      case 'custom_order_receivable': return 'Credit Created';
+      case 'custom_order_payment': return 'Credit Due Received';
+      case 'manual_cash_in': return 'Manual Cash In';
+      case 'manual_cash_out': return 'Withdrawals';
+      case 'adjustment':
+        return row.description.toLowerCase().includes('withdraw')
+          ? 'Withdrawals'
+          : row.description.toLowerCase().includes('added')
+            ? 'Manual Cash In'
+            : 'Adjustments';
+      default: return 'Other';
+    }
+  };
+
+  const filteredDailyRows = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return allLedgerRows.filter((r) => {
+      const t = new Date(r.date).getTime();
+      if (from && t < new Date(`${from}T00:00:00`).getTime()) return false;
+      if (to && t > new Date(`${to}T23:59:59`).getTime()) return false;
+      if (!query) return true;
+      return `${r.description} ${r.reference} ${r.party}`.toLowerCase().includes(query);
+    });
+  }, [allLedgerRows, from, to, search]);
+
+  const dailyBreakdownRows = useMemo(() => {
+    const chrono = [...allLedgerRows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    const dayMap = new Map<string, {
+      dayKey: string;
+      openingCash: number;
+      cashIn: number;
+      cashOut: number;
+      onlineIn: number;
+      onlineOut: number;
+      creditCreated: number;
+      creditDueReceived: number;
+      purchaseAdded: number;
+      supplierPayments: number;
+      expenses: number;
+      withdrawals: number;
+      closingCash: number;
+      rows: Row[];
+      categoryMap: Map<string, Row[]>;
+    }>();
+    let runningCash = 0;
+
+    chrono.forEach((row) => {
+      const dayKey = getLocalDayKey(row.date);
+      if (!dayKey) return;
+      let bucket = dayMap.get(dayKey);
+      if (!bucket) {
+        bucket = {
+          dayKey,
+          openingCash: runningCash,
+          cashIn: 0,
+          cashOut: 0,
+          onlineIn: 0,
+          onlineOut: 0,
+          creditCreated: 0,
+          creditDueReceived: 0,
+          purchaseAdded: 0,
+          supplierPayments: 0,
+          expenses: 0,
+          withdrawals: 0,
+          closingCash: runningCash,
+          rows: [],
+          categoryMap: new Map<string, Row[]>(),
+        };
+        dayMap.set(dayKey, bucket);
+      }
+
+      bucket.cashIn += row.cashIn;
+      bucket.cashOut += row.cashOut;
+      bucket.onlineIn += row.bankIn;
+      bucket.onlineOut += row.bankOut;
+      bucket.creditCreated += row.receivableIncrease;
+      bucket.creditDueReceived += row.receivableDecrease;
+      bucket.purchaseAdded += row.payableIncrease;
+      bucket.supplierPayments += row.type === 'supplier_payment' ? Math.max(0, row.cashOut + row.bankOut) : 0;
+      bucket.expenses += row.type === 'expense' ? Math.max(0, row.cashOut + row.bankOut) : 0;
+      bucket.withdrawals += row.type === 'manual_cash_out' || (row.type === 'adjustment' && row.description.toLowerCase().includes('withdraw'))
+        ? Math.max(0, row.cashOut + row.bankOut)
+        : 0;
+      bucket.rows.push(row);
+
+      const category = getDailyCategoryLabel(row);
+      const categoryRows = bucket.categoryMap.get(category) || [];
+      categoryRows.push(row);
+      bucket.categoryMap.set(category, categoryRows);
+
+      runningCash += row.cashIn - row.cashOut;
+      bucket.closingCash = runningCash;
+    });
+
+    const visibleDayKeys = new Set(filteredDailyRows.map((row) => getLocalDayKey(row.date)).filter(Boolean));
+    return Array.from(dayMap.values())
+      .filter((bucket) => visibleDayKeys.has(bucket.dayKey))
+      .sort((a, b) => sort === 'newest'
+        ? new Date(`${b.dayKey}T00:00:00`).getTime() - new Date(`${a.dayKey}T00:00:00`).getTime()
+        : new Date(`${a.dayKey}T00:00:00`).getTime() - new Date(`${b.dayKey}T00:00:00`).getTime());
+  }, [allLedgerRows, filteredDailyRows, sort]);
+
+  const selectedDailyBreakdown = useMemo(
+    () => selectedDailyBreakdownKey
+      ? dailyBreakdownRows.find((day) => day.dayKey === selectedDailyBreakdownKey) || null
+      : null,
+    [dailyBreakdownRows, selectedDailyBreakdownKey],
+  );
+
+  const openDailyBreakdownModal = (dayKey: string, trigger: HTMLButtonElement | null) => {
+    dailyBreakdownTriggerRef.current = trigger;
+    setSelectedDailyBreakdownKey(dayKey);
+  };
+
+  useEffect(() => {
+    if (!selectedDailyBreakdown) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.setTimeout(() => {
+      dailyBreakdownCloseButtonRef.current?.focus();
+    }, 0);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selectedDailyBreakdown]);
+
+  useEffect(() => {
+    if (!selectedDailyBreakdown) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const container = dailyBreakdownModalRef.current;
+      if (!container) {
+        return;
+      }
+
+      const focusable = (Array.from(
+        container.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ),
+      ) as HTMLElement[]).filter((element) => !element.hasAttribute('disabled') && element.tabIndex !== -1);
+
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey) {
+        if (!active || active === first || !container.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+
+      if (!active || active === last || !container.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [selectedDailyBreakdown]);
+
+  const getDailyPaymentBadgeClass = (payment: string) => {
+    if (payment === 'cash') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    if (payment === 'online') return 'border-blue-200 bg-blue-50 text-blue-700';
+    if (payment === 'credit') return 'border-amber-200 bg-amber-50 text-amber-700';
+    return 'border-slate-200 bg-slate-100 text-slate-600';
+  };
+
+  const getDailyCategoryIcon = (category: string) => {
+    switch (category) {
+      case 'Sales':
+        return ShoppingCart;
+      case 'Customer Payments':
+      case 'Credit Due Received':
+        return Wallet;
+      case 'Purchases':
+        return Receipt;
+      case 'Supplier Payments':
+        return Truck;
+      case 'Expenses':
+        return BanknoteArrowDown;
+      case 'Withdrawals':
+        return BanknoteArrowUp;
+      case 'Credit Created':
+        return CreditCard;
+      default:
+        return Store;
+    }
+  };
+
   return <div className="space-y-4">
     <div className="flex items-start justify-between gap-3">
       <div><h1 className="text-2xl font-bold">Cashbook</h1><p className="text-sm text-muted-foreground">Track all cash and bank flows across your business.</p></div>
@@ -752,8 +1001,9 @@ export default function Cashbook() {
       <div className="flex gap-2">
         <button onClick={() => setActiveTab('ledger')} className={`border rounded px-3 h-9 ${activeTab === 'ledger' ? 'bg-slate-900 text-white' : ''}`}>Cashbook Ledger</button>
         <button onClick={() => setActiveTab('register')} className={`border rounded px-3 h-9 ${activeTab === 'register' ? 'bg-slate-900 text-white' : ''}`}>Register Format</button>
+        <button onClick={() => setActiveTab('daily_breakdown')} className={`border rounded px-3 h-9 ${activeTab === 'daily_breakdown' ? 'bg-slate-900 text-white' : ''}`}>Daily Breakdown</button>
       </div>
-      {activeTab === 'ledger' && (
+      {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
       <>
       <div className="grid md:grid-cols-6 gap-2">
         <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="border rounded px-2 h-9" />
@@ -764,6 +1014,156 @@ export default function Cashbook() {
         <button onClick={() => setFull(v => !v)} className="border rounded px-2 h-9">{full ? 'Compact columns' : 'Show full accountant columns'}</button>
       </div>
       <input placeholder="Search description/customer/party/reference" value={search} onChange={e => setSearch(e.target.value)} className="border rounded px-2 h-9 w-full" />
+      </>
+      )}
+      {activeTab === 'daily_breakdown' && (
+      <div className="space-y-3">
+        {dailyBreakdownRows.map((day) => {
+          return (
+            <div key={day.dayKey} className="rounded-lg border">
+              <button
+                type="button"
+                onClick={(event) => openDailyBreakdownModal(day.dayKey, event.currentTarget)}
+                className="w-full rounded-lg p-3 text-left hover:bg-slate-50"
+              >
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="font-semibold">{formatDayLabel(day.dayKey)}</div>
+                    <div className="text-xs text-muted-foreground">{day.rows.length} entries</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
+                    <div className="rounded border bg-slate-50 px-2 py-1"><div className="text-muted-foreground">Opening Cash</div><div className="font-semibold">{fmt(day.openingCash)}</div></div>
+                    <div className="rounded border bg-emerald-50 px-2 py-1"><div className="text-muted-foreground">Cash In</div><div className="font-semibold">{fmt(day.cashIn)}</div></div>
+                    <div className="rounded border bg-rose-50 px-2 py-1"><div className="text-muted-foreground">Cash Out</div><div className="font-semibold">{fmt(day.cashOut)}</div></div>
+                    <div className="rounded border bg-blue-50 px-2 py-1"><div className="text-muted-foreground">Online In</div><div className="font-semibold">{fmt(day.onlineIn)}</div></div>
+                    <div className="rounded border bg-orange-50 px-2 py-1"><div className="text-muted-foreground">Online Out</div><div className="font-semibold">{fmt(day.onlineOut)}</div></div>
+                    <div className="rounded border bg-slate-100 px-2 py-1"><div className="text-muted-foreground">Closing Cash</div><div className="font-semibold">{fmt(day.closingCash)}</div></div>
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4 xl:grid-cols-6">
+                  <div className="rounded border px-2 py-1">Credit Created: <span className="font-semibold">{fmt(day.creditCreated)}</span></div>
+                  <div className="rounded border px-2 py-1">Credit Due Received: <span className="font-semibold">{fmt(day.creditDueReceived)}</span></div>
+                  <div className="rounded border px-2 py-1">Purchase Added: <span className="font-semibold">{fmt(day.purchaseAdded)}</span></div>
+                  <div className="rounded border px-2 py-1">Supplier Payments: <span className="font-semibold">{fmt(day.supplierPayments)}</span></div>
+                  <div className="rounded border px-2 py-1">Expenses: <span className="font-semibold">{fmt(day.expenses)}</span></div>
+                  <div className="rounded border px-2 py-1">Withdrawals: <span className="font-semibold">{fmt(day.withdrawals)}</span></div>
+                </div>
+              </button>
+            </div>
+          );
+        })}
+        {dailyBreakdownRows.length === 0 && <div className="rounded border px-3 py-6 text-sm text-muted-foreground">No daily rows found for the current filters.</div>}
+      </div>
+      )}
+      {selectedDailyBreakdown && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+          onClick={closeDailyBreakdownModal}
+          aria-hidden="true"
+        >
+          <div
+            ref={dailyBreakdownModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="daily-breakdown-modal-title"
+            aria-describedby="daily-breakdown-modal-summary"
+            className="flex max-h-[85vh] w-[90vw] max-w-[1400px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="sticky top-0 z-20 border-b bg-white/95 px-5 py-4 backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <h2 id="daily-breakdown-modal-title" className="text-xl font-semibold text-slate-900">
+                    {formatDayLabel(selectedDailyBreakdown.dayKey)}
+                  </h2>
+                  <p id="daily-breakdown-modal-summary" className="text-sm text-slate-500">
+                    {selectedDailyBreakdown.rows.length} entries
+                  </p>
+                </div>
+                <button
+                  ref={dailyBreakdownCloseButtonRef}
+                  type="button"
+                  onClick={closeDailyBreakdownModal}
+                  className="rounded-full border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                  aria-label="Close daily breakdown"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 xl:grid-cols-8">
+                <div className="rounded-xl border bg-slate-50 px-3 py-2"><div className="text-slate-500">Opening Cash</div><div className="text-sm font-semibold text-slate-900">{fmt(selectedDailyBreakdown.openingCash)}</div></div>
+                <div className="rounded-xl border bg-slate-100 px-3 py-2"><div className="text-slate-500">Closing Cash</div><div className="text-sm font-semibold text-slate-900">{fmt(selectedDailyBreakdown.closingCash)}</div></div>
+                <div className="rounded-xl border bg-emerald-50 px-3 py-2"><div className="text-emerald-700">Cash In</div><div className="text-sm font-semibold text-emerald-800">{fmt(selectedDailyBreakdown.cashIn)}</div></div>
+                <div className="rounded-xl border bg-rose-50 px-3 py-2"><div className="text-rose-700">Cash Out</div><div className="text-sm font-semibold text-rose-800">{fmt(selectedDailyBreakdown.cashOut)}</div></div>
+                <div className="rounded-xl border bg-blue-50 px-3 py-2"><div className="text-blue-700">Online In</div><div className="text-sm font-semibold text-blue-800">{fmt(selectedDailyBreakdown.onlineIn)}</div></div>
+                <div className="rounded-xl border bg-orange-50 px-3 py-2"><div className="text-orange-700">Online Out</div><div className="text-sm font-semibold text-orange-800">{fmt(selectedDailyBreakdown.onlineOut)}</div></div>
+                <div className="rounded-xl border bg-amber-50 px-3 py-2"><div className="text-amber-700">Credit Created</div><div className="text-sm font-semibold text-amber-800">{fmt(selectedDailyBreakdown.creditCreated)}</div></div>
+                <div className="rounded-xl border bg-cyan-50 px-3 py-2"><div className="text-cyan-700">Credit Due Received</div><div className="text-sm font-semibold text-cyan-800">{fmt(selectedDailyBreakdown.creditDueReceived)}</div></div>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/60 px-5 py-4">
+              <div className="space-y-4">
+                {Array.from(selectedDailyBreakdown.categoryMap.entries()).map(([category, categoryRows]) => {
+                  const CategoryIcon = getDailyCategoryIcon(category);
+                  return (
+                    <section key={`${selectedDailyBreakdown.dayKey}-${category}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b bg-white/95 px-4 py-3 backdrop-blur">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-lg bg-slate-100 p-2 text-slate-600">
+                            <CategoryIcon className="h-4 w-4" />
+                          </span>
+                          <div>
+                            <h3 className="text-sm font-semibold text-slate-900">{category}</h3>
+                            <p className="text-xs text-slate-500">{categoryRows.length} entries</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="divide-y divide-slate-100">
+                        {categoryRows.slice().sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).map((row, index) => {
+                          const amount = Math.max(row.cashIn, row.cashOut, row.bankIn, row.bankOut, row.receivableIncrease, row.receivableDecrease, row.payableIncrease, row.payableDecrease);
+                          return (
+                            <div
+                              key={row.id}
+                              className={`grid gap-3 px-4 py-3 text-xs transition hover:bg-slate-50 md:grid-cols-[96px_120px_minmax(0,1fr)_120px_120px] ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}
+                            >
+                              <div className="font-medium text-slate-700">{formatTimeLabel(row.date)}</div>
+                              <div className="uppercase tracking-wide text-slate-500">{row.type.replace(/_/g, ' ')}</div>
+                              <div className="min-w-0">
+                                <div className="truncate font-medium text-slate-900">{row.party || '—'}</div>
+                                <div className="truncate text-slate-500">{row.description}</div>
+                                <div className="truncate text-slate-400">Ref: {row.reference || row.id}</div>
+                              </div>
+                              <div className="flex items-start md:justify-center">
+                                <span className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-medium capitalize ${getDailyPaymentBadgeClass(row.payment)}`}>
+                                  {row.payment === 'na' ? '—' : row.payment}
+                                </span>
+                              </div>
+                              <div className="text-right text-sm font-semibold text-slate-900">{fmt(amount)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="border-t bg-white px-5 py-3">
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={closeDailyBreakdownModal}
+                  className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {activeTab === 'ledger' && (
+      <>
       <div className="overflow-auto"><table className="min-w-[1400px] w-full text-xs"><thead><tr className="text-left border-b"><th>Date</th><th>Type</th><th>Description</th><th>Payment</th><th className="text-right">Cash In</th><th className="text-right">Cash Out</th><th className="text-right">Bank In</th><th className="text-right">Bank Out</th><th className="text-right">Recv +</th><th className="text-right">Recv -</th><th className="text-right">Pay +</th><th className="text-right">Pay -</th><th className="text-right">SC +</th><th className="text-right">SC -</th><th className="text-right">Cash Bal</th><th className="text-right">Bank Bal</th></tr></thead><tbody>{visibleRows.map((r) => { const bal = rowsWithChronoBalances.get(r.id) || { cash: 0, bank: 0 }; return <tr key={r.id} className="border-b"><td>{new Date(r.date).toLocaleString()}</td><td>{({sale:'Sale',credit:'Credit Sale',payment:'Payment',return:'Return',deleted_sale:'Deleted Sale',deleted_refund:'Deleted Refund',purchase:'Purchase',supplier_payment:'Supplier Payment',expense:'Expense',adjustment:'Adjustment',manual_cash_in:'Manual Cash In',manual_cash_out:'Manual Cash Out',custom_order_receivable:'Custom Order',custom_order_payment:'Custom Order Payment'} as Record<string,string>)[r.type] || r.type}</td><td>{r.description}</td><td>{r.payment}</td><td className="text-right text-emerald-700">{r.cashIn ? fmt(r.cashIn) : '-'}</td><td className="text-right text-red-600">{r.cashOut ? fmt(r.cashOut) : '-'}</td><td className="text-right text-blue-700">{r.bankIn ? fmt(r.bankIn) : '-'}</td><td className="text-right text-red-600">{r.bankOut ? fmt(r.bankOut) : '-'}</td><td className="text-right">{r.receivableIncrease ? fmt(r.receivableIncrease) : '-'}</td><td className="text-right">{r.receivableDecrease ? fmt(r.receivableDecrease) : '-'}</td><td className="text-right">{r.payableIncrease ? fmt(r.payableIncrease) : '-'}</td><td className="text-right">{r.payableDecrease ? fmt(r.payableDecrease) : '-'}</td><td className="text-right">{r.storeCreditIncrease ? fmt(r.storeCreditIncrease) : '-'}</td><td className="text-right">{r.storeCreditDecrease ? fmt(r.storeCreditDecrease) : '-'}</td><td className="text-right">{fmt(bal.cash)}</td><td className="text-right">{fmt(bal.bank)}</td></tr>; })}</tbody></table></div>
       <div className="flex items-center justify-between text-xs text-muted-foreground"><span>Showing {Math.min(visibleRows.length, filteredDisplayRows.length)} of {filteredDisplayRows.length} entries</span>{filteredDisplayRows.length > visibleRowCount && <button onClick={() => setVisibleRowCount((p) => p + 100)} className="border rounded px-3 py-1 text-foreground">Load More (100)</button>}</div>
       </>
