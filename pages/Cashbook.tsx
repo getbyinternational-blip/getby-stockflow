@@ -1,11 +1,12 @@
 ﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { loadData, getSaleSettlementBreakdown, getCanonicalCustomerBalanceSnapshot, buildUpfrontOrderLedgerEffects, createManualCashbookEntry, refreshDeletedTransactionsFromCloud } from '../services/storage';
-import { CashAdjustment, Expense, ManualCashbookEntry, PurchaseOrder, Transaction, UpfrontOrder } from '../types';
+import { CashAdjustment, Expense, ManualCashbookEntry, Product, PurchaseOrder, Transaction, UpfrontOrder } from '../types';
 import { formatCurrency } from '../services/numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { BanknoteArrowDown, BanknoteArrowUp, CreditCard, Receipt, ShoppingCart, Store, Truck, Wallet, X } from 'lucide-react';
+import { ResolvedCostSource, resolveTransactionItemCost } from '../services/costResolution';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -41,6 +42,27 @@ type RegisterRow = {
   cashIn: number;
   cashOut: number;
 };
+type GrossProfitRow = {
+  id: string;
+  date: string;
+  transactionId: string;
+  transactionType: 'sale' | 'return';
+  invoiceRef: string;
+  customer: string;
+  product: string;
+  details: string;
+  qty: number;
+  sellPrice: number;
+  revenue: number;
+  buyPrice: number;
+  cogs: number;
+  grossProfit: number;
+  marginPct: number;
+  source: ResolvedCostSource;
+  paymentMethod: string;
+  productId: string;
+  isHistoricalImport: boolean;
+};
 
 const fmt = (n: number) => formatCurrency(n);
 const asArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
@@ -68,6 +90,24 @@ const getPurchaseOrderProductSummary = (po: PurchaseOrder, maxItems = 2): string
 };
 const toNum = (v: unknown) => Number.isFinite(Number(v)) ? Number(v) : 0;
 const CASHBOOK_RECONCILE_DEBUG = import.meta.env.DEV && import.meta.env.VITE_CASHBOOK_RECONCILE_DEBUG === 'true';
+const formatPercent = (value: number) => `${Number.isFinite(value) ? value.toFixed(1) : '0.0'}%`;
+const getDateValue = (value: string) => {
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+};
+const GROSS_PROFIT_PAGE_SIZE = 200;
+const matchesDateRange = (value: string, from: string, to: string) => {
+  const current = getDateValue(value);
+  if (from) {
+    const start = new Date(`${from}T00:00:00`).getTime();
+    if (current < start) return false;
+  }
+  if (to) {
+    const end = new Date(`${to}T23:59:59.999`).getTime();
+    if (current > end) return false;
+  }
+  return true;
+};
 
 const getCashbookReference = (tx: any) => [tx?.invoiceNo, tx?.creditNoteNo, tx?.receiptNo, tx?.billNo, tx?.reference, tx?.orderId, tx?.id].find((v) => typeof v === 'string' && v.trim()) || String(tx?.id || '').slice(-6) || 'UNKNOWN';
 const getCashbookCustomerName = (tx: any, customerMap: Map<string, string>) => customerMap.get(tx?.customerId) || tx?.customerName || tx?.customer?.name || tx?.customerPhone || 'Walk-in Customer';
@@ -234,8 +274,13 @@ export default function Cashbook() {
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [full, setFull] = useState(false); const [visibleRowCount, setVisibleRowCount] = useState(100);
   const [visibleRegisterRowCount, setVisibleRegisterRowCount] = useState(50);
-  const [activeTab, setActiveTab] = useState<'ledger' | 'register' | 'daily_breakdown'>('ledger');
+  const [activeTab, setActiveTab] = useState<'ledger' | 'register' | 'daily_breakdown' | 'gross_profit'>('ledger');
   const [selectedDailyBreakdownKey, setSelectedDailyBreakdownKey] = useState<string | null>(null);
+  const [grossProfitCustomerSearch, setGrossProfitCustomerSearch] = useState('');
+  const [grossProfitProductSearch, setGrossProfitProductSearch] = useState('');
+  const [isGrossProfitModalOpen, setIsGrossProfitModalOpen] = useState(false);
+  const [grossProfitPage, setGrossProfitPage] = useState(1);
+  const [grossProfitModalPage, setGrossProfitModalPage] = useState(1);
   const [isAddCashOpen, setIsAddCashOpen] = useState(false);
   const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
   const [manualType, setManualType] = useState<'cash_in' | 'cash_out'>('cash_in');
@@ -245,6 +290,8 @@ export default function Cashbook() {
   const dailyBreakdownModalRef = React.useRef<HTMLDivElement | null>(null);
   const dailyBreakdownCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const dailyBreakdownTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const grossProfitModalRef = React.useRef<HTMLDivElement | null>(null);
+  const grossProfitCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
   function closeDailyBreakdownModal() {
     setSelectedDailyBreakdownKey(null);
     window.setTimeout(() => {
@@ -253,6 +300,7 @@ export default function Cashbook() {
   }
   useEscapeLayer(isAddCashOpen, () => setIsAddCashOpen(false), { priority: 100 });
   useEscapeLayer(Boolean(selectedDailyBreakdownKey), closeDailyBreakdownModal, { priority: 110 });
+  useEscapeLayer(isGrossProfitModalOpen, () => setIsGrossProfitModalOpen(false), { priority: 115 });
 
   const refreshCashbookData = async () => {
     try {
@@ -274,6 +322,7 @@ export default function Cashbook() {
   }, []);
 
   const safeTransactions = asArray<Transaction>(data.transactions);
+  const safeProducts = asArray<Product>((data as any).products);
   const safePurchaseOrders = asArray<PurchaseOrder>(data.purchaseOrders);
   const safeSupplierPayments = asArray<any>((data as any).supplierPayments);
   const safeExpenses = asArray<Expense>(data.expenses);
@@ -285,6 +334,7 @@ export default function Cashbook() {
   const safeUpfrontOrders = asArray<UpfrontOrder>((data as any).upfrontOrders);
   const safeManualCashbookEntries = asArray<ManualCashbookEntry>((data as any).manualCashbookEntries).filter((entry) => !entry?.isDeleted);
   const customerMap = useMemo(() => new Map(safeCustomers.map((c) => [c.id, c.name || ''])), [safeCustomers]);
+  const productMap = useMemo(() => new Map(safeProducts.map((product) => [product.id, product])), [safeProducts]);
 
   const openManualCashModal = (type: 'cash_in' | 'cash_out') => {
     setManualError(null);
@@ -958,6 +1008,20 @@ export default function Cashbook() {
     if (payment === 'credit') return 'border-amber-200 bg-amber-50 text-amber-700';
     return 'border-slate-200 bg-slate-100 text-slate-600';
   };
+  const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
+    if (source === 'historical_purchase_cost') return 'Historical cost';
+    if (source === 'current_product_buy_price') return 'Current product cost';
+    if (source === 'linked_sale_buy_price') return 'Linked sale';
+    if (source === 'missing_buy_price') return 'Buy price missing';
+    return 'Sale line';
+  };
+  const getGrossProfitSourceClass = (source: ResolvedCostSource) => {
+    if (source === 'historical_purchase_cost') return 'border-sky-200 bg-sky-50 text-sky-700';
+    if (source === 'current_product_buy_price') return 'border-amber-200 bg-amber-50 text-amber-700';
+    if (source === 'linked_sale_buy_price') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    if (source === 'missing_buy_price') return 'border-rose-200 bg-rose-50 text-rose-700';
+    return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  };
 
   const getDailyCategoryIcon = (category: string) => {
     switch (category) {
@@ -980,6 +1044,211 @@ export default function Cashbook() {
         return Store;
     }
   };
+  const renderGrossProfitPagination = (
+    currentPage: number,
+    totalPages: number,
+    totalRows: number,
+    onPrevious: () => void,
+    onNext: () => void,
+  ) => (
+    <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+      <span>Total matching rows: {totalRows}</span>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={onPrevious} disabled={currentPage <= 1} className="rounded border px-3 py-1 text-foreground disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
+        <span>Page {currentPage} of {totalPages}</span>
+        <button type="button" onClick={onNext} disabled={currentPage >= totalPages} className="rounded border px-3 py-1 text-foreground disabled:cursor-not-allowed disabled:opacity-50">Next</button>
+      </div>
+    </div>
+  );
+
+  const grossProfitRows = useMemo<GrossProfitRow[]>(() => {
+    const rowsOut: GrossProfitRow[] = [];
+    const transactionsById = new Map(safeTransactions.map((tx) => [tx.id, tx]));
+
+    safeTransactions.forEach((tx) => {
+      const txAny = tx as any;
+      const normalizedType = detectCashbookTransactionType(txAny);
+      if (normalizedType !== 'sale' && normalizedType !== 'return') return;
+
+      const items = normalizeTransactionItems<any>(tx.items);
+      if (!items.length) return;
+
+      const paymentMethod = normalizedType === 'sale'
+        ? (() => {
+          const settlement = getCashbookSaleBreakdown(tx, txAny);
+          const hasCash = settlement.cashPaid > 0;
+          const hasOnline = settlement.onlinePaid > 0;
+          const hasCredit = settlement.creditDue > 0;
+          const laneCount = Number(hasCash) + Number(hasOnline) + Number(hasCredit);
+          return laneCount > 1 ? 'Mixed' : hasCash ? 'Cash' : hasOnline ? 'Online' : hasCredit ? 'Credit' : (tx.paymentMethod || 'Unknown');
+        })()
+        : (tx.paymentMethod || 'Credit');
+      const customer = getCashbookCustomerName(txAny, customerMap);
+      const invoiceRef = getCashbookReference(txAny);
+      const multiplier = normalizedType === 'return' ? -1 : 1;
+      const isHistoricalImport = tx.source === 'historical_import' || tx.isHistorical === true;
+      const fallbackDetails = String(tx.notes || txAny.notes || invoiceRef || tx.id || '').trim() || 'Transaction';
+
+      items.forEach((item, index) => {
+        const qty = Math.max(0, Number(item?.quantity || 0));
+        if (qty <= 0) return;
+
+        const sellPrice = Math.max(0, Number(item?.sellPrice || 0));
+        const discountAmount = Math.max(0, Number(item?.discountAmount || 0));
+        const revenue = Number((((qty * sellPrice) - discountAmount) * multiplier).toFixed(2));
+        const resolvedCost = resolveTransactionItemCost({
+          item,
+          txDate: tx.date,
+          productsById: productMap,
+          transactionsById,
+        });
+        const buyPrice = resolvedCost.buyPrice;
+        const source = resolvedCost.source;
+        const cogs = Number((qty * buyPrice * multiplier).toFixed(2));
+        const grossProfit = Number((revenue - cogs).toFixed(2));
+        const marginPct = Math.abs(revenue) > 0 ? Number(((grossProfit / revenue) * 100).toFixed(2)) : 0;
+
+        rowsOut.push({
+          id: `gp-${tx.id}-${index}`,
+          date: tx.date,
+          transactionId: tx.id,
+          transactionType: normalizedType,
+          invoiceRef,
+          customer,
+          product: getLineProductName(item),
+          details: getLineProductName(item) || fallbackDetails,
+          qty: qty * multiplier,
+          sellPrice,
+          revenue,
+          buyPrice,
+          cogs,
+          grossProfit,
+          marginPct,
+          source,
+          paymentMethod,
+          productId: String(item?.id || ''),
+          isHistoricalImport,
+        });
+      });
+    });
+
+    return rowsOut.sort((a, b) => getDateValue(b.date) - getDateValue(a.date));
+  }, [customerMap, productMap, safeTransactions]);
+
+  const filteredGrossProfitRows = useMemo(() => {
+    const customerQuery = grossProfitCustomerSearch.trim().toLowerCase();
+    const productQuery = grossProfitProductSearch.trim().toLowerCase();
+
+    return grossProfitRows.filter((row) => {
+      if (!matchesDateRange(row.date, from, to)) return false;
+      if (customerQuery && !row.customer.toLowerCase().includes(customerQuery)) return false;
+      if (productQuery && !row.product.toLowerCase().includes(productQuery)) return false;
+      return true;
+    });
+  }, [from, grossProfitCustomerSearch, grossProfitProductSearch, grossProfitRows, to]);
+
+  const grossProfitSummary = useMemo(() => {
+    const netSales = filteredGrossProfitRows.reduce((sum, row) => sum + row.revenue, 0);
+    const cogs = filteredGrossProfitRows.reduce((sum, row) => sum + row.cogs, 0);
+    const grossProfit = netSales - cogs;
+    const numberOfItemsSold = filteredGrossProfitRows.reduce((sum, row) => sum + row.qty, 0);
+    const numberOfSales = new Set(filteredGrossProfitRows.map((row) => row.transactionId)).size;
+    const grossMarginPct = Math.abs(netSales) > 0 ? (grossProfit / netSales) * 100 : 0;
+    return { netSales, cogs, grossProfit, grossMarginPct, numberOfSales, numberOfItemsSold };
+  }, [filteredGrossProfitRows]);
+
+  const grossProfitAuditCounts = useMemo(() => {
+    const saleBuyPriceRows = filteredGrossProfitRows.filter((row) => row.source === 'sale_line_buy_price' || row.source === 'linked_sale_buy_price').length;
+    const historicalCostFallbackRows = filteredGrossProfitRows.filter((row) => row.source === 'historical_purchase_cost').length;
+    const missingBuyPriceRows = filteredGrossProfitRows.filter((row) => row.source === 'missing_buy_price').length;
+    const hasHistoricalImportRows = filteredGrossProfitRows.some((row) => row.isHistoricalImport);
+    return { saleBuyPriceRows, historicalCostFallbackRows, missingBuyPriceRows, hasHistoricalImportRows };
+  }, [filteredGrossProfitRows]);
+  const grossProfitTotalPages = Math.max(1, Math.ceil(filteredGrossProfitRows.length / GROSS_PROFIT_PAGE_SIZE));
+  const grossProfitModalTotalPages = Math.max(1, Math.ceil(filteredGrossProfitRows.length / GROSS_PROFIT_PAGE_SIZE));
+  const pagedGrossProfitRows = useMemo(() => {
+    const start = (grossProfitPage - 1) * GROSS_PROFIT_PAGE_SIZE;
+    return filteredGrossProfitRows.slice(start, start + GROSS_PROFIT_PAGE_SIZE);
+  }, [filteredGrossProfitRows, grossProfitPage]);
+  const pagedGrossProfitModalRows = useMemo(() => {
+    const start = (grossProfitModalPage - 1) * GROSS_PROFIT_PAGE_SIZE;
+    return filteredGrossProfitRows.slice(start, start + GROSS_PROFIT_PAGE_SIZE);
+  }, [filteredGrossProfitRows, grossProfitModalPage]);
+
+  useEffect(() => {
+    setGrossProfitPage(1);
+    setGrossProfitModalPage(1);
+  }, [from, to, grossProfitCustomerSearch, grossProfitProductSearch]);
+
+  useEffect(() => {
+    if (grossProfitPage > grossProfitTotalPages) {
+      setGrossProfitPage(grossProfitTotalPages);
+    }
+  }, [grossProfitPage, grossProfitTotalPages]);
+
+  useEffect(() => {
+    if (grossProfitModalPage > grossProfitModalTotalPages) {
+      setGrossProfitModalPage(grossProfitModalTotalPages);
+    }
+  }, [grossProfitModalPage, grossProfitModalTotalPages]);
+
+  useEffect(() => {
+    if (!isGrossProfitModalOpen) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.setTimeout(() => {
+      grossProfitCloseButtonRef.current?.focus();
+    }, 0);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isGrossProfitModalOpen]);
+
+  useEffect(() => {
+    if (!isGrossProfitModalOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+
+      const container = grossProfitModalRef.current;
+      if (!container) return;
+
+      const focusable = (Array.from(
+        container.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+      ) as HTMLElement[]).filter((element) => !element.hasAttribute('disabled') && element.tabIndex !== -1);
+
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey) {
+        if (!active || active === first || !container.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+
+      if (!active || active === last || !container.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isGrossProfitModalOpen]);
 
   return <div className="space-y-4">
     <div className="flex items-start justify-between gap-3">
@@ -1002,6 +1271,7 @@ export default function Cashbook() {
         <button onClick={() => setActiveTab('ledger')} className={`border rounded px-3 h-9 ${activeTab === 'ledger' ? 'bg-slate-900 text-white' : ''}`}>Cashbook Ledger</button>
         <button onClick={() => setActiveTab('register')} className={`border rounded px-3 h-9 ${activeTab === 'register' ? 'bg-slate-900 text-white' : ''}`}>Register Format</button>
         <button onClick={() => setActiveTab('daily_breakdown')} className={`border rounded px-3 h-9 ${activeTab === 'daily_breakdown' ? 'bg-slate-900 text-white' : ''}`}>Daily Breakdown</button>
+        <button onClick={() => setActiveTab('gross_profit')} className={`border rounded px-3 h-9 ${activeTab === 'gross_profit' ? 'bg-slate-900 text-white' : ''}`}>Gross Profit</button>
       </div>
       {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
       <>
@@ -1014,6 +1284,25 @@ export default function Cashbook() {
         <button onClick={() => setFull(v => !v)} className="border rounded px-2 h-9">{full ? 'Compact columns' : 'Show full accountant columns'}</button>
       </div>
       <input placeholder="Search description/customer/party/reference" value={search} onChange={e => setSearch(e.target.value)} className="border rounded px-2 h-9 w-full" />
+      </>
+      )}
+      {activeTab === 'gross_profit' && (
+      <>
+      <div className="grid gap-2 md:grid-cols-4">
+        <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="border rounded px-2 h-9" />
+        <input type="date" value={to} onChange={e => setTo(e.target.value)} className="border rounded px-2 h-9" />
+        <input placeholder="Search customer" value={grossProfitCustomerSearch} onChange={e => setGrossProfitCustomerSearch(e.target.value)} className="border rounded px-2 h-9" />
+        <input placeholder="Search product" value={grossProfitProductSearch} onChange={e => setGrossProfitProductSearch(e.target.value)} className="border rounded px-2 h-9" />
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs text-muted-foreground">Gross Profit = Net Sales Revenue - COGS. Sales and sales returns are included.</p>
+        <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">Sale Buy Price Rows: {grossProfitAuditCounts.saleBuyPriceRows}</span>
+        <span className="inline-flex rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700">Historical Cost Fallback Rows: {grossProfitAuditCounts.historicalCostFallbackRows}</span>
+        <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-700">Missing Buy Price Rows: {grossProfitAuditCounts.missingBuyPriceRows}</span>
+        {grossProfitAuditCounts.hasHistoricalImportRows && (
+          <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">Historical imported rows may use legacy pricing.</span>
+        )}
+      </div>
       </>
       )}
       {activeTab === 'daily_breakdown' && (
@@ -1225,7 +1514,194 @@ export default function Cashbook() {
           </div>
         </div>
       )}
+      {activeTab === 'gross_profit' && (
+        <div className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => filteredGrossProfitRows.length > 0 && setIsGrossProfitModalOpen(true)}
+              disabled={filteredGrossProfitRows.length === 0}
+              className="rounded border bg-emerald-50 p-3 text-left transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <div className="text-xs uppercase tracking-wide text-emerald-700">Gross Profit</div>
+              <div className={`text-xl font-bold ${grossProfitSummary.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(grossProfitSummary.grossProfit)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">Open invoice summary</div>
+            </button>
+            <div className="rounded border bg-blue-50 p-3">
+              <div className="text-xs uppercase tracking-wide text-blue-700">Net Sales</div>
+              <div className="text-xl font-bold text-blue-700">{fmt(grossProfitSummary.netSales)}</div>
+            </div>
+          </div>
+
+          <div className="overflow-auto rounded border">
+            <table className="min-w-[1500px] w-full text-xs">
+              <thead className="sticky top-0 z-10 bg-slate-50">
+                <tr className="border-b text-left">
+                  <th className="px-3 py-2">Date</th>
+                  <th className="px-3 py-2">Invoice / Transaction ID</th>
+                  <th className="px-3 py-2">Customer</th>
+                  <th className="px-3 py-2">Product</th>
+                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2 text-right">Qty</th>
+                  <th className="px-3 py-2 text-right">Sell Price</th>
+                  <th className="px-3 py-2 text-right">Revenue</th>
+                  <th className="px-3 py-2 text-right">Buy Price</th>
+                  <th className="px-3 py-2 text-right">COGS</th>
+                  <th className="px-3 py-2 text-right">Gross Profit</th>
+                  <th className="px-3 py-2 text-right">Margin %</th>
+                  <th className="px-3 py-2">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedGrossProfitRows.map((row, index) => (
+                  <tr key={row.id} className={`border-b ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                    <td className="px-3 py-2 whitespace-nowrap">{new Date(row.date).toLocaleDateString()}</td>
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-slate-900">{row.invoiceRef}</div>
+                      <div className="text-[11px] text-slate-500">{row.transactionId}</div>
+                    </td>
+                    <td className="px-3 py-2">{row.customer}</td>
+                    <td className="px-3 py-2">{row.product}</td>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                        {row.transactionType === 'return' ? 'Return' : 'Sale'}
+                      </span>
+                    </td>
+                    <td className={`px-3 py-2 text-right ${row.qty >= 0 ? '' : 'text-rose-700'}`}>{row.qty}</td>
+                    <td className="px-3 py-2 text-right">{fmt(row.sellPrice)}</td>
+                    <td className="px-3 py-2 text-right font-medium">{fmt(row.revenue)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(row.buyPrice)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(row.cogs)}</td>
+                    <td className={`px-3 py-2 text-right font-semibold ${row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(row.grossProfit)}</td>
+                    <td className={`px-3 py-2 text-right ${row.marginPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatPercent(row.marginPct)}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-1">
+                        <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${getGrossProfitSourceClass(row.source)}`}>
+                          {getGrossProfitSourceLabel(row.source)}
+                        </span>
+                        {row.source === 'current_product_buy_price' && (
+                          <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                            Fallback
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {pagedGrossProfitRows.length === 0 && (
+                  <tr>
+                    <td colSpan={13} className="px-3 py-8 text-center text-sm text-muted-foreground">No gross profit rows found for the selected filters.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {renderGrossProfitPagination(
+            grossProfitPage,
+            grossProfitTotalPages,
+            filteredGrossProfitRows.length,
+            () => setGrossProfitPage((page) => Math.max(1, page - 1)),
+            () => setGrossProfitPage((page) => Math.min(grossProfitTotalPages, page + 1)),
+          )}
+        </div>
+      )}
     </div>
+    {isGrossProfitModalOpen && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" onClick={() => setIsGrossProfitModalOpen(false)} aria-hidden="true">
+        <div
+          ref={grossProfitModalRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gross-profit-modal-title"
+          className="flex max-h-[88vh] w-[94vw] max-w-[1500px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="sticky top-0 z-20 border-b bg-white/95 px-5 py-4 backdrop-blur">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="gross-profit-modal-title" className="text-xl font-semibold text-slate-900">Gross Profit Summary</h2>
+                <p className="text-sm text-slate-500">Showing latest 200 rows. Use filters to narrow results.</p>
+              </div>
+              <button
+                ref={grossProfitCloseButtonRef}
+                type="button"
+                onClick={() => setIsGrossProfitModalOpen(false)}
+                className="rounded-full border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                aria-label="Close gross profit summary"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-2">
+              <div className="rounded-xl border bg-emerald-50 px-3 py-2"><div className="text-emerald-700">Gross Profit</div><div className={`text-sm font-semibold ${grossProfitSummary.grossProfit >= 0 ? 'text-emerald-800' : 'text-rose-700'}`}>{fmt(grossProfitSummary.grossProfit)}</div></div>
+              <div className="rounded-xl border bg-blue-50 px-3 py-2"><div className="text-blue-700">Net Sales</div><div className="text-sm font-semibold text-blue-800">{fmt(grossProfitSummary.netSales)}</div></div>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/60 px-5 py-4">
+            <div className="space-y-3">
+              <div className="overflow-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="min-w-[1200px] w-full text-xs">
+                  <thead className="sticky top-0 z-10 bg-slate-50">
+                    <tr className="border-b text-left">
+                      <th className="px-3 py-2">Date</th>
+                      <th className="px-3 py-2">Transaction Type</th>
+                      <th className="px-3 py-2">Transaction Method</th>
+                      <th className="px-3 py-2">Details</th>
+                      <th className="px-3 py-2">Customer Name</th>
+                      <th className="px-3 py-2 text-right">Qty</th>
+                      <th className="px-3 py-2 text-right">Buy Price</th>
+                      <th className="px-3 py-2 text-right">Sell Price</th>
+                      <th className="px-3 py-2 text-right">Gross Profit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pagedGrossProfitModalRows.map((row, index) => (
+                      <tr key={`modal-${row.id}`} className={`border-b ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                        <td className="px-3 py-2 whitespace-nowrap">{new Date(row.date).toLocaleString()}</td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                            {row.transactionType === 'return' ? 'Return' : 'Sale'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">{String(row.paymentMethod || 'Unknown').toLowerCase()}</td>
+                        <td className="px-3 py-2">
+                          <div className="font-medium text-slate-900">{row.details || row.invoiceRef || row.transactionId}</div>
+                          <div className="text-[11px] text-slate-500">{row.invoiceRef || row.transactionId}</div>
+                        </td>
+                        <td className="px-3 py-2">{row.customer}</td>
+                        <td className={`px-3 py-2 text-right ${row.qty >= 0 ? '' : 'text-rose-700'}`}>{row.qty}</td>
+                        <td className="px-3 py-2 text-right">{fmt(row.buyPrice)}</td>
+                        <td className="px-3 py-2 text-right">{fmt(row.sellPrice)}</td>
+                        <td className={`px-3 py-2 text-right font-semibold ${row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(row.grossProfit)}</td>
+                      </tr>
+                    ))}
+                    {pagedGrossProfitModalRows.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-4 py-8 text-center text-sm text-muted-foreground">No gross profit rows found for the current filtered view.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {renderGrossProfitPagination(
+                grossProfitModalPage,
+                grossProfitModalTotalPages,
+                filteredGrossProfitRows.length,
+                () => setGrossProfitModalPage((page) => Math.max(1, page - 1)),
+                () => setGrossProfitModalPage((page) => Math.min(grossProfitModalTotalPages, page + 1)),
+              )}
+            </div>
+          </div>
+          <div className="border-t bg-white px-5 py-3">
+            <div className="flex justify-end">
+              <button type="button" onClick={() => setIsGrossProfitModalOpen(false)} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
     {isAddCashOpen && (
       <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg border shadow-lg w-full max-w-md p-4 space-y-3">

@@ -5,6 +5,7 @@ import { NO_COLOR, NO_VARIANT } from './productVariants';
 import { getCanonicalReturnAllocation, getResolvedReturnHandlingMode, getSaleSettlementBreakdown, loadData } from './storage';
 import { formatMoneyPrecise } from './numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
+import { resolveTransactionItemCost } from './costResolution';
 
 type TransactionFinanceEffect = {
     txId: string;
@@ -228,22 +229,23 @@ export const exportTransactionsToExcel = (transactions: Transaction[]) => {
     };
     let totalExportedLineProfit = 0;
 
+    const transactionsById = new Map(transactions.map((tx) => [tx.id, tx]));
     const resolveBuyPriceForExport = (item: CartItem, txDate: string): { buyPrice: number; source: BuyPriceSource } => {
-        const direct = Number.isFinite(item.buyPrice) ? Number(item.buyPrice) : 0;
-        if (direct > 0) return { buyPrice: direct, source: 'item' };
-
-        const product = productsById.get(item.id);
-        if (!product) return { buyPrice: 0, source: 'none' };
-
-        const txTime = new Date(txDate).getTime();
-        const historical = (product.purchaseHistory || [])
-            .filter(entry => Number.isFinite(new Date(entry.date).getTime()) && new Date(entry.date).getTime() <= txTime)
-            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-        const historicalBuy = historical ? Number(historical.nextBuyPrice ?? historical.unitPrice ?? 0) : 0;
-        if (Number.isFinite(historicalBuy) && historicalBuy > 0) return { buyPrice: historicalBuy, source: 'history' };
-
-        const current = Number.isFinite(product.buyPrice) ? Number(product.buyPrice) : 0;
-        if (current > 0) return { buyPrice: current, source: 'current' };
+        const resolved = resolveTransactionItemCost({
+            item,
+            txDate,
+            productsById,
+            transactionsById,
+        });
+        if (resolved.source === 'sale_line_buy_price' || resolved.source === 'linked_sale_buy_price') {
+            return { buyPrice: resolved.buyPrice, source: 'item' };
+        }
+        if (resolved.source === 'historical_purchase_cost') {
+            return { buyPrice: resolved.buyPrice, source: 'history' };
+        }
+        if (resolved.source === 'current_product_buy_price') {
+            return { buyPrice: resolved.buyPrice, source: 'current' };
+        }
         return { buyPrice: 0, source: 'none' };
     };
 
