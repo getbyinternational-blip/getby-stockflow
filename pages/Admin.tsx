@@ -35,7 +35,7 @@ import { getCanonicalCustomerBalanceResult } from '../services/customerBalanceVi
 import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
-const SHOW_FORENSIC_ANALYZER = Boolean((import.meta as any).env?.DEV);
+const SHOW_FORENSIC_ANALYZER = Boolean((import.meta as any).envRs .DEV);
 const BALANCE_AUDIT_SOURCE_LABELS = {
   overpayment: 'Overpayment',
   return_credit: 'Return Credit',
@@ -46,7 +46,7 @@ const BALANCE_AUDIT_SOURCE_LABELS = {
 } as const;
 type BalanceAuditSourceKey = keyof typeof BALANCE_AUDIT_SOURCE_LABELS;
 
-function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel = 'Confirm' }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void; confirmLabel?: string }) {
+function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel = 'Confirm' }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void; confirmLabelRs : string }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
   if (!open) return null;
   return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"><Card className="w-full max-w-md"><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">{message}</p><div className="flex justify-end gap-2"><Button variant="outline" onClick={onCancel}>Cancel</Button><Button className="bg-red-600 hover:bg-red-700" onClick={onConfirm}>{confirmLabel}</Button></div></CardContent></Card></div>;
@@ -77,7 +77,11 @@ export default function Admin() {
   const [isTelegramModalOpen, setIsTelegramModalOpen] = useState(false);
   const [telegramTemplate, setTelegramTemplate] = useState('{productName}\nPrice: ₹{price}\n{notes}');
   const [telegramNotes, setTelegramNotes] = useState('');
-  const [telegramScheduleMode, setTelegramScheduleMode] = useState<'none' | 'every_hour_random' | 'every_morning' | 'every_2_minutes_batch'>('none');
+  const [telegramChannelId, setTelegramChannelId] = useState('');
+  const [telegramSelectedProductIds, setTelegramSelectedProductIds] = useState<string[]>([]);
+  const [telegramProductSearch, setTelegramProductSearch] = useState('');
+  const [telegramCategoryFilter, setTelegramCategoryFilter] = useState('all');
+  const [telegramStockFilter, setTelegramStockFilter] = useState<'all' | 'in_stock' | 'out_of_stock'>('all');
   const [telegramStatus, setTelegramStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [isTelegramSubmitting, setIsTelegramSubmitting] = useState(false);
   const [batchEditProductIds, setBatchEditProductIds] = useState<string[]>([]);
@@ -121,7 +125,7 @@ export default function Admin() {
     name: '', barcode: '', buyPrice: '', sellPrice: '', stock: '', totalPurchase: '', totalSold: '', description: '', category: '', hsn: '', locationZone: '', locationRow: '', locationRack: '', locationShelf: '',
     variants: [] as string[],
     colors: [] as string[],
-    stockByVariantColor: [] as Array<{ variant: string; color: string; stock: number; buyPrice?: number | ''; sellPrice?: number | ''; totalPurchase?: number | ''; totalSold?: number | '' }>,
+    stockByVariantColor: [] as Array<{ variant: string; color: string; stock: number; buyPriceRs : number | ''; sellPriceRs : number | ''; totalPurchaseRs : number | ''; totalSoldRs : number | '' }>,
     variantInput: '',
     colorInput: '',
     supplierName: '',
@@ -223,26 +227,26 @@ export default function Admin() {
   useEscapeLayer(isCategoryModalOpen, () => setIsCategoryModalOpen(false), { priority: 100 });
   useEscapeLayer(isLowStockModalOpen, () => setIsLowStockModalOpen(false), { priority: 100 });
 
-  const getProductImageUrl = (product?: any): string => {
+  const getProductImageUrl = (productRs : any): string => {
     if (!product) return '';
-    const imageObj = Array.isArray(product.images) ? product.images[0] : null;
+    const imageObj = Array.isArray(product.images) Rs  product.images[0] : null;
     return String(
       product.thumbnailImage
       || product.image
       || product.imageSrc
-      || (Array.isArray(product.galleryImages) ? product.galleryImages[0] : '')
-      || imageObj?.src
-      || imageObj?.url
+      || (Array.isArray(product.galleryImages) Rs  product.galleryImages[0] : '')
+      || imageObjRs .src
+      || imageObjRs .url
       || ''
     ).trim();
   };
 
 
-  const getProductLocationFields = (product?: Partial<Product>) => ({
-    locationZone: String((product as any)?.locationZone || ''),
-    locationRow: String((product as any)?.locationRow || ''),
-    locationRack: String((product as any)?.locationRack || ''),
-    locationShelf: String((product as any)?.locationShelf || ''),
+  const getProductLocationFields = (productRs : Partial<Product>) => ({
+    locationZone: String((product as any)Rs .locationZone || ''),
+    locationRow: String((product as any)Rs .locationRow || ''),
+    locationRack: String((product as any)Rs .locationRack || ''),
+    locationShelf: String((product as any)Rs .locationShelf || ''),
   });
   const startInlineLocationEdit = (product: Product) => {
     if (!can('inventoryBuyPrice')) return;
@@ -255,7 +259,7 @@ export default function Admin() {
   };
   const saveInlineLocationEdit = async (product: Product) => {
     const updated = await updateProduct({
-      ...product,
+   ...product,
       locationZone: locationDraft.locationZone.trim(),
       locationRow: locationDraft.locationRow.trim(),
       locationRack: locationDraft.locationRack.trim(),
@@ -283,12 +287,12 @@ export default function Admin() {
     try {
       const uploadedUrl = await uploadImageFileToCloudinary(file);
       const updatedProduct = {
-        ...selectedPhotoProduct,
+     ...selectedPhotoProduct,
         image: uploadedUrl,
         thumbnailImage: uploadedUrl,
         imageSrc: uploadedUrl,
         galleryImages: Array.isArray((selectedPhotoProduct as any).galleryImages) && (selectedPhotoProduct as any).galleryImages.length
-          ? (selectedPhotoProduct as any).galleryImages
+          Rs  (selectedPhotoProduct as any).galleryImages
           : [uploadedUrl],
       } as Product;
       const updated = await updateProduct(updatedProduct);
@@ -305,10 +309,10 @@ export default function Admin() {
 
   const handleDeleteProductPhoto = async () => {
     if (!selectedPhotoProduct) return;
-    if (!window.confirm('Remove this product photo?')) return;
+    if (!window.confirm('Remove this product photoRs ')) return;
     setPhotoUploadError(null);
     const updatedProduct = {
-      ...selectedPhotoProduct,
+   ...selectedPhotoProduct,
       image: '',
       thumbnailImage: '',
       imageSrc: '',
@@ -329,10 +333,10 @@ export default function Admin() {
   const refreshData = () => {
     const data = loadData();
     setProducts(data.products);
-    setPurchaseOrders(Array.isArray(data.purchaseOrders) ? data.purchaseOrders : []);
-    setCustomers(Array.isArray(data.customers) ? data.customers : []);
-    setTransactions(Array.isArray(data.transactions) ? data.transactions : []);
-    setUpfrontOrders(Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []);
+    setPurchaseOrders(Array.isArray(data.purchaseOrders) Rs  data.purchaseOrders : []);
+    setCustomers(Array.isArray(data.customers) Rs  data.customers : []);
+    setTransactions(Array.isArray(data.transactions) Rs  data.transactions : []);
+    setUpfrontOrders(Array.isArray(data.upfrontOrders) Rs  data.upfrontOrders : []);
     setCategories(data.categories);
     setStoreName(data.profile.storeName || 'StockFlow');
     setStoreProfile(data.profile || null);
@@ -376,7 +380,7 @@ export default function Admin() {
     const malformed = products
       .map((product) => {
         const missingFields = ['name', 'category'].filter((field) => !safeText((product as any)[field]));
-        return missingFields.length ? { id: product.id, missingFields } : null;
+        return missingFields.length Rs  { id: product.id, missingFields } : null;
       })
       .filter(Boolean)
       .slice(0, 10);
@@ -404,7 +408,7 @@ export default function Admin() {
 
   const toNonNegativeNumber = (value: any) => {
     const n = Number(value);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    return Number.isFinite(n) && n >= 0 Rs  n : 0;
   };
 
   const parseOptionalNonNegative = (value: any): number | undefined => {
@@ -415,24 +419,24 @@ export default function Admin() {
   };
 
   const cleanOptionalText = (value: any): string | undefined => {
-    const text = String(value ?? '').trim();
+    const text = String(value - '').trim();
     return text || undefined;
   };
 
   const cleanOptionalNumber = (value: any, fallback = 0): number => {
     if (value === '' || value === null || value === undefined) return fallback;
     const n = Number(value);
-    return Number.isFinite(n) && n >= 0 ? n : fallback;
+    return Number.isFinite(n) && n >= 0 Rs  n : fallback;
   };
 
   const displayProductText = (value: any, fallback = 'not set yet') => safeText(value, fallback);
   const getUpfrontOrderTotal = (order: UpfrontOrder): number => {
-    const total = Number((order as any).finalTotal ?? order.totalCost ?? (((order as any).orderTotalCustomer || 0) + ((order as any).expenseAmount || 0)));
-    return Number.isFinite(total) ? Math.max(0, total) : 0;
+    const total = Number((order as any).finalTotal - order.totalCost - (((order as any).orderTotalCustomer || 0) + ((order as any).expenseAmount || 0)));
+    return Number.isFinite(total) Rs  Math.max(0, total) : 0;
   };
-  const roundAuditMoney = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
+  const roundAuditMoney = (value: number) => Math.round((Number.isFinite(value) Rs  value : 0) * 100) / 100;
   const toggleExpandedValue = (value: string, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
-    setter((prev) => (prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]));
+    setter((prev) => (prev.includes(value) Rs  prev.filter((item) => item !== value) : [...prev, value]));
   };
   const customerBalanceAudit = useMemo(() => {
     const canonicalBalanceByCustomerId = new Map<string, ReturnType<typeof getCanonicalCustomerBalanceResult>>();
@@ -510,18 +514,18 @@ export default function Admin() {
         const storedDue = Math.max(0, Number(customer.totalDue || 0));
         const storedStoreCredit = Math.max(0, Number(customer.storeCredit || 0));
         const storedNet = roundAuditMoney(Math.max(0, storedDue - storedStoreCredit));
-        const canonicalNet = canonicalBalance?.status === 'ok' ? canonicalBalance.netReceivable : 0;
+        const canonicalNet = canonicalBalanceRs .status === 'ok' Rs  canonicalBalance.netReceivable : 0;
         return {
           customerId: customer.id,
           customerName: customer.name,
           phone: customer.phone || '',
           storedDue,
           storedStoreCredit,
-          canonicalDue: canonicalBalance?.status === 'ok' ? canonicalBalance.currentDue : 0,
-          canonicalStoreCredit: canonicalBalance?.status === 'ok' ? canonicalBalance.storeCredit : 0,
+          canonicalDue: canonicalBalanceRs .status === 'ok' Rs  canonicalBalance.currentDue : 0,
+          canonicalStoreCredit: canonicalBalanceRs .status === 'ok' Rs  canonicalBalance.storeCredit : 0,
           canonicalNet,
           difference: roundAuditMoney(canonicalNet - storedNet),
-          warnings: ledgerPreviewByCustomerId.get(customer.id)?.warnings || [],
+          warnings: ledgerPreviewByCustomerId.get(customer.id)Rs .warnings || [],
           openOrders: openOrders.filter((order) => order.customerId === customer.id),
         };
       })
@@ -531,13 +535,13 @@ export default function Admin() {
       .map((order) => ({
         id: order.id,
         customerId: order.customerId,
-        customerName: (order as any).customerName || customers.find((customer) => customer.id === order.customerId)?.name || 'Unknown Customer',
+        customerName: (order as any).customerName || customers.find((customer) => customer.id === order.customerId)Rs .name || 'Unknown Customer',
         status: String(order.status || 'unpaid'),
         orderNo: String((order as any).orderNumber || (order as any).orderNo || order.id.slice(-6)),
         orderTotal: getUpfrontOrderTotal(order),
         advancePaid: Math.max(0, Number(order.advancePaid || 0)),
         remaining: Math.max(0, Number(order.remainingAmount || 0)),
-        paymentHistoryCount: Array.isArray(order.paymentHistory) ? order.paymentHistory.length : 0,
+        paymentHistoryCount: Array.isArray(order.paymentHistory) Rs  order.paymentHistory.length : 0,
         productName: String(order.productName || 'Custom Order'),
         notes: String(order.notes || ''),
       }))
@@ -551,17 +555,17 @@ export default function Admin() {
       const simulatedDue = roundAuditMoney(nonUpfront.due + customerOpenOrders.reduce((sum, order) => sum + order.remaining, 0));
       const simulatedStoreCredit = roundAuditMoney(nonUpfront.storeCredit);
       const simulatedNet = roundAuditMoney(Math.max(0, simulatedDue - simulatedStoreCredit));
-      const currentDue = current?.status === 'ok' ? current.currentDue : 0;
-      const currentStoreCredit = current?.status === 'ok' ? current.storeCredit : 0;
-      const currentNet = current?.status === 'ok' ? current.netReceivable : 0;
+      const currentDue = currentRs .status === 'ok' Rs  current.currentDue : 0;
+      const currentStoreCredit = currentRs .status === 'ok' Rs  current.storeCredit : 0;
+      const currentNet = currentRs .status === 'ok' Rs  current.netReceivable : 0;
       const difference = roundAuditMoney(simulatedNet - currentNet);
       const advanceOrderCreditEntries = sourceEntries.filter((entry) => entry.customerId === customer.id && entry.source === 'advance_order_payment');
       const unknownEntries = sourceEntries.filter((entry) => entry.customerId === customer.id && entry.source === 'unknown');
       const legacyOrderCount = legacyOrderInfoByCustomerId.get(customer.id) || 0;
-      const risk: 'Safe' | 'Review' | 'Unknown' = unknownEntries.length > 0 || legacyOrderCount > 0 || (preview?.warnings.length || 0) > 0
-        ? 'Unknown'
+      const risk: 'Safe' | 'Review' | 'Unknown' = unknownEntries.length > 0 || legacyOrderCount > 0 || (previewRs .warnings.length || 0) > 0
+        Rs  'Unknown'
         : Math.abs(difference) > 0.01 || (currentDue > 0.005 && currentStoreCredit > 0.005) || advanceOrderCreditEntries.length > 0
-          ? 'Review'
+          Rs  'Review'
           : 'Safe';
       return {
         customerId: customer.id,
@@ -578,7 +582,7 @@ export default function Admin() {
         advanceOrderCreditTotal: roundAuditMoney(advanceOrderCreditEntries.reduce((sum, entry) => sum + entry.amount, 0)),
         unknownCreditTotal: roundAuditMoney(unknownEntries.reduce((sum, entry) => sum + entry.amount, 0)),
         openOrders: customerOpenOrders,
-        warningCount: preview?.warnings.length || 0,
+        warningCount: previewRs .warnings.length || 0,
       };
     }).filter((row) => row.currentDue > 0.005 && row.currentStoreCredit > 0.005 || Math.abs(row.difference) > 0.01 || row.advanceOrderCreditTotal > 0.005 || row.unknownCreditTotal > 0.005)
       .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference) || a.customerName.localeCompare(b.customerName));
@@ -591,7 +595,7 @@ export default function Admin() {
         totalOpenOrderValue: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.orderTotal, 0)),
         totalAdvancePaid: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.advancePaid, 0)),
         totalRemaining: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.remaining, 0)),
-        unknownCreditSourceCount: sourceSummary.find((row) => row.source === 'unknown')?.count || 0,
+        unknownCreditSourceCount: sourceSummary.find((row) => row.source === 'unknown')Rs .count || 0,
       },
       dueCreditViolations,
       openAdvanceOrders,
@@ -606,7 +610,7 @@ export default function Admin() {
           totalOpenOrderValue: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.orderTotal, 0)),
           totalAdvancePaid: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.advancePaid, 0)),
           totalRemaining: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.remaining, 0)),
-          unknownCreditSourceCount: sourceSummary.find((row) => row.source === 'unknown')?.count || 0,
+          unknownCreditSourceCount: sourceSummary.find((row) => row.source === 'unknown')Rs .count || 0,
         },
         dueCreditViolations,
         openAdvanceOrders,
@@ -621,7 +625,7 @@ export default function Admin() {
   );
   const handleExportCustomerBalanceAuditJson = () => {
     const blob = new Blob([JSON.stringify({
-      ...customerBalanceAudit.exportPayload,
+   ...customerBalanceAudit.exportPayload,
       policyDryRun: customerBalancePolicyDryRun,
     }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -653,8 +657,8 @@ export default function Admin() {
       UnitCost: row.unitCost,
       LineTotal: row.lineTotal,
       PaymentStatus: row.paymentStatus,
-      PaidAmount: row.paidAmount ?? '',
-      RemainingAmount: row.remainingAmount ?? '',
+      PaidAmount: row.paidAmount - '',
+      RemainingAmount: row.remainingAmount - '',
       PaymentMethod: row.paymentMethod || '',
       PurchaseOrderId: row.purchaseOrderId || '',
       LegacyHistoryId: row.legacyHistoryId || '',
@@ -669,7 +673,7 @@ export default function Admin() {
     const headers = Object.keys(rows[0] || {
       Source: '', ProductName: '', ProductId: '', ProductCode: '', SupplierName: '', SupplierId: '', Date: '', Quantity: '', UnitCost: '', LineTotal: '', PaymentStatus: '', PaidAmount: '', RemainingAmount: '', PaymentMethod: '', PurchaseOrderId: '', LegacyHistoryId: '', Reference: '', Notes: '', MatchStatus: '', MatchConfidence: '', DuplicateKey: '', SuggestedAction: '', ReviewReason: '',
     });
-    const escapeCsv = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const escapeCsv = (value: unknown) => `"${String(value - '').replace(/"/g, '""')}"`;
     const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => escapeCsv((row as Record<string, unknown>)[header])).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -680,7 +684,7 @@ export default function Admin() {
     URL.revokeObjectURL(url);
   };
   const openCustomerCorrectLedger = (customerId: string) => {
-    navigate(`/customers?showCorrectLedger=1&auditCustomerId=${encodeURIComponent(customerId)}`);
+    navigate(`/customersRs showCorrectLedger=1&auditCustomerId=${encodeURIComponent(customerId)}`);
   };
 
   const getSuggestedStock = (totalPurchase: any, totalSold: any) => {
@@ -689,8 +693,8 @@ export default function Admin() {
     return Math.max(0, purchase - sold);
   };
 
-  const getVariantRowKey = (variant?: string, color?: string) => `${variant || NO_VARIANT}__${color || NO_COLOR}`;
-  const formatVariantColorValue = (value?: string, fallbackToken?: string) => {
+  const getVariantRowKey = (variantRs : string, colorRs : string) => `${variant || NO_VARIANT}__${color || NO_COLOR}`;
+  const formatVariantColorValue = (valueRs : string, fallbackTokenRs : string) => {
     if (!value) return 'Default';
     if (fallbackToken && value === fallbackToken) return 'Default';
     return value;
@@ -758,9 +762,9 @@ export default function Admin() {
       {rows.map((h) => (
         (() => {
           const lineTotal = Number((toNonNegativeNumber(h.lineTotal || (toNonNegativeNumber(h.quantity) * toNonNegativeNumber(h.unitPrice)))).toFixed(2));
-          const orderTotal = h.orderTotal == null ? null : toNonNegativeNumber(h.orderTotal);
-          const orderPaid = h.orderPaid == null ? null : toNonNegativeNumber(h.orderPaid);
-          const remainingPayable = h.remainingPayable == null ? null : toNonNegativeNumber(h.remainingPayable);
+          const orderTotal = h.orderTotal == null Rs  null : toNonNegativeNumber(h.orderTotal);
+          const orderPaid = h.orderPaid == null Rs  null : toNonNegativeNumber(h.orderPaid);
+          const remainingPayable = h.remainingPayable == null Rs  null : toNonNegativeNumber(h.remainingPayable);
           const paymentSummary = h.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 };
           const partyName = h.partyName || 'Not linked / Unknown';
           const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || 'Ã¢â‚¬â€';
@@ -805,9 +809,9 @@ export default function Admin() {
               <div><span className="text-muted-foreground">Party:</span> <span className="font-medium">{partyName}</span></div>
               <div><span className="text-muted-foreground">PO:</span> <span className="font-medium">{poLabel}</span></div>
               <div><span className="text-muted-foreground">Line Total:</span> <span className="font-medium">{lineTotal.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `${orderTotal.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `${orderPaid.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `${remainingPayable.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null Rs  `${orderTotal.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null Rs  `${orderPaid.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null Rs  `${remainingPayable.toFixed(2)}` : '—'}</span></div>
               <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">{paymentSummary.partyCredit.toFixed(2)}</span></div>
               <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">{paymentSummary.cash.toFixed(2)}</span></div>
               <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">{paymentSummary.online.toFixed(2)}</span></div>
@@ -844,7 +848,7 @@ export default function Admin() {
                 <div className="font-semibold">{productName}</div>
                 <Badge variant="outline">Legacy-only history row</Badge>
               </div>
-              <div className="text-muted-foreground">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
+              <div className="text-muted-foreground">{row.date Rs  new Date(row.date).toLocaleString() : 'Unknown date'}</div>
             </div>
             <div className="rounded border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-900">
               Legacy-only history row Ã¢â‚¬â€ not part of canonical purchase ledger.
@@ -890,7 +894,7 @@ export default function Admin() {
     }
 
     const stockRows = getProductStockRows(product);
-    const sourceRows = Array.isArray(product.stockByVariantColor) ? product.stockByVariantColor : [];
+    const sourceRows = Array.isArray(product.stockByVariantColor) Rs  product.stockByVariantColor : [];
     const totalsByRowKey = new Map<string, { totalPurchase: number; totalSold: number }>();
     sourceRows.forEach((row) => {
       totalsByRowKey.set(getVariantRowKey(row.variant, row.color), {
@@ -917,8 +921,8 @@ export default function Admin() {
       const buyPrice = toNonNegativeNumber(row.buyPrice);
       const sellPrice = toNonNegativeNumber(row.sellPrice);
       const totals = totalsByRowKey.get(getVariantRowKey(row.variant, row.color));
-      const rowPurchase = totals?.totalPurchase ?? 0;
-      const rowSold = totals?.totalSold ?? 0;
+      const rowPurchase = totalsRs .totalPurchase - 0;
+      const rowSold = totalsRs .totalSold - 0;
 
       totalPurchase += rowPurchase;
       totalSold += rowSold;
@@ -935,15 +939,15 @@ export default function Admin() {
     });
 
     const combinedAvgBuyPrice = totalPurchase > 0
-      ? buyWeightedByPurchase / totalPurchase
+      Rs  buyWeightedByPurchase / totalPurchase
       : totalStock > 0
-        ? buyWeightedByStock / totalStock
-        : (rowCount ? buySum / rowCount : 0);
+        Rs  buyWeightedByStock / totalStock
+        : (rowCount Rs  buySum / rowCount : 0);
     const combinedAvgSellPrice = totalSold > 0
-      ? sellWeightedBySold / totalSold
+      Rs  sellWeightedBySold / totalSold
       : totalStock > 0
-        ? sellWeightedByStock / totalStock
-        : (rowCount ? sellSum / rowCount : 0);
+        Rs  sellWeightedByStock / totalStock
+        : (rowCount Rs  sellSum / rowCount : 0);
 
     return {
       hasVariantRows: true,
@@ -980,20 +984,20 @@ export default function Admin() {
 
   const saveProduct = async (keepOpenForNext = false) => {
     if (isSaving) return;
-    const hasVariantAxes = !!(formData.variants?.length || formData.colors?.length);
+    const hasVariantAxes = !!(formData.variantsRs .length || formData.colorsRs .length);
     const hasCombos = hasVariantAxes && Array.isArray(formData.stockByVariantColor) && formData.stockByVariantColor.length > 0;
 
     const openingStockValue = cleanOptionalNumber(formData.stock, 0);
     const totalPurchaseBlank = formData.totalPurchase === '' || formData.totalPurchase === null || formData.totalPurchase === undefined;
-    const effectiveTotalPurchase = totalPurchaseBlank && openingStockValue > 0 ? openingStockValue : cleanOptionalNumber(formData.totalPurchase, 0);
+    const effectiveTotalPurchase = totalPurchaseBlank && openingStockValue > 0 Rs  openingStockValue : cleanOptionalNumber(formData.totalPurchase, 0);
     const supplierName = String(formData.supplierName || '').trim();
     const supplierPayableRaw = formData.supplierTotalPayable;
     const supplierPaidRaw = formData.supplierTotalPaid;
     const supplierMethod = String(formData.supplierPaymentMethod || '').trim();
     const supplierNote = String(formData.supplierNote || '').trim();
     const supplierSectionTouched = supplierName !== '' || supplierPayableRaw !== '' || supplierPaidRaw !== '' || supplierMethod !== '' || supplierNote !== '';
-    const supplierPayable = supplierPayableRaw === '' ? 0 : Number(supplierPayableRaw);
-    const supplierPaid = supplierPaidRaw === '' ? 0 : Number(supplierPaidRaw);
+    const supplierPayable = supplierPayableRaw === '' Rs  0 : Number(supplierPayableRaw);
+    const supplierPaid = supplierPaidRaw === '' Rs  0 : Number(supplierPaidRaw);
     if (supplierSectionTouched) {
       if (!supplierName) return setError('Party / supplier name is required when supplier details are entered.');
       if (!Number.isFinite(supplierPayable) || supplierPayable < 0) return setError('Total payable must be a valid number Ã¢â€°Â¥ 0.');
@@ -1005,31 +1009,31 @@ export default function Admin() {
     setError(null);
 
     const totalComboStock = hasCombos
-      ? formData.stockByVariantColor.reduce((sum: number, row: any) => sum + toNonNegativeNumber(row.stock), 0)
+      Rs  formData.stockByVariantColor.reduce((sum: number, row: any) => sum + toNonNegativeNumber(row.stock), 0)
       : toNonNegativeNumber(formData.stock);
 
     const productPayload = {
-      id: editingProduct ? editingProduct.id : Date.now().toString(),
-      createdAt: editingProduct?.createdAt || new Date().toISOString(),
-      ...(cleanOptionalText(formData.image) ? { image: cleanOptionalText(formData.image)! } : {}),
+      id: editingProduct Rs  editingProduct.id : Date.now().toString(),
+      createdAt: editingProductRs .createdAt || new Date().toISOString(),
+   ...(cleanOptionalText(formData.image) Rs  { image: cleanOptionalText(formData.image)! } : {}),
       name: cleanOptionalText(formData.name) || 'not set yet',
-      ...(cleanOptionalText(formData.barcode) ? { barcode: cleanOptionalText(formData.barcode)! } : {}),
-      ...(cleanOptionalText(formData.description) ? { description: cleanOptionalText(formData.description)! } : {}),
+   ...(cleanOptionalText(formData.barcode) Rs  { barcode: cleanOptionalText(formData.barcode)! } : {}),
+   ...(cleanOptionalText(formData.description) Rs  { description: cleanOptionalText(formData.description)! } : {}),
       category: cleanOptionalText(formData.category) || 'not set yet',
       locationZone: cleanOptionalText(formData.locationZone) || '',
       locationRow: cleanOptionalText(formData.locationRow) || '',
       locationRack: cleanOptionalText(formData.locationRack) || '',
       locationShelf: cleanOptionalText(formData.locationShelf) || '',
-      ...(cleanOptionalText(formData.hsn) ? { hsn: cleanOptionalText(formData.hsn)! } : {}),
-      buyPrice: hasCombos ? cleanOptionalNumber(editingProduct?.buyPrice, 0) : cleanOptionalNumber(formData.buyPrice, 0),
-      sellPrice: hasCombos ? cleanOptionalNumber(editingProduct?.sellPrice, 0) : cleanOptionalNumber(formData.sellPrice, 0),
+   ...(cleanOptionalText(formData.hsn) Rs  { hsn: cleanOptionalText(formData.hsn)! } : {}),
+      buyPrice: hasCombos Rs  cleanOptionalNumber(editingProductRs .buyPrice, 0) : cleanOptionalNumber(formData.buyPrice, 0),
+      sellPrice: hasCombos Rs  cleanOptionalNumber(editingProductRs .sellPrice, 0) : cleanOptionalNumber(formData.sellPrice, 0),
       totalPurchase: cleanOptionalNumber(effectiveTotalPurchase, 0),
       totalSold: cleanOptionalNumber(formData.totalSold, 0),
       stock: totalComboStock,
-      variants: hasCombos ? (formData.variants || []) : [],
-      colors: hasCombos ? (formData.colors || []) : [],
+      variants: hasCombos Rs  (formData.variants || []) : [],
+      colors: hasCombos Rs  (formData.colors || []) : [],
       stockByVariantColor: hasCombos
-        ? (formData.stockByVariantColor || []).map((row: any) => ({
+        Rs  (formData.stockByVariantColor || []).map((row: any) => ({
             variant: row.variant,
             color: row.color,
             stock: toNonNegativeNumber(row.stock),
@@ -1050,7 +1054,7 @@ export default function Admin() {
       } else {
         if (supplierSectionTouched) {
           const now = new Date().toISOString();
-          const supplierPaidEffective = supplierMethod === 'credit' ? 0 : supplierPaid;
+          const supplierPaidEffective = supplierMethod === 'credit' Rs  0 : supplierPaid;
           const remainingDue = Math.max(0, Number((supplierPayable - supplierPaidEffective).toFixed(2)));
           
           const linkedOrderId = `po-admin-create-${Date.now()}`;
@@ -1078,7 +1082,7 @@ export default function Admin() {
         updated = await addProduct(productPayload);
         if (supplierSectionTouched) {
           const existingParty = (formData.supplierPartyId
-            ? getPurchaseParties().find((p) => p.id === formData.supplierPartyId)
+            Rs  getPurchaseParties().find((p) => p.id === formData.supplierPartyId)
             : undefined) || getPurchaseParties().find((p) => safeLower(p.name) === safeLower(supplierName));
           const party = existingParty || await createPurchaseParty({ name: supplierName });
           if (supplierPayable > 0) {
@@ -1108,11 +1112,11 @@ export default function Admin() {
               }],
               totalQuantity: openingStockValue,
               totalAmount: supplierPayable,
-              paymentHistory: supplierMethod === 'credit' ? [] : supplierPaid > 0 ? [{
+              paymentHistory: supplierMethod === 'credit' Rs  [] : supplierPaid > 0 Rs  [{
                 id: `pop-admin-create-${Date.now()}`,
                 paidAt: now,
                 amount: supplierPaid,
-                method: supplierMethod === 'cash' ? 'cash' : 'online',
+                method: supplierMethod === 'cash' Rs  'cash' : 'online',
                 note: supplierNote || 'Admin product creation',
               }] : [],
               createdAt: now,
@@ -1148,7 +1152,7 @@ export default function Admin() {
       const message = getFriendlyErrorMessage(saveError, 'admin.product_save');
       setError(message);
       const userMessage = message.toLowerCase().includes('image upload failed')
-        ? 'Image upload failed. Please try again.'
+        Rs  'Image upload failed. Please try again.'
         : message;
       setNotice({ type: 'error', message: userMessage });
     } finally {
@@ -1162,7 +1166,7 @@ export default function Admin() {
   const purchaseVariantRows = useMemo(() => {
     if (!purchaseTarget || !productHasCombinationStock(purchaseTarget)) return [];
     return getProductStockRows(purchaseTarget).map((row, idx) => ({
-      ...row,
+   ...row,
       key: `${row.variant || NO_VARIANT}__${row.color || NO_COLOR}__${idx}`,
     }));
   }, [purchaseTarget]);
@@ -1223,7 +1227,7 @@ export default function Admin() {
       setSelectedPurchaseVariantKey('');
       return;
     }
-    setSelectedPurchaseVariantKey(prev => (prev && purchaseVariantRows.some(row => row.key === prev)) ? prev : purchaseVariantRows[0].key);
+    setSelectedPurchaseVariantKey(prev => (prev && purchaseVariantRows.some(row => row.key === prev)) Rs  prev : purchaseVariantRows[0].key);
   }, [purchaseTarget, purchaseVariantRows]);
 
   const purchaseTotalCost = useMemo(() => {
@@ -1237,8 +1241,8 @@ export default function Admin() {
   const purchaseEffectiveBankPaid = useMemo(() => Math.max(0, Number(purchaseBankPaid || 0) || 0), [purchaseBankPaid]);
   const purchaseEffectivePaidAmount = useMemo(() => Number((purchaseEffectiveCashPaid + purchaseEffectiveBankPaid).toFixed(2)), [purchaseEffectiveCashPaid, purchaseEffectiveBankPaid]);
   const purchaseRemainingDue = useMemo(() => Math.max(0, Number((purchaseTotalCost - purchaseEffectivePaidAmount).toFixed(2))), [purchaseTotalCost, purchaseEffectivePaidAmount]);
-  const normalizePartyName = (value?: string) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  const partyCreditEntryMatchesParty = (entry: { partyId?: string; partyName?: string }, party: { id?: string; name?: string }) => {
+  const normalizePartyName = (valueRs : string) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const partyCreditEntryMatchesParty = (entry: { partyIdRs : string; partyNameRs : string }, party: { idRs : string; nameRs : string }) => {
     const entryId = String(entry.partyId || '').trim();
     const partyId = String(party.id || '').trim();
     if (entryId && partyId && entryId === partyId) return true;
@@ -1251,9 +1255,9 @@ export default function Admin() {
     if (!partyName && !selectedPurchasePartyId) return 0;
     const parties = getPurchaseParties();
     const matchedParty = (selectedPurchasePartyId
-      ? parties.find((p) => p.id === selectedPurchasePartyId)
+      Rs  parties.find((p) => p.id === selectedPurchasePartyId)
       : undefined) || parties.find((p) => normalizePartyName(p.name) === normalizePartyName(partyName));
-    const partyRef = { id: matchedParty?.id || selectedPurchasePartyId, name: matchedParty?.name || partyName };
+    const partyRef = { id: matchedPartyRs .id || selectedPurchasePartyId, name: matchedPartyRs .name || partyName };
     return (loadData().partyCreditLedger || [])
       .filter((entry) => Math.max(0, Number(entry.remainingAmount || 0)) > 0 && partyCreditEntryMatchesParty(entry, partyRef))
       .reduce((sum, entry) => sum + Math.max(0, Number(entry.remainingAmount || 0)), 0);
@@ -1281,8 +1285,8 @@ export default function Admin() {
     const buyPrice = toNonNegativeNumber(formData.buyPrice);
     const openingStock = toNonNegativeNumber(formData.stock);
     const totalPurchase = toNonNegativeNumber(formData.totalPurchase);
-    const qty = openingStock > 0 ? openingStock : totalPurchase;
-    const autoPayable = qty > 0 && buyPrice > 0 ? Number((qty * buyPrice).toFixed(2)) : 0;
+    const qty = openingStock > 0 Rs  openingStock : totalPurchase;
+    const autoPayable = qty > 0 && buyPrice > 0 Rs  Number((qty * buyPrice).toFixed(2)) : 0;
     setFormData((prev: any) => ({ ...prev, supplierTotalPayable: String(autoPayable) }));
   }, [formData.buyPrice, formData.stock, formData.totalPurchase, editingProduct, supplierPayableManuallyEdited]);
 
@@ -1297,11 +1301,11 @@ export default function Admin() {
     }
 
     const isVariantPurchase = productHasCombinationStock(purchaseTarget) && !!selectedPurchaseVariantRow;
-    const currentStock = isVariantPurchase ? toNonNegativeNumber(selectedPurchaseVariantRow?.stock) : toNonNegativeNumber(purchaseTarget.stock);
-    const currentBuyPrice = isVariantPurchase ? toNonNegativeNumber(selectedPurchaseVariantRow?.buyPrice) : toNonNegativeNumber(purchaseTarget.buyPrice);
-    const weightedAvg = currentStock + qty > 0 ? ((currentStock * currentBuyPrice) + (qty * unitPrice)) / (currentStock + qty) : unitPrice;
+    const currentStock = isVariantPurchase Rs  toNonNegativeNumber(selectedPurchaseVariantRowRs .stock) : toNonNegativeNumber(purchaseTarget.stock);
+    const currentBuyPrice = isVariantPurchase Rs  toNonNegativeNumber(selectedPurchaseVariantRowRs .buyPrice) : toNonNegativeNumber(purchaseTarget.buyPrice);
+    const weightedAvg = currentStock + qty > 0 Rs  ((currentStock * currentBuyPrice) + (qty * unitPrice)) / (currentStock + qty) : unitPrice;
     const manualBuyPrice = parseOptionalNonNegative(purchaseNextBuyPrice);
-    const nextBuyPrice = manualBuyPrice ?? weightedAvg;
+    const nextBuyPrice = manualBuyPrice - weightedAvg;
     const reference = purchaseReference.trim() || undefined;
     const notes = purchaseNotes.trim() || undefined;
     const partyName = purchasePartyName.trim();
@@ -1327,14 +1331,14 @@ export default function Admin() {
     }
 
     const updatedVariantRows = isVariantPurchase
-      ? (purchaseTarget.stockByVariantColor || []).map((row) => {
+      Rs  (purchaseTarget.stockByVariantColor || []).map((row) => {
           const variant = row.variant || NO_VARIANT;
           const color = row.color || NO_COLOR;
-          if (variant !== (selectedPurchaseVariantRow?.variant || NO_VARIANT) || color !== (selectedPurchaseVariantRow?.color || NO_COLOR)) {
+          if (variant !== (selectedPurchaseVariantRowRs .variant || NO_VARIANT) || color !== (selectedPurchaseVariantRowRs .color || NO_COLOR)) {
             return row;
           }
           return {
-            ...row,
+         ...row,
             stock: toNonNegativeNumber(row.stock) + qty,
             buyPrice: nextBuyPrice,
             totalPurchase: toNonNegativeNumber(row.totalPurchase) + qty,
@@ -1343,7 +1347,7 @@ export default function Admin() {
       : (purchaseTarget.stockByVariantColor || []);
 
     const rolledUpBuyPrice = isVariantPurchase
-      ? (() => {
+      Rs  (() => {
           const rows = updatedVariantRows.map((row) => ({
             stock: toNonNegativeNumber(row.stock),
             buyPrice: toNonNegativeNumber(row.buyPrice),
@@ -1356,7 +1360,7 @@ export default function Admin() {
       : nextBuyPrice;
 
     const existingParty = (selectedPurchasePartyId
-      ? getPurchaseParties().find((p) => p.id === selectedPurchasePartyId)
+      Rs  getPurchaseParties().find((p) => p.id === selectedPurchasePartyId)
       : undefined) || getPurchaseParties().find((p) => safeLower(p.name) === safeLower(partyName));
     const party = existingParty || await createPurchaseParty({ name: partyName });
     const now = new Date().toISOString();
@@ -1368,8 +1372,8 @@ export default function Admin() {
       productName: purchaseTarget.name,
       category: purchaseTarget.category,
       image: purchaseTarget.image,
-      variant: isVariantPurchase ? (selectedPurchaseVariantRow?.variant || NO_VARIANT) : NO_VARIANT,
-      color: isVariantPurchase ? (selectedPurchaseVariantRow?.color || NO_COLOR) : NO_COLOR,
+      variant: isVariantPurchase Rs  (selectedPurchaseVariantRowRs .variant || NO_VARIANT) : NO_VARIANT,
+      color: isVariantPurchase Rs  (selectedPurchaseVariantRowRs .color || NO_COLOR) : NO_COLOR,
       quantity: qty,
       unitCost: unitPrice,
       totalCost: totalAmount,
@@ -1391,8 +1395,8 @@ export default function Admin() {
       totalPaid: paidAmount,
       remainingAmount: Math.max(0, Number((totalAmount - paidAmount).toFixed(2))),
       paymentHistory: [
-        ...(cashPaid > 0 ? [{ id: `pop-init-cash-${Date.now()}`, paidAt: now, amount: cashPaid, method: 'cash' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
-        ...(bankPaid > 0 ? [{ id: `pop-init-bank-${Date.now()}`, paidAt: now, amount: bankPaid, method: 'online' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
+     ...(cashPaid > 0 Rs  [{ id: `pop-init-cash-${Date.now()}`, paidAt: now, amount: cashPaid, method: 'cash' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
+     ...(bankPaid > 0 Rs  [{ id: `pop-init-bank-${Date.now()}`, paidAt: now, amount: bankPaid, method: 'online' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
       ],
       receivedQuantity: qty,
       createdAt: now,
@@ -1424,7 +1428,7 @@ export default function Admin() {
       try {
         applyCalled = true;
         applyResult = await applyPartyCreditToPurchaseOrder(savedOrder.id, creditToApply, savedOrder.billNumber || savedOrder.id.slice(-6));
-        const appliedAmount = Math.max(0, Number(applyResult?.appliedAmount || 0));
+        const appliedAmount = Math.max(0, Number(applyResultRs .appliedAmount || 0));
         if (appliedAmount <= 0) {
           setNotice({ type: 'error', message: 'Purchase was saved, but party credit could not be applied. Use Apply Party Credit from Party Statement to repair this purchase.' });
         } else if (Math.abs(appliedAmount - creditToApply) > 0.01) {
@@ -1450,16 +1454,16 @@ export default function Admin() {
         availablePartyCreditBeforeSave: availablePartyCredit,
         creditToApply,
         orderIdBuilt: orderId,
-        createPurchaseOrderReturnShape: savedOrder ? Object.keys(savedOrder) : null,
+        createPurchaseOrderReturnShape: savedOrder Rs  Object.keys(savedOrder) : null,
         applyCalled,
         applyResult,
-        postApplyOrderPaymentHistory: postApplyOrder?.paymentHistory || [],
-        postApplyRemainingAmount: postApplyOrder?.remainingAmount,
+        postApplyOrderPaymentHistory: postApplyOrderRs .paymentHistory || [],
+        postApplyRemainingAmount: postApplyOrderRs .remainingAmount,
         postApplyLedgerRemaining,
       }, null, 2));
     }
     const updatedProduct: Product = {
-      ...purchaseTarget,
+   ...purchaseTarget,
       stock: toNonNegativeNumber(purchaseTarget.stock) + qty,
       totalPurchase: toNonNegativeNumber(purchaseTarget.totalPurchase) + qty,
       buyPrice: rolledUpBuyPrice,
@@ -1468,21 +1472,21 @@ export default function Admin() {
         {
           id: `ph-${Date.now()}`,
           date: new Date().toISOString(),
-          variant: isVariantPurchase ? (selectedPurchaseVariantRow?.variant || NO_VARIANT) : NO_VARIANT,
-          color: isVariantPurchase ? (selectedPurchaseVariantRow?.color || NO_COLOR) : NO_COLOR,
+          variant: isVariantPurchase Rs  (selectedPurchaseVariantRowRs .variant || NO_VARIANT) : NO_VARIANT,
+          color: isVariantPurchase Rs  (selectedPurchaseVariantRowRs .color || NO_COLOR) : NO_COLOR,
           quantity: qty,
           unitPrice,
           previousStock: currentStock,
           previousBuyPrice: currentBuyPrice,
           nextBuyPrice,
           purchaseOrderId: orderId,
-          paymentMethod: paidAmount > 0 ? (bankPaid > 0 && cashPaid === 0 ? 'online' : 'cash') : 'credit',
+          paymentMethod: paidAmount > 0 Rs  (bankPaid > 0 && cashPaid === 0 Rs  'online' : 'cash') : 'credit',
           paidAmount,
           partyName,
           reference,
           notes,
         },
-        ...(purchaseTarget.purchaseHistory || []),
+     ...(purchaseTarget.purchaseHistory || []),
       ],
     };
 
@@ -1507,10 +1511,10 @@ export default function Admin() {
     if (!purchaseTarget) return 0;
     const qty = toNonNegativeNumber(purchaseQty);
     const unitPrice = toNonNegativeNumber(purchasePrice);
-    const currentStock = selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.stock) : toNonNegativeNumber(purchaseTarget.stock);
-    const currentBuyPrice = selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : toNonNegativeNumber(purchaseTarget.buyPrice);
+    const currentStock = selectedPurchaseVariantRow Rs  toNonNegativeNumber(selectedPurchaseVariantRow.stock) : toNonNegativeNumber(purchaseTarget.stock);
+    const currentBuyPrice = selectedPurchaseVariantRow Rs  toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : toNonNegativeNumber(purchaseTarget.buyPrice);
     if (qty <= 0 || unitPrice <= 0) return currentBuyPrice;
-    return currentStock + qty > 0 ? ((currentStock * currentBuyPrice) + (qty * unitPrice)) / (currentStock + qty) : unitPrice;
+    return currentStock + qty > 0 Rs  ((currentStock * currentBuyPrice) + (qty * unitPrice)) / (currentStock + qty) : unitPrice;
   }, [purchaseTarget, purchaseQty, purchasePrice, selectedPurchaseVariantRow]);
 
   const handleDelete = async (id: string) => {
@@ -1527,7 +1531,7 @@ export default function Admin() {
     const payload = {
       generatedAt: new Date().toISOString(),
       reportType: 'missing_product_purchase_history_rows',
-      ...missingHistoryAnalysis,
+   ...missingHistoryAnalysis,
       repairPlan: [
         'Restore missing embedded product.purchaseHistory rows from purchaseOrders.',
         'Do not alter purchaseOrders.',
@@ -1552,7 +1556,7 @@ export default function Admin() {
     const payload = {
       generatedAt: new Date().toISOString(),
       reportType: 'purchase_order_product_history_trace',
-      ...purchaseTraceResult,
+   ...purchaseTraceResult,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -1574,8 +1578,8 @@ export default function Admin() {
     if (!lostDamageTarget) return;
     const existingLost = Math.max(0, Math.floor(Number(lostDamageTarget.lostDamageQty || 0)));
     const currentStock = Math.max(0, Math.floor(Number(lostDamageTarget.stock || 0)));
-    const sanitizedInput = lostDamageQtyInput.trim() === '' ? 0 : Math.floor(Number(lostDamageQtyInput));
-    const newLost = Number.isFinite(sanitizedInput) ? Math.max(0, sanitizedInput) : 0;
+    const sanitizedInput = lostDamageQtyInput.trim() === '' Rs  0 : Math.floor(Number(lostDamageQtyInput));
+    const newLost = Number.isFinite(sanitizedInput) Rs  Math.max(0, sanitizedInput) : 0;
     const delta = newLost - existingLost;
     if (delta > currentStock) {
       setLostDamageError('Lost & damage quantity cannot exceed available stock.');
@@ -1584,18 +1588,18 @@ export default function Admin() {
     const nextStock = currentStock - delta;
     const unitCost = Math.max(0, Number(lostDamageTarget.buyPrice || 0));
     const payload: Product = {
-      ...lostDamageTarget,
+   ...lostDamageTarget,
       stock: nextStock,
-      lostDamageQty: newLost > 0 ? newLost : undefined,
-      lostDamageUnitCost: newLost > 0 ? unitCost : undefined,
-      lostDamageUpdatedAt: newLost > 0 ? new Date().toISOString() : undefined,
+      lostDamageQty: newLost > 0 Rs  newLost : undefined,
+      lostDamageUnitCost: newLost > 0 Rs  unitCost : undefined,
+      lostDamageUpdatedAt: newLost > 0 Rs  new Date().toISOString() : undefined,
     };
     const updated = await updateProduct(payload);
     setProducts(updated);
     setLostDamageTarget(null);
     setLostDamageQtyInput('');
     setLostDamageError(null);
-    setNotice({ type: 'success', message: newLost > 0 ? 'Lost & Damage updated.' : 'Lost & Damage cleared.' });
+    setNotice({ type: 'success', message: newLost > 0 Rs  'Lost & Damage updated.' : 'Lost & Damage cleared.' });
   };
   const confirmDeleteProduct = async () => {
     if (!pendingDeleteProductId) return;
@@ -1688,13 +1692,13 @@ export default function Admin() {
 
   const getRowKey = (variant: string, color: string) => `${variant}__${color}`;
 
-  const rebuildStockRows = (nextVariants: string[], nextColors: string[], existingRowsInput?: any[]) => {
-    const variants = nextVariants.length ? nextVariants : [NO_VARIANT];
-    const colors = nextColors.length ? nextColors : [NO_COLOR];
-    const existingRows = Array.isArray(existingRowsInput) ? existingRowsInput : (Array.isArray(formData.stockByVariantColor) ? formData.stockByVariantColor : []);
+  const rebuildStockRows = (nextVariants: string[], nextColors: string[], existingRowsInputRs : any[]) => {
+    const variants = nextVariants.length Rs  nextVariants : [NO_VARIANT];
+    const colors = nextColors.length Rs  nextColors : [NO_COLOR];
+    const existingRows = Array.isArray(existingRowsInput) Rs  existingRowsInput : (Array.isArray(formData.stockByVariantColor) Rs  formData.stockByVariantColor : []);
     const existingByKey = new Map<string, any>(existingRows.map((row: any) => [getRowKey(row.variant || NO_VARIANT, row.color || NO_COLOR), row]));
     const fallbackRow = existingByKey.get(getRowKey(NO_VARIANT, NO_COLOR));
-    const nextRows: Array<{ variant: string; color: string; stock: number; buyPrice?: number | ''; sellPrice?: number | ''; totalPurchase?: number | ''; totalSold?: number | '' }> = [];
+    const nextRows: Array<{ variant: string; color: string; stock: number; buyPriceRs : number | ''; sellPriceRs : number | ''; totalPurchaseRs : number | ''; totalSoldRs : number | '' }> = [];
 
     variants.forEach(v => {
       colors.forEach(c => {
@@ -1703,11 +1707,11 @@ export default function Admin() {
         nextRows.push({
           variant: v,
           color: c,
-          stock: toNonNegativeNumber(seed?.stock),
-          buyPrice: seed?.buyPrice === '' ? '' : parseOptionalNonNegative(seed?.buyPrice),
-          sellPrice: seed?.sellPrice === '' ? '' : parseOptionalNonNegative(seed?.sellPrice),
-          totalPurchase: seed?.totalPurchase === '' ? '' : parseOptionalNonNegative(seed?.totalPurchase),
-          totalSold: seed?.totalSold === '' ? '' : parseOptionalNonNegative(seed?.totalSold),
+          stock: toNonNegativeNumber(seedRs .stock),
+          buyPrice: seedRs .buyPrice === '' Rs  '' : parseOptionalNonNegative(seedRs .buyPrice),
+          sellPrice: seedRs .sellPrice === '' Rs  '' : parseOptionalNonNegative(seedRs .sellPrice),
+          totalPurchase: seedRs .totalPurchase === '' Rs  '' : parseOptionalNonNegative(seedRs .totalPurchase),
+          totalSold: seedRs .totalSold === '' Rs  '' : parseOptionalNonNegative(seedRs .totalSold),
         });
       });
     });
@@ -1722,7 +1726,7 @@ export default function Admin() {
     setFormData((prev: any) => {
       const nextVariants = Array.from(new Set([...(prev.variants || []), value]));
       return {
-        ...prev,
+     ...prev,
         variants: nextVariants,
         variantInput: '',
         stockByVariantColor: rebuildStockRows(nextVariants, prev.colors || [], prev.stockByVariantColor || []),
@@ -1738,7 +1742,7 @@ export default function Admin() {
     setFormData((prev: any) => {
       const nextColors = Array.from(new Set([...(prev.colors || []), value]));
       return {
-        ...prev,
+     ...prev,
         colors: nextColors,
         colorInput: '',
         stockByVariantColor: rebuildStockRows(prev.variants || [], nextColors, prev.stockByVariantColor || []),
@@ -1746,28 +1750,28 @@ export default function Admin() {
     });
   };
 
-  const openModal = (product?: Product) => {
+  const openModal = (productRs : Product) => {
     setSupplierPayableManuallyEdited(false);
     setError(null);
     if (product) {
       setEditingProduct(product);
       setFormData({
-        ...emptyProductForm,
-        ...product,
-        buyPrice: Number.isFinite(product.buyPrice) ? product.buyPrice : '',
-        sellPrice: Number.isFinite(product.sellPrice) ? product.sellPrice : '',
-        stock: Number.isFinite(product.stock) ? product.stock : '',
-        totalPurchase: Number.isFinite(product.totalPurchase) ? product.totalPurchase : '',
-        totalSold: Number.isFinite(product.totalSold) ? product.totalSold : '',
+     ...emptyProductForm,
+     ...product,
+        buyPrice: Number.isFinite(product.buyPrice) Rs  product.buyPrice : '',
+        sellPrice: Number.isFinite(product.sellPrice) Rs  product.sellPrice : '',
+        stock: Number.isFinite(product.stock) Rs  product.stock : '',
+        totalPurchase: Number.isFinite(product.totalPurchase) Rs  product.totalPurchase : '',
+        totalSold: Number.isFinite(product.totalSold) Rs  product.totalSold : '',
         variants: product.variants || [],
         colors: product.colors || [],
         stockByVariantColor: (product.stockByVariantColor || []).map((row: any) => ({
-          ...row,
-          stock: Number.isFinite(row.stock) ? row.stock : 0,
-          buyPrice: Number.isFinite(row.buyPrice) ? Number(row.buyPrice) : '',
-          sellPrice: Number.isFinite(row.sellPrice) ? Number(row.sellPrice) : '',
-          totalPurchase: Number.isFinite(row.totalPurchase) ? Number(row.totalPurchase) : '',
-          totalSold: Number.isFinite(row.totalSold) ? Number(row.totalSold) : '',
+       ...row,
+          stock: Number.isFinite(row.stock) Rs  row.stock : 0,
+          buyPrice: Number.isFinite(row.buyPrice) Rs  Number(row.buyPrice) : '',
+          sellPrice: Number.isFinite(row.sellPrice) Rs  Number(row.sellPrice) : '',
+          totalPurchase: Number.isFinite(row.totalPurchase) Rs  Number(row.totalPurchase) : '',
+          totalSold: Number.isFinite(row.totalSold) Rs  Number(row.totalSold) : '',
         })),
         variantInput: '',
         colorInput: ''
@@ -1789,17 +1793,17 @@ export default function Admin() {
   };
 
   const isBatchEditing = batchEditProductIds.length > 0;
-  const remainingBatchProducts = isBatchEditing ? Math.max(0, batchEditProductIds.length - batchEditIndex - 1) : 0;
+  const remainingBatchProducts = isBatchEditing Rs  Math.max(0, batchEditProductIds.length - batchEditIndex - 1) : 0;
 
   const handleToggleProductSelection = (productId: string) => {
-    setSelectedProductIds(prev => prev.includes(productId) ? prev.filter(id => id !== productId) : [...prev, productId]);
+    setSelectedProductIds(prev => prev.includes(productId) Rs  prev.filter(id => id !== productId) : [...prev, productId]);
   };
 
   const handleToggleSelectAllProducts = () => {
     const filteredIds = filteredProducts.map(product => product.id);
     const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selectedProductIds.includes(id));
     setSelectedProductIds(prev => allFilteredSelected
-      ? prev.filter(id => !filteredIds.includes(id))
+      Rs  prev.filter(id => !filteredIds.includes(id))
       : Array.from(new Set([...prev, ...filteredIds]))
     );
   };
@@ -1834,7 +1838,7 @@ export default function Admin() {
 
   // --- IMAGE COMPRESSION LOGIC ---
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const file = e.target.filesRs .[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = (event) => {
@@ -1868,7 +1872,7 @@ export default function Admin() {
             setFormData((prev: any) => ({ ...prev, image: dataUrl }));
           }
         };
-        img.src = event.target?.result as string;
+        img.src = event.targetRs .result as string;
       };
       reader.readAsDataURL(file);
     }
@@ -1899,7 +1903,7 @@ export default function Admin() {
     ctx.font = "bold 22px Arial";
     ctx.textAlign = "center";
     const barcodeProductName = displayProductText(barcodePreview.name);
-    const displayName = barcodeProductName.length > 25 ? barcodeProductName.substring(0, 22) + '...' : barcodeProductName;
+    const displayName = barcodeProductName.length > 25 Rs  barcodeProductName.substring(0, 22) + '...' : barcodeProductName;
     ctx.fillText(displayName.toUpperCase(), compositeCanvas.width / 2, padding + 20);
 
     // Draw Barcode (Centered below name)
@@ -1969,10 +1973,27 @@ export default function Admin() {
 
     return result;
   }, [products, searchTerm, sortOption, categoryFilter]);
+  const telegramHasBackendDefaultChannel = String((import.meta as any)Rs .envRs .VITE_TELEGRAM_BACKEND_DEFAULT_CHANNEL_AVAILABLE || '').trim().toLowerCase() === 'true';
   const telegramProducts = useMemo(
-    () => (selectedProducts.length > 0 ? selectedProducts : filteredProducts),
-    [selectedProducts, filteredProducts]
+    () => products.filter((product) => telegramSelectedProductIds.includes(product.id)),
+    [products, telegramSelectedProductIds]
   );
+  const telegramTrialProduct = telegramProducts[0] || null;
+  const telegramPickerProducts = useMemo(() => {
+    const search = telegramProductSearch.trim().toLowerCase();
+    return products.filter((product) => {
+      const productName = displayProductText(product.name, '').toLowerCase();
+      const productCategory = displayProductText(product.category, '').toLowerCase();
+      const matchesSearch = !search || productName.includes(search) || productCategory.includes(search);
+      const matchesCategory = telegramCategoryFilter === 'all' || displayProductText(product.category, '') === telegramCategoryFilter;
+      const stock = Math.max(0, Number(product.stock || 0));
+      const matchesStock = telegramStockFilter === 'all'
+        || (telegramStockFilter === 'in_stock' && stock > 0)
+        || (telegramStockFilter === 'out_of_stock' && stock <= 0);
+      return matchesSearch && matchesCategory && matchesStock;
+    });
+  }, [products, telegramCategoryFilter, telegramProductSearch, telegramStockFilter]);
+  const telegramCanPostNow = Boolean((telegramChannelId.trim() || telegramHasBackendDefaultChannel) && telegramProducts.length === 1 && telegramTrialProduct && getProductImageUrl(telegramTrialProduct));
   const renderTelegramCaption = (product: Product) => telegramTemplate
     .replace(/\{productName\}/g, displayProductText(product.name))
     .replace(/\{price\}/g, String(Math.max(0, Number(product.sellPrice || 0)).toFixed(2)))
@@ -1980,54 +2001,71 @@ export default function Admin() {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   const openTelegramModal = () => {
-    if (telegramProducts.length <= 0) {
-      setNotice({ type: 'error', message: 'Select at least one product or adjust the current product list first.' });
-      return;
-    }
+    setTelegramSelectedProductIds((current) => current.length > 0 Rs  current : selectedProductIds.slice(0, 1));
     setTelegramStatus(null);
     setIsTelegramModalOpen(true);
   };
   const handleSubmitTelegramPost = async (mode: 'post_now' | 'schedule') => {
     if (telegramProducts.length <= 0) {
-      setTelegramStatus({ type: 'error', message: 'At least one product is required.' });
+      setTelegramStatus({ type: 'error', message: 'Select products first.' });
+      return;
+    }
+    if (mode === 'schedule') {
+      setTelegramStatus({ type: 'info', message: 'Scheduling is coming soon for the trial UI.' });
+      return;
+    }
+    if (telegramProducts.length > 1) {
+      setTelegramStatus({ type: 'error', message: 'Trial posting allows only 1 selected product for Post Now.' });
+      return;
+    }
+    if (!telegramChannelId.trim() && !telegramHasBackendDefaultChannel) {
+      setTelegramStatus({ type: 'error', message: 'Enter a channel ID or configure a backend default channel first.' });
       return;
     }
     if (!telegramTemplate.trim()) {
       setTelegramStatus({ type: 'error', message: 'Caption template is required.' });
       return;
     }
-    if (mode === 'schedule' && telegramScheduleMode === 'none') {
-      setTelegramStatus({ type: 'error', message: 'Choose a schedule mode before scheduling.' });
+    if (!telegramTrialProduct) {
+      setTelegramStatus({ type: 'error', message: 'Select 1 product first.' });
+      return;
+    }
+    const productImageUrl = getProductImageUrl(telegramTrialProduct);
+    if (!productImageUrl) {
+      setTelegramStatus({ type: 'error', message: 'Selected product must have an image URL before posting.' });
       return;
     }
 
     setIsTelegramSubmitting(true);
-    setTelegramStatus({ type: 'info', message: mode === 'post_now' ? 'Sending Telegram post request...' : 'Scheduling Telegram post request...' });
+    setTelegramStatus({ type: 'info', message: 'Sending Telegram post request...' });
     try {
       await createTelegramProductPost({
-        mode,
-        scheduleMode: mode === 'schedule' ? telegramScheduleMode : 'none',
-        products: telegramProducts.map((product) => ({
-          id: product.id,
-          name: displayProductText(product.name),
-          price: Math.max(0, Number(product.sellPrice || 0)),
-          image: getProductImageUrl(product),
-          category: displayProductText(product.category, ''),
-          stock: Math.max(0, Number(product.stock || 0)),
-        })),
+        channelId: telegramChannelId.trim() || undefined,
+        product: {
+          id: telegramTrialProduct.id,
+          name: displayProductText(telegramTrialProduct.name),
+          price: Math.max(0, Number(telegramTrialProduct.sellPrice || 0)),
+          image: productImageUrl,
+          category: displayProductText(telegramTrialProduct.category, ''),
+          stock: Math.max(0, Number(telegramTrialProduct.stock || 0)),
+        },
         template: telegramTemplate,
-        notes: telegramNotes.trim(),
+        notes: telegramNotes.trim() || undefined,
       });
-      const successMessage = mode === 'post_now' ? 'Telegram post request sent successfully.' : 'Telegram schedule request sent successfully.';
+      const successMessage = 'Telegram post request sent successfully.';
       setTelegramStatus({ type: 'success', message: successMessage });
       setNotice({ type: 'success', message: successMessage });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Telegram request failed.';
+      const message = error instanceof Error Rs  error.message : 'Telegram request failed.';
       setTelegramStatus({ type: 'error', message });
       setNotice({ type: 'error', message });
     } finally {
       setIsTelegramSubmitting(false);
     }
+  };
+  const toggleTelegramProductSelection = (productId: string) => {
+    setTelegramStatus(null);
+    setTelegramSelectedProductIds((current) => current.includes(productId) Rs  [] : [productId]);
   };
   const purchaseOrderRowsForAudit = useMemo(
     () => purchaseOrders,
@@ -2037,13 +2075,13 @@ export default function Admin() {
     return filteredProducts.map((product) => {
       const audit = compareProductPurchaseHistoryForProduct(product, purchaseOrderRowsForAudit);
       const implication = audit.brokenProductLinkCount > 0
-        ? 'Some purchase-order lines need product link review before they can be treated as fully resolved history.'
+        Rs  'Some purchase-order lines need product link review before they can be treated as fully resolved history.'
         : audit.missingPurchaseOrderCount > 0
-          ? 'Legacy purchase snapshot rows exist without a matching purchase order.'
+          Rs  'Legacy purchase snapshot rows exist without a matching purchase order.'
           : audit.quantityMismatchCount > 0 || audit.amountMismatchCount > 0
-            ? 'Canonical purchase-order rows and legacy audit snapshots disagree on quantity or amount.'
+            Rs  'Canonical purchase-order rows and legacy audit snapshots disagree on quantity or amount.'
             : audit.legacySnapshotMissingCount > 0
-              ? 'Legacy snapshot rows are missing, but canonical purchase-order history is available.'
+              Rs  'Legacy snapshot rows are missing, but canonical purchase-order history is available.'
               : 'Canonical purchase orders and legacy audit snapshots are aligned.';
 
       return { product, audit, implication };
@@ -2239,7 +2277,7 @@ export default function Admin() {
       return image;
     }
 
-    if (!/^https?:\/\//i.test(image)) {
+    if (!/^httpsRs :\/\//i.test(image)) {
       return null;
     }
 
@@ -2252,7 +2290,7 @@ export default function Admin() {
       const blob = await response.blob();
       return await new Promise<string | null>((resolve) => {
         const reader = new FileReader();
-        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+        reader.onloadend = () => resolve(typeof reader.result === 'string' Rs  reader.result : null);
         reader.onerror = () => resolve(null);
         reader.readAsDataURL(blob);
       });
@@ -2308,8 +2346,8 @@ export default function Admin() {
             if (pdfImageSource) {
                 const formatMatch = pdfImageSource.match(/^data:image\/(png|jpeg|jpg)/i);
                 const format =
-                  formatMatch?.[1]?.toLowerCase() === 'png'
-                    ? 'PNG'
+                  formatMatchRs .[1]Rs .toLowerCase() === 'png'
+                    Rs  'PNG'
                     : 'JPEG';
                 doc.addImage(pdfImageSource, format, imgX, imgY, imgSize, imgSize, undefined, 'FAST');
             } else {
@@ -2418,7 +2456,7 @@ export default function Admin() {
             <div className="grid grid-cols-[64px_minmax(0,1fr)_100px_110px_110px] gap-2 border-b bg-slate-50 p-3 text-xs font-black uppercase tracking-wider text-slate-500"><div>Image</div><div>Product</div><div>Location</div><div className="text-right">Stock</div><div className="text-right">Sell Price</div></div>
             {operatorPaginatedProducts.map((product) => (
               <div key={product.id} className="grid grid-cols-[64px_minmax(0,1fr)_100px_110px_110px] items-center gap-2 border-b p-3 text-sm">
-                <div className="h-12 w-12 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{getProductImageUrl(product) ? <img src={getProductImageUrl(product)} alt={getProductName(product)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div>
+                <div className="h-12 w-12 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{getProductImageUrl(product) Rs  <img src={getProductImageUrl(product)} alt={getProductName(product)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div>
                 <div className="min-w-0"><div className="truncate font-semibold">{getProductName(product)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(product)}</div></div>
                 <div>{renderLocationDisplay(product)}</div>
                 <div className="text-right font-bold">{product.stock}</div>
@@ -2435,7 +2473,7 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
-        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || '—'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">{formatCurrency(p.sellPrice)}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
+        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) Rs  <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || '—'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">{formatCurrency(p.sellPrice)}</span><Badge variant={p.stock === 0 Rs  'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
 
       </div>
     );
@@ -2452,7 +2490,7 @@ export default function Admin() {
           </div>
           
 	          {/* Executive Stats Cards */}
-            {inventoryViewTab === 'inventory' ? (
+            {inventoryViewTab === 'inventory' Rs  (
 		          <>
               <Card className="bg-blue-50/50 border-blue-100 shadow-sm relative overflow-hidden group">
                <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
@@ -2500,7 +2538,7 @@ export default function Admin() {
 	               </CardContent>
 		          </Card>
               </>
-            ) : inventoryViewTab === 'customer-balance-audit' ? (
+            ) : inventoryViewTab === 'customer-balance-audit' Rs  (
               <>
               <Card className="bg-indigo-50/60 border-indigo-100 shadow-sm">
                 <CardContent className="p-4">
@@ -2576,7 +2614,7 @@ export default function Admin() {
               {/* Row 2: Filters (2-col Grid on Mobile, Flex on Desktop) */}
               <div className="grid grid-cols-2 gap-2 md:flex md:w-auto">
                   <Select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="w-full md:w-[140px]">
-                      {filterCategories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
+                      {filterCategories.map(c => <option key={c} value={c}>{c === 'all' Rs  'All Categories' : c}</option>)}
                   </Select>
                   <Select value={sortOption} onChange={(e) => setSortOption(e.target.value)} className="w-full md:w-[140px]">
                       <option value="name-asc">Name (A-Z)</option>
@@ -2631,15 +2669,15 @@ export default function Admin() {
           </div>
       </div>
 
-      {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${notice.type === 'error' ? 'border-red-200 bg-red-50 text-red-700' : notice.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>{notice.message}</div>}
+      {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${notice.type === 'error' Rs  'border-red-200 bg-red-50 text-red-700' : notice.type === 'success' Rs  'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>{notice.message}</div>}
       <div className="flex items-center gap-2">
-        <Button size="sm" variant={inventoryViewTab === 'inventory' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('inventory')}>Inventory</Button>
-        <Button size="sm" variant={inventoryViewTab === 'lost-damage' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('lost-damage')}>Lost & Damage</Button>
-        <Button size="sm" variant={inventoryViewTab === 'purchase-history-reconciliation' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-reconciliation')}>Purchase History Reconciliation Dashboard</Button>
-        <Button size="sm" variant={inventoryViewTab === 'purchase-history-conversion-dry-run' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-conversion-dry-run')}>Convert Legacy Purchase History to purchaseOrders</Button>
-        <Button size="sm" variant={inventoryViewTab === 'customer-balance-audit' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('customer-balance-audit')}>Customer Balance Audit</Button>
+        <Button size="sm" variant={inventoryViewTab === 'inventory' Rs  'default' : 'outline'} onClick={() => setInventoryViewTab('inventory')}>Inventory</Button>
+        <Button size="sm" variant={inventoryViewTab === 'lost-damage' Rs  'default' : 'outline'} onClick={() => setInventoryViewTab('lost-damage')}>Lost & Damage</Button>
+        <Button size="sm" variant={inventoryViewTab === 'purchase-history-reconciliation' Rs  'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-reconciliation')}>Purchase History Reconciliation Dashboard</Button>
+        <Button size="sm" variant={inventoryViewTab === 'purchase-history-conversion-dry-run' Rs  'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-conversion-dry-run')}>Convert Legacy Purchase History to purchaseOrders</Button>
+        <Button size="sm" variant={inventoryViewTab === 'customer-balance-audit' Rs  'default' : 'outline'} onClick={() => setInventoryViewTab('customer-balance-audit')}>Customer Balance Audit</Button>
       </div>
-      {inventoryViewTab === 'inventory' ? (
+      {inventoryViewTab === 'inventory' Rs  (
       <>
       <div className="border rounded-xl bg-card overflow-visible">
         <div className="overflow-x-auto overflow-y-visible">
@@ -2679,7 +2717,7 @@ export default function Admin() {
                     className="h-12 w-12 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center"
                     onClick={(e) => { e.stopPropagation(); openProductPhotoModal(product); }}
                   >
-                    {getProductImageUrl(product) ? <img src={getProductImageUrl(product)} alt={displayProductText(product.name)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}
+                    {getProductImageUrl(product) Rs  <img src={getProductImageUrl(product)} alt={displayProductText(product.name)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}
                   </button>
                 </td>
                 <td className="p-3 min-w-[260px]">
@@ -2691,7 +2729,7 @@ export default function Admin() {
                         <div className="mt-1 text-[11px] text-primary">Hover to view variants</div>
                         <div className="pointer-events-none absolute z-20 hidden group-hover:block top-full left-0 mt-2 w-[360px] rounded-xl border bg-white p-3 shadow-xl">
                           <div className="mb-2 flex items-center gap-2">
-                            <div className="h-10 w-10 rounded overflow-hidden border bg-muted/30 flex items-center justify-center">{product.image ? <img src={product.image} alt={displayProductText(product.name)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-3 h-3 text-muted-foreground" />}</div>
+                            <div className="h-10 w-10 rounded overflow-hidden border bg-muted/30 flex items-center justify-center">{product.image Rs  <img src={product.image} alt={displayProductText(product.name)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-3 h-3 text-muted-foreground" />}</div>
                             <div>
                               <div className="text-xs font-semibold">{displayProductText(product.name)}</div>
                               <div className="text-[10px] text-muted-foreground">{displayProductText(product.category)}</div>
@@ -2711,7 +2749,7 @@ export default function Admin() {
                   </div>
                 </td>
                 <td className="p-3">
-                  {editingLocationProductId === product.id ? (
+                  {editingLocationProductId === product.id Rs  (
                     <div className="grid min-w-[220px] gap-2">
                       <div className="grid grid-cols-2 gap-2">
                         <Input className="h-8 text-xs" value={locationDraft.locationZone} onChange={(e) => setLocationDraft((prev) => ({ ...prev, locationZone: e.target.value }))} placeholder="Zone" />
@@ -2733,7 +2771,7 @@ export default function Admin() {
                     <Button size="sm" variant="outline" onClick={() => { setPurchaseTarget(product); setPurchaseQty(''); setPurchasePrice(''); setPurchaseNextBuyPrice(''); setPurchaseReference(''); setPurchaseNotes(''); setPurchasePartyName(''); setSelectedPurchasePartyId(''); setPurchaseCashPaid(''); setPurchaseBankPaid(''); setPurchasePaymentNote(''); setPurchaseModalTab('add'); setPurchaseHistoryVariantFilter('all'); setPurchaseError(null); }}>Add Purchase</Button>
                     <Button size="sm" variant="outline" onClick={() => openModal(product)}>Edit</Button>
                     <div className="relative">
-                      <Button size="sm" variant="outline" onClick={() => setOpenActionMenuProductId(prev => prev === product.id ? null : product.id)}><MoreVertical className="w-4 h-4" /></Button>
+                      <Button size="sm" variant="outline" onClick={() => setOpenActionMenuProductId(prev => prev === product.id Rs  null : product.id)}><MoreVertical className="w-4 h-4" /></Button>
                       {openActionMenuProductId === product.id && (
                         <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border bg-white shadow-lg p-1">
                           <button type="button" className="w-full text-left px-2 py-1.5 text-sm hover:bg-muted rounded" onClick={() => { setViewingProduct(product); setViewingProductAuditMode(false); setOpenActionMenuProductId(null); }}>
@@ -2779,7 +2817,7 @@ export default function Admin() {
         </div>
       )}
       </>
-	      ) : inventoryViewTab === 'customer-balance-audit' ? (
+	      ) : inventoryViewTab === 'customer-balance-audit' Rs  (
         <div className="space-y-4">
           <Card className="border-slate-200 bg-slate-50/70">
             <CardHeader className="pb-3">
@@ -2841,7 +2879,7 @@ export default function Admin() {
                         <td className="p-2 text-right text-blue-700">{row.newDue.toFixed(2)}</td>
                         <td className="p-2 text-right text-emerald-700">{row.newStoreCredit.toFixed(2)}</td>
                         <td className="p-2 text-right font-semibold">{row.newNetReceivable.toFixed(2)}</td>
-                        <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
+                        <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 Rs  'text-slate-600' : row.difference > 0 Rs  'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
                       </tr>
                     ))}
                     {customerBalancePolicyDryRun.rows.length === 0 && (
@@ -2888,7 +2926,7 @@ export default function Admin() {
                             <td className="p-2 text-right text-blue-700">{row.canonicalDue.toFixed(2)}</td>
                             <td className="p-2 text-right text-blue-700">{row.canonicalStoreCredit.toFixed(2)}</td>
                             <td className="p-2 text-right font-semibold">{row.canonicalNet.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
+                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 Rs  'text-slate-600' : row.difference > 0 Rs  'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
                             <td className="p-2 text-right">
                               <Button
                                 size="sm"
@@ -3023,7 +3061,7 @@ export default function Admin() {
                           {expanded && (
                             <tr className="border-t bg-slate-50/60">
                               <td colSpan={4} className="p-3">
-                                {!group.entries.length ? (
+                                {!group.entries.length Rs  (
                                   <div className="text-xs text-muted-foreground">No contributions in this group.</div>
                                 ) : (
                                   <div className="space-y-2">
@@ -3090,9 +3128,9 @@ export default function Admin() {
                             <td className="p-2 text-right text-blue-700">{row.simulatedDue.toFixed(2)}</td>
                             <td className="p-2 text-right text-blue-700">{row.simulatedStoreCredit.toFixed(2)}</td>
                             <td className="p-2 text-right font-semibold">{row.simulatedNet.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
+                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 Rs  'text-slate-600' : row.difference > 0 Rs  'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
                             <td className="p-2 text-right">
-                              <Badge variant={row.risk === 'Safe' ? 'success' : 'outline'}>{row.risk}</Badge>
+                              <Badge variant={row.risk === 'Safe' Rs  'success' : 'outline'}>{row.risk}</Badge>
                             </td>
                           </tr>
                           {expanded && (
@@ -3131,7 +3169,7 @@ export default function Admin() {
             </CardContent>
           </Card>
         </div>
-	      ) : inventoryViewTab === 'purchase-history-conversion-dry-run' ? (
+	      ) : inventoryViewTab === 'purchase-history-conversion-dry-run' Rs  (
         <div className="space-y-4">
           <Card className="border-slate-200 bg-slate-50/70">
             <CardHeader className="pb-3">
@@ -3184,7 +3222,7 @@ export default function Admin() {
                 </div>
               </CardHeader>
               <CardContent className="pt-0">
-                {!section.rows.length ? (
+                {!section.rows.length Rs  (
                   <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{section.empty}</div>
                 ) : (
                   <div className="overflow-x-auto rounded-lg border">
@@ -3205,8 +3243,8 @@ export default function Admin() {
                         {section.rows.map((row) => (
                           <tr key={row.id} className="border-t align-top">
                             <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.productCode || row.productId || 'No code'}</div></td>
-                            <td className="p-2"><div>{row.partyName || 'Unknown supplier'}</div><div className="text-[11px] text-muted-foreground">{row.suggestedPartyName && row.suggestedPartyName !== row.partyName ? `Suggested: ${row.suggestedPartyName}` : row.partyId || row.suggestedPartyId || ''}</div></td>
-                            <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
+                            <td className="p-2"><div>{row.partyName || 'Unknown supplier'}</div><div className="text-[11px] text-muted-foreground">{row.suggestedPartyName && row.suggestedPartyName !== row.partyName Rs  `Suggested: ${row.suggestedPartyName}` : row.partyId || row.suggestedPartyId || ''}</div></td>
+                            <td className="p-2">{row.date Rs  new Date(row.date).toLocaleString() : 'Unknown date'}</td>
                             <td className="p-2 text-right">{row.quantity}</td>
                             <td className="p-2 text-right">{row.unitCost.toFixed(2)}</td>
                             <td className="p-2 text-right font-semibold">{row.lineTotal.toFixed(2)}</td>
@@ -3298,13 +3336,13 @@ export default function Admin() {
                             <td className="p-2">{row.productCode || 'Ã¢â‚¬â€'}</td>
                             <td className="p-2">{row.partyName || 'Ã¢â‚¬â€'}</td>
                             <td className="p-2">{row.partyId || row.suggestedPartyId || 'Ã¢â‚¬â€'}</td>
-                            <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
+                            <td className="p-2">{row.date Rs  new Date(row.date).toLocaleString() : 'Unknown date'}</td>
                             <td className="p-2 text-right">{row.quantity}</td>
                             <td className="p-2 text-right">{row.unitCost.toFixed(2)}</td>
                             <td className="p-2 text-right font-semibold">{row.lineTotal.toFixed(2)}</td>
                             <td className="p-2">{row.paymentStatus}</td>
-                            <td className="p-2 text-right">{row.paidAmount == null ? 'Ã¢â‚¬â€' : `${row.paidAmount.toFixed(2)}`}</td>
-                            <td className="p-2 text-right">{row.remainingAmount == null ? 'Ã¢â‚¬â€' : `${row.remainingAmount.toFixed(2)}`}</td>
+                            <td className="p-2 text-right">{row.paidAmount == null Rs  'Ã¢â‚¬â€' : `${row.paidAmount.toFixed(2)}`}</td>
+                            <td className="p-2 text-right">{row.remainingAmount == null Rs  'Ã¢â‚¬â€' : `${row.remainingAmount.toFixed(2)}`}</td>
                             <td className="p-2">{row.paymentMethod || 'Ã¢â‚¬â€'}</td>
                             <td className="p-2">{row.purchaseOrderId || 'Ã¢â‚¬â€'}</td>
                             <td className="p-2">{row.legacyHistoryId || 'Ã¢â‚¬â€'}</td>
@@ -3329,7 +3367,7 @@ export default function Admin() {
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Conversion Preview</div>
-                                    {row.proposedPurchaseOrder ? (
+                                    {row.proposedPurchaseOrder Rs  (
                                       <div className="mt-1 space-y-1 text-muted-foreground">
                                         <div>Proposed PO ID: {row.proposedPurchaseOrder.id}</div>
                                         <div>Supplier: {row.proposedPurchaseOrder.partyName || 'Ã¢â‚¬â€'}</div>
@@ -3356,7 +3394,7 @@ export default function Admin() {
             </CardContent>
           </Card>
         </div>
-	      ) : inventoryViewTab === 'purchase-history-reconciliation' ? (
+	      ) : inventoryViewTab === 'purchase-history-reconciliation' Rs  (
         <Card className="border-slate-200 bg-slate-50/60">
           <CardHeader className="pb-3">
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -3366,9 +3404,9 @@ export default function Admin() {
                   Read-only comparison for the current Inventory filter set. `purchaseOrders` is the canonical source, and embedded `product.purchaseHistory` is legacy snapshot data.
                 </p>
               </div>
-              <Badge variant={inventoryPurchaseHistoryAuditSummary.totalIssues > 0 ? 'outline' : 'success'}>
+              <Badge variant={inventoryPurchaseHistoryAuditSummary.totalIssues > 0 Rs  'outline' : 'success'}>
                 {inventoryPurchaseHistoryAuditSummary.totalIssues > 0
-                  ? `${inventoryPurchaseHistoryAuditSummary.productsWithIssues}/${inventoryPurchaseHistoryAuditSummary.productsScanned} products need review`
+                  Rs  `${inventoryPurchaseHistoryAuditSummary.productsWithIssues}/${inventoryPurchaseHistoryAuditSummary.productsScanned} products need review`
                   : 'All filtered products aligned'}
               </Badge>
             </div>
@@ -3419,13 +3457,13 @@ export default function Admin() {
                 <tbody>
                   {inventoryPurchaseHistoryAuditTopRows.map(({ product, audit, implication }) => {
                     const primaryGap = audit.brokenProductLinkCount > 0
-                      ? 'Needs product link review'
+                      Rs  'Needs product link review'
                       : audit.missingPurchaseOrderCount > 0
-                        ? 'Missing purchase order'
+                        Rs  'Missing purchase order'
                         : audit.legacySnapshotMissingCount > 0
-                          ? 'Legacy snapshot missing'
+                          Rs  'Legacy snapshot missing'
                           : audit.quantityMismatchCount > 0 || audit.amountMismatchCount > 0
-                            ? 'Value mismatch'
+                            Rs  'Value mismatch'
                             : 'Aligned';
 
                     return (
@@ -3438,7 +3476,7 @@ export default function Admin() {
                         <td className="p-3 text-right">{audit.legacyCount}</td>
                         <td className="p-3 text-right font-semibold">{audit.issueCount}</td>
                         <td className="p-3">
-                          <Badge variant={audit.issueCount > 0 ? 'outline' : 'success'}>{primaryGap}</Badge>
+                          <Badge variant={audit.issueCount > 0 Rs  'outline' : 'success'}>{primaryGap}</Badge>
                         </td>
                         <td className="p-3 text-xs text-muted-foreground">{implication}</td>
                         <td className="p-3 text-right">
@@ -3477,7 +3515,7 @@ export default function Admin() {
                   const unit = Math.max(0, Number(p.lostDamageUnitCost || p.buyPrice || 0));
                   return (
                     <tr key={p.id} className="border-t">
-                      <td className="p-3"><div className="flex items-center gap-2"><div className="h-10 w-10 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{p.image ? <img src={p.image} alt={getProductName(p)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div><div><div className="font-medium">{getProductName(p)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(p)}</div></div></div></td><td className="p-3">{getProductBarcode(p)}</td><td className="p-3">{p.stock}</td><td className="p-3">{qty}</td><td className="p-3">{unit.toFixed(2)}</td><td className="p-3">{(qty * unit).toFixed(2)}</td><td className="p-3">{p.lostDamageUpdatedAt ? new Date(p.lostDamageUpdatedAt).toLocaleString() : '-'}</td>
+                      <td className="p-3"><div className="flex items-center gap-2"><div className="h-10 w-10 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{p.image Rs  <img src={p.image} alt={getProductName(p)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div><div><div className="font-medium">{getProductName(p)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(p)}</div></div></div></td><td className="p-3">{getProductBarcode(p)}</td><td className="p-3">{p.stock}</td><td className="p-3">{qty}</td><td className="p-3">{unit.toFixed(2)}</td><td className="p-3">{(qty * unit).toFixed(2)}</td><td className="p-3">{p.lostDamageUpdatedAt Rs  new Date(p.lostDamageUpdatedAt).toLocaleString() : '-'}</td>
                       <td className="p-3"><Button size="sm" variant="outline" onClick={() => openLostDamageModal(p)}>Edit</Button></td>
                     </tr>
                   );
@@ -3496,7 +3534,7 @@ export default function Admin() {
             <CardHeader className="flex flex-row items-center justify-between border-b pb-4 bg-muted/20">
                 <CardTitle className="text-xl">
                   {editingProduct
-                    ? (isBatchEditing ? `Batch Edit Product ${batchEditIndex + 1} of ${batchEditProductIds.length}` : 'Edit Product')
+                    Rs  (isBatchEditing Rs  `Batch Edit Product ${batchEditIndex + 1} of ${batchEditProductIds.length}` : 'Edit Product')
                     : 'Add New Product'}
                 </CardTitle>
                 <Button variant="ghost" size="sm" onClick={closeModal}><X className="w-4 h-4" /></Button>
@@ -3515,7 +3553,7 @@ export default function Admin() {
                       <Label>Product Image</Label>
                       <div className="flex items-center gap-4 p-3 border rounded-lg border-dashed hover:bg-muted/10 transition-colors">
                         <div className="h-16 w-16 bg-white rounded-md overflow-hidden border flex items-center justify-center shadow-sm">
-                          {formData.image ? (
+                          {formData.image Rs  (
                             <img src={formData.image} alt="Preview" className="h-full w-full object-contain"  loading="lazy"  decoding="async" />
                           ) : (
                             <span className="text-[10px] text-muted-foreground">No Image</span>
@@ -3540,9 +3578,9 @@ export default function Admin() {
                           const newCat = e.target.value;
                           let newBarcode = formData.barcode;
                           const isGenBarcode = !formData.barcode || formData.barcode.startsWith('GEN-');
-                          const categoryChanged = editingProduct ? editingProduct.category !== newCat : true;
+                          const categoryChanged = editingProduct Rs  editingProduct.category !== newCat : true;
                           if (isGenBarcode && categoryChanged) {
-                            newBarcode = newCat ? getNextBarcode(newCat) : '';
+                            newBarcode = newCat Rs  getNextBarcode(newCat) : '';
                           }
                           setFormData({ ...formData, category: newCat, barcode: newBarcode });
                         }}
@@ -3596,7 +3634,7 @@ export default function Admin() {
                       </div>
                       </div>
 
-                      {(formData.variants?.length || formData.colors?.length) && (
+                      {(formData.variantsRs .length || formData.colorsRs .length) && (
                       <div className="border rounded-md overflow-hidden">
                         <div className="grid grid-cols-7 gap-2 bg-muted px-2 py-1 text-xs font-semibold">
                           <div>Variant</div><div>Color</div><div>Opening/Current Stock</div><div>Buy Price</div><div>Sell Price</div><div>Total Purchase</div><div>Total Sold</div>
@@ -3606,31 +3644,31 @@ export default function Admin() {
                             <div className="text-xs py-2">{row.variant || NO_VARIANT}</div>
                             <div className="text-xs py-2">{row.color || NO_COLOR}</div>
                             <div>
-                              <Input type="number" min="0" value={row.stock ?? 0} placeholder={String(getSuggestedStock(row.totalPurchase, row.totalSold))} onChange={e => {
+                              <Input type="number" min="0" value={row.stock - 0} placeholder={String(getSuggestedStock(row.totalPurchase, row.totalSold))} onChange={e => {
                                 const next = [...(formData.stockByVariantColor || [])];
-                                next[idx] = { ...next[idx], stock: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
+                                next[idx] = { ...next[idx], stock: e.target.value === '' Rs  '' : Math.max(0, Number(e.target.value) || 0) };
                                 setFormData({ ...formData, stockByVariantColor: next });
                               }} />
                               <p className="text-[10px] text-muted-foreground mt-1">Suggested: {getSuggestedStock(row.totalPurchase, row.totalSold)}</p>
                             </div>
-                            <Input type="number" min="0" value={row.buyPrice ?? ''} placeholder="0.00" onChange={e => {
+                            <Input type="number" min="0" value={row.buyPrice - ''} placeholder="0.00" onChange={e => {
                               const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], buyPrice: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
+                              next[idx] = { ...next[idx], buyPrice: e.target.value === '' Rs  '' : Math.max(0, Number(e.target.value) || 0) };
                               setFormData({ ...formData, stockByVariantColor: next });
                             }} />
-                            <Input type="number" min="0" value={row.sellPrice ?? ''} placeholder="0.00" onChange={e => {
+                            <Input type="number" min="0" value={row.sellPrice - ''} placeholder="0.00" onChange={e => {
                               const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], sellPrice: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
+                              next[idx] = { ...next[idx], sellPrice: e.target.value === '' Rs  '' : Math.max(0, Number(e.target.value) || 0) };
                               setFormData({ ...formData, stockByVariantColor: next });
                             }} />
-                            <Input type="number" min="0" value={row.totalPurchase ?? ''} placeholder="0" onChange={e => {
+                            <Input type="number" min="0" value={row.totalPurchase - ''} placeholder="0" onChange={e => {
                               const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], totalPurchase: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
+                              next[idx] = { ...next[idx], totalPurchase: e.target.value === '' Rs  '' : Math.max(0, Number(e.target.value) || 0) };
                               setFormData({ ...formData, stockByVariantColor: next });
                             }} />
-                            <Input type="number" min="0" value={row.totalSold ?? ''} placeholder="0" onChange={e => {
+                            <Input type="number" min="0" value={row.totalSold - ''} placeholder="0" onChange={e => {
                               const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], totalSold: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
+                              next[idx] = { ...next[idx], totalSold: e.target.value === '' Rs  '' : Math.max(0, Number(e.target.value) || 0) };
                               setFormData({ ...formData, stockByVariantColor: next });
                             }} />
                           </div>
@@ -3645,10 +3683,10 @@ export default function Admin() {
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-2 col-span-2">
                         <Label>Opening / Current Stock</Label>
-                        {(!formData.variants?.length && !formData.colors?.length) ? (
+                        {(!formData.variantsRs .length && !formData.colorsRs .length) Rs  (
                           <Input
                             type="number"
-                            value={formData.stock ?? ''}
+                            value={formData.stock - ''}
                             onChange={e => setFormData({ ...formData, stock: e.target.value })}
                             placeholder={String(getSuggestedStock(formData.totalPurchase, formData.totalSold))}
                           />
@@ -3665,7 +3703,7 @@ export default function Admin() {
                         <Label>Purchase / Buy Price</Label>
                         <div className="relative">
                           <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
-                          <Input type="number" className="pl-6" value={formData.buyPrice ?? ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
+                          <Input type="number" className="pl-6" value={formData.buyPrice - ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variantsRs .length || formData.colorsRs .length)} />
                         </div>
                       </div>
 
@@ -3673,18 +3711,18 @@ export default function Admin() {
                         <Label>Sell Price</Label>
                         <div className="relative">
                           <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
-                          <Input type="number" className="pl-6 font-bold text-primary" value={formData.sellPrice ?? ''} onChange={e => setFormData({ ...formData, sellPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
+                          <Input type="number" className="pl-6 font-bold text-primary" value={formData.sellPrice - ''} onChange={e => setFormData({ ...formData, sellPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variantsRs .length || formData.colorsRs .length)} />
                         </div>
                       </div>
 
                       <div className="space-y-2">
                         <Label>Total Purchase</Label>
-                        <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => setFormData({ ...formData, totalPurchase: e.target.value })} placeholder="0" />
+                        <Input type="number" min="0" value={formData.totalPurchase - ''} onChange={e => setFormData({ ...formData, totalPurchase: e.target.value })} placeholder="0" />
                       </div>
 
                       <div className="space-y-2">
                         <Label>Total Sold <span className="text-muted-foreground">(Optional)</span></Label>
-                        <Input type="number" min="0" value={formData.totalSold ?? ''} onChange={e => setFormData({ ...formData, totalSold: e.target.value })} placeholder="0" />
+                        <Input type="number" min="0" value={formData.totalSold - ''} onChange={e => setFormData({ ...formData, totalSold: e.target.value })} placeholder="0" />
                       </div>
                     </div>
                     <p className="text-[11px] text-muted-foreground">Opening Stock = current available stock. Total Purchase = lifetime/recorded purchased quantity. Suggested stock: {getSuggestedStock(formData.totalPurchase, formData.totalSold)} (Total Purchase - Total Sold)</p>
@@ -3695,25 +3733,25 @@ export default function Admin() {
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-2 col-span-2 relative">
                         <Label>Party / Supplier</Label>
-                        <Input value={formData.supplierName ?? ''} onChange={e => {
+                        <Input value={formData.supplierName - ''} onChange={e => {
                           const value = e.target.value;
                           const matched = purchaseParties.find((party) => party.name.toLowerCase() === value.trim().toLowerCase());
-                          setFormData({ ...formData, supplierName: value, supplierPartyId: matched?.id || '' });
+                          setFormData({ ...formData, supplierName: value, supplierPartyId: matchedRs .id || '' });
                         }} placeholder="Select or type supplier name" />
                         <div className="mt-2 flex items-center gap-2">
                           <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowSupplierPartyModal(true); }}>See All Parties</Button>
                           <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowAddSupplierPartyModal(true); }}>+ Add Party</Button>
                         </div>
                       </div>
-                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity × purchase price. You can edit it.</p></div>
-                      <div className="space-y-2"><Label>Total Paid</Label><Input type="number" min="0" value={formData.supplierTotalPaid ?? ''} onChange={e => setFormData({ ...formData, supplierTotalPaid: e.target.value })} placeholder="0" /></div>
+                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable - ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity × purchase price. You can edit it.</p></div>
+                      <div className="space-y-2"><Label>Total Paid</Label><Input type="number" min="0" value={formData.supplierTotalPaid - ''} onChange={e => setFormData({ ...formData, supplierTotalPaid: e.target.value })} placeholder="0" /></div>
                       <div className="space-y-2">
                         <Label>Payment Method</Label>
-                        <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={formData.supplierPaymentMethod || ''} onChange={e => setFormData({ ...formData, supplierPaymentMethod: e.target.value, supplierTotalPaid: e.target.value === 'credit' ? '0' : formData.supplierTotalPaid })}>
+                        <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={formData.supplierPaymentMethod || ''} onChange={e => setFormData({ ...formData, supplierPaymentMethod: e.target.value, supplierTotalPaid: e.target.value === 'credit' Rs  '0' : formData.supplierTotalPaid })}>
                           <option value="">Select</option><option value="cash">Cash</option><option value="credit">Credit</option><option value="bank">Bank</option>
                         </select>
                       </div>
-                      <div className="space-y-2"><Label>Note / Reference</Label><Input value={formData.supplierNote ?? ''} onChange={e => setFormData({ ...formData, supplierNote: e.target.value })} placeholder="Optional" /></div>
+                      <div className="space-y-2"><Label>Note / Reference</Label><Input value={formData.supplierNote - ''} onChange={e => setFormData({ ...formData, supplierNote: e.target.value })} placeholder="Optional" /></div>
                     </div>
                   </div>
                 )}
@@ -3722,10 +3760,10 @@ export default function Admin() {
                 <div className="pt-2">
                     <div className="grid grid-cols-2 gap-2">
                       <Button className="h-11 text-base shadow-lg" onClick={handleSave} disabled={isSaving}>
-                          <Save className="w-4 h-4 mr-2" /> {isSaving ? 'Saving...' : editingProduct ? 'Update Product' : 'Save Product'}
+                          <Save className="w-4 h-4 mr-2" /> {isSaving Rs  'Saving...' : editingProduct Rs  'Update Product' : 'Save Product'}
                       </Button>
                       <Button variant="outline" className="h-11 text-base" onClick={handleSaveAndNext} disabled={isSaving}>
-                          {isSaving ? 'Saving...' : editingProduct ? (remainingBatchProducts > 0 ? `Update & Next (${remainingBatchProducts} left)` : 'Update & Next') : 'Save & Next'}
+                          {isSaving Rs  'Saving...' : editingProduct Rs  (remainingBatchProducts > 0 Rs  `Update & Next (${remainingBatchProducts} left)` : 'Update & Next') : 'Save & Next'}
                       </Button>
                     </div>
                 </div>
@@ -3741,7 +3779,7 @@ export default function Admin() {
             <CardContent className="space-y-3">
               <Input value={supplierPartySearch} onChange={e => setSupplierPartySearch(e.target.value)} placeholder="Search party by name / phone / GST" />
               <div className="max-h-[50vh] overflow-y-auto border rounded-md">
-                {getPurchaseParties().filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? `Ã¢â‚¬Â¢ GST ${p.gst}` : ''}</div></button>)}
+                {getPurchaseParties().filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst Rs  `Ã¢â‚¬Â¢ GST ${p.gst}` : ''}</div></button>)}
                 {!getPurchaseParties().filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).length && (
                   <div className="p-4 text-sm text-muted-foreground">No parties found. <button type="button" className="text-primary" onClick={() => { setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(true); }}>Add Party</button></div>
                 )}
@@ -3778,15 +3816,15 @@ export default function Admin() {
             <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Add Purchase - {purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => setPurchaseTarget(null)}><X className="w-4 h-4"/></Button></CardHeader>
             <CardContent className="space-y-3 overflow-y-auto max-h-[calc(90vh-84px)]">
               <div className="flex gap-2 border-b pb-2">
-                <Button size="sm" variant={purchaseModalTab === 'add' ? 'default' : 'outline'} onClick={() => setPurchaseModalTab('add')}>Add Purchase</Button>
-                <Button size="sm" variant={purchaseModalTab === 'history' ? 'default' : 'outline'} onClick={() => setPurchaseModalTab('history')}>Purchase History</Button>
+                <Button size="sm" variant={purchaseModalTab === 'add' Rs  'default' : 'outline'} onClick={() => setPurchaseModalTab('add')}>Add Purchase</Button>
+                <Button size="sm" variant={purchaseModalTab === 'history' Rs  'default' : 'outline'} onClick={() => setPurchaseModalTab('history')}>Purchase History</Button>
               </div>
-              {purchaseModalTab === 'add' ? (
+              {purchaseModalTab === 'add' Rs  (
                 <>
               <div className="rounded-xl border bg-muted/20 p-4">
                 <div className="flex items-center gap-3">
                   <div className="h-16 w-16 rounded-md border overflow-hidden bg-white flex items-center justify-center">
-                    {purchaseTarget.image ? <img src={purchaseTarget.image} alt={purchaseTarget.name} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}
+                    {purchaseTarget.image Rs  <img src={purchaseTarget.image} alt={purchaseTarget.name} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}
                   </div>
                   <div>
                     <div className="font-semibold text-base">{purchaseTarget.name}</div>
@@ -3794,8 +3832,8 @@ export default function Admin() {
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Stock</div><div className="font-semibold">{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.stock) : purchaseTarget.stock}</div></div>
-                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Buy Price</div><div className="font-semibold">{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : purchaseTarget.buyPrice}</div></div>
+                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Stock</div><div className="font-semibold">{selectedPurchaseVariantRow Rs  toNonNegativeNumber(selectedPurchaseVariantRow.stock) : purchaseTarget.stock}</div></div>
+                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Buy Price</div><div className="font-semibold">{selectedPurchaseVariantRow Rs  toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : purchaseTarget.buyPrice}</div></div>
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Purchase</div><div className="font-semibold">{toNonNegativeNumber(purchaseTarget.totalPurchase)}</div></div>
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Sold</div><div className="font-semibold">{toNonNegativeNumber(purchaseTarget.totalSold)}</div></div>
                 </div>
@@ -3835,7 +3873,7 @@ export default function Admin() {
                           const value = e.target.value;
                           setPurchasePartyName(value);
                           const matched = purchaseParties.find((party) => party.name.toLowerCase() === value.trim().toLowerCase());
-                          setSelectedPurchasePartyId(matched?.id || '');
+                          setSelectedPurchasePartyId(matchedRs .id || '');
                         }}
                       />
                       {purchasePartySuggestions.length > 0 && (
@@ -3852,7 +3890,7 @@ export default function Admin() {
                               }}
                             >
                               <div className="text-sm font-medium">{party.name}</div>
-                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` Ã¢â‚¬Â¢ GST ${party.gst}` : ''}</div>
+                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst Rs  ` Ã¢â‚¬Â¢ GST ${party.gst}` : ''}</div>
                             </button>
                           ))}
                         </div>
@@ -3920,7 +3958,7 @@ export default function Admin() {
                       </select>
                     </div>
                   )}
-                  {!purchaseHistoryRows.length ? (
+                  {!purchaseHistoryRows.length Rs  (
                     <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
                       No purchase history found for this product yet.
                     </div>
@@ -3973,7 +4011,7 @@ export default function Admin() {
                   <div className="mt-1 text-2xl font-bold text-slate-900">{missingHistoryAnalysis.scannedLines}</div>
                 </div>
               </div>
-              {!missingHistoryAnalysis.missingRows.length ? (
+              {!missingHistoryAnalysis.missingRows.length Rs  (
                 <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
                   No missing product purchase history rows detected in currently loaded data.
                 </div>
@@ -4007,12 +4045,12 @@ export default function Admin() {
                             <div>{row.partyName}</div>
                             <div className="text-xs text-muted-foreground">{row.partyId}</div>
                           </td>
-                          <td className="p-3">{row.date ? new Date(row.date).toLocaleString() : 'N/A'}</td>
+                          <td className="p-3">{row.date Rs  new Date(row.date).toLocaleString() : 'N/A'}</td>
                           <td className="p-3 text-right">{row.quantity}</td>
                           <td className="p-3 text-right">{row.unitPrice.toFixed(2)}</td>
                           <td className="p-3 text-right">{row.total.toFixed(2)}</td>
                           <td className="p-3">
-                            <div className="font-medium">{row.reason === 'product_not_found' ? 'Product doc missing' : 'History row missing'}</div>
+                            <div className="font-medium">{row.reason === 'product_not_found' Rs  'Product doc missing' : 'History row missing'}</div>
                             <div className="text-xs text-muted-foreground">
                               Preview payment: {row.expectedHistoryRowPreview.paymentMethod || 'N/A'} Ã‚Â· Paid {Number(row.expectedHistoryRowPreview.paidAmount || 0).toFixed(2)}
                             </div>
@@ -4056,7 +4094,7 @@ export default function Admin() {
               <div className="grid gap-3 md:grid-cols-4">
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order Found</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.purchaseOrderFound ? 'Yes' : 'No'}</div>
+                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.purchaseOrderFound Rs  'Yes' : 'No'}</div>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Verdict</div>
@@ -4064,16 +4102,16 @@ export default function Admin() {
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Line Count</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.purchaseOrder?.lineCount ?? 0}</div>
+                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.purchaseOrderRs .lineCount - 0}</div>
                 </div>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{Number(purchaseTraceResult.purchaseOrder?.total || 0).toFixed(2)}</div>
+                  <div className="mt-1 text-lg font-bold text-slate-900">{Number(purchaseTraceResult.purchaseOrderRs .total || 0).toFixed(2)}</div>
                 </div>
               </div>
-              {purchaseTraceResult.purchaseOrder ? (
+              {purchaseTraceResult.purchaseOrder Rs  (
                 <div className="rounded-lg border bg-slate-50 p-3 text-sm">
-                  <div><span className="font-semibold">Date:</span> {purchaseTraceResult.purchaseOrder.date ? new Date(purchaseTraceResult.purchaseOrder.date).toLocaleString() : 'N/A'}</div>
+                  <div><span className="font-semibold">Date:</span> {purchaseTraceResult.purchaseOrder.date Rs  new Date(purchaseTraceResult.purchaseOrder.date).toLocaleString() : 'N/A'}</div>
                   <div><span className="font-semibold">Party:</span> {purchaseTraceResult.purchaseOrder.partyName || 'N/A'}</div>
                   <div><span className="font-semibold">Party ID:</span> <span className="font-mono text-xs">{purchaseTraceResult.purchaseOrder.partyId || 'N/A'}</span></div>
                 </div>
@@ -4109,18 +4147,18 @@ export default function Admin() {
                             <div>Total: {line.lineTotal.toFixed(2)}</div>
                           </td>
                           <td className="p-3">
-                            <div className="font-medium">{line.productFound ? 'Product found' : 'Product missing'}</div>
+                            <div className="font-medium">{line.productFound Rs  'Product found' : 'Product missing'}</div>
                             <div>{line.resolvedProductName || 'N/A'}</div>
                             <div className="font-mono text-xs text-muted-foreground">{line.resolvedProductId || 'N/A'}</div>
                             <div className="text-xs text-muted-foreground">purchaseHistory count: {line.productPurchaseHistoryCount}</div>
                           </td>
                           <td className="p-3">
-                            <div className="font-medium">{line.matchingHistoryRowFound ? 'Matching row present' : 'Matching row missing'}</div>
+                            <div className="font-medium">{line.matchingHistoryRowFound Rs  'Matching row present' : 'Matching row missing'}</div>
                             <div className="text-xs text-muted-foreground">Matching rows: {line.matchingHistoryRows.length}</div>
                             {line.matchingHistoryRows.slice(0, 2).map((row) => (
                               <div key={row.id} className="mt-1 rounded border bg-slate-50 px-2 py-1 text-xs text-muted-foreground">
                                 <div>ID: {row.id}</div>
-                                <div>Date: {row.date ? new Date(row.date).toLocaleString() : 'N/A'}</div>
+                                <div>Date: {row.date Rs  new Date(row.date).toLocaleString() : 'N/A'}</div>
                                 <div>Qty: {Number(row.quantity || 0)} Ã‚Â· Unit: {Number(row.unitPrice || 0).toFixed(2)}</div>
                               </div>
                             ))}
@@ -4150,7 +4188,7 @@ export default function Admin() {
             <CardContent className="space-y-4">
               <div className="text-sm font-medium">{selectedPhotoProduct.name}</div>
               <div className="rounded-lg border bg-slate-900/80 p-3 min-h-[280px] flex items-center justify-center">
-                {getProductImageUrl(selectedPhotoProduct) ? (
+                {getProductImageUrl(selectedPhotoProduct) Rs  (
                   <img src={getProductImageUrl(selectedPhotoProduct)} alt={selectedPhotoProduct.name} className="max-h-[420px] w-full object-contain rounded"  loading="lazy"  decoding="async" />
                 ) : (
                   <div className="text-center text-slate-200">
@@ -4166,15 +4204,15 @@ export default function Admin() {
                 accept="image/*"
                 className="hidden"
                 onChange={async (e) => {
-                  const file = e.target.files?.[0];
+                  const file = e.target.filesRs .[0];
                   if (!file) return;
                   await handleUploadProductPhoto(file);
                   e.currentTarget.value = '';
                 }}
               />
               <div className="flex flex-wrap justify-end gap-2">
-                <Button variant="outline" onClick={() => photoFileInputRef.current?.click()} disabled={isPhotoUploading}>
-                  {isPhotoUploading ? 'Uploading...' : (getProductImageUrl(selectedPhotoProduct) ? 'Replace Photo' : 'Add Photo')}
+                <Button variant="outline" onClick={() => photoFileInputRef.currentRs .click()} disabled={isPhotoUploading}>
+                  {isPhotoUploading Rs  'Uploading...' : (getProductImageUrl(selectedPhotoProduct) Rs  'Replace Photo' : 'Add Photo')}
                 </Button>
                 {getProductImageUrl(selectedPhotoProduct) && (
                   <Button variant="outline" className="border-red-300 text-red-700" onClick={() => void handleDeleteProductPhoto()} disabled={isPhotoUploading}>
@@ -4202,7 +4240,7 @@ export default function Admin() {
             groupByCategory: opts.groupByCategory,
             showInStockPrices: opts.showInStockPrices,
             showOutOfStockPrices: opts.showOutOfStockPrices,
-            firstPageImage: storeProfile?.customerCatalogFirstPage,
+            firstPageImage: storeProfileRs .customerCatalogFirstPage,
           });
           setIsCatalogOptionsOpen(false);
         }}
@@ -4213,8 +4251,8 @@ export default function Admin() {
           <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
             <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Product Details - {viewingProduct.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setViewingProduct(null); setViewingProductAuditMode(false); }}><X className="w-4 h-4"/></Button></CardHeader>
             <CardContent className="space-y-3">
-              <div className="text-sm">Created: {viewingProduct.createdAt ? new Date(viewingProduct.createdAt).toLocaleString() : 'N/A'}</div>
-              {viewingVariantDetails.hasVariantRows ? (
+              <div className="text-sm">Created: {viewingProduct.createdAt Rs  new Date(viewingProduct.createdAt).toLocaleString() : 'N/A'}</div>
+              {viewingVariantDetails.hasVariantRows Rs  (
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                     <div className="rounded border p-2 bg-muted/20"><div className="text-muted-foreground">Current stock</div><div className="font-semibold">{viewingProduct.stock}</div></div>
@@ -4255,7 +4293,7 @@ export default function Admin() {
                 <div className="text-sm">Current stock: {viewingProduct.stock}, Total purchase: {toNonNegativeNumber(viewingProduct.totalPurchase)}, Total sold: {toNonNegativeNumber(viewingProduct.totalSold)}, Lost & Damage: {Math.max(0, Number(viewingProduct.lostDamageQty || 0))} pcs</div>
               )}
               <h4 className="font-semibold">Purchase History</h4>
-              {!viewingPurchaseHistoryRows.length ? (
+              {!viewingPurchaseHistoryRows.length Rs  (
                 <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
                   No purchase history found for this product yet.
                 </div>
@@ -4312,7 +4350,7 @@ export default function Admin() {
                         {categories.length === 0 && <div className="text-sm text-muted-foreground text-center py-8 flex flex-col items-center"><Tags className="w-8 h-8 opacity-20 mb-2"/>No categories yet.</div>}
                         {[...categories].sort().map(cat => (
                             <div key={cat} className="flex justify-between items-center p-3 bg-card hover:bg-muted/50 transition-colors rounded-lg border shadow-sm group">
-                                {editingCategory === cat ? (
+                                {editingCategory === cat Rs  (
                                     <div className="flex-1 flex gap-2">
                                         <Input 
                                             value={editCategoryValue || ''} 
@@ -4443,7 +4481,7 @@ export default function Admin() {
                         onChange={(e) => setLowStockCategoryFilter(e.target.value)}
                         className="h-9 w-[160px]"
                       >
-                          {filterCategories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
+                          {filterCategories.map(c => <option key={c} value={c}>{c === 'all' Rs  'All Categories' : c}</option>)}
                       </Select>
                       <Select 
                         value={lowStockSortOption} 
@@ -4461,7 +4499,7 @@ export default function Admin() {
                   </div>
 
                   <CardContent className="overflow-y-auto p-4">
-                      {lowStockProducts.length === 0 ? (
+                      {lowStockProducts.length === 0 Rs  (
                           <div className="py-20 text-center flex flex-col items-center">
                               <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
                                   <Package className="w-6 h-6 opacity-30" />
@@ -4473,7 +4511,7 @@ export default function Admin() {
                               {lowStockProducts.map(p => (
                                   <div key={p.id} className="flex flex-col border rounded-xl bg-card hover:border-primary/30 transition-all group overflow-hidden">
                                       <div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">
-                                          {p.image ? (
+                                          {p.image Rs  (
                                               <img src={p.image} className="w-full h-full object-contain"  loading="lazy"  decoding="async" />
                                           ) : (
                                               <div className="w-full h-full flex items-center justify-center opacity-20">
@@ -4486,7 +4524,7 @@ export default function Admin() {
                                           <p className="text-[9px] text-muted-foreground font-mono truncate">{getProductBarcode(p)}</p>
                                           <div className="flex items-center justify-between mt-2">
                                               <span className="text-xs font-bold">{p.sellPrice}</span>
-                                              <Badge variant={p.stock === 0 ? "destructive" : "secondary"} className="h-5 px-1.5 text-[10px]">
+                                              <Badge variant={p.stock === 0 Rs  "destructive" : "secondary"} className="h-5 px-1.5 text-[10px]">
                                                   Qty: {p.stock}
                                               </Badge>
                                           </div>
@@ -4516,28 +4554,65 @@ export default function Admin() {
             isOpen={isExportModalOpen} 
             onClose={() => setIsExportModalOpen(false)} 
             onExport={handleExport}
-            title={exportType === 'inventory' ? "Export Inventory" : "Export Low Stock Report"}
+            title={exportType === 'inventory' Rs  "Export Inventory" : "Export Low Stock Report"}
         />
       {isTelegramModalOpen && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-black/50 p-4">
-          <Card className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden">
+          <Card className="flex max-h-[88vh] w-full max-w-7xl flex-col overflow-hidden">
             <CardHeader className="flex flex-row items-center justify-between gap-4 border-b">
               <div>
                 <CardTitle>Telegram Product Post</CardTitle>
                 <p className="text-sm text-muted-foreground">
-                  {selectedProducts.length > 0 ? `Using ${selectedProducts.length} checked product${selectedProducts.length === 1 ? '' : 's'}.` : `Using ${telegramProducts.length} product${telegramProducts.length === 1 ? '' : 's'} from the current product list.`}
+                  Trial mode posts one product photo + caption. Albums, videos, and scheduling coming next.
                 </p>
               </div>
               <Button variant="ghost" onClick={() => setIsTelegramModalOpen(false)}>Close</Button>
             </CardHeader>
-            <CardContent className="grid gap-4 overflow-y-auto p-4 md:grid-cols-[320px_minmax(0,1fr)]">
-              <div className="space-y-4">
+            <CardContent className="grid gap-4 overflow-y-auto p-4 xl:grid-cols-[320px_minmax(0,1fr)_360px]">
+              <div className="space-y-4 xl:order-1">
                 <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label>Selected Products</Label>
-                    <Badge variant="secondary">{telegramProducts.length}</Badge>
+                  <Label className="text-sm">Channel Target</Label>
+                  <div className="mt-2 space-y-2">
+                    <Input
+                      id="telegram-channel-id"
+                      value={telegramChannelId}
+                      onChange={(e) => setTelegramChannelId(e.target.value)}
+                      placeholder="@channel_username"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {telegramHasBackendDefaultChannel
+                        Rs  'Channel ID is optional because a backend default channel is available.'
+                        : 'Enter the client Telegram channel ID for this trial post.'}
+                    </p>
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">Checked products are used first. If none are checked, the current filtered product list is used.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Selected Products</Label>
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">Trial selection</span>
+                      <Badge variant="secondary">{telegramProducts.length}/1</Badge>
+                    </div>
+                    {telegramTrialProduct Rs  (
+                      <div className="mt-3 flex items-center gap-3 rounded-md border bg-slate-50 p-2">
+                        <div className="h-14 w-14 overflow-hidden rounded border bg-white">
+                          {getProductImageUrl(telegramTrialProduct) Rs  (
+                            <img src={getProductImageUrl(telegramTrialProduct)} alt={displayProductText(telegramTrialProduct.name)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-[10px] text-red-600">No image</div>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-semibold">{displayProductText(telegramTrialProduct.name)}</div>
+                          <div className="text-xs text-muted-foreground">{displayProductText(telegramTrialProduct.category, 'Uncategorized')}</div>
+                          <div className="text-xs">{formatCurrency(telegramTrialProduct.sellPrice)}</div>
+                        </div>
+                        <Button variant="outline" size="sm" onClick={() => setTelegramSelectedProductIds([])}>Clear</Button>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-muted-foreground">Select products first.</p>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="telegram-template">Caption Template</Label>
@@ -4559,74 +4634,133 @@ export default function Admin() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="telegram-schedule-mode">Schedule Mode</Label>
-                  <Select
-                    id="telegram-schedule-mode"
-                    value={telegramScheduleMode}
-                    onChange={(e) => setTelegramScheduleMode(e.target.value as 'none' | 'every_hour_random' | 'every_morning' | 'every_2_minutes_batch')}
-                  >
-                    <option value="none">none</option>
-                    <option value="every_hour_random">every_hour_random</option>
-                    <option value="every_morning">every_morning</option>
-                    <option value="every_2_minutes_batch">every_2_minutes_batch</option>
-                  </Select>
+                  <Label>Future Features</Label>
+                  <div className="flex flex-wrap gap-2 rounded-lg border p-3">
+                    <Badge variant="outline">Multiple products batch</Badge>
+                    <Badge variant="outline">Multiple images</Badge>
+                    <Badge variant="outline">Video</Badge>
+                    <Badge variant="outline">Schedule</Badge>
+                    <span className="text-xs text-muted-foreground">Coming soon</span>
+                  </div>
                 </div>
                 {telegramStatus && (
                   <div className={`rounded-lg border px-3 py-2 text-sm ${
                     telegramStatus.type === 'error'
-                      ? 'border-red-200 bg-red-50 text-red-700'
+                      Rs  'border-red-200 bg-red-50 text-red-700'
                       : telegramStatus.type === 'success'
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        Rs  'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-slate-200 bg-slate-50 text-slate-700'
                   }`}>
                     {telegramStatus.message}
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => void handleSubmitTelegramPost('post_now')} disabled={isTelegramSubmitting || telegramProducts.length === 0}>
-                    {isTelegramSubmitting ? 'Sending...' : 'Post Now'}
+                  <Button onClick={() => void handleSubmitTelegramPost('post_now')} disabled={isTelegramSubmitting || !telegramCanPostNow}>
+                    {isTelegramSubmitting Rs  'Sending...' : 'Post Now'}
                   </Button>
-                  <Button variant="outline" onClick={() => void handleSubmitTelegramPost('schedule')} disabled={isTelegramSubmitting || telegramProducts.length === 0}>
-                    {isTelegramSubmitting ? 'Scheduling...' : 'Schedule'}
+                  <Button variant="outline" disabled title="Coming soon">
+                    Coming soon
                   </Button>
                 </div>
               </div>
-              <div className="space-y-3">
+              <div className="space-y-3 xl:order-2">
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold">Product Picker</h3>
+                      <p className="text-xs text-muted-foreground">Pick the one product photo to post in trial mode.</p>
+                    </div>
+                    <Badge variant="outline">{telegramPickerProducts.length} match</Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    <Input
+                      value={telegramProductSearch}
+                      onChange={(e) => setTelegramProductSearch(e.target.value)}
+                      placeholder="Search product"
+                    />
+                    <Select value={telegramCategoryFilter} onChange={(e) => setTelegramCategoryFilter(e.target.value)}>
+                      <option value="all">All categories</option>
+                      {categories.map((category) => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                    </Select>
+                    <Select value={telegramStockFilter} onChange={(e) => setTelegramStockFilter(e.target.value as 'all' | 'in_stock' | 'out_of_stock')}>
+                      <option value="all">All stock</option>
+                      <option value="in_stock">In stock</option>
+                      <option value="out_of_stock">Out of stock</option>
+                    </Select>
+                  </div>
+                  <div className="mt-3 grid max-h-[420px] gap-2 overflow-y-auto pr-1">
+                    {telegramPickerProducts.map((product) => {
+                      const isSelected = telegramSelectedProductIds.includes(product.id);
+                      const imageUrl = getProductImageUrl(product);
+                      return (
+                        <button
+                          key={product.id}
+                          type="button"
+                          onClick={() => toggleTelegramProductSelection(product.id)}
+                          className={`grid w-full grid-cols-[56px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border p-2 text-left transition ${isSelected Rs  'border-slate-900 bg-slate-50' : 'hover:bg-slate-50'}`}
+                        >
+                          <div className="h-14 w-14 overflow-hidden rounded border bg-white">
+                            {imageUrl Rs  (
+                              <img src={imageUrl} alt={displayProductText(product.name)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-[10px] text-red-600">No image</div>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate font-semibold">{displayProductText(product.name)}</div>
+                            <div className="text-xs text-muted-foreground">{displayProductText(product.category, 'Uncategorized')}</div>
+                            <div className="text-xs">{formatCurrency(product.sellPrice)} • Stock {Math.max(0, Number(product.stock || 0))}</div>
+                          </div>
+                          <Badge variant={isSelected Rs  'secondary' : 'outline'}>{isSelected Rs  'Selected' : 'Select'}</Badge>
+                        </button>
+                      );
+                    })}
+                    {telegramPickerProducts.length === 0 && (
+                      <div className="rounded-md border border-dashed p-6 text-sm text-muted-foreground">No products match these filters.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-3 xl:order-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <h3 className="text-sm font-semibold">Preview</h3>
-                    <p className="text-xs text-muted-foreground">Showing up to 8 products.</p>
+                    <p className="text-xs text-muted-foreground">Telegram-style trial preview for one product photo + caption.</p>
                   </div>
-                  <Badge variant="outline">{selectedProducts.length > 0 ? 'Checked products' : 'Current filtered list'}</Badge>
+                  <Badge variant="outline">Trial preview</Badge>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {telegramProducts.slice(0, 8).map((product) => (
-                    <Card key={product.id} className="overflow-hidden border shadow-sm">
+                <div className="grid gap-3">
+                  {telegramTrialProduct Rs  (
+                    <Card key={telegramTrialProduct.id} className="max-w-md overflow-hidden border shadow-sm">
                       <div className="aspect-[4/3] w-full bg-slate-50">
-                        {getProductImageUrl(product) ? (
-                          <img src={getProductImageUrl(product)} alt={displayProductText(product.name)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                        {getProductImageUrl(telegramTrialProduct) Rs  (
+                          <img src={getProductImageUrl(telegramTrialProduct)} alt={displayProductText(telegramTrialProduct.name)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
                         ) : (
-                          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">No image</div>
+                          <div className="flex h-full items-center justify-center text-xs text-red-600">Image URL required</div>
                         )}
                       </div>
                       <CardContent className="space-y-2 p-3">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <div className="truncate font-semibold">{displayProductText(product.name)}</div>
-                            <div className="text-xs text-muted-foreground">{displayProductText(product.category, 'Uncategorized')}</div>
+                            <div className="truncate font-semibold">{displayProductText(telegramTrialProduct.name)}</div>
+                            <div className="text-xs text-muted-foreground">{displayProductText(telegramTrialProduct.category, 'Uncategorized')}</div>
                           </div>
-                          <Badge variant={Math.max(0, Number(product.stock || 0)) > 0 ? 'secondary' : 'destructive'}>
-                            Stock {Math.max(0, Number(product.stock || 0))}
+                          <Badge variant={Math.max(0, Number(telegramTrialProduct.stock || 0)) > 0 Rs  'secondary' : 'destructive'}>
+                            Stock {Math.max(0, Number(telegramTrialProduct.stock || 0))}
                           </Badge>
                         </div>
-                        <div className="text-sm font-semibold">{formatCurrency(product.sellPrice)}</div>
-                        <pre className="whitespace-pre-wrap rounded-md bg-slate-50 p-2 text-xs text-slate-700">{renderTelegramCaption(product)}</pre>
+                        <div className="text-sm font-semibold">{formatCurrency(telegramTrialProduct.sellPrice)}</div>
+                        <pre className="whitespace-pre-wrap rounded-md bg-slate-50 p-2 text-xs text-slate-700">{renderTelegramCaption(telegramTrialProduct)}</pre>
                       </CardContent>
                     </Card>
-                  ))}
+                  ) : (
+                    <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">Select one product in the picker to preview the Telegram post.</div>
+                  )}
                 </div>
-                {telegramProducts.length > 8 && (
-                  <p className="text-xs text-muted-foreground">Preview limited to first 8 products. The request still includes all {telegramProducts.length} selected products.</p>
+                {telegramProducts.length > 1 && (
+                  <p className="text-xs text-amber-700">Only 1 selected product can be posted in the trial flow.</p>
                 )}
               </div>
             </CardContent>
@@ -4635,16 +4769,16 @@ export default function Admin() {
       )}
       {purchaseEditTarget && (() => {
         const targetProduct = products.find((p) => p.id === purchaseEditTarget.productId) || purchaseTarget;
-        const targetHistory = (targetProduct?.purchaseHistory || []).find((h) => h.id === purchaseEditTarget.historyId);
-        const linkedOrder = (loadData().purchaseOrders || []).find((o) => o.id === targetHistory?.purchaseOrderId);
-        const oldQty = toNonNegativeNumber(targetHistory?.quantity);
-        const oldUnitPrice = toNonNegativeNumber(targetHistory?.unitPrice);
+        const targetHistory = (targetProductRs .purchaseHistory || []).find((h) => h.id === purchaseEditTarget.historyId);
+        const linkedOrder = (loadData().purchaseOrders || []).find((o) => o.id === targetHistoryRs .purchaseOrderId);
+        const oldQty = toNonNegativeNumber(targetHistoryRs .quantity);
+        const oldUnitPrice = toNonNegativeNumber(targetHistoryRs .unitPrice);
         const oldTotal = oldQty * oldUnitPrice;
         const newQty = toNonNegativeNumber(purchaseEditQuantity);
         const newUnit = toNonNegativeNumber(purchaseEditUnitPrice);
         const newTotal = Number((newQty * newUnit).toFixed(2));
         const stockDelta = Number((newQty - oldQty).toFixed(2));
-        const coveredPaid = toNonNegativeNumber((linkedOrder?.paymentHistory || []).reduce((sum: number, payment: any) => sum + Math.max(0, Number(payment.amount || 0)), 0));
+        const coveredPaid = toNonNegativeNumber((linkedOrderRs .paymentHistory || []).reduce((sum: number, payment: any) => sum + Math.max(0, Number(payment.amount || 0)), 0));
         const estimatedRemaining = Math.max(0, Number((newTotal - coveredPaid).toFixed(2)));
         const estimatedOverpaymentCredit = Math.max(0, Number((coveredPaid - newTotal).toFixed(2)));
         return (
@@ -4652,9 +4786,9 @@ export default function Admin() {
             <Card className="w-full max-w-lg">
               <CardHeader><CardTitle>Edit Purchase Entry</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <div>Product: <span className="font-medium">{targetProduct?.name || 'Ã¢â‚¬â€'}</span></div>
-                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || 'Ã¢â‚¬â€'}</span></div>
-                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || 'Ã¢â‚¬â€'}</span></div>
+                <div>Product: <span className="font-medium">{targetProductRs .name || 'Ã¢â‚¬â€'}</span></div>
+                <div>Party: <span className="font-medium">{linkedOrderRs .partyName || targetHistoryRs .partyName || 'Ã¢â‚¬â€'}</span></div>
+                <div>Purchase order: <span className="font-medium">{linkedOrderRs .billNumber || linkedOrderRs .id || targetHistoryRs .purchaseOrderId || 'Ã¢â‚¬â€'}</span></div>
                 <div className="grid grid-cols-2 gap-2 text-xs rounded border p-2">
                   <div>Old quantity: {oldQty}</div>
                   <div>Old unit price: {oldUnitPrice.toFixed(2)}</div>
@@ -4669,7 +4803,7 @@ export default function Admin() {
                   <div className="font-medium">payable impact</div>
                   <div>New total: {newTotal.toFixed(2)}</div>
                   <div>Difference: {(newTotal - oldTotal).toFixed(2)}</div>
-                  <div>stock delta: {stockDelta >= 0 ? '+' : ''}{stockDelta}</div>
+                  <div>stock delta: {stockDelta >= 0 Rs  '+' : ''}{stockDelta}</div>
                   <div>Estimated remaining payable after edit: {estimatedRemaining.toFixed(2)}</div>
                   {estimatedOverpaymentCredit > 0 && <div>Overpayment will become Our Credit: {estimatedOverpaymentCredit.toFixed(2)}</div>}
                 </div>
@@ -4683,9 +4817,9 @@ export default function Admin() {
           </div>
         );
       })()}
-      <ConfirmDialog open={!!pendingPurchaseReverse} title="Reverse this purchase?" message="This action may affect stock/history. Continue?" onCancel={() => setPendingPurchaseReverse(null)} onConfirm={() => void confirmDeletePurchaseHistoryEntry()} confirmLabel="Reverse" />
-      <ConfirmDialog open={!!pendingDeleteProductId} title="Delete this product?" message="This action may affect stock/history. Continue?" onCancel={() => setPendingDeleteProductId(null)} onConfirm={() => void confirmDeleteProduct()} confirmLabel="Delete" />
-      <ConfirmDialog open={isBatchDeleteConfirmOpen} title="Delete selected products?" message={`Delete ${selectedProducts.length} selected product${selectedProducts.length > 1 ? 's' : ''}? This action may affect stock/history. Continue?`} onCancel={() => setIsBatchDeleteConfirmOpen(false)} onConfirm={() => void confirmBatchDeleteProducts()} confirmLabel="Delete" />
+      <ConfirmDialog open={!!pendingPurchaseReverse} title="Reverse this purchaseRs " message="This action may affect stock/history. ContinueRs " onCancel={() => setPendingPurchaseReverse(null)} onConfirm={() => void confirmDeletePurchaseHistoryEntry()} confirmLabel="Reverse" />
+      <ConfirmDialog open={!!pendingDeleteProductId} title="Delete this productRs " message="This action may affect stock/history. ContinueRs " onCancel={() => setPendingDeleteProductId(null)} onConfirm={() => void confirmDeleteProduct()} confirmLabel="Delete" />
+      <ConfirmDialog open={isBatchDeleteConfirmOpen} title="Delete selected productsRs " message={`Delete ${selectedProducts.length} selected product${selectedProducts.length > 1 Rs  's' : ''}Rs  This action may affect stock/history. ContinueRs `} onCancel={() => setIsBatchDeleteConfirmOpen(false)} onConfirm={() => void confirmBatchDeleteProducts()} confirmLabel="Delete" />
       {lostDamageTarget && (
         <div className="fixed inset-0 z-[130] bg-black/50 flex items-center justify-center p-4">
           <Card className="w-full max-w-md">
