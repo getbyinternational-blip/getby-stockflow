@@ -16,8 +16,8 @@ import Terms from './pages/Terms';
 import DataDeletion from './pages/DataDeletion';
 import RoleLoginModal from './components/auth/RoleLoginModal';
 import { RestrictedPage } from './components/auth/PermissionGuard';
-import { can, getCurrentAccessSession, isAccessUnlockedForUser, type SimplePermission } from './src/auth/simplePermissions';
-import { RoleSessionProvider, useRoleSession } from './src/auth/roleSession';
+import { can, clearAccessSession, type SimplePermission } from './src/auth/simplePermissions';
+import { getStoredRoleSession, RoleSessionProvider, useRoleSession } from './src/auth/roleSession';
 const WhatsAppLogs = lazy(() => import('./pages/WhatsAppLogs'));
 
 const Admin = lazy(() => import('./pages/Admin'));
@@ -126,6 +126,7 @@ function AppContent() {
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
+        clearAccessSession();
         setCurrentEmail(null);
         setAuthStatus('unauthenticated');
         return;
@@ -219,7 +220,6 @@ function AppContent() {
   };
 
   const canShowRepairCenter = repairCenterEnabled;
-  const isAccessUnlockedForCurrentUser = authStatus === 'authenticated' && isAccessUnlockedForUser(currentEmail);
   const accessRoleLabel = roleSession?.role === 'operator' ? (roleSession.operatorName || 'Staff') : 'Admin';
 
   const handleFullLogout = () => {
@@ -231,28 +231,10 @@ function AppContent() {
   };
 
   useEffect(() => {
-    if (authStatus !== 'authenticated') {
-      if (roleSession) setRoleSession(null);
-      return;
-    }
-
-    if (!isAccessUnlockedForCurrentUser) {
-      if (roleSession) setRoleSession(null);
-      return;
-    }
-
-    if (!roleSession) {
-      const storedSession = getCurrentAccessSession();
-      if (storedSession) {
-        setRoleSession({
-          role: storedSession.role,
-          operatorId: storedSession.operatorId,
-          operatorName: storedSession.operatorName,
-          loginAt: new Date().toISOString(),
-        });
-      }
-    }
-  }, [authStatus, currentEmail, isAccessUnlockedForCurrentUser, roleSession, setRoleSession]);
+    if (authStatus !== 'authenticated' || roleSession) return;
+    const storedSession = getStoredRoleSession();
+    if (storedSession) setRoleSession(storedSession);
+  }, [authStatus, roleSession, setRoleSession]);
 
   const publicPaths = new Set(['/privacy-policy', '/terms', '/data-deletion']);
   const isPublicRoute = publicPaths.has(location.pathname);

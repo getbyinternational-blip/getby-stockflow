@@ -15,7 +15,7 @@ type RoleSessionContextValue = {
 
 const RoleSessionContext = createContext<RoleSessionContextValue | null>(null);
 
-const getStoredRoleSession = (): RoleSession | null => {
+export const getStoredRoleSession = (): RoleSession | null => {
   const session = getCurrentAccessSession();
   if (!session) return null;
   return {

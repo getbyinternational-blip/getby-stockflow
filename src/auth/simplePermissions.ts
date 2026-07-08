@@ -17,6 +17,7 @@ export const OPERATOR_ID_KEY = 'currentOperatorId';
 export const OPERATOR_NAME_KEY = 'currentOperatorName';
 export const ACCESS_UNLOCKED_KEY = 'accessUnlocked';
 export const ACCESS_USER_EMAIL_KEY = 'accessUserEmail';
+const ROLE_STORAGE_KEY = 'stockflow.roleSession';
 
 const operatorPermissions: Record<SimplePermission, boolean> = {
   inventoryBuyPrice: false,
@@ -31,12 +32,12 @@ const operatorPermissions: Record<SimplePermission, boolean> = {
   cashWithdrawal: false,
 };
 
-const canUseStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+const canUseStorage = () => typeof window !== 'undefined' && typeof window.sessionStorage !== 'undefined';
 
 const readStorage = (key: string): string => {
   if (!canUseStorage()) return '';
   try {
-    return window.localStorage.getItem(key) || '';
+    return window.sessionStorage.getItem(key) || '';
   } catch {
     return '';
   }
@@ -45,7 +46,7 @@ const readStorage = (key: string): string => {
 const writeStorage = (key: string, value: string) => {
   if (!canUseStorage()) return;
   try {
-    window.localStorage.setItem(key, value);
+    window.sessionStorage.setItem(key, value);
   } catch {
     // ignore storage failures and keep the session in memory-only callers
   }
@@ -54,7 +55,7 @@ const writeStorage = (key: string, value: string) => {
 const removeStorage = (key: string) => {
   if (!canUseStorage()) return;
   try {
-    window.localStorage.removeItem(key);
+    window.sessionStorage.removeItem(key);
   } catch {
     // ignore storage failures
   }
@@ -89,17 +90,28 @@ export const setCurrentRole = (role: AppRole): AppRole => {
 };
 
 export const getCurrentAccessSession = (): { role: AppRole; operatorId?: string; operatorName?: string; userEmail?: string | null } | null => {
+  const rawSession = readStorage(ROLE_STORAGE_KEY);
+  if (rawSession) {
+    try {
+      const parsed = JSON.parse(rawSession) as { role?: AppRole; operatorId?: string; operatorName?: string; userEmail?: string | null };
+      if (parsed.role === 'admin' || parsed.role === 'operator') {
+        return {
+          role: parsed.role,
+          operatorId: parsed.operatorId || undefined,
+          operatorName: parsed.operatorName || undefined,
+          userEmail: parsed.userEmail || null,
+        };
+      }
+    } catch {
+      // fall back to legacy keys below
+    }
+  }
   if (!isAccessUnlocked()) return null;
   const role = getCurrentRole();
   const operatorId = getCurrentOperatorId();
   const operatorName = getCurrentOperatorName();
   const userEmail = readStorage(ACCESS_USER_EMAIL_KEY) || null;
-  return {
-    role,
-    operatorId: operatorId || undefined,
-    operatorName: operatorName || undefined,
-    userEmail,
-  };
+  return { role, operatorId: operatorId || undefined, operatorName: operatorName || undefined, userEmail };
 };
 
 export const setAccessSession = (session: { role: AppRole; operatorId?: string; operatorName?: string; userEmail?: string | null }) => {
@@ -108,6 +120,12 @@ export const setAccessSession = (session: { role: AppRole; operatorId?: string; 
   writeStorage(OPERATOR_ID_KEY, session.operatorId || '');
   writeStorage(OPERATOR_NAME_KEY, session.operatorName || '');
   writeStorage(ACCESS_USER_EMAIL_KEY, String(session.userEmail || '').trim().toLowerCase());
+  writeStorage(ROLE_STORAGE_KEY, JSON.stringify({
+    role: session.role,
+    operatorId: session.operatorId || '',
+    operatorName: session.operatorName || '',
+    userEmail: String(session.userEmail || '').trim().toLowerCase(),
+  }));
   emitAccessUpdate();
 };
 
@@ -122,6 +140,7 @@ export const lockAccess = () => {
 export const clearAccessSession = () => {
   lockAccess();
   removeStorage(ACCESS_USER_EMAIL_KEY);
+  removeStorage(ROLE_STORAGE_KEY);
   emitAccessUpdate();
 };
 
