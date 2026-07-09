@@ -249,7 +249,7 @@ export default function RoleLoginModal({ onLogin }: { onLogin: (session: RoleSes
   };
 
   return (
-    <div className="fixed inset-0 z-[180] flex items-center justify-center bg-slate-950/80 p-4">
+    <div className="fixed inset-0 z-[180] flex items-center justify-center bg-slate-900/15 p-4 backdrop-blur-md">
       <Card className="w-full max-w-md border-0 shadow-2xl">
         <CardHeader>
           <CardTitle>{SIMPLE_ACCESS_MODE_ENABLED ? 'Select Access Role' : 'Enter Access Password'}</CardTitle>

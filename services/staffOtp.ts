@@ -1,4 +1,4 @@
-const STAFF_OTP_API_BASE_URL = 'https://whatsapp.indianstrendstore.in';
+const STAFF_OTP_API_BASE_URL = 'https://whatsapp.indiantrendstore.in';
 
 const parseErrorMessage = (payload: any, fallback: string): string => {
   if (typeof payload?.error === 'string' && payload.error.trim()) return payload.error;
@@ -7,13 +7,18 @@ const parseErrorMessage = (payload: any, fallback: string): string => {
 };
 
 const postJson = async <T>(path: string, body: Record<string, unknown>, fallbackError: string): Promise<T> => {
-  const response = await fetch(`${STAFF_OTP_API_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${STAFF_OTP_API_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Could not reach OTP server. Please check backend status or internet connection.');
+  }
 
   const payload = await response.json().catch(() => ({}));
   if (response.status === 429) {
