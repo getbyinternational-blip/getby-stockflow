@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
 import { PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
-import { appendRepairHistoryEntry, applyConfirmedPurchasePartyOrderOnlyMerge, applyMissingProductPurchaseHistoryRowsSafePatches, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, deleteSupplierPayment, getPurchaseOrders, getPurchaseParties, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, searchPurchaseOrdersRuntime, updatePurchaseOrder, updatePurchaseParty, updateSupplierPayment, ApplyMissingProductPurchaseHistorySafeRestoreResult, MissingProductPurchaseHistoryDryRunResult, PurchaseOrderRuntimeSearchResult } from '../services/storage';
+import { appendRepairHistoryEntry, applyConfirmedPurchasePartyOrderOnlyMerge, applyMissingProductPurchaseHistoryRowsSafePatches, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, deleteSupplierPayment, editInventoryPurchaseHistoryEntry, getPurchaseOrders, getPurchaseParties, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, searchPurchaseOrdersRuntime, updatePurchaseOrder, updatePurchaseParty, updateSupplierPayment, ApplyMissingProductPurchaseHistorySafeRestoreResult, MissingProductPurchaseHistoryDryRunResult, PurchaseOrderRuntimeSearchResult } from '../services/storage';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadPurchaseData, downloadPurchaseTemplate, importPurchaseFromFile } from '../services/importExcel';
 import { getProductStockRows, NO_COLOR, NO_VARIANT } from '../services/productVariants';
@@ -53,6 +53,21 @@ type PendingVariantRow = { key: string; label: string; variant?: string; color?:
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const toNum = (v: number | '') => (v === '' ? 0 : Number(v));
+const sanitizeAccountingNumberInput = (value: string, decimals = 2) => {
+  const normalized = String(value || '').replace(/[^\d.]/g, '');
+  const firstDotIndex = normalized.indexOf('.');
+  const compact = firstDotIndex === -1
+    ? normalized
+    : `${normalized.slice(0, firstDotIndex + 1)}${normalized.slice(firstDotIndex + 1).replace(/\./g, '')}`;
+  const [whole = '', fraction = ''] = compact.split('.');
+  if (!compact) return '';
+  return compact.includes('.') ? `${whole}.${fraction.slice(0, decimals)}` : whole;
+};
+const parseAccountingNumber = (value: string) => {
+  if (value.trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
 const formatNumber = (value: number, digits = 2) => value.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const EMPTY_DASH = '\u2014';
 const DISPLAY_SEPARATOR = '\u2022';
@@ -493,11 +508,22 @@ const formatVariantValue = (value?: string | null, fallback = 'â€”') => {
   return trimmed;
 };
 
-function PurchaseHistoryCards({ productName, rows }: { productName: string; rows: PurchaseOrderDerivedHistoryRow[] }) {
+function PurchaseHistoryCards({
+  productName,
+  rows,
+  allowRepairEdit = false,
+  onEditPurchaseEntry,
+}: {
+  productName: string;
+  rows: PurchaseOrderDerivedHistoryRow[];
+  allowRepairEdit?: boolean;
+  onEditPurchaseEntry?: (row: PurchaseOrderDerivedHistoryRow) => void;
+}) {
   return (
     <div className="space-y-2">
       {rows.map((row) => {
         const lineTotal = Math.max(0, Number(row.lineTotal || (row.quantity * row.unitPrice) || 0));
+        const canEditRow = allowRepairEdit && row.linkStatus === 'resolved' && !!row.legacyHistoryId && !!row.purchaseOrderId;
         return (
           <div key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -523,8 +549,13 @@ function PurchaseHistoryCards({ productName, rows }: { productName: string; rows
               <div>Paid: <span className="font-medium text-slate-900">?{formatNumber(Math.max(0, Number(row.orderPaid || 0)))}</span> Â· Remaining: <span className="font-medium text-slate-900">?{formatNumber(Math.max(0, Number(row.remainingPayable || 0)))}</span></div>
             </div>
             <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
-              Edit/delete for purchase-order history will be handled from Purchase Orders.
+              {canEditRow ? 'Use Repair Center update to correct quantity, unit cost, average buy price, and linked payable impact.' : 'Edit/delete for purchase-order history will be handled from Purchase Orders.'}
             </div>
+            {canEditRow && (
+              <div className="mt-2 flex justify-end">
+                <Button size="sm" variant="outline" onClick={() => onEditPurchaseEntry?.(row)}>Update Purchase Entry</Button>
+              </div>
+            )}
           </div>
         );
       })}
@@ -665,6 +696,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [purchaseRowsTo, setPurchaseRowsTo] = useState('');
   const [purchaseRowsPage, setPurchaseRowsPage] = useState(1);
   const [purchaseViewProduct, setPurchaseViewProduct] = useState<Product | null>(null);
+  const [purchaseHistoryEditTarget, setPurchaseHistoryEditTarget] = useState<{ productId: string; historyId: string } | null>(null);
+  const [purchaseHistoryEditQuantity, setPurchaseHistoryEditQuantity] = useState('');
+  const [purchaseHistoryEditUnitPrice, setPurchaseHistoryEditUnitPrice] = useState('');
+  const [purchaseHistoryEditAvgPrice, setPurchaseHistoryEditAvgPrice] = useState('');
+  const [purchaseHistoryEditError, setPurchaseHistoryEditError] = useState<string | null>(null);
+  const [purchaseHistoryEditSubmitting, setPurchaseHistoryEditSubmitting] = useState(false);
   const [repairDryRunResult, setRepairDryRunResult] = useState<MissingProductPurchaseHistoryDryRunResult | null>(null);
   const [repairRollbackPreviewDownloadedAt, setRepairRollbackPreviewDownloadedAt] = useState('');
   const [isApplyingRepairSafePatches, setIsApplyingRepairSafePatches] = useState(false);
@@ -699,6 +736,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setPurchaseRepairError(null);
   }, { priority: 85 });
   useEscapeLayer(Boolean(purchaseViewProduct), () => setPurchaseViewProduct(null), { priority: 80 });
+  useEscapeLayer(Boolean(purchaseHistoryEditTarget), () => {
+    setPurchaseHistoryEditTarget(null);
+    setPurchaseHistoryEditQuantity('');
+    setPurchaseHistoryEditUnitPrice('');
+    setPurchaseHistoryEditAvgPrice('');
+    setPurchaseHistoryEditError(null);
+    setPurchaseHistoryEditSubmitting(false);
+  }, { priority: 82 });
   useEscapeLayer(Boolean(repairDryRunResult), () => setRepairDryRunResult(null), { priority: 80 });
   useEscapeLayer(Boolean(purchaseRuntimeSearchResult), () => setPurchaseRuntimeSearchResult(null), { priority: 80 });
   const [receivePriceMethod, setReceivePriceMethod] = useState<ReceivePriceMethod>('no_change');
@@ -1051,10 +1096,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setPurchaseCreditApplyError(null);
 
     const existingOrderBeingEdited = editingOrderId ? orders.find((o) => o.id === editingOrderId) : null;
-    const hasExistingPaymentOrCreditHistory = Boolean(existingOrderBeingEdited?.paymentHistory?.some((entry) => Math.max(0, Number(entry.amount || 0)) > 0));
-    if (editingOrderId && hasExistingPaymentOrCreditHistory) {
-      throw new Error('This purchase already has payment or supplier-credit history. Editing is blocked to protect the supplier ledger; reverse/recreate or add a supported recalculation flow first.');
-    }
+    const preservedPaymentHistory = editingOrderId
+      ? (existingOrderBeingEdited?.paymentHistory || []).map((entry) => ({ ...entry }))
+      : [];
+    const preservedTotalPaid = Number(
+      preservedPaymentHistory.reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0).toFixed(2)
+    );
+    const shouldPreserveExistingPayments = editingOrderId && preservedPaymentHistory.length > 0;
 
     const orderId = editingOrderId || `po-${uid()}`;
     const existingLineByBucket = new Map<string, PurchaseOrderLine>(
@@ -1112,7 +1160,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     const uiPartyCreditToApply = Math.max(0, Number(partyCreditToApply) || 0);
     const autoCreditToApply = Math.min(latestAvailablePartyCredit, latestMaxCreditUsable);
     const desiredCreditToApply = partyCreditTouched ? uiPartyCreditToApply : autoCreditToApply;
-    const finalCreditToApply = Math.min(desiredCreditToApply, latestAvailablePartyCredit, latestMaxCreditUsable);
+    const finalCreditToApply = shouldPreserveExistingPayments ? 0 : Math.min(desiredCreditToApply, latestAvailablePartyCredit, latestMaxCreditUsable);
+    const nextTotalPaid = shouldPreserveExistingPayments ? preservedTotalPaid : initialPaid;
     const order: PurchaseOrder = {
       id: orderId,
       partyId: party.id,
@@ -1132,9 +1181,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       lines,
       totalQuantity: lines.reduce((s, l) => s + l.quantity, 0),
       totalAmount: taxableAmount + gstAmount,
-      totalPaid: initialPaid,
-      remainingAmount: Number(((taxableAmount + gstAmount) - initialPaid).toFixed(2)),
-      paymentHistory: initialPaid > 0 ? [{
+      totalPaid: nextTotalPaid,
+      remainingAmount: Math.max(0, Number(((taxableAmount + gstAmount) - nextTotalPaid).toFixed(2))),
+      paymentHistory: shouldPreserveExistingPayments ? preservedPaymentHistory : initialPaid > 0 ? [{
         id: `pop-init-${uid()}`,
         paidAt: now,
         amount: Number(initialPaid.toFixed(2)),
@@ -1224,6 +1273,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setBillNumber(order.billNumber || '');
     setBillDate(order.billDate ? order.billDate.slice(0, 10) : '');
     setGstPercent(order.gstPercent ?? '');
+    setInitialPaidAmount(Math.max(0, Number(order.totalPaid || 0)));
+    setPartyCreditToApply(Number(((order.paymentHistory || []).reduce((sum, entry) => {
+      return String(entry.method || '').toLowerCase() === 'party_credit'
+        ? sum + Math.max(0, Number(entry.amount || 0))
+        : sum;
+    }, 0)).toFixed(2)));
+    setPartyCreditTouched(false);
     setPricingEntries({});
 
     if (first.sourceType === 'inventory' && first.productId) {
@@ -1232,6 +1288,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       setSourceMode('inventory');
       setSelectedProduct(product);
 
+      const variantChoices = getProductStockRows(product).filter((row) => !isPlaceholder(row.variant) || !isPlaceholder(row.color));
+      const hasMeaningfulVariants = variantChoices.length > 0;
       const rowMap = new Map<string, { key: string; variant?: string; color?: string; stock: number; label: string }>();
       getProductStockRows(product).forEach((row, idx) => {
         const key = `${product.id}-${idx}-${row.variant}-${row.color}`;
@@ -1239,7 +1297,20 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       });
       const selectedKeys: string[] = [];
       const seeded: Record<string, DraftLine> = {};
+      if (!hasMeaningfulVariants) {
+        const standaloneLine = order.lines[0];
+        seeded.standalone = {
+          key: 'standalone',
+          label: 'Standalone product',
+          stock: Math.max(0, product.stock || 0),
+          variant: undefined,
+          color: undefined,
+          quantity: standaloneLine.quantity,
+          unitCost: standaloneLine.unitCost,
+        };
+      }
       order.lines.forEach((line) => {
+        if (!hasMeaningfulVariants) return;
         const mapKey = `${line.variant || ''}__${line.color || ''}`;
         const row = rowMap.get(mapKey);
         if (!row) return;
@@ -2093,6 +2164,55 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const openProductSnapshot = (productId: string) => {
     if (!productId) return;
     setPurchaseViewProduct(productById.get(productId) || null);
+  };
+  const closePurchaseHistoryEntryEdit = () => {
+    setPurchaseHistoryEditTarget(null);
+    setPurchaseHistoryEditQuantity('');
+    setPurchaseHistoryEditUnitPrice('');
+    setPurchaseHistoryEditAvgPrice('');
+    setPurchaseHistoryEditError(null);
+    setPurchaseHistoryEditSubmitting(false);
+  };
+  const openPurchaseHistoryEntryEdit = (row: PurchaseOrderDerivedHistoryRow) => {
+    if (!purchaseViewProduct || !row.legacyHistoryId) return;
+    setPurchaseHistoryEditTarget({ productId: purchaseViewProduct.id, historyId: row.legacyHistoryId });
+    setPurchaseHistoryEditQuantity(String(Math.max(0, Number(row.quantity || 0))));
+    setPurchaseHistoryEditUnitPrice(String(Math.max(0, Number(row.unitPrice || 0))));
+    setPurchaseHistoryEditAvgPrice(String(Math.max(0, Number((row.nextBuyPrice ?? row.unitPrice ?? purchaseViewProduct.buyPrice) || 0))));
+    setPurchaseHistoryEditError(null);
+  };
+  const confirmPurchaseHistoryEntryEdit = async () => {
+    if (!purchaseHistoryEditTarget) return;
+    const quantity = parseAccountingNumber(purchaseHistoryEditQuantity);
+    const unitPrice = parseAccountingNumber(purchaseHistoryEditUnitPrice);
+    const nextBuyPrice = parseAccountingNumber(purchaseHistoryEditAvgPrice);
+    if (quantity === null || quantity <= 0) {
+      setPurchaseHistoryEditError('Enter a valid purchase quantity greater than zero.');
+      return;
+    }
+    if (unitPrice === null) {
+      setPurchaseHistoryEditError('Enter a valid unit cost.');
+      return;
+    }
+    if (nextBuyPrice === null) {
+      setPurchaseHistoryEditError('Enter a valid average buy price.');
+      return;
+    }
+    setPurchaseHistoryEditSubmitting(true);
+    setPurchaseHistoryEditError(null);
+    try {
+      await editInventoryPurchaseHistoryEntry(
+        purchaseHistoryEditTarget.productId,
+        purchaseHistoryEditTarget.historyId,
+        { quantity, unitPrice, nextBuyPrice },
+      );
+      refresh();
+      setPurchaseViewProduct((loadData().products || []).find((item) => item.id === purchaseHistoryEditTarget.productId) || null);
+      closePurchaseHistoryEntryEdit();
+    } catch (error) {
+      setPurchaseHistoryEditError(error instanceof Error ? error.message : 'Could not update purchase entry.');
+      setPurchaseHistoryEditSubmitting(false);
+    }
   };
   const purchaseViewProductHistoryRows = useMemo(() => {
     if (!purchaseViewProduct) return [];
@@ -3587,7 +3707,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   <div className="rounded-2xl border border-dashed p-4 text-sm text-slate-500">No purchase history found for this product yet.</div>
                 ) : (
                   <div className="max-h-[320px] overflow-y-auto rounded-2xl border border-slate-200 p-2">
-                    <PurchaseHistoryCards productName={purchaseViewProduct.name} rows={purchaseViewProductHistoryRows} />
+                    <PurchaseHistoryCards
+                      productName={purchaseViewProduct.name}
+                      rows={purchaseViewProductHistoryRows}
+                      allowRepairEdit={repairMode}
+                      onEditPurchaseEntry={openPurchaseHistoryEntryEdit}
+                    />
                   </div>
                 )}
               </div>
@@ -3623,6 +3748,73 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           </div>
         ) : null}
       </Modal>
+      {purchaseHistoryEditTarget && (() => {
+        const targetProduct = (loadData().products || []).find((item) => item.id === purchaseHistoryEditTarget.productId) || purchaseViewProduct;
+        const targetHistory = (targetProduct?.purchaseHistory || []).find((item) => item.id === purchaseHistoryEditTarget.historyId);
+        const linkedOrder = orders.find((order) => order.id === targetHistory?.purchaseOrderId);
+        const oldQty = Math.max(0, Number(targetHistory?.quantity || 0));
+        const oldUnitPrice = Math.max(0, Number(targetHistory?.unitPrice || 0));
+        const oldAvgPrice = Math.max(0, Number(targetHistory?.nextBuyPrice || targetProduct?.buyPrice || 0));
+        const oldTotal = Number((oldQty * oldUnitPrice).toFixed(2));
+        const newQty = parseAccountingNumber(purchaseHistoryEditQuantity) ?? 0;
+        const newUnitPrice = parseAccountingNumber(purchaseHistoryEditUnitPrice) ?? 0;
+        const newAvgPrice = parseAccountingNumber(purchaseHistoryEditAvgPrice) ?? 0;
+        const newTotal = Number((newQty * newUnitPrice).toFixed(2));
+        const stockDelta = Number((newQty - oldQty).toFixed(2));
+        const coveredPaid = Math.max(0, Number((linkedOrder?.paymentHistory || []).reduce((sum, payment: any) => sum + Math.max(0, Number(payment.amount || 0)), 0).toFixed(2)));
+        const estimatedRemaining = Math.max(0, Number((newTotal - coveredPaid).toFixed(2)));
+        const estimatedOverpaymentCredit = Math.max(0, Number((coveredPaid - newTotal).toFixed(2)));
+        return (
+          <Modal open={Boolean(purchaseHistoryEditTarget)} onClose={closePurchaseHistoryEntryEdit} title="Update Purchase Entry">
+            <div className="space-y-4 text-sm">
+              <div className="grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-2">
+                <div>Product: <span className="font-medium text-slate-900">{targetProduct?.name || EMPTY_DASH}</span></div>
+                <div>Party: <span className="font-medium text-slate-900">{linkedOrder?.partyName || targetHistory?.partyName || EMPTY_DASH}</span></div>
+                <div>Purchase order: <span className="font-medium text-slate-900">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || EMPTY_DASH}</span></div>
+                <div>Covered paid amount: <span className="font-medium text-slate-900">{formatCurrency(coveredPaid)}</span></div>
+              </div>
+              <div className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-xs md:grid-cols-4">
+                <div>Old quantity: <span className="font-semibold text-slate-900">{formatNumber(oldQty, 0)}</span></div>
+                <div>Old unit cost: <span className="font-semibold text-slate-900">{formatCurrency(oldUnitPrice)}</span></div>
+                <div>Old avg buy price: <span className="font-semibold text-slate-900">{formatCurrency(oldAvgPrice)}</span></div>
+                <div>Old total: <span className="font-semibold text-slate-900">{formatCurrency(oldTotal)}</span></div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div>
+                  <Label>Quantity</Label>
+                  <Input type="text" inputMode="decimal" value={purchaseHistoryEditQuantity} onChange={(e) => setPurchaseHistoryEditQuantity(sanitizeAccountingNumberInput(e.target.value))} placeholder="0" />
+                </div>
+                <div>
+                  <Label>Unit Cost</Label>
+                  <Input type="text" inputMode="decimal" value={purchaseHistoryEditUnitPrice} onChange={(e) => setPurchaseHistoryEditUnitPrice(sanitizeAccountingNumberInput(e.target.value))} placeholder="0.00" />
+                </div>
+                <div>
+                  <Label>Average Buy Price</Label>
+                  <Input type="text" inputMode="decimal" value={purchaseHistoryEditAvgPrice} onChange={(e) => setPurchaseHistoryEditAvgPrice(sanitizeAccountingNumberInput(e.target.value))} placeholder="0.00" />
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+                <div className="font-medium text-slate-900">Accounting impact preview</div>
+                <div className="mt-2 grid gap-1 md:grid-cols-2">
+                  <div>New line total: <span className="font-semibold text-slate-900">{formatCurrency(newTotal)}</span></div>
+                  <div>Difference: <span className="font-semibold text-slate-900">{formatCurrency(newTotal - oldTotal)}</span></div>
+                  <div>Stock delta: <span className="font-semibold text-slate-900">{stockDelta >= 0 ? '+' : ''}{formatNumber(stockDelta, 0)}</span></div>
+                  <div>Updated avg buy price: <span className="font-semibold text-slate-900">{formatCurrency(newAvgPrice)}</span></div>
+                  <div>Estimated remaining payable: <span className="font-semibold text-slate-900">{formatCurrency(estimatedRemaining)}</span></div>
+                  <div>Estimated overpayment credit: <span className="font-semibold text-slate-900">{formatCurrency(estimatedOverpaymentCredit)}</span></div>
+                </div>
+              </div>
+              {purchaseHistoryEditError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{purchaseHistoryEditError}</div>}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={closePurchaseHistoryEntryEdit} disabled={purchaseHistoryEditSubmitting}>Cancel</Button>
+                <Button onClick={() => void confirmPurchaseHistoryEntryEdit()} disabled={purchaseHistoryEditSubmitting}>
+                  {purchaseHistoryEditSubmitting ? 'Saving...' : 'Save Update'}
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
       )}
 

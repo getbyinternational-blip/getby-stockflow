@@ -7966,7 +7966,7 @@ export const deleteLegacySupplierPaymentGroup = async (allocations: Array<{ orde
 export const editInventoryPurchaseHistoryEntry = async (
   productId: string,
   purchaseHistoryId: string,
-  patch: { quantity: number; unitPrice: number }
+  patch: { quantity: number; unitPrice: number; nextBuyPrice?: number }
 ): Promise<Product[]> => {
   const data = loadData();
   const products = [...(data.products || [])];
@@ -7987,8 +7987,12 @@ export const editInventoryPurchaseHistoryEntry = async (
 
   const newQty = Math.max(0, Number(patch.quantity || 0));
   const newUnitPrice = Math.max(0, Number(patch.unitPrice || 0));
+  const requestedNextBuyPrice = patch.nextBuyPrice === undefined ? undefined : Math.max(0, Number(patch.nextBuyPrice || 0));
   if (newQty <= 0) failValidation('PURCHASE_ORDER_INVALID_STATE', 'Purchase quantity must be greater than zero.', { quantity: patch.quantity });
   if (!Number.isFinite(newUnitPrice) || newUnitPrice < 0) failValidation('PURCHASE_ORDER_INVALID_STATE', 'Purchase unit price must be zero or greater.', { unitPrice: patch.unitPrice });
+  if (requestedNextBuyPrice !== undefined && (!Number.isFinite(requestedNextBuyPrice) || requestedNextBuyPrice < 0)) {
+    failValidation('PURCHASE_ORDER_INVALID_STATE', 'Purchase average buy price must be zero or greater.', { nextBuyPrice: patch.nextBuyPrice });
+  }
 
   const oldQty = Math.max(0, Number(history.quantity || 0));
   const qtyDelta = newQty - oldQty;
@@ -8025,7 +8029,7 @@ export const editInventoryPurchaseHistoryEntry = async (
   const overpaidAmount = Math.max(0, Number((coveredAmount - totalAmount).toFixed(2)));
 
   const now = new Date().toISOString();
-  const nextBuyPrice = Number(newUnitPrice.toFixed(2));
+  const nextBuyPrice = Number((requestedNextBuyPrice ?? newUnitPrice).toFixed(2));
   const nextHistory = [...(product.purchaseHistory || [])];
   nextHistory[historyIndex] = {
     ...history,
