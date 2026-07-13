@@ -25,6 +25,7 @@ import { CanonicalCustomerBalanceResult, assertCanonicalBalanceErrorDoesNotTrust
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
+import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
 
 const normalizePhone = (v?: string) => String(v || '').replace(/\D/g, '');
 const normalizeName = (v?: string) => String(v || '').trim().toLowerCase();
@@ -861,12 +862,14 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
 
   const filteredData = useMemo(() => {
     let processed = [...canonicalCustomers];
+    const customerSeriesMap = buildCustomerSeriesMap(canonicalCustomers);
     
     if (deferredSearchQuery) {
         const lowerQ = deferredSearchQuery.toLowerCase();
         processed = processed.filter(c => 
             c.name.toLowerCase().includes(lowerQ) || 
-            c.phone.includes(lowerQ)
+            c.phone.includes(lowerQ) ||
+            (customerSeriesMap.get(c.id)?.toLowerCase() || '').includes(lowerQ)
         );
     }
     
@@ -887,6 +890,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     const totalDues = processed.reduce((acc, c) => acc + (canonicalDisplayBalanceByCustomerId.get(c.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(c.id)!.netReceivable : 0), 0);
     return { displayCustomers: processed, totalDues, totalCount: processed.length };
   }, [canonicalCustomers, deferredSearchQuery, filterType, sortBy, sortOrder, highValueThreshold, canonicalDisplayBalanceByCustomerId]);
+  const customerSeriesById = useMemo(() => buildCustomerSeriesMap(customers), [customers]);
   const customerTotalPages = Math.max(1, Math.ceil(filteredData.displayCustomers.length / CUSTOMERS_PAGE_SIZE));
   const paginatedCustomers = useMemo(
     () => filteredData.displayCustomers.slice((customerPage - 1) * CUSTOMERS_PAGE_SIZE, customerPage * CUSTOMERS_PAGE_SIZE),
@@ -2151,7 +2155,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           <div className="flex flex-col gap-2 sm:flex-row">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Search name or phone..." className="h-9 rounded-lg border-slate-200 bg-slate-50 pl-9" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                <Input placeholder="Search name, phone, or series..." className="h-9 rounded-lg border-slate-200 bg-slate-50 pl-9" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
             </div>
             <div className="flex items-center rounded-lg border border-slate-200 bg-white px-2 shrink-0">
                <Select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="h-full text-xs border-0 bg-transparent w-28 font-bold text-slate-700">
@@ -2415,7 +2419,10 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                     className="h-4 w-4 rounded border-slate-300"
                   />
                 </td>
-                <td className="px-3 py-2.5 align-top font-medium">{customer.name}</td>
+                <td className="px-3 py-2.5 align-top font-medium">
+                  <div>{customer.name}</div>
+                  <div className="text-[11px] text-muted-foreground">{customerSeriesById.get(customer.id) || 'CU01'}</div>
+                </td>
                 <td className="px-3 py-2.5 align-top">
                   <div>{formatOptionalText(customer.phone)}</div>
                   <div className="text-[11px] text-muted-foreground">{formatGstText(customer.gstNumber)}</div>

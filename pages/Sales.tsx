@@ -25,6 +25,7 @@ import { getCanonicalCustomerBalanceView } from '../services/customerBalanceView
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
+import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
 
 const toMoneyCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100);
 const fromMoneyCents = (value: number) => value / 100;
@@ -1447,7 +1448,13 @@ export default function Sales() {
 
   useEffect(() => {
   }, [products.length, filteredProducts.length, productSearch, selectedCategory]);
-  const filteredCustomers = customerSearch ? customers.filter(c => c.name.toLowerCase().includes(customerSearch.toLowerCase()) || c.phone.includes(customerSearch)) : [];
+  const customerSeriesById = useMemo(() => buildCustomerSeriesMap(customers), [customers]);
+  const filteredCustomers = customerSearch ? customers.filter(c => {
+    const lowerSearch = customerSearch.toLowerCase();
+    return c.name.toLowerCase().includes(lowerSearch)
+      || c.phone.includes(customerSearch)
+      || (customerSeriesById.get(c.id)?.toLowerCase() || '').includes(lowerSearch);
+  }) : [];
   const productTotalPages = Math.max(1, Math.ceil(filteredProducts.length / POS_PRODUCTS_PER_PAGE));
   const paginatedProducts = filteredProducts.slice((productPage - 1) * POS_PRODUCTS_PER_PAGE, productPage * POS_PRODUCTS_PER_PAGE);
   const returnTransactions = useMemo(() => {
@@ -2134,12 +2141,15 @@ export default function Sales() {
               <div className="space-y-2">
                 {/* POS DEBUG ACTIVE */}
                 {!hasSelectedCustomer ? (
-                  <Input placeholder="Search phone or name..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} />
+                  <Input placeholder="Search phone, name, or series..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} />
                 ) : (
                   <div className="bg-muted p-2 rounded border">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-bold truncate">{selectedCustomerDisplayRecord?.name || (isSelectedCustomerPendingResolution ? 'Resolving customer...' : 'Customer selected')}</p>
+                        <p className="text-sm font-bold truncate">
+                          {selectedCustomerDisplayRecord?.name || (isSelectedCustomerPendingResolution ? 'Resolving customer...' : 'Customer selected')}
+                          {selectedCustomerDisplayRecord?.id ? ` (${customerSeriesById.get(selectedCustomerDisplayRecord.id) || 'CU01'})` : ''}
+                        </p>
                         <p className="text-xs text-muted-foreground">{selectedCustomerDisplayRecord?.phone || (selectedCustomerId || '')}</p>
                         {selectedCustomerDue > 0 && (
                           <p className="mt-1 text-xs font-semibold text-orange-700">
@@ -2155,7 +2165,7 @@ export default function Sales() {
                   <div className="border rounded-lg max-h-40 overflow-auto divide-y">
                     {filteredCustomers.map(c => (
                       <div key={c.id} className="p-2 hover:bg-muted cursor-pointer" onClick={() => { mutateSelectedCustomer(c, 'customer_search_select_desktop', 'set', 'customer search result click'); setInvoiceGstName(c.gstName || ''); setInvoiceGstNumber(c.gstNumber || ''); setCustomerSearch(''); }}>
-                        <p className="text-sm font-bold">{c.name}</p><p className="text-xs text-muted-foreground">{c.phone}</p>
+                        <p className="text-sm font-bold">{c.name} <span className="text-xs font-medium text-muted-foreground">({customerSeriesById.get(c.id) || 'CU01'})</span></p><p className="text-xs text-muted-foreground">{c.phone}</p>
                       </div>
                     ))}
                   </div>
@@ -2500,13 +2510,16 @@ export default function Sales() {
                     {!hasSelectedCustomer ? (
                       <div className="relative">
                         <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                        <Input placeholder="Search phone or name..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="pl-9" />
+                        <Input placeholder="Search phone, name, or series..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="pl-9" />
                       </div>
                     ) : (
                       <div className="bg-muted p-3 rounded-lg border">
                         <div className="flex items-center justify-between gap-3">
                           <div className="text-sm min-w-0">
-                            <p className="font-bold truncate">{selectedCustomerDisplayRecord?.name || (isSelectedCustomerPendingResolution ? 'Resolving customer...' : 'Customer selected')}</p>
+                            <p className="font-bold truncate">
+                              {selectedCustomerDisplayRecord?.name || (isSelectedCustomerPendingResolution ? 'Resolving customer...' : 'Customer selected')}
+                              {selectedCustomerDisplayRecord?.id ? ` (${customerSeriesById.get(selectedCustomerDisplayRecord.id) || 'CU01'})` : ''}
+                            </p>
                             <p className="text-xs text-muted-foreground">{selectedCustomerDisplayRecord?.phone || (selectedCustomerId || '')}</p>
                             {selectedCustomerDue > 0 && (
                               <p className="mt-1 text-xs font-semibold text-orange-700">
@@ -2522,7 +2535,7 @@ export default function Sales() {
                       <div className="border rounded-lg max-h-40 overflow-auto divide-y">
                         {filteredCustomers.map(c => (
                           <div key={c.id} className="p-3 hover:bg-muted cursor-pointer transition-colors" onClick={() => { mutateSelectedCustomer(c, 'customer_search_select_mobile', 'set', 'customer search result click'); setInvoiceGstName(c.gstName || ''); setInvoiceGstNumber(c.gstNumber || ''); setCustomerSearch(''); }}>
-                            <p className="text-sm font-bold">{c.name}</p>
+                            <p className="text-sm font-bold">{c.name} <span className="text-xs font-medium text-muted-foreground">({customerSeriesById.get(c.id) || 'CU01'})</span></p>
                             <p className="text-xs text-muted-foreground">{c.phone}</p>
                           </div>
                         ))}
