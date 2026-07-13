@@ -18,7 +18,8 @@ export default function Settings() {
     storeName: '', ownerName: '', gstin: '', email: '', phone: '',
     addressLine1: '', addressLine2: '', state: '',
     bankName: '', bankAccount: '', bankIfsc: '', bankHolder: '',
-    defaultTaxRate: 0, defaultTaxLabel: 'None', signatureImage: '', logoImage: '', repairCenterEnabled: false, adminPin: ''
+    defaultTaxRate: 0, defaultTaxLabel: 'None', signatureImage: '', logoImage: '', repairCenterEnabled: false, adminPin: '',
+    invoiceFormat: 'standard', thermalPaperWidth: '80mm'
   });
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -67,6 +68,8 @@ export default function Settings() {
       const data = loadData();
       setProfile({
         ...data.profile,
+        invoiceFormat: data.profile?.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
+        thermalPaperWidth: data.profile?.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
         customerCatalogFirstPage: typeof data.profile?.customerCatalogFirstPage === 'string' ? data.profile.customerCatalogFirstPage : '',
         customerCatalogFirstPageName: typeof data.profile?.customerCatalogFirstPageName === 'string' ? data.profile.customerCatalogFirstPageName : '',
         customerCatalogFirstPageMimeType: typeof data.profile?.customerCatalogFirstPageMimeType === 'string' ? data.profile.customerCatalogFirstPageMimeType : '',
@@ -90,6 +93,8 @@ export default function Settings() {
   const handleSave = async () => {
     const safeProfile: StoreProfile = {
       ...profile,
+      invoiceFormat: profile.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
+      thermalPaperWidth: profile.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
       customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
       customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
       customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
@@ -542,7 +547,7 @@ export default function Settings() {
               <div className="space-y-2">
                   <Label>Default Invoice Format</Label>
                   <p className="text-[10px] text-muted-foreground mb-1">Choose how your invoices are generated and printed.</p>
-                  <Select value={profile.invoiceFormat || 'standard'} onChange={(e) => setProfile({...profile, invoiceFormat: e.target.value as any})} className="bg-background">
+                  <Select value={profile.invoiceFormat || 'standard'} onChange={(e) => setProfile({...profile, invoiceFormat: e.target.value === 'thermal' ? 'thermal' : 'standard'})} className="bg-background">
                       <option value="standard">Standard PDF (A4)</option>
                       <option value="thermal">Thermal Print (Responsive)</option>
                   </Select>

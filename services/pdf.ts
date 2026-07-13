@@ -48,6 +48,10 @@ const getThermalPaperWidth = (profile?: Partial<StoreProfile> | null): ThermalPa
   (profile?.thermalPaperWidth === '58mm' ? '58mm' : '80mm')
 );
 
+const getInvoiceFormat = (profile?: Partial<StoreProfile> | null): 'standard' | 'thermal' => (
+  profile?.invoiceFormat === 'thermal' ? 'thermal' : 'standard'
+);
+
 const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((resolve, reject) => {
   const width = 900;
   const height = 720;
@@ -1106,7 +1110,7 @@ export const generateReceiptPDF = (
       return cleaned;
     };
     
-    if (profile.invoiceFormat === 'thermal') {
+    if (getInvoiceFormat(profile) === 'thermal') {
         if (options?.returnDataUrl) throw new Error('Thermal invoice data URL preview is not supported yet.');
         void printThermalInvoice(transaction, customers, paymentDetails);
         return;
@@ -1414,6 +1418,9 @@ const printThermalInvoiceLegacy = (transaction: Transaction, customers: Customer
       : (transaction.invoiceNo || `IN-${transaction.id.slice(-6)}`);
     const date = new Date(transaction.date).toLocaleDateString();
     const time = new Date(transaction.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const shouldShowCustomerGst = Boolean(transaction.gstApplied && (transaction.gstName || transaction.gstNumber));
+    const customerGstName = String(transaction.gstName || '-').trim() || '-';
+    const customerGstNumber = String(transaction.gstNumber || '-').trim() || '-';
 
     const html = `
 <!DOCTYPE html>
@@ -1535,6 +1542,8 @@ const printThermalInvoiceLegacy = (transaction: Transaction, customers: Customer
       <h4>Bill To</h4>
       <p><strong>${transaction.customerName || 'Walk-in Customer'}</strong></p>
       <p>Contact: ${customer?.phone || '-'}</p>
+      ${shouldShowCustomerGst ? `<p><strong>GST Name:</strong> ${customerGstName}</p>` : ''}
+      ${shouldShowCustomerGst ? `<p><strong>GST Number:</strong> ${customerGstNumber}</p>` : ''}
     </div>
     <div class="invoice-details">
       <h4>Details</h4>
@@ -1652,5 +1661,10 @@ export const printReceipt = async (
   customers: Customer[],
   paymentDetails?: ReceiptPaymentDetails,
 ): Promise<ReceiptPrintResult> => {
-  return printThermalInvoice(transaction, customers, paymentDetails);
+  const { profile } = loadData();
+  if (getInvoiceFormat(profile) === 'thermal') {
+    return printThermalInvoice(transaction, customers, paymentDetails);
+  }
+  generateReceiptPDF(transaction, customers, paymentDetails);
+  return { mode: 'download', usedFallback: false };
 };

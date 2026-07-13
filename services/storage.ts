@@ -4221,6 +4221,8 @@ export const requestStoreProvisioning = async (context?: string) => {
 
 const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile => ({
   ...profile,
+  invoiceFormat: profile.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
+  thermalPaperWidth: profile.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
   customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
   customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
   customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',

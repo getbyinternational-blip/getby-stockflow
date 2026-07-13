@@ -53,11 +53,12 @@ export const getConfiguredMetaWhatsAppServerUrl = () => {
 export const sendInvoiceViaMetaWhatsApp = async (
   payload: MetaWhatsAppInvoiceRequest,
 ): Promise<MetaWhatsAppInvoiceResponse> => {
+  const backendKey = getMetaPublicKey().trim();
   const response = await fetch(`${getMetaBaseUrl()}/api/whatsapp/send-invoice`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-stockflow-whatsapp-key': getMetaPublicKey(),
+      'x-stockflow-whatsapp-key': backendKey,
     },
     body: JSON.stringify(payload),
   });
@@ -71,6 +72,9 @@ export const sendInvoiceViaMetaWhatsApp = async (
   }
 
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('WhatsApp backend key is invalid. Check frontend Vercel env key.');
+    }
     throw new Error(data?.message || 'Failed to send invoice via Official WhatsApp.');
   }
 
