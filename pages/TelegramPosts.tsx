@@ -522,45 +522,62 @@ export default function TelegramPosts() {
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Telegram Posts</h1>
-          <p className="text-muted-foreground">Create collections, save category-specific Telegram settings, track what posted last, and modify the active catalog setup live.</p>
-        </div>
-        <Card className="border-sky-100 bg-sky-50/70">
-          <CardContent className="grid grid-cols-2 gap-3 p-4">
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Filtered</div>
-              <div className="mt-1 text-2xl font-bold text-sky-950">{filteredProducts.length}</div>
-            </div>
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Queued</div>
-              <div className="mt-1 text-2xl font-bold text-sky-950">{queuedProducts.length}</div>
-            </div>
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Out of Stock</div>
-              <div className="mt-1 text-2xl font-bold text-sky-950">{outOfStockProducts.length}</div>
-            </div>
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Will Send</div>
-              <div className="mt-1 text-2xl font-bold text-sky-950">{targetProducts.length}</div>
-            </div>
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Posted Total</div>
-              <div className="mt-1 text-2xl font-bold text-sky-950">{totalPostedCount}</div>
-            </div>
-            <div>
-              <div className="text-xs font-bold uppercase tracking-widest text-sky-700">Collections</div>
-              <div className="mt-1 text-2xl font-bold text-sky-950">{telegramCollections.length}</div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
       {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${noticeClassName}`}>{notice.message}</div>}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div className="space-y-6">
+          <Card className="border-sky-100 bg-sky-50/70 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base tracking-wide uppercase text-slate-700">Collection Status</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1.2fr)_180px_180px]">
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Currently Serving</div>
+                  <div className="mt-1 text-lg font-bold text-slate-950">{activeCollection?.name || 'No active collection selected'}</div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    {activeCollection
+                      ? `${activeCollection.category === 'all' ? 'All categories' : activeCollection.category} • ${activeCollection.postMode.replace(/_/g, ' ')}`
+                      : 'Choose a saved collection below or create a new one.'}
+                  </div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Saved Collections</div>
+                  <div className="mt-1 text-2xl font-bold text-slate-950">{telegramCollections.length}</div>
+                  <div className="mt-1 text-sm text-slate-600">Reusable channel and queue setups</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Live Catalog</div>
+                  <div className="mt-1 text-2xl font-bold text-slate-950">{totalPostedCount}</div>
+                  <div className="mt-1 text-sm text-slate-600">Posts sent so far</div>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_180px_180px]">
+                <div className="space-y-2">
+                  <Label>Open Saved Collection</Label>
+                  <Select value={activeCollectionId} onChange={(event) => loadCollection(event.target.value)}>
+                    <option value="">Select saved collection</option>
+                    {telegramCollections.map((collection) => (
+                      <option key={collection.id} value={collection.id}>{collection.name} ({collection.category})</option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="rounded-xl border bg-white p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Filtered</div>
+                  <div className="mt-1 text-xl font-bold text-slate-950">{filteredProducts.length}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Queued</div>
+                  <div className="mt-1 text-xl font-bold text-slate-950">{queuedProducts.length}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-4 text-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Will Send</div>
+                  <div className="mt-1 text-xl font-bold text-slate-950">{targetProducts.length}</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card className="shadow-sm">
             <CardHeader>
               <CardTitle className="text-base tracking-wide uppercase text-slate-700">1. Post Type</CardTitle>
@@ -619,12 +636,7 @@ export default function TelegramPosts() {
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
                 <div className="space-y-2">
                   <Label>Choose Collection</Label>
-                  <Select value={activeCollectionId} onChange={(event) => loadCollection(event.target.value)}>
-                    <option value="">Select saved collection</option>
-                    {telegramCollections.map((collection) => (
-                      <option key={collection.id} value={collection.id}>{collection.name} ({collection.category})</option>
-                    ))}
-                  </Select>
+                  <Input value={activeCollection?.name || 'No saved collection selected'} readOnly className="bg-slate-50" />
                 </div>
                 <div className="space-y-2">
                   <Label>Collection Category</Label>

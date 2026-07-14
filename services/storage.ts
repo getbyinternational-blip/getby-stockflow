@@ -29,7 +29,7 @@ import {
   OperatorUser,
 } from '../types';
 import { db, auth } from './firebase';
-import { doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, getDocs, getDoc, deleteDoc, runTransaction as runFirestoreTransaction, query, where } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, getDocs, getDoc, deleteDoc, deleteField, runTransaction as runFirestoreTransaction, query, where } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { aggregateCartItemsByStockBucket, normalizeStockBucketColor, normalizeStockBucketVariant } from './stockBuckets';
 import { financeLog } from './financeLogger';
@@ -408,6 +408,24 @@ const ROOT_STORE_BLOCKED_ARRAY_FIELDS = [
   'partyCreditLedger',
 ] as const;
 
+const ROOT_STORE_LEGACY_CLEANUP_FIELDS = [
+  ...ROOT_STORE_BLOCKED_ARRAY_FIELDS,
+  'freightInquiries',
+  'freightConfirmedOrders',
+  'freightPurchases',
+  'purchaseReceiptPostings',
+  'repairHistoryEntries',
+] as const;
+
+const isFirestoreDocumentSizeLikeError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  const normalized = message.toLowerCase();
+  return (
+    (normalized.includes('cannot be written') || normalized.includes('maximum allowed size') || normalized.includes('exceeds') || normalized.includes('1,048,576') || normalized.includes('1048576'))
+    && (normalized.includes('stores/') || normalized.includes('document') || normalized.includes('firestore'))
+  );
+};
+
 const assertNoLargeArraysInRootStorePayload = (payload: Record<string, unknown>, reason: string) => {
   const blockedFields = ROOT_STORE_BLOCKED_ARRAY_FIELDS
     .map((field) => ({ field, value: payload[field] }))
@@ -421,6 +439,32 @@ const assertNoLargeArraysInRootStorePayload = (payload: Record<string, unknown>,
   }));
   console.error('[storage] Blocked root stores/{uid} write containing large array fields.', { functionName: reason, fields: details });
   throw new Error(`Blocked root store write from ${reason} containing large array fields: ${details.map((item) => item.field).join(', ')}`);
+};
+
+const cleanupLegacyRootStoreFields = async (uid: string, reason: string) => {
+  if (!db) return;
+  const cleanupPayload = Object.fromEntries(
+    ROOT_STORE_LEGACY_CLEANUP_FIELDS.map((field) => [field, deleteField()])
+  );
+  await setDoc(doc(db, 'stores', uid), cleanupPayload, { merge: true });
+  void writeAuditEvent('UPDATE', {
+    reason: `${reason}_legacy_root_cleanup`,
+    cleanedFields: ROOT_STORE_LEGACY_CLEANUP_FIELDS,
+  });
+};
+
+const retryRootStoreWriteAfterLegacyCleanup = async (
+  uid: string,
+  payload: Record<string, unknown>,
+  reason: string,
+) => {
+  try {
+    await setDoc(doc(db!, 'stores', uid), payload, { merge: true });
+  } catch (error) {
+    if (!isFirestoreDocumentSizeLikeError(error)) throw error;
+    await cleanupLegacyRootStoreFields(uid, reason);
+    await setDoc(doc(db!, 'stores', uid), payload, { merge: true });
+  }
 };
 
 const ensureStoreInitializedForCurrentUser = async (
@@ -2152,7 +2196,7 @@ const commitProcessTransactionAtomically = async ({
       }
 
       const updatedProduct = applyTransactionItemsToProduct(currentProduct, normalizeTransactionItems(transaction.items), transaction.type);
-      firestoreTx.set(productRef, sanitizeData(updatedProduct), { merge: true });
+      firestoreTx.set(productRef, buildInventoryMutationProductPatch(updatedProduct), { merge: true });
       committedProducts.push(updatedProduct);
     }
 
@@ -3160,6 +3204,16 @@ const sanitizeProductPayload = (product: Product): Product => {
   return cleaned as Product;
 };
 
+const buildInventoryMutationProductPatch = (product: Product) => sanitizeData({
+  stock: cleanProductNumber(product.stock, 0),
+  totalPurchase: cleanProductNumber(product.totalPurchase, 0),
+  totalSold: cleanProductNumber(product.totalSold, 0),
+  updatedAt: cleanProductText((product as any).updatedAt) || new Date().toISOString(),
+  variants: Array.isArray(product.variants) ? product.variants.filter(Boolean).map(String) : [],
+  colors: Array.isArray(product.colors) ? product.colors.filter(Boolean).map(String) : [],
+  stockByVariantColor: Array.isArray((product as any).stockByVariantColor) ? (product as any).stockByVariantColor : [],
+});
+
 const sanitizeVariantColorStock = (product: Product): Product => {
   const entries = Array.isArray(product.stockByVariantColor) ? product.stockByVariantColor : [];
   const dedup = new Map<string, { variant: string; color: string; stock: number; buyPrice?: number; sellPrice?: number; totalPurchase?: number; totalSold?: number }>();
@@ -3718,7 +3772,7 @@ const syncToCloud = async (data: AppState) => {
           return;
         }
         assertNoLargeArraysInRootStorePayload(cleanData as Record<string, unknown>, 'syncToCloud');
-        await setDoc(doc(db, "stores", user.uid), cleanData, { merge: true });
+        await retryRootStoreWriteAfterLegacyCleanup(user.uid, cleanData as Record<string, unknown>, 'syncToCloud');
     } catch (e) {
         throw e;
     }
@@ -4273,7 +4327,7 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
   }
 
   const user = await assertCloudWriteReady('updateStoreProfile');
-  await setDoc(doc(db, 'stores', user.uid), sanitizeData({ profile: safeProfile }), { merge: true });
+  await retryRootStoreWriteAfterLegacyCleanup(user.uid, sanitizeData({ profile: safeProfile }) as Record<string, unknown>, 'updateStoreProfile');
   memoryState = nextState;
   emitLocalStorageUpdate();
   await writeAuditEvent('UPDATE', {
