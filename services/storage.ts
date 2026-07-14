@@ -2301,6 +2301,9 @@ const defaultProfile: StoreProfile = {
   invoiceFormat: 'standard',
   autoSendInvoiceAfterCreation: false,
   repairCenterEnabled: false,
+  telegramCollections: [],
+  telegramPostActivity: [],
+  telegramActiveCollectionId: '',
 };
 
 const DEFAULT_SALES_INVOICE_SERIES = Object.freeze({ nextNumber: 201, padding: 5, prefix: '' });
@@ -3708,7 +3711,7 @@ const syncToCloud = async (data: AppState) => {
 
     try {
         // Keep subcollection-owned entities out of root store writes to avoid array-overwrite blast radius.
-        const { products: _omitProducts, customers: _omitCustomers, transactions: _omitTransactions, deletedTransactions: _omitDeletedTransactions, purchaseOrders: _omitPurchaseOrders, expenses: _omitExpenses, expenseActivities: _omitExpenseActivities, supplierPayments: _omitSupplierPayments, customerProductStats: _omitCustomerProductStats, auditEvents: _omitAuditEvents, operationCommits: _omitOperationCommits, purchaseParties: _omitPurchaseParties, partyCreditLedger: _omitPartyCreditLedger, freightInquiries: _omitFreightInquiries, freightConfirmedOrders: _omitFreightConfirmedOrders, freightPurchases: _omitFreightPurchases, ...rootStateWithoutMigratedEntities } = data as AppState & Record<string, unknown>;
+        const { products: _omitProducts, customers: _omitCustomers, transactions: _omitTransactions, deletedTransactions: _omitDeletedTransactions, purchaseOrders: _omitPurchaseOrders, expenses: _omitExpenses, expenseActivities: _omitExpenseActivities, supplierPayments: _omitSupplierPayments, customerProductStats: _omitCustomerProductStats, auditEvents: _omitAuditEvents, operationCommits: _omitOperationCommits, purchaseParties: _omitPurchaseParties, partyCreditLedger: _omitPartyCreditLedger, freightInquiries: _omitFreightInquiries, freightConfirmedOrders: _omitFreightConfirmedOrders, freightPurchases: _omitFreightPurchases, cashSessions: _omitCashSessions, cashAdjustments: _omitCashAdjustments, manualCashbookEntries: _omitManualCashbookEntries, operatorUsers: _omitOperatorUsers, repairHistoryEntries: _omitRepairHistoryEntries, ...rootStateWithoutMigratedEntities } = data as AppState & Record<string, unknown>;
         const normalizedState = { ...rootStateWithoutMigratedEntities };
         const cleanData = sanitizeData(normalizedState);
         if (!cleanData || typeof cleanData !== 'object' || Object.keys(cleanData).length === 0) {
@@ -4226,6 +4229,37 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
   customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
   customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
   customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
+  telegramCollections: Array.isArray(profile.telegramCollections) ? profile.telegramCollections.map((collection) => ({
+    ...collection,
+    id: String(collection?.id || '').trim(),
+    name: String(collection?.name || '').trim(),
+    category: String(collection?.category || 'all').trim() || 'all',
+    channelId: String(collection?.channelId || '').trim(),
+    template: String(collection?.template || '').trim(),
+    notes: String(collection?.notes || '').trim(),
+    postMode: (collection?.postMode === 'out_of_stock' || collection?.postMode === 'filtered' ? collection.postMode : 'selected') as any,
+    queuedProductIds: Array.isArray(collection?.queuedProductIds) ? collection.queuedProductIds.map((productId) => String(productId || '').trim()).filter(Boolean) : [],
+    createdAt: String(collection?.createdAt || new Date().toISOString()),
+    updatedAt: String(collection?.updatedAt || new Date().toISOString()),
+    lastPostedAt: String(collection?.lastPostedAt || '').trim() || undefined,
+    lastPostedProductName: String(collection?.lastPostedProductName || '').trim() || undefined,
+    totalPostsSent: Number.isFinite(Number(collection?.totalPostsSent)) ? Math.max(0, Number(collection?.totalPostsSent)) : 0,
+  })).filter((collection) => collection.id && collection.name) : [],
+  telegramPostActivity: Array.isArray(profile.telegramPostActivity) ? profile.telegramPostActivity.map((entry) => ({
+    ...entry,
+    id: String(entry?.id || '').trim(),
+    collectionId: String(entry?.collectionId || '').trim() || undefined,
+    collectionName: String(entry?.collectionName || '').trim() || undefined,
+    category: String(entry?.category || 'all').trim() || 'all',
+    channelId: String(entry?.channelId || '').trim(),
+    postMode: (entry?.postMode === 'out_of_stock' || entry?.postMode === 'filtered' ? entry.postMode : 'selected') as any,
+    productCount: Number.isFinite(Number(entry?.productCount)) ? Math.max(0, Number(entry?.productCount)) : 0,
+    successCount: Number.isFinite(Number(entry?.successCount)) ? Math.max(0, Number(entry?.successCount)) : 0,
+    failureCount: Number.isFinite(Number(entry?.failureCount)) ? Math.max(0, Number(entry?.failureCount)) : 0,
+    postedAt: String(entry?.postedAt || new Date().toISOString()),
+    lastPostedProductName: String(entry?.lastPostedProductName || '').trim() || undefined,
+  })).filter((entry) => entry.id) : [],
+  telegramActiveCollectionId: String(profile.telegramActiveCollectionId || '').trim(),
 });
 
 export const updateStoreProfile = async (profile: StoreProfile): Promise<StoreProfile> => {
@@ -4918,7 +4952,6 @@ export const addCustomer = (customer: Customer): Customer[] => {
     emitLocalStorageUpdate();
 
     void upsertCustomerInSubcollection(newCustomer, 'addCustomer')
-      .then(() => syncToCloud({ ...data }))
       .then(() => writeAuditEvent('CREATE', {
         reason: 'addCustomer_subcollection',
         migrationPhase: CUSTOMERS_MIGRATION_PHASE,
@@ -4951,7 +4984,6 @@ export const updateCustomer = (customer: Customer): Customer[] => {
     }
 
     void upsertCustomerInSubcollection(normalizedCustomer, 'updateCustomer')
-      .then(() => syncToCloud({ ...data }))
       .then(() => writeAuditEvent('UPDATE', {
         reason: 'updateCustomer_subcollection',
         migrationPhase: CUSTOMERS_MIGRATION_PHASE,
@@ -5384,7 +5416,6 @@ export const deleteCustomer = (id: string): Customer[] => {
     emitLocalStorageUpdate();
 
     void deleteCustomerInSubcollection(id, 'deleteCustomer')
-      .then(() => syncToCloud({ ...data }))
       .then(() => writeAuditEvent('DELETE', {
         reason: 'deleteCustomer_subcollection',
         migrationPhase: CUSTOMERS_MIGRATION_PHASE,

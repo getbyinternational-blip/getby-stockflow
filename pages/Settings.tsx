@@ -11,9 +11,11 @@ import { Button, Input, Card, CardContent, CardHeader, CardTitle, Label, Select 
 import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { getEffectiveAdminPin } from '../src/auth/permissions';
+import { isAdmin } from '../src/auth/simplePermissions';
 const isValidOperatorPin = (value: string) => /^\d{6,8}$/.test(value.trim());
 
 export default function Settings() {
+  const adminAccess = isAdmin();
   const [profile, setProfile] = useState<StoreProfile>({
     storeName: '', ownerName: '', gstin: '', email: '', phone: '',
     addressLine1: '', addressLine2: '', state: '',
@@ -437,7 +439,7 @@ export default function Settings() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
-          <p className="text-muted-foreground">Manage your store profile.</p>
+          <p className="text-muted-foreground">{adminAccess ? 'Manage your store profile.' : 'Staff settings can update tax defaults and invoice behavior only.'}</p>
           {userEmail && (
             <p className="text-xs font-medium text-primary mt-1 flex items-center gap-1">
               <ShieldCheck className="w-3 h-3" /> Logged in as: {userEmail}
@@ -466,8 +468,8 @@ export default function Settings() {
               <div className="space-y-2"><Label>GSTIN</Label><Input value={profile.gstin || ''} onChange={e => setProfile({...profile, gstin: e.target.value})} /></div>
              <div className="space-y-2"><Label>Business Logo</Label><div className="flex items-center gap-3"><div className="h-16 w-24 border rounded bg-muted/20 flex items-center justify-center overflow-hidden">{profile.logoImage ? <img src={profile.logoImage} alt="Logo" className="max-w-full max-h-full object-contain" /> : <span className="text-[10px] text-muted-foreground">No Logo</span>}</div><div className="flex flex-col gap-2"><Input type="file" accept="image/*" onChange={handleLogoUpload} className="text-xs h-auto py-1" />{profile.logoImage && <Button variant="ghost" size="sm" onClick={() => setProfile({...profile, logoImage: ''})} className="text-destructive h-7 px-2">Remove</Button>}</div></div></div>
            </CardContent>
-        </Card>
-        <Card className="md:col-span-2">
+         </Card>
+        {adminAccess && <Card className="md:col-span-2">
           <CardHeader><CardTitle className="flex items-center gap-2"><FileText className="w-5 h-5 text-primary" /> Customer Catalog Default First Page</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <p className="text-xs text-muted-foreground">Upload an image first page for Customer Catalog PDF. Internal Audit/Invoices are unaffected.</p>
@@ -480,7 +482,7 @@ export default function Settings() {
               </div>
             )}
           </CardContent>
-        </Card>
+        </Card>}
 
         {/* Tax Configuration Section */}
         <Card className="border-primary/20 bg-primary/5">
@@ -502,7 +504,7 @@ export default function Settings() {
            </CardContent>
         </Card>
 
-        <Card>
+        {adminAccess && <Card>
            <CardHeader><CardTitle className="flex items-center gap-2"><Building2 className="w-5 h-5 text-primary" /> Contact & Address</CardTitle></CardHeader>
            <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -512,9 +514,9 @@ export default function Settings() {
               <div className="space-y-2"><Label>Address</Label><Input value={profile.addressLine1 || ''} onChange={e => setProfile({...profile, addressLine1: e.target.value})} /></div>
               <div className="space-y-2"><Label>State</Label><Input value={profile.state || ''} onChange={e => setProfile({...profile, state: e.target.value})} /></div>
            </CardContent>
-        </Card>
+        </Card>}
 
-        <Card>
+        {adminAccess && <Card>
            <CardHeader><CardTitle className="flex items-center gap-2"><ImageIcon className="w-5 h-5 text-primary" /> Authorized Signature</CardTitle></CardHeader>
            <CardContent className="space-y-4">
               <div className="space-y-2">
@@ -539,9 +541,9 @@ export default function Settings() {
                   </div>
               </div>
            </CardContent>
-        </Card>
+        </Card>}
 
-        <Card>
+        {adminAccess && <Card>
            <CardHeader><CardTitle className="flex items-center gap-2 text-primary"><FileText className="w-5 h-5" /> Invoice Settings</CardTitle></CardHeader>
            <CardContent className="space-y-4">
               <div className="space-y-2">
@@ -567,19 +569,19 @@ export default function Settings() {
                 />
                 Auto send invoice to customer after invoice creation
               </label>
-              <label className="flex items-center gap-2 text-sm">
+              {adminAccess && <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={Boolean(profile.repairCenterEnabled)}
                   onChange={(e) => setProfile({ ...profile, repairCenterEnabled: e.target.checked })}
                 />
                 Show Repair Center tab
-              </label>
+              </label>}
            </CardContent>
-        </Card>
+        </Card>}
 
 
-        <Card>
+        {adminAccess && <Card>
           <CardHeader><CardTitle>WhatsApp Integration</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             {!waResolvedServerUrl && <p className="text-sm text-amber-700">WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL in Vercel Project Settings → Environment Variables, then redeploy.</p>}
@@ -606,8 +608,8 @@ export default function Settings() {
               </p>
             )}
           </CardContent>
-        </Card>
-        <Card className='md:col-span-2'>
+        </Card>}
+        {adminAccess && <Card className='md:col-span-2'>
            <CardHeader><CardTitle className="flex items-center gap-2"><Landmark className="w-5 h-5 text-primary" /> Bank Details</CardTitle></CardHeader>
            <CardContent className="grid md:grid-cols-2 gap-4">
               <div className="space-y-2"><Label>Bank Name</Label><Input value={profile.bankName || ''} onChange={e => setProfile({...profile, bankName: e.target.value})} /></div>
@@ -615,7 +617,7 @@ export default function Settings() {
               <div className="space-y-2"><Label>Account Number</Label><Input value={profile.bankAccount || ''} onChange={e => setProfile({...profile, bankAccount: e.target.value})} /></div>
               <div className="space-y-2"><Label>IFSC</Label><Input value={profile.bankIfsc || ''} onChange={e => setProfile({...profile, bankIfsc: e.target.value})} /></div>
            </CardContent>
-        </Card>
+        </Card>}
       </div>
       
       <div className="flex items-center gap-4 border-t pt-6">

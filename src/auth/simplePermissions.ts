@@ -26,7 +26,7 @@ const operatorPermissions: Record<SimplePermission, boolean> = {
   cashbook: false,
   purchases: false,
   freight: false,
-  settings: false,
+  settings: true,
   transactionEdit: false,
   transactionDelete: false,
   cashWithdrawal: false,

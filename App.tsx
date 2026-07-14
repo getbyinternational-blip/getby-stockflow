@@ -7,7 +7,7 @@ import { auth } from './services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { loadData } from './services/storage';
 import { emitFinanceSnapshot } from './utils/financeDebugLogger';
-import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, Truck, ClipboardList, BarChart3, Wrench } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, Truck, ClipboardList, BarChart3, Wrench, Send } from 'lucide-react';
 import { Button, LightweightLoader } from './components/ui';
 import { useVersionCheck } from './src/hooks/useVersionCheck';
 import Settings from './pages/Settings';
@@ -34,6 +34,7 @@ const ProductAnalytics = lazy(() => import('./pages/ProductAnalytics'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Cashbook = lazy(() => import('./pages/Cashbook'));
 const RepairCenter = lazy(() => import('./pages/RepairCenter'));
+const TelegramPosts = lazy(() => import('./pages/TelegramPosts'));
 
 // --- Components ---
 
@@ -339,6 +340,7 @@ function AppContent() {
             <p className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-2">Menu</p>
             <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
             <NavItem to="/" icon={Package} label="Inventory" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
+            <NavItem to="/telegram-posts" icon={Send} label="Telegram Posts" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
             <NavItem to="/sales" icon={ShoppingCart} label="POS System" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
             <NavItem to="/transactions" icon={ArrowRightLeft} label="Transactions" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
             {can('analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
@@ -413,6 +415,12 @@ function AppContent() {
                               </div>
                               <span className="font-medium text-sm">Dashboard</span>
                          </Link>
+                         <Link to="/telegram-posts" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
+                              <div className="p-3 bg-sky-100 text-sky-700 rounded-full mb-2">
+                                  <Send className="w-6 h-6" />
+                              </div>
+                              <span className="font-medium text-sm">Telegram Posts</span>
+                         </Link>
                          {can('analytics') && <Link to="/product-analytics" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
                               <div className="p-3 bg-cyan-100 text-cyan-600 rounded-full mb-2">
                                   <BarChart3 className="w-6 h-6" />
@@ -466,6 +474,7 @@ function AppContent() {
             <Suspense fallback={<LightweightLoader label="Loading page…" className="min-h-[320px]" />}>
               <Routes>
                 <Route path="/" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Admin /></ProtectedRoute>} />
+                <Route path="/telegram-posts" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><TelegramPosts /></ProtectedRoute>} />
                 <Route path="/transactions" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Transactions /></ProtectedRoute>} />
                 <Route path="/dashboard" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Dashboard /></ProtectedRoute>} />
                 <Route path="/product-analytics" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="analytics" label="Product Analytics"><ProductAnalytics /></AccessControlledRoute>} />

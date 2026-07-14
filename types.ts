@@ -137,6 +137,38 @@ export interface DocumentSeriesConfig {
   prefix?: string;
 }
 
+export type TelegramPostMode = 'selected' | 'filtered' | 'out_of_stock';
+
+export interface TelegramPostCollection {
+  id: string;
+  name: string;
+  category: string;
+  channelId: string;
+  template: string;
+  notes: string;
+  postMode: TelegramPostMode;
+  queuedProductIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastPostedAt?: string;
+  lastPostedProductName?: string;
+  totalPostsSent?: number;
+}
+
+export interface TelegramPostActivity {
+  id: string;
+  collectionId?: string;
+  collectionName?: string;
+  category: string;
+  channelId: string;
+  postMode: TelegramPostMode;
+  productCount: number;
+  successCount: number;
+  failureCount: number;
+  postedAt: string;
+  lastPostedProductName?: string;
+}
+
 export interface StoreProfile {
   storeName: string;
   ownerName: string;
@@ -162,6 +194,12 @@ export interface StoreProfile {
   autoSendInvoiceAfterCreation?: boolean;
   repairCenterEnabled?: boolean;
   adminPin?: string;
+  telegramChannelId?: string;
+  telegramTemplate?: string;
+  telegramNotes?: string;
+  telegramCollections?: TelegramPostCollection[];
+  telegramPostActivity?: TelegramPostActivity[];
+  telegramActiveCollectionId?: string;
 }
 
 
