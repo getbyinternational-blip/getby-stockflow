@@ -277,6 +277,157 @@ const sortExpenseActivitiesDesc = (activities: ExpenseActivity[] = []) => [...ac
 const sortRepairHistoryEntriesDesc = (entries: RepairHistoryEntry[] = []) => [...entries]
   .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
 
+const LEGACY_UPFRONT_ORDER_FIELD_CANDIDATES = [
+  'upfrontOrders',
+  'customOrders',
+  'advanceOrders',
+  'advanceCustomOrders',
+  'upfront_orders',
+  'custom_orders',
+  'advance_orders',
+] as const;
+
+const toLegacyRecordArray = (value: unknown): Array<Record<string, unknown>> => {
+  if (Array.isArray(value)) return value.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object');
+  if (value && typeof value === 'object') return Object.values(value).filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object');
+  return [];
+};
+
+const asFiniteMoney = (value: unknown, fallback = 0) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+};
+
+const asOptionalText = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+};
+
+const resolveLegacyUpfrontOrdersFromCloudData = (
+  cloudData: Record<string, unknown>,
+  customers: Pick<Customer, 'id' | 'name' | 'phone'>[] = []
+): UpfrontOrder[] => {
+  const customerById = new Map(customers.map((customer) => [customer.id, customer]));
+  const customerByPhone = new Map(
+    customers
+      .map((customer) => [String(customer.phone || '').replace(/\D/g, ''), customer] as const)
+      .filter(([phone]) => Boolean(phone))
+  );
+  const customerByName = new Map(
+    customers
+      .map((customer) => [String(customer.name || '').trim().toLowerCase(), customer] as const)
+      .filter(([name]) => Boolean(name))
+  );
+
+  const rows = LEGACY_UPFRONT_ORDER_FIELD_CANDIDATES.flatMap((fieldName) => toLegacyRecordArray(cloudData[fieldName]));
+  const deduped = new Map<string, UpfrontOrder>();
+
+  rows.forEach((row, index) => {
+    const customerPhone = String(row.customerPhone || row.phone || '').replace(/\D/g, '');
+    const customerName = String(row.customerName || row.name || row.customer || '').trim().toLowerCase();
+    const matchedCustomer =
+      (typeof row.customerId === 'string' ? customerById.get(row.customerId) : undefined)
+      || (customerPhone ? customerByPhone.get(customerPhone) : undefined)
+      || (customerName ? customerByName.get(customerName) : undefined);
+    const totalPieces = Math.max(
+      1,
+      asFiniteMoney(row.totalPieces,
+        asFiniteMoney(row.quantity,
+          Math.max(1, asFiniteMoney(row.numberOfPieces, 1) * Math.max(1, asFiniteMoney(row.numberOfCartons, 1)))
+        )
+      )
+    );
+    const finalTotal = Math.max(
+      0,
+      asFiniteMoney(
+        row.finalTotal,
+        asFiniteMoney(
+          row.totalCost,
+          asFiniteMoney(
+            row.orderTotalCustomer,
+            asFiniteMoney(row.orderTotal, totalPieces * asFiniteMoney(row.customerPricePerPiece, asFiniteMoney(row.pricePerPieceCustomer, asFiniteMoney(row.cartonPriceCustomer))))
+          ) + Math.max(0, asFiniteMoney(row.expenseAmount))
+        )
+      )
+    );
+    const advancePaid = Math.max(
+      0,
+      asFiniteMoney(
+        row.advancePaid,
+        asFiniteMoney(row.advance, asFiniteMoney(row.initialAdvancePaid, Math.max(0, asFiniteMoney(row.paidNowCash) + asFiniteMoney(row.paidNowOnline))))
+      )
+    );
+    const remainingAmount = Math.max(
+      0,
+      asFiniteMoney(row.remainingAmount, Math.max(0, finalTotal - advancePaid))
+    );
+    const pricePerPiece = Math.max(0, asFiniteMoney(row.pricePerPiece, asFiniteMoney(row.cartonPriceAdmin)));
+    const customerPricePerPiece = Math.max(0, asFiniteMoney(row.customerPricePerPiece, asFiniteMoney(row.pricePerPieceCustomer, asFiniteMoney(row.cartonPriceCustomer))));
+    const rawPaymentHistory = Array.isArray(row.paymentHistory) ? row.paymentHistory : [];
+    const normalized: UpfrontOrder = {
+      id: String(row.id || `legacy-upfront-${index}`),
+      customerId: String(row.customerId || matchedCustomer?.id || '').trim(),
+      productId: asOptionalText(row.productId),
+      productName: String(row.productName || row.itemName || row.product || row.title || 'Custom Order').trim(),
+      productImage: asOptionalText(row.productImage || row.image),
+      category: asOptionalText(row.category),
+      selectedVariant: asOptionalText(row.selectedVariant || row.variant),
+      selectedColor: asOptionalText(row.selectedColor || row.color),
+      variantLabel: asOptionalText(row.variantLabel),
+      quantity: totalPieces,
+      isCarton: Boolean(row.isCarton ?? row.numberOfCartons ?? row.piecesPerCarton),
+      piecesPerCarton: Math.max(0, asFiniteMoney(row.piecesPerCarton, asFiniteMoney(row.numberOfPieces))),
+      numberOfCartons: Math.max(0, asFiniteMoney(row.numberOfCartons, 1)),
+      totalPieces,
+      pricePerPiece,
+      customerPricePerPiece,
+      orderTotal: Math.max(0, asFiniteMoney(row.orderTotal, totalPieces * pricePerPiece)),
+      orderTotalCustomer: Math.max(0, asFiniteMoney(row.orderTotalCustomer, totalPieces * customerPricePerPiece)),
+      expenseAmount: Math.max(0, asFiniteMoney(row.expenseAmount)),
+      finalTotal,
+      profitAmount: asFiniteMoney(row.profitAmount, Math.max(0, (customerPricePerPiece - pricePerPiece) * totalPieces)),
+      profitPercent: asFiniteMoney(row.profitPercent, pricePerPiece > 0 ? ((customerPricePerPiece - pricePerPiece) / pricePerPiece) * 100 : 0),
+      effectiveAt: String(row.effectiveAt || row.date || row.createdAt || row.updatedAt || new Date().toISOString()),
+      paidNowCash: Math.max(0, asFiniteMoney(row.paidNowCash)),
+      paidNowOnline: Math.max(0, asFiniteMoney(row.paidNowOnline)),
+      cartonPriceAdmin: Math.max(0, asFiniteMoney(row.cartonPriceAdmin, pricePerPiece)),
+      cartonPriceCustomer: Math.max(0, asFiniteMoney(row.cartonPriceCustomer, customerPricePerPiece)),
+      totalCost: finalTotal,
+      advancePaid,
+      remainingAmount,
+      accountingMode: row.accountingMode === 'legacy_untrusted' ? 'legacy_untrusted' : 'modern_receivable',
+      date: String(row.date || row.effectiveAt || row.createdAt || row.updatedAt || new Date().toISOString()),
+      reminderDate: asOptionalText(row.reminderDate),
+      status: remainingAmount <= MONEY_EPSILON ? 'cleared' : 'unpaid',
+      notes: asOptionalText(row.notes),
+      initialAdvancePaid: Math.max(0, asFiniteMoney(row.initialAdvancePaid, advancePaid)),
+      createdAt: String(row.createdAt || row.date || row.effectiveAt || new Date().toISOString()),
+      updatedAt: String(row.updatedAt || row.createdAt || row.date || new Date().toISOString()),
+      paymentHistory: rawPaymentHistory
+        .filter((payment): payment is Record<string, unknown> => !!payment && typeof payment === 'object')
+        .map((payment, paymentIndex) => ({
+          id: String(payment.id || `legacy-payment-${index}-${paymentIndex}`),
+          paidAt: String(payment.paidAt || payment.effectiveAt || row.date || row.createdAt || new Date().toISOString()),
+          effectiveAt: asOptionalText(payment.effectiveAt) || String(payment.paidAt || row.date || row.createdAt || new Date().toISOString()),
+          amount: Math.max(0, asFiniteMoney(payment.amount)),
+          method: String(payment.method || 'Advance'),
+          note: asOptionalText(payment.note),
+          kind: payment.kind === 'additional_payment' ? 'additional_payment' : 'initial_advance',
+          receivableOnlyRepair: Boolean(payment.receivableOnlyRepair),
+          remainingAfterPayment: Math.max(0, asFiniteMoney(payment.remainingAfterPayment)),
+          advancePaidAfterPayment: Math.max(0, asFiniteMoney(payment.advancePaidAfterPayment)),
+        })),
+    };
+
+    if (!normalized.customerId) return;
+    if (!normalized.productName.trim()) return;
+    deduped.set(normalized.id, normalized);
+  });
+
+  return Array.from(deduped.values());
+};
+
 const buildMergedExpenseHydrationState = () => ({
   expenses: sortExpensesDesc(mergeByIdPreferPrimaryRespectDeletes(subcollectionExpensesCache, legacyRootExpensesCache)),
   expenseActivities: sortExpenseActivitiesDesc(mergeByIdPreferPrimaryRespectDeletes(subcollectionExpenseActivitiesCache, legacyRootExpenseActivitiesCache)).slice(0, 500),
@@ -2374,6 +2525,12 @@ const defaultProfile: StoreProfile = {
   defaultTaxRate: 0,
   defaultTaxLabel: 'None',
   invoiceFormat: 'standard',
+  thermalPaperWidth: '80mm',
+  thermalStyle: 'grocery',
+  thermalDensity: 'compact',
+  thermalFontScale: 1,
+  thermalPaddingX: 2,
+  thermalPaddingY: 1.5,
   autoSendInvoiceAfterCreation: false,
   repairCenterEnabled: false,
   telegramCollections: [],
@@ -3043,6 +3200,10 @@ const syncFromCloud = async (): Promise<void> => {
                 const fallbackFreightInquiries = Array.isArray(memoryState.freightInquiries) ? memoryState.freightInquiries : [];
                 const fallbackFreightConfirmedOrders = Array.isArray(memoryState.freightConfirmedOrders) ? memoryState.freightConfirmedOrders : [];
                 const fallbackFreightPurchases = Array.isArray(memoryState.freightPurchases) ? memoryState.freightPurchases : [];
+                const hydratedUpfrontOrders = resolveLegacyUpfrontOrdersFromCloudData(
+                  cloudData as unknown as Record<string, unknown>,
+                  hydratedCustomers,
+                );
                 memoryState = {
                     ...initialData,
                     ...cloudData,
@@ -3052,7 +3213,7 @@ const syncFromCloud = async (): Promise<void> => {
                     updatedTransactionEvents: cloudData.updatedTransactionEvents || [],
                     categories: cloudData.categories || [],
                     customers: hydratedCustomers,
-                    upfrontOrders: cloudData.upfrontOrders || [],
+                    upfrontOrders: hydratedUpfrontOrders,
                     expenses: mergedExpenseState.expenses,
                     expenseActivities: mergedExpenseState.expenseActivities,
                     repairHistoryEntries: mergedRepairHistoryState.repairHistoryEntries,
@@ -4312,6 +4473,11 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
   ...profile,
   invoiceFormat: profile.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
   thermalPaperWidth: profile.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
+  thermalStyle: profile.thermalStyle === 'classic' || profile.thermalStyle === 'boxed' || profile.thermalStyle === 'minimal' ? profile.thermalStyle : 'grocery',
+  thermalDensity: profile.thermalDensity === 'balanced' || profile.thermalDensity === 'comfortable' ? profile.thermalDensity : 'compact',
+  thermalFontScale: Number.isFinite(Number(profile.thermalFontScale)) ? Math.min(1.25, Math.max(0.85, Number(profile.thermalFontScale))) : 1,
+  thermalPaddingX: Number.isFinite(Number(profile.thermalPaddingX)) ? Math.min(4, Math.max(0.5, Number(profile.thermalPaddingX))) : 2,
+  thermalPaddingY: Number.isFinite(Number(profile.thermalPaddingY)) ? Math.min(4, Math.max(0.5, Number(profile.thermalPaddingY))) : 1.5,
   customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
   customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
   customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',

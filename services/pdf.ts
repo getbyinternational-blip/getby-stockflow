@@ -19,6 +19,8 @@ export type ReceiptPrintResult = {
 };
 
 type ThermalPaperWidth = '58mm' | '80mm';
+type ThermalStyle = 'classic' | 'grocery' | 'boxed' | 'minimal';
+type ThermalDensity = 'compact' | 'balanced' | 'comfortable';
 
 const escapeHtml = (value: unknown) => String(value || '')
   .replace(/&/g, '&amp;')
@@ -51,6 +53,33 @@ const getThermalPaperWidth = (profile?: Partial<StoreProfile> | null): ThermalPa
 const getInvoiceFormat = (profile?: Partial<StoreProfile> | null): 'standard' | 'thermal' => (
   profile?.invoiceFormat === 'thermal' ? 'thermal' : 'standard'
 );
+
+const getThermalStyle = (profile?: Partial<StoreProfile> | null): ThermalStyle => (
+  profile?.thermalStyle === 'classic' || profile?.thermalStyle === 'boxed' || profile?.thermalStyle === 'minimal'
+    ? profile.thermalStyle
+    : 'grocery'
+);
+
+const getThermalDensity = (profile?: Partial<StoreProfile> | null): ThermalDensity => (
+  profile?.thermalDensity === 'balanced' || profile?.thermalDensity === 'comfortable'
+    ? profile.thermalDensity
+    : 'compact'
+);
+
+const getThermalFontScale = (profile?: Partial<StoreProfile> | null): number => {
+  const value = Number(profile?.thermalFontScale);
+  return Number.isFinite(value) ? Math.min(1.25, Math.max(0.85, value)) : 1;
+};
+
+const getThermalPaddingX = (profile?: Partial<StoreProfile> | null): number => {
+  const value = Number(profile?.thermalPaddingX);
+  return Number.isFinite(value) ? Math.min(4, Math.max(0.5, value)) : 2;
+};
+
+const getThermalPaddingY = (profile?: Partial<StoreProfile> | null): number => {
+  const value = Number(profile?.thermalPaddingY);
+  return Number.isFinite(value) ? Math.min(4, Math.max(0.5, value)) : 1.5;
+};
 
 const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((resolve, reject) => {
   const width = 900;
@@ -741,6 +770,11 @@ const buildThermalInvoiceHtml = (
     const previousBalanceLabel = canonicalBalance?.status === 'ok' ? `${formatMoneyWhole(previousBalanceValue)}` : 'Ledger unavailable';
     const currentBalanceLabel = canonicalBalance?.status === 'ok' ? `${formatMoneyWhole(currentBalanceValue)}` : 'Ledger unavailable';
     const paperWidth = getThermalPaperWidth(profile);
+    const thermalStyle = getThermalStyle(profile);
+    const thermalDensity = getThermalDensity(profile);
+    const thermalFontScale = getThermalFontScale(profile);
+    const thermalPaddingX = getThermalPaddingX(profile);
+    const thermalPaddingY = getThermalPaddingY(profile);
     const currency = (value: number) => `${formatMoneyPrecise(Math.max(0, Number(value || 0)))}`;
     const invoiceNo = transaction.type === 'return'
       ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-6)}`)
@@ -752,7 +786,14 @@ const buildThermalInvoiceHtml = (
       ? issuedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
       : '';
     const customerName = (transaction.customerName || 'Walk-in Customer').trim() || 'Walk-in Customer';
-    const customerPhone = (transaction.customerPhone || customer?.phone || '').trim();
+    const headerTone = thermalStyle === 'boxed' ? '#ffffff' : '#111827';
+    const headerBackground = thermalStyle === 'boxed' ? '#111827' : 'transparent';
+    const ruleStyle = thermalStyle === 'minimal' ? 'solid' : thermalStyle === 'boxed' ? 'double' : thermalStyle === 'classic' ? 'dashed' : 'solid';
+    const densityLineHeight = thermalDensity === 'comfortable' ? 1.42 : thermalDensity === 'balanced' ? 1.28 : 1.12;
+    const baseFontSize = (paperWidth === '58mm' ? 9 : 10) * thermalFontScale;
+    const headerFontSize = (paperWidth === '58mm' ? 14 : 16) * thermalFontScale;
+    const titleFontSize = (paperWidth === '58mm' ? 10 : 11) * thermalFontScale;
+    const smallFontSize = (paperWidth === '58mm' ? 8 : 9) * thermalFontScale;
     const itemRows = normalizeTransactionItems(transaction.items).map((item, index) => {
       const itemName = formatInvoiceItemName(item);
       const amount = Math.max(0, (Number(item.sellPrice || 0) * Number(item.quantity || 0)) - Number(item.discountAmount || 0));
@@ -766,7 +807,7 @@ const buildThermalInvoiceHtml = (
           <td class="num">${index + 1}</td>
           <td class="item-cell">
             <div class="item-name">${escapeHtml(itemName)}</div>
-            ${metaBits.length ? `<div class="item-meta">${escapeHtml(metaBits.join(' • '))}</div>` : ''}
+            ${metaBits.length ? `<div class="item-meta">${escapeHtml(metaBits.join(' | '))}</div>` : ''}
           </td>
           <td class="qty-col">${escapeHtml(String(item.quantity || 0))}</td>
           <td class="amt">${escapeHtml(currency(Number(item.sellPrice || 0)))}</td>
@@ -801,12 +842,6 @@ const buildThermalInvoiceHtml = (
         { label: 'Date', value: dateLabel },
         { label: 'Time', value: timeLabel || '-' },
       ],
-      customerPhone
-        ? [
-            { label: 'Phone', value: customerPhone },
-            { label: '', value: '' },
-          ]
-        : null,
     ].filter(Boolean) as Array<Array<{ label: string; value: string }>>;
 
     const infoMarkup = infoRows.map((row) => `
@@ -841,14 +876,17 @@ const buildThermalInvoiceHtml = (
     :root {
       --paper-width: ${paperWidth};
       --receipt-width: ${paperWidth === '58mm' ? '54mm' : '76mm'};
-      --receipt-padding-x: ${paperWidth === '58mm' ? '1.5mm' : '2mm'};
-      --receipt-padding-y: 1.5mm;
-      --font-size: ${paperWidth === '58mm' ? '9px' : '10px'};
-      --header-size: ${paperWidth === '58mm' ? '14px' : '16px'};
-      --title-size: ${paperWidth === '58mm' ? '10px' : '11px'};
-      --small-size: ${paperWidth === '58mm' ? '8px' : '9px'};
+      --receipt-padding-x: ${thermalPaddingX}mm;
+      --receipt-padding-y: ${thermalPaddingY}mm;
+      --font-size: ${baseFontSize}px;
+      --header-size: ${headerFontSize}px;
+      --title-size: ${titleFontSize}px;
+      --small-size: ${smallFontSize}px;
       --line-color: #1f2937;
       --muted: #4b5563;
+      --header-tone: ${headerTone};
+      --header-bg: ${headerBackground};
+      --line-height: ${densityLineHeight};
     }
     * { box-sizing: border-box; }
     html, body {
@@ -861,23 +899,28 @@ const buildThermalInvoiceHtml = (
       color: #111827;
       font-family: "Courier New", Courier, monospace;
       font-size: var(--font-size);
-      line-height: 1.25;
+      line-height: var(--line-height);
+      height: auto;
     }
     body {
       padding: 0;
       overflow: visible;
+      display: inline-block;
     }
     .receipt {
       width: var(--receipt-width);
       padding: var(--receipt-padding-y) var(--receipt-padding-x);
       margin: 0;
+      display: block;
+      page-break-after: avoid;
+      break-after: avoid-page;
     }
     .center { text-align: center; }
     .muted { color: var(--muted); }
     .strong { font-weight: 700; }
     .rule {
-      border-top: 1px dashed var(--line-color);
-      margin: 3px 0;
+      border-top: 1px ${ruleStyle} var(--line-color);
+      margin: ${thermalDensity === 'comfortable' ? '4px' : thermalDensity === 'balanced' ? '3px' : '2px'} 0;
     }
     .rule.solid {
       border-top-style: solid;
@@ -889,13 +932,16 @@ const buildThermalInvoiceHtml = (
       letter-spacing: 0.15px;
       margin: 0;
       line-height: 1.15;
+      color: var(--header-tone);
+      background: var(--header-bg);
+      padding: ${thermalStyle === 'boxed' ? '3px 4px' : '0'};
     }
     .header-subtext {
       margin-top: 1px;
       line-height: 1.15;
     }
     .document-title {
-      margin-top: 2px;
+      margin-top: ${thermalDensity === 'comfortable' ? '3px' : '2px'};
       font-size: var(--title-size);
       font-weight: 700;
       letter-spacing: 0.8px;
@@ -949,17 +995,18 @@ const buildThermalInvoiceHtml = (
     thead th {
       border-top: 1px solid var(--line-color);
       border-bottom: 1px solid var(--line-color);
-      padding: 2px 1px;
+      padding: ${thermalDensity === 'comfortable' ? '3px' : '2px'} 1px;
       text-align: left;
       font-size: var(--small-size);
       font-weight: 700;
     }
     tbody td {
-      padding: 2px 1px;
+      padding: ${thermalDensity === 'comfortable' ? '3px' : thermalDensity === 'balanced' ? '2px' : '1.5px'} 1px;
       vertical-align: top;
-      border-bottom: 1px dotted #d1d5db;
+      border-bottom: ${thermalStyle === 'minimal' ? '1px solid #e5e7eb' : '1px dotted #d1d5db'};
       word-break: normal;
       overflow-wrap: anywhere;
+      break-inside: avoid-page;
     }
     tbody tr:last-child td {
       border-bottom: none;
@@ -973,7 +1020,7 @@ const buildThermalInvoiceHtml = (
     }
     .item-name {
       white-space: normal;
-      line-height: 1.15;
+      line-height: var(--line-height);
     }
     .item-meta {
       margin-top: 1px;
@@ -989,9 +1036,9 @@ const buildThermalInvoiceHtml = (
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 8px;
-      padding: 1px 0;
+      padding: ${thermalDensity === 'comfortable' ? '2px' : '1px'} 0;
       align-items: baseline;
-      line-height: 1.2;
+      line-height: var(--line-height);
     }
     .total-row.strong {
       font-weight: 700;
@@ -1024,17 +1071,22 @@ const buildThermalInvoiceHtml = (
         max-width: var(--paper-width);
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
+        height: auto !important;
       }
       body {
         overflow: visible;
+        display: inline-block;
       }
       .receipt {
         width: var(--receipt-width);
         margin: 0;
         padding: var(--receipt-padding-y) var(--receipt-padding-x);
+        page-break-after: avoid;
+        break-after: avoid-page;
       }
       table, thead, tbody, tr, td, th {
         page-break-inside: avoid;
+        break-inside: avoid-page;
       }
     }
   </style>
@@ -1043,7 +1095,6 @@ const buildThermalInvoiceHtml = (
   <div class="receipt">
     <div class="center">
       <div class="header-title">${escapeHtml(profile.storeName || 'StockFlow')}</div>
-      ${profile.phone ? `<div class="header-subtext">${escapeHtml(profile.phone)}</div>` : ''}
       <div class="document-title">${escapeHtml(invoiceTitle)}</div>
     </div>
 

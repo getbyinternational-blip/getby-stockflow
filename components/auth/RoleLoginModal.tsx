@@ -10,6 +10,7 @@ import { getAdminAccessDiagnostics, isAccessDebugEnabled, verifyAdminAccessPassw
 const nowSession = (session: Omit<RoleSession, 'loginAt'>): RoleSession => ({ ...session, loginAt: new Date().toISOString() });
 const FAILED_ATTEMPT_COOLDOWN_MS = 1500;
 const DEV_ACCESS_BYPASS_ENABLED = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_ACCESS_BYPASS === 'true';
+const TEST_AUTH_BYPASS_ENABLED = String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'false').toLowerCase() === 'true';
 const SIMPLE_ACCESS_MODE_ENABLED = String((import.meta as any).env?.VITE_SIMPLE_ACCESS_MODE || 'true').toLowerCase() !== 'false';
 const AUTH_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_AUTH_LOGS || 'false').toLowerCase() === 'true';
 const DEFAULT_OTP_EXPIRY_SECONDS = 120;
@@ -102,6 +103,14 @@ export default function RoleLoginModal({ onLogin }: { onLogin: (session: RoleSes
   };
 
   const beginOtpFlow = async (role: 'admin' | 'staff') => {
+    if (TEST_AUTH_BYPASS_ENABLED) {
+      if (role === 'admin') {
+        enterAdmin();
+        return;
+      }
+      finishStaffEntry();
+      return;
+    }
     if (isOtpSubmitting) return;
     setPendingOtpRole(role);
     setIsOtpSubmitting(true);
@@ -350,15 +359,21 @@ export default function RoleLoginModal({ onLogin }: { onLogin: (session: RoleSes
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
+          {TEST_AUTH_BYPASS_ENABLED && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-amber-900">TEST ONLY</p>
+              <p className="text-xs text-amber-800">Firebase login and email OTP bypass are enabled from env. Do not keep this on in production.</p>
+            </div>
+          )}
           {SIMPLE_ACCESS_MODE_ENABLED ? (
             <>
               {otpFlow === 'choice' && (
                 <>
                   <Button className="w-full" onClick={() => void beginOtpFlow('admin')} disabled={isOtpSubmitting}>
-                    {isOtpSubmitting && pendingOtpRole === 'admin' ? 'Sending code...' : 'Enter as Admin'}
+                    {TEST_AUTH_BYPASS_ENABLED ? 'Enter as Admin' : isOtpSubmitting && pendingOtpRole === 'admin' ? 'Sending code...' : 'Enter as Admin'}
                   </Button>
                   <Button type="button" variant="outline" className="w-full" onClick={() => void beginOtpFlow('staff')} disabled={isOtpSubmitting}>
-                    {isOtpSubmitting && pendingOtpRole === 'staff' ? 'Sending code...' : 'Enter as Staff'}
+                    {TEST_AUTH_BYPASS_ENABLED ? 'Enter as Staff' : isOtpSubmitting && pendingOtpRole === 'staff' ? 'Sending code...' : 'Enter as Staff'}
                   </Button>
                   <p className="text-xs text-muted-foreground">
                     Staff mode hides admin-only areas like reports, settings, cashbook, purchases, freight, and restricted edit/delete actions.

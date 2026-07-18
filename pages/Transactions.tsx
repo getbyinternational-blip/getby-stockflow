@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
@@ -13,7 +13,7 @@ import { shareTransactionInvoiceViaWhatsApp } from '../services/whatsappShare';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { appendWhatsAppLog } from '../services/whatsappLogs';
 import { Card, CardContent, CardHeader, CardTitle, Badge, Select, Input, Button, LightweightLoader } from '../components/ui';
-import { TrendingDown, TrendingUp, Calendar, X, Eye, ArrowUpRight, ArrowDownLeft, User, Package, Clock, Download, CreditCard, IndianRupee, Percent, FileText, Edit, Trash2 } from 'lucide-react';
+import { TrendingDown, TrendingUp, Calendar, X, Eye, ArrowUpRight, ArrowDownLeft, User, Package, Clock, Download, CreditCard, IndianRupee, Percent, FileText, Edit, Trash2, Search, ChevronDown, Users } from 'lucide-react';
 import { ExportModal } from '../components/ExportModal';
 import { exportTransactionsToExcel, exportInvoiceToExcel } from '../services/excel';
 import { UploadImportModal } from '../components/UploadImportModal';
@@ -25,6 +25,7 @@ import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useRoleSession } from '../src/auth/roleSession';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
+import { formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
@@ -89,6 +90,9 @@ export default function Transactions() {
   const [editingTxPaymentMethod, setEditingTxPaymentMethod] = useState<'Cash' | 'Credit' | 'Online'>('Cash');
   const [editingTxNotes, setEditingTxNotes] = useState('');
   const [editingCustomerId, setEditingCustomerId] = useState('');
+  const [editingCustomerSearch, setEditingCustomerSearch] = useState('');
+  const [isEditingCustomerPickerOpen, setIsEditingCustomerPickerOpen] = useState(false);
+  const [showAllEditingCustomers, setShowAllEditingCustomers] = useState(false);
   const [editingItems, setEditingItems] = useState<CartItem[]>([]);
   const [editingCashPaid, setEditingCashPaid] = useState('');
   const [editingOnlinePaid, setEditingOnlinePaid] = useState('');
@@ -114,10 +118,12 @@ export default function Transactions() {
   const [excelAmountMoreThan, setExcelAmountMoreThan] = useState('');
   const [excelAmountLessThan, setExcelAmountLessThan] = useState('');
   const [deleteTargetTx, setDeleteTargetTx] = useState<Transaction | null>(null);
+  const editingCustomerPickerRef = useRef<HTMLDivElement | null>(null);
   useEscapeLayer(Boolean(deleteTargetTx), () => setDeleteTargetTx(null), { priority: 120 });
   useEscapeLayer(Boolean(selectedDeletedTx), () => setSelectedDeletedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(editingTx), () => setEditingTx(null), { priority: 110 });
+  useEscapeLayer(isEditingCustomerPickerOpen, () => setIsEditingCustomerPickerOpen(false), { priority: 115 });
   useEscapeLayer(isProductPickerOpen && editingTx?.type === 'sale', () => setIsProductPickerOpen(false), { priority: 115 });
   useEscapeLayer(isExcelFilterModalOpen, () => setIsExcelFilterModalOpen(false), { priority: 105 });
   const [deleteReason, setDeleteReason] = useState<'customer_cancelled' | 'created_by_mistake' | 'other'>('customer_cancelled');
@@ -151,7 +157,7 @@ export default function Transactions() {
         customerName: payment.partyName || 'Supplier',
         paymentMethod: method,
         receiptNo: payment.voucherNo || undefined,
-        notes: `Supplier Payment Ã¢â‚¬â€ ${payment.partyName || 'Supplier'} Ã¢â‚¬â€ ${method.toLowerCase()}${payableReduced > 0 ? ` Ã¢â‚¬Â¢ Payable reduced ${formatMoneyWhole(payableReduced)}` : ''}${partyCreditAdded > 0 ? ` Ã¢â‚¬Â¢ Party credit added ${formatMoneyWhole(partyCreditAdded)}` : ''}${payment.note ? ` Ã¢â‚¬Â¢ Note: ${payment.note}` : ''}`,
+        notes: `Supplier Payment - ${payment.partyName || 'Supplier'} - ${method.toLowerCase()}${payableReduced > 0 ? ` | Payable reduced ${formatMoneyWhole(payableReduced)}` : ''}${partyCreditAdded > 0 ? ` | Party credit added ${formatMoneyWhole(partyCreditAdded)}` : ''}${payment.note ? ` | Note: ${payment.note}` : ''}`,
         sourceTransactionDate: selectedDate || undefined,
       } as Transaction;
     }), [supplierPayments]);
@@ -188,8 +194,8 @@ export default function Transactions() {
         customerName,
         paymentMethod: 'Credit',
         notes: isCompleted
-          ? `Legacy paid order Ã¢â‚¬Â¢ Product: ${order.productName || 'Unknown Product'} Ã¢â‚¬Â¢ Total: ${formatMoneyWhole(total)} Ã¢â‚¬Â¢ Paid: ${formatMoneyWhole(advancePaid)} Ã¢â‚¬Â¢ Remaining: ${formatMoneyWhole(remaining)} Ã¢â‚¬Â¢ Legacy order Ã¢â‚¬â€ payment split not available. Ã¢â‚¬Â¢ Ref: ${order.id}`
-          : `Advance Customer Order Ã¢â‚¬Â¢ Product: ${order.productName || 'Unknown Product'} Ã¢â‚¬Â¢ Total: ${formatMoneyWhole(total)} Ã¢â‚¬Â¢ Advance Paid: ${formatMoneyWhole(advancePaid)} Ã¢â‚¬Â¢ Remaining: ${formatMoneyWhole(remaining)} Ã¢â‚¬Â¢ Ref: ${order.id}`,
+          ? `Legacy paid order | Product: ${order.productName || 'Unknown Product'} | Total: ${formatMoneyWhole(total)} | Paid: ${formatMoneyWhole(advancePaid)} | Remaining: ${formatMoneyWhole(remaining)} | Legacy order payment split not available. | Ref: ${order.id}`
+          : `Advance Customer Order | Product: ${order.productName || 'Unknown Product'} | Total: ${formatMoneyWhole(total)} | Advance Paid: ${formatMoneyWhole(advancePaid)} | Remaining: ${formatMoneyWhole(remaining)} | Ref: ${order.id}`,
         source: 'historical_import',
         isHistorical: true,
         legacyRef: order.id,
@@ -206,7 +212,7 @@ export default function Transactions() {
       customerId: order.customerId,
       customerName,
       paymentMethod: initial.some((p) => String(p.method || '').toLowerCase().includes('cash')) && initial.some((p) => String(p.method || '').toLowerCase().includes('online')) ? 'Online' : (initial[0]?.method as any) || 'Advance',
-      notes: `Advance Customer Order Ã¢â‚¬Â¢ Product: ${order.productName || 'Unknown Product'} Ã¢â‚¬Â¢ Total: ${formatMoneyWhole(order.totalCost || 0)} Ã¢â‚¬Â¢ Cash: ${formatMoneyWhole(initial.filter((p) => String(p.method || '').toLowerCase().includes('cash')).reduce((s, p) => s + Number(p.amount || 0), 0))} Ã¢â‚¬Â¢ Online: ${formatMoneyWhole(initial.filter((p) => String(p.method || '').toLowerCase().includes('online')).reduce((s, p) => s + Number(p.amount || 0), 0))} Ã¢â‚¬Â¢ Advance: ${formatMoneyWhole(initial.reduce((s, p) => s + Number(p.amount || 0), 0))} Ã¢â‚¬Â¢ Remaining: ${formatMoneyWhole(Math.max(0, Number(order.remainingAmount || 0)))} Ã¢â‚¬Â¢ Ref: ${order.id}`,
+      notes: `Advance Customer Order | Product: ${order.productName || 'Unknown Product'} | Total: ${formatMoneyWhole(order.totalCost || 0)} | Cash: ${formatMoneyWhole(initial.filter((p) => String(p.method || '').toLowerCase().includes('cash')).reduce((s, p) => s + Number(p.amount || 0), 0))} | Online: ${formatMoneyWhole(initial.filter((p) => String(p.method || '').toLowerCase().includes('online')).reduce((s, p) => s + Number(p.amount || 0), 0))} | Advance: ${formatMoneyWhole(initial.reduce((s, p) => s + Number(p.amount || 0), 0))} | Remaining: ${formatMoneyWhole(Math.max(0, Number(order.remainingAmount || 0)))} | Ref: ${order.id}`,
       source: 'historical_import',
       isHistorical: true,
       legacyRef: order.id,
@@ -220,7 +226,7 @@ export default function Transactions() {
       customerId: order.customerId,
       customerName,
       paymentMethod: (payment.method as any) || 'Advance',
-      notes: `Custom Order Payment Ã¢â‚¬Â¢ Product: ${order.productName || 'Unknown Product'} Ã¢â‚¬Â¢ Order Ref: ${order.id} Ã¢â‚¬Â¢ Paid: ${formatMoneyWhole(payment.amount || 0)} Ã¢â‚¬Â¢ Remaining: ${formatMoneyWhole(payment.remainingAfterPayment || 0)}${payment.note ? ` Ã¢â‚¬Â¢ Note: ${payment.note}` : ''}`,
+      notes: `Custom Order Payment | Product: ${order.productName || 'Unknown Product'} | Order Ref: ${order.id} | Paid: ${formatMoneyWhole(payment.amount || 0)} | Remaining: ${formatMoneyWhole(payment.remainingAfterPayment || 0)}${payment.note ? ` | Note: ${payment.note}` : ''}`,
       source: 'historical_import',
       isHistorical: true,
       legacyRef: order.id,
@@ -759,6 +765,9 @@ export default function Transactions() {
     setEditingTxPaymentMethod((tx.paymentMethod || 'Cash') as 'Cash' | 'Credit' | 'Online');
     setEditingTxNotes(tx.notes || '');
     setEditingCustomerId(tx.customerId || '');
+    setEditingCustomerSearch('');
+    setIsEditingCustomerPickerOpen(false);
+    setShowAllEditingCustomers(false);
     setEditingItems(normalizeTransactionItems(tx.items).map(item => ({ ...item })));
     setEditingCashPaid(String(settlement.cashPaid || 0));
     setEditingOnlinePaid(String(settlement.onlinePaid || 0));
@@ -777,6 +786,9 @@ export default function Transactions() {
     setIsSavingTransaction(false);
     setEditingItems([]);
     setEditingCustomerId('');
+    setEditingCustomerSearch('');
+    setIsEditingCustomerPickerOpen(false);
+    setShowAllEditingCustomers(false);
     setEditingCashPaid('');
     setEditingOnlinePaid('');
     setEditingCreditDue('');
@@ -1125,6 +1137,16 @@ export default function Transactions() {
     () => customers.find(c => c.id === editingCustomerId) || null,
     [customers, editingCustomerId]
   );
+  const filteredEditingCustomers = useMemo(() => {
+    const normalizedSearch = safeLower(editingCustomerSearch.trim());
+    const sortedCustomers = [...customers].sort((a, b) => a.name.localeCompare(b.name) || String(a.phone || '').localeCompare(String(b.phone || '')));
+    if (!normalizedSearch) return sortedCustomers;
+    return sortedCustomers.filter((customer) => safeLower(`${customer.name} ${customer.phone || ''} ${customer.id}`).includes(normalizedSearch));
+  }, [customers, editingCustomerSearch]);
+  const visibleEditingCustomers = useMemo(
+    () => (showAllEditingCustomers ? filteredEditingCustomers : filteredEditingCustomers.slice(0, 6)),
+    [filteredEditingCustomers, showAllEditingCustomers]
+  );
   const editingCustomerBalance = useMemo(
     () => getCanonicalCustomerBalanceResult(editingCustomer, transactions, upfrontOrders),
     [editingCustomer, transactions, upfrontOrders]
@@ -1230,6 +1252,17 @@ export default function Transactions() {
     }
     return { tone: 'bg-emerald-50 border-emerald-200 text-emerald-800', title: 'Safe edit', detail: 'Edit is allowed with standard reconcile and audit trace.' };
   }, [editingTx, editingSaleLinkageInfo]);
+
+  useEffect(() => {
+    if (!isEditingCustomerPickerOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!editingCustomerPickerRef.current?.contains(event.target as Node)) {
+        setIsEditingCustomerPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [isEditingCustomerPickerOpen]);
 
 
   const diagnostics = useMemo(() => {
@@ -1406,7 +1439,7 @@ export default function Transactions() {
     if (txType !== 'sale' && txType !== 'historical_reference') return null;
     const settlement = getSaleSettlementBreakdown(tx);
     const used = Math.max(0, Number(tx.storeCreditUsed || 0));
-    return `Cash ${formatINRPrecise(settlement.cashPaid)} ? Online ${formatINRPrecise(settlement.onlinePaid)} ? Due ${formatINRPrecise(settlement.creditDue)}${used > 0 ? ` ? SC ${formatINRPrecise(used)}` : ''}`;
+    return `Cash ${formatINRPrecise(settlement.cashPaid)} | Online ${formatINRPrecise(settlement.onlinePaid)} | Due ${formatINRPrecise(settlement.creditDue)}${used > 0 ? ` | SC ${formatINRPrecise(used)}` : ''}`;
   };
 
 
@@ -2240,7 +2273,7 @@ export default function Transactions() {
                                               <p className="font-medium text-sm">{formatMoneyWhole((item.sellPrice * item.quantity) - (item.discountAmount || 0))}</p>
                                           </div>
                                           <div className="flex justify-between items-center mt-1">
-                                              <p className="text-xs text-muted-foreground">SKU: {item.barcode} Ã¢â‚¬Â¢ {item.selectedVariant || NO_VARIANT} / {item.selectedColor || NO_COLOR}</p>
+                                              <p className="text-xs text-muted-foreground">SKU: {item.barcode} | {item.selectedVariant || NO_VARIANT} / {item.selectedColor || NO_COLOR}</p>
                                               <div className="flex flex-col items-end">
                                                   <Badge variant="secondary" className="text-[10px] h-4 px-1.5 font-normal">
                                                       {item.quantity} x {item.sellPrice}
@@ -2312,7 +2345,7 @@ export default function Transactions() {
                     <Badge variant="outline" className="uppercase">{selectedDeletedTx.type}</Badge>
                     <Badge variant="destructive">{Math.abs(selectedDeletedTx.amount || 0).toLocaleString()}</Badge>
                     <span className="text-muted-foreground">{selectedDeletedTx.customerName || 'Walk-in'}</span>
-                    <span className="text-muted-foreground">Ã¢â‚¬Â¢</span>
+                    <span className="text-muted-foreground">|</span>
                     <span className="text-muted-foreground">{new Date(selectedDeletedTx.deletedAt).toLocaleString()}</span>
                   </div>
                 </div>
@@ -2339,19 +2372,19 @@ export default function Transactions() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                   <div className="rounded-md border bg-background p-2 space-y-1">
                     <p className="font-semibold text-muted-foreground">Customer impact</p>
-                    <p>Due: {selectedDeletedTx.beforeImpact.customerDue.toLocaleString()} Ã¢â€ â€™ {selectedDeletedTx.afterImpact.customerDue.toLocaleString()}</p>
+                    <p>Due: {selectedDeletedTx.beforeImpact.customerDue.toLocaleString()} → {selectedDeletedTx.afterImpact.customerDue.toLocaleString()}</p>
                     <p className="text-muted-foreground">Change: {(selectedDeletedTx.afterImpact.customerDue - selectedDeletedTx.beforeImpact.customerDue).toLocaleString()}</p>
-                    <p>Store credit: {selectedDeletedTx.beforeImpact.customerStoreCredit.toLocaleString()} Ã¢â€ â€™ {selectedDeletedTx.afterImpact.customerStoreCredit.toLocaleString()}</p>
+                    <p>Store credit: {selectedDeletedTx.beforeImpact.customerStoreCredit.toLocaleString()} → {selectedDeletedTx.afterImpact.customerStoreCredit.toLocaleString()}</p>
                     <p className="text-muted-foreground">Change: {(selectedDeletedTx.afterImpact.customerStoreCredit - selectedDeletedTx.beforeImpact.customerStoreCredit).toLocaleString()}</p>
                   </div>
                   <div className="rounded-md border bg-background p-2 space-y-1">
                     <p className="font-semibold text-muted-foreground">Cash impact</p>
-                    <p>Cash estimate: {selectedDeletedTx.beforeImpact.estimatedCashFromActiveTransactions.toLocaleString()} Ã¢â€ â€™ {selectedDeletedTx.afterImpact.estimatedCashFromActiveTransactions.toLocaleString()}</p>
+                    <p>Cash estimate: {selectedDeletedTx.beforeImpact.estimatedCashFromActiveTransactions.toLocaleString()} → {selectedDeletedTx.afterImpact.estimatedCashFromActiveTransactions.toLocaleString()}</p>
                     <p className="text-muted-foreground">Change: {(selectedDeletedTx.afterImpact.estimatedCashFromActiveTransactions - selectedDeletedTx.beforeImpact.estimatedCashFromActiveTransactions).toLocaleString()}</p>
                   </div>
                   <div className="rounded-md border bg-background p-2 space-y-1">
                     <p className="font-semibold text-muted-foreground">Activity impact</p>
-                    <p>Active transactions: {selectedDeletedTx.beforeImpact.activeTransactionsCount} Ã¢â€ â€™ {selectedDeletedTx.afterImpact.activeTransactionsCount}</p>
+                    <p>Active transactions: {selectedDeletedTx.beforeImpact.activeTransactionsCount} → {selectedDeletedTx.afterImpact.activeTransactionsCount}</p>
                     <p className="text-muted-foreground">Change: {(selectedDeletedTx.afterImpact.activeTransactionsCount - selectedDeletedTx.beforeImpact.activeTransactionsCount).toLocaleString()}</p>
                   </div>
                 </div>
@@ -2376,7 +2409,7 @@ export default function Transactions() {
                   <div><span className="text-muted-foreground">Total:</span> {formatMoneyWhole(Math.abs(selectedDeletedTx.originalTransaction.total || 0))}</div>
                   <div><span className="text-muted-foreground">Discount:</span> {formatMoneyWhole(Math.abs(selectedDeletedTx.originalTransaction.discount || 0))}</div>
                   <div><span className="text-muted-foreground">Tax:</span> {formatMoneyWhole(Math.abs(selectedDeletedTx.originalTransaction.tax || 0))}</div>
-                  <div className="md:col-span-2"><span className="text-muted-foreground">Notes:</span> {selectedDeletedTx.originalTransaction.notes || 'Ã¢â‚¬â€'}</div>
+                  <div className="md:col-span-2"><span className="text-muted-foreground">Notes:</span> {selectedDeletedTx.originalTransaction.notes || '-'}</div>
                 </div>
               </div>
 
@@ -2542,7 +2575,7 @@ export default function Transactions() {
             <CardHeader className="border-b py-3 flex flex-row items-center justify-between gap-2">
               <CardTitle>{isBatchEditing ? `Batch Edit ${batchEditTransactionIndex + 1}/${batchEditTransactionIds.length}` : `Edit #${editingTx.id.slice(-6)}`} • {editingTx.type.toUpperCase()}</CardTitle>
               <div className="flex items-center gap-2">
-                <div className="text-xs text-muted-foreground">{new Date(editingTx.date).toLocaleString()} • {editingTx.customerName || 'Walk-in customer'}</div>
+                <div className="text-xs text-muted-foreground">{formatDateTimeDisplay(editingTx.date)} • {editingTx.customerName || 'Walk-in customer'}</div>
                 <Button
                   type="button"
                   variant="ghost"
@@ -2578,12 +2611,87 @@ export default function Transactions() {
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Customer</label>
-                      <Select value={editingCustomerId || ''} onChange={e => setEditingCustomerId(e.target.value)}>
-                        <option value="">Walk-in</option>
-                        {customers.map(customer => (
-                          <option key={customer.id} value={customer.id}>{customer.name} ({customer.phone})</option>
-                        ))}
-                      </Select>
+                      <div ref={editingCustomerPickerRef} className="relative">
+                        <button
+                          type="button"
+                          className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-left text-sm"
+                          onClick={() => setIsEditingCustomerPickerOpen((open) => !open)}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-slate-900">{editingCustomer?.name || 'Walk-in customer'}</div>
+                            <div className="truncate text-[11px] text-muted-foreground">{editingCustomer?.phone || 'No customer ledger selected'}</div>
+                          </div>
+                          <ChevronDown className="h-4 w-4 shrink-0 text-slate-500" />
+                        </button>
+                        {isEditingCustomerPickerOpen && (
+                          <div className="absolute z-30 mt-2 w-full rounded-xl border bg-white p-3 shadow-xl">
+                            <div className="relative">
+                              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                              <Input
+                                autoFocus
+                                value={editingCustomerSearch}
+                                onChange={(e) => {
+                                  setEditingCustomerSearch(e.target.value);
+                                  setShowAllEditingCustomers(false);
+                                }}
+                                placeholder="Search customer name, phone, or ID"
+                                className="pl-9"
+                              />
+                            </div>
+                            <div className="mt-2 rounded-lg border">
+                              <button
+                                type="button"
+                                className={`flex w-full items-start justify-between border-b px-3 py-2 text-left text-sm hover:bg-slate-50 ${!editingCustomerId ? 'bg-slate-50' : ''}`}
+                                onClick={() => {
+                                  setEditingCustomerId('');
+                                  setEditingCustomerSearch('');
+                                  setIsEditingCustomerPickerOpen(false);
+                                  setShowAllEditingCustomers(false);
+                                }}
+                              >
+                                <div>
+                                  <div className="font-medium text-slate-900">Walk-in customer</div>
+                                  <div className="text-[11px] text-slate-500">No ledger link</div>
+                                </div>
+                                {!editingCustomerId && <span className="text-[11px] font-semibold text-primary">Selected</span>}
+                              </button>
+                              <div className="max-h-72 overflow-y-auto">
+                                {visibleEditingCustomers.length === 0 ? (
+                                  <div className="px-3 py-4 text-sm text-slate-500">No customers matched your search.</div>
+                                ) : visibleEditingCustomers.map((customer) => (
+                                  <button
+                                    key={customer.id}
+                                    type="button"
+                                    className={`flex w-full items-start justify-between border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-slate-50 ${editingCustomerId === customer.id ? 'bg-slate-50' : ''}`}
+                                    onClick={() => {
+                                      setEditingCustomerId(customer.id);
+                                      setEditingCustomerSearch(customer.name);
+                                      setIsEditingCustomerPickerOpen(false);
+                                      setShowAllEditingCustomers(false);
+                                    }}
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="truncate font-medium text-slate-900">{customer.name}</div>
+                                      <div className="truncate text-[11px] text-slate-500">{customer.phone || 'No phone'} • {customer.id}</div>
+                                    </div>
+                                    {editingCustomerId === customer.id && <span className="text-[11px] font-semibold text-primary">Selected</span>}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            {!showAllEditingCustomers && filteredEditingCustomers.length > visibleEditingCustomers.length && (
+                              <button
+                                type="button"
+                                className="mt-2 flex w-full items-center justify-center gap-2 rounded-md border border-dashed px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                                onClick={() => setShowAllEditingCustomers(true)}
+                              >
+                                <Users className="h-4 w-4" />
+                                See all {filteredEditingCustomers.length} customers
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                       {editingSectionWarning?.section === 'customer' && <p className="text-[11px] text-red-700">{editingSectionWarning.message}</p>}
                     </div>
                   </div>

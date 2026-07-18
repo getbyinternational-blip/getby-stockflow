@@ -242,6 +242,11 @@ export interface StoreProfile {
   customerCatalogFirstPageMimeType?: string;
   invoiceFormat?: 'standard' | 'thermal';
   thermalPaperWidth?: '58mm' | '80mm';
+  thermalStyle?: 'classic' | 'grocery' | 'boxed' | 'minimal';
+  thermalDensity?: 'compact' | 'balanced' | 'comfortable';
+  thermalFontScale?: number;
+  thermalPaddingX?: number;
+  thermalPaddingY?: number;
   autoSendInvoiceAfterCreation?: boolean;
   repairCenterEnabled?: boolean;
   adminPin?: string;

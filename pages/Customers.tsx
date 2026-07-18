@@ -26,6 +26,7 @@ import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
+import { formatDateDisplay } from '../src/utils/dateFormat';
 
 const normalizePhone = (v?: string) => String(v || '').replace(/\D/g, '');
 const normalizeName = (v?: string) => String(v || '').trim().toLowerCase();
@@ -62,11 +63,7 @@ const getTransactionProductSummary = (tx: Transaction, maxItems = 2): string => 
   return unique.length > maxItems ? `${shown} +${unique.length - maxItems} more` : shown;
 };
 
-const formatCompactDate = (date: string): string => {
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleDateString([], { day: '2-digit', month: 'short' });
-};
+const formatCompactDate = (date: string): string => formatDateDisplay(date);
 
 const getLedgerSortTime = (date: string): number => {
   const time = new Date(date || '').getTime();
@@ -667,8 +664,9 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   // Filter & Sort State
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all_time');
-  const [sortBy, setSortBy] = useState<'spend' | 'due' | 'lastVisit'>('spend');
+  const [sortBy, setSortBy] = useState<'name' | 'phone' | 'visits' | 'spend' | 'due' | 'storeCredit' | 'lastVisit'>('spend');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [customerHeaderMenu, setCustomerHeaderMenu] = useState<string | null>(null);
   const [customerPage, setCustomerPage] = useState(1);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -877,12 +875,25 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         processed = processed.filter(c => (canonicalDisplayBalanceByCustomerId.get(c.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(c.id)!.netReceivable : 0) > 0);
     } else if (filterType === 'high_value') {
         processed = processed.filter(c => c.totalSpend >= highValueThreshold && c.totalSpend > 0);
+    } else if (filterType === 'has_store_credit') {
+        processed = processed.filter(c => (canonicalDisplayBalanceByCustomerId.get(c.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(c.id)!.storeCredit : 0) > 0.01);
+    } else if (filterType === 'recent_30_days') {
+        const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+        processed = processed.filter(c => new Date(c.lastVisit || '').getTime() >= cutoff);
+    } else if (filterType === 'has_phone') {
+        processed = processed.filter(c => Boolean(String(c.phone || '').trim()));
+    } else if (filterType === 'missing_phone') {
+        processed = processed.filter(c => !String(c.phone || '').trim());
     }
     
     processed.sort((a, b) => {
         let valA, valB;
-        if (sortBy === 'spend') { valA = a.totalSpend; valB = b.totalSpend; }
+        if (sortBy === 'name') return sortOrder === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+        if (sortBy === 'phone') return sortOrder === 'asc' ? String(a.phone || '').localeCompare(String(b.phone || '')) : String(b.phone || '').localeCompare(String(a.phone || ''));
+        if (sortBy === 'visits') { valA = a.visitCount; valB = b.visitCount; }
+        else if (sortBy === 'spend') { valA = a.totalSpend; valB = b.totalSpend; }
         else if (sortBy === 'due') { valA = canonicalDisplayBalanceByCustomerId.get(a.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(a.id)!.netReceivable : 0; valB = canonicalDisplayBalanceByCustomerId.get(b.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(b.id)!.netReceivable : 0; }
+        else if (sortBy === 'storeCredit') { valA = canonicalDisplayBalanceByCustomerId.get(a.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(a.id)!.storeCredit : 0; valB = canonicalDisplayBalanceByCustomerId.get(b.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(b.id)!.storeCredit : 0; }
         else { valA = new Date(a.lastVisit).getTime(); valB = new Date(b.lastVisit).getTime(); }
         return sortOrder === 'asc' ? valA - valB : valB - valA;
     });
@@ -1032,6 +1043,13 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   useEffect(() => {
     setCustomerPage(1);
   }, [searchQuery, filterType, sortBy, sortOrder]);
+
+  useEffect(() => {
+    if (!customerHeaderMenu) return;
+    const closeMenu = () => setCustomerHeaderMenu(null);
+    window.addEventListener('click', closeMenu);
+    return () => window.removeEventListener('click', closeMenu);
+  }, [customerHeaderMenu]);
 
   useEffect(() => {
     setCustomerPage((prev) => Math.min(prev, customerTotalPages));
@@ -1325,6 +1343,26 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     .sort((a, b) => allOrdersSort === 'newest'
       ? new Date(b.date || b.createdAt || 0).getTime() - new Date(a.date || a.createdAt || 0).getTime()
       : new Date(a.date || a.createdAt || 0).getTime() - new Date(b.date || b.createdAt || 0).getTime()), [popupCustomerOrders, allOrdersSearch, allOrdersStatus, allOrdersSort]);
+  const visibleUpfrontOrders = useMemo(() => {
+    const customerById = new Map(customers.map((customer) => [customer.id, customer]));
+    return upfrontOrders
+      .map((order) => {
+        const customer = customerById.get(order.customerId);
+        return {
+          order,
+          customer,
+          status: getUpfrontOrderStatus(order),
+          total: getUpfrontOrderCustomerTotal(order),
+          paid: getUpfrontOrderPaid(order),
+          remaining: getUpfrontOrderRemaining(order),
+        };
+      })
+      .sort((a, b) => new Date(b.order.date || b.order.createdAt || 0).getTime() - new Date(a.order.date || a.order.createdAt || 0).getTime());
+  }, [customers, upfrontOrders]);
+  const visibleOpenUpfrontOrders = useMemo(
+    () => visibleUpfrontOrders.filter((entry) => entry.remaining > 0.0001),
+    [visibleUpfrontOrders]
+  );
 
   const openCustomerActionModal = (type: 'payment' | 'customer_cash_out' | 'customer_credit' = 'payment') => {
     setCustomerActionType(type);
@@ -2162,10 +2200,18 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                    <option value="all_time">All</option>
                    <option value="has_due">Has Due</option>
                    <option value="high_value">High Spend</option>
+                   <option value="has_store_credit">Store Credit</option>
+                   <option value="recent_30_days">Recent 30 Days</option>
+                   <option value="has_phone">Has Phone</option>
+                   <option value="missing_phone">Missing Phone</option>
                </Select>
-               <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="h-full text-xs border-0 bg-transparent w-24 font-bold text-slate-700">
+               <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="h-full text-xs border-0 bg-transparent w-28 font-bold text-slate-700">
+                   <option value="name">Name</option>
+                   <option value="phone">Phone</option>
+                   <option value="visits">Visits</option>
                    <option value="spend">Spend</option>
                    <option value="due">Due</option>
+                   <option value="storeCredit">Credit</option>
                    <option value="lastVisit">Recent</option>
                </Select>
                <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500" onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}>
@@ -2396,13 +2442,84 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                   className="h-4 w-4 rounded border-slate-300"
                 />
               </th>
-              <th className="px-3 py-2.5 text-left">Customer</th>
-              <th className="px-3 py-2.5 text-left">Phone</th>
-              <th className="px-3 py-2.5 text-left">Visits</th>
-              <th className="px-3 py-2.5 text-left">Total Spend</th>
-              <th className="px-3 py-2.5 text-left">Due</th>
-              <th className="px-3 py-2.5 text-left">Store Credit</th>
-              <th className="px-3 py-2.5 text-left">Last Visit</th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'customer' ? null : 'customer'); }}>
+                    Customer <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'customer' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('name'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Sort A to Z</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('name'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Sort Z to A</button>
+                  </div>}
+                </div>
+              </th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'phone' ? null : 'phone'); }}>
+                    Phone <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'phone' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_phone'); setCustomerHeaderMenu(null); }}>Only with phone</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('missing_phone'); setCustomerHeaderMenu(null); }}>Only missing phone</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('phone'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Sort phone ascending</button>
+                  </div>}
+                </div>
+              </th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'visits' ? null : 'visits'); }}>
+                    Visits <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'visits' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('visits'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest visits first</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('visits'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Lowest visits first</button>
+                  </div>}
+                </div>
+              </th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'spend' ? null : 'spend'); }}>
+                    Total Spend <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'spend' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('spend'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest spend first</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('high_value'); setCustomerHeaderMenu(null); }}>Filter high spend</button>
+                  </div>}
+                </div>
+              </th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'due' ? null : 'due'); }}>
+                    Due <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'due' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_due'); setCustomerHeaderMenu(null); }}>Only customers with due</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('due'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest due first</button>
+                  </div>}
+                </div>
+              </th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'storeCredit' ? null : 'storeCredit'); }}>
+                    Store Credit <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'storeCredit' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_store_credit'); setCustomerHeaderMenu(null); }}>Only with store credit</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('storeCredit'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest credit first</button>
+                  </div>}
+                </div>
+              </th>
+              <th className="px-3 py-2.5 text-left">
+                <div className="relative">
+                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'lastVisit' ? null : 'lastVisit'); }}>
+                    Last Visit <ArrowUpDown className="h-3.5 w-3.5" />
+                  </button>
+                  {customerHeaderMenu === 'lastVisit' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('lastVisit'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Newest first</button>
+                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('recent_30_days'); setCustomerHeaderMenu(null); }}>Only recent 30 days</button>
+                  </div>}
+                </div>
+              </th>
               <th className="px-3 py-2.5 text-left">Actions</th>
             </tr>
           </thead>
@@ -2442,7 +2559,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                     <td className={`px-3 py-2.5 align-top font-semibold ${balance.storeCredit > 0 ? 'text-emerald-600' : 'text-muted-foreground'}`}>{formatINRWhole(balance.storeCredit)}</td>
                   </>;
                 })()}
-                <td className="px-3 py-2.5 align-top">{new Date(customer.lastVisit).toLocaleDateString()}</td>
+                <td className="px-3 py-2.5 align-top">{formatDateDisplay(customer.lastVisit)}</td>
                 <td className="px-3 py-2.5 align-top">
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(customer); }}>View Details</Button>
@@ -2472,6 +2589,92 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.min(customerTotalPages, prev + 1))} disabled={customerPage === customerTotalPages}>Next</Button>
         </div>
       )}
+      <div className="mt-4 rounded-lg border bg-white">
+        <div className="flex flex-col gap-3 border-b px-4 py-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">Advance / Custom Orders</h3>
+            <p className="text-xs text-muted-foreground">System-wide visibility for every saved advance/custom order.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+            <div className="rounded border bg-slate-50 px-3 py-2">
+              <div className="text-muted-foreground">Total Orders</div>
+              <div className="font-bold text-slate-900">{visibleUpfrontOrders.length}</div>
+            </div>
+            <div className="rounded border bg-slate-50 px-3 py-2">
+              <div className="text-muted-foreground">Open Orders</div>
+              <div className="font-bold text-amber-700">{visibleOpenUpfrontOrders.length}</div>
+            </div>
+            <div className="rounded border bg-slate-50 px-3 py-2">
+              <div className="text-muted-foreground">Advance Paid</div>
+              <div className="font-bold text-emerald-700">{formatINRWhole(visibleUpfrontOrders.reduce((sum, entry) => sum + entry.paid, 0))}</div>
+            </div>
+            <div className="rounded border bg-slate-50 px-3 py-2">
+              <div className="text-muted-foreground">Remaining Due</div>
+              <div className="font-bold text-red-700">{formatINRWhole(visibleOpenUpfrontOrders.reduce((sum, entry) => sum + entry.remaining, 0))}</div>
+            </div>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] text-sm">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="px-3 py-2.5 text-left">Date</th>
+                <th className="px-3 py-2.5 text-left">Customer</th>
+                <th className="px-3 py-2.5 text-left">Product</th>
+                <th className="px-3 py-2.5 text-left">Order ID</th>
+                <th className="px-3 py-2.5 text-right">Total</th>
+                <th className="px-3 py-2.5 text-right">Advance</th>
+                <th className="px-3 py-2.5 text-right">Remaining</th>
+                <th className="px-3 py-2.5 text-left">Status</th>
+                <th className="px-3 py-2.5 text-left">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleUpfrontOrders.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-3 py-6 text-center text-sm text-muted-foreground">No advance/custom orders found.</td>
+                </tr>
+              ) : visibleUpfrontOrders.map(({ order, customer, status, total, paid, remaining }) => (
+                <tr key={order.id} className="border-t hover:bg-slate-50/70">
+                  <td className="px-3 py-2.5 align-top">{new Date(order.date || order.createdAt || Date.now()).toLocaleDateString()}</td>
+                  <td className="px-3 py-2.5 align-top">
+                    <div className="font-medium text-slate-900">{customer?.name || 'Unknown customer'}</div>
+                    <div className="text-[11px] text-muted-foreground">{customer?.phone || order.customerId}</div>
+                  </td>
+                  <td className="px-3 py-2.5 align-top">
+                    <div className="font-medium text-slate-900">{order.productName}</div>
+                    <div className="text-[11px] text-muted-foreground">{order.variantLabel || order.category || 'Custom order'}</div>
+                  </td>
+                  <td className="px-3 py-2.5 align-top font-mono text-xs text-slate-600">#{order.id.slice(-6)}</td>
+                  <td className="px-3 py-2.5 align-top text-right font-semibold text-slate-900">{formatINRWhole(total)}</td>
+                  <td className="px-3 py-2.5 align-top text-right font-semibold text-emerald-700">{formatINRWhole(paid)}</td>
+                  <td className="px-3 py-2.5 align-top text-right font-semibold text-red-700">{formatINRWhole(remaining)}</td>
+                  <td className="px-3 py-2.5 align-top">
+                    <Badge className={status === 'Paid in Full' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>
+                      {status}
+                    </Badge>
+                  </td>
+                  <td className="px-3 py-2.5 align-top">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!customer}
+                      onClick={() => {
+                        if (!customer) return;
+                        setExpandedCustomerHistoryId(null);
+                        setViewingCustomer(customer);
+                        setCustomerDetailTab('custom_orders');
+                      }}
+                    >
+                      View Order
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
         </>
       )}
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import Auth from './pages/Auth';
 import VerificationRequired from './pages/VerificationRequired';
 import { getCurrentUser, logout } from './services/auth';
@@ -18,7 +18,13 @@ import RoleLoginModal from './components/auth/RoleLoginModal';
 import { RestrictedPage } from './components/auth/PermissionGuard';
 import { can, clearAccessSession, type SimplePermission } from './src/auth/simplePermissions';
 import { getStoredRoleSession, RoleSessionProvider, useRoleSession } from './src/auth/roleSession';
+import { getCanonicalCustomerBalanceResult } from './services/customerBalanceView';
+import { buildPurchasePartyLedger } from './services/purchaseLedger';
+import { formatDateDisplay } from './src/utils/dateFormat';
 const WhatsAppLogs = lazy(() => import('./pages/WhatsAppLogs'));
+
+const TEST_AUTH_BYPASS_ENABLED = String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'false').toLowerCase() === 'true';
+const TEST_AUTH_BYPASS_EMAIL = 'test-bypass@local.stockflow';
 
 const Admin = lazy(() => import('./pages/Admin'));
 const Sales = lazy(() => import('./pages/Sales'));
@@ -35,6 +41,17 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Cashbook = lazy(() => import('./pages/Cashbook'));
 const RepairCenter = lazy(() => import('./pages/RepairCenter'));
 const TelegramPosts = lazy(() => import('./pages/TelegramPosts'));
+const ADMIN_REMINDER_START_DATE = '2026-07-19T00:00:00';
+const ADMIN_REMINDER_REPEAT_MS = 7 * 24 * 60 * 60 * 1000;
+const ADMIN_REMINDER_STORAGE_KEY = 'stockflow:admin-reminder:last-shown';
+
+type AdminReminderSummary = {
+  customerDueTotal: number;
+  customerDueCount: number;
+  supplierPayableTotal: number;
+  supplierPayableCount: number;
+  generatedAt: string;
+};
 
 // --- Components ---
 
@@ -103,6 +120,7 @@ const AccessControlledRoute = ({
 
 function AppContent() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { session: roleSession, setSession: setRoleSession } = useRoleSession();
   const currentBuildId = typeof APP_BUILD_ID === 'string' ? APP_BUILD_ID : 'unknown';
   const { updateAvailable, latestVersionData, dismissUpdate } = useVersionCheck(currentBuildId);
@@ -115,9 +133,17 @@ function AppContent() {
   const [opStatus, setOpStatus] = useState<{ phase: 'start' | 'success' | 'error'; message: string; op?: string } | null>(null);
   const [salesCartCount, setSalesCartCount] = useState(0);
   const [optimisticActivePath, setOptimisticActivePath] = useState<string | null>(null);
+  const [showAdminReminder, setShowAdminReminder] = useState(false);
+  const [adminReminderSummary, setAdminReminderSummary] = useState<AdminReminderSummary | null>(null);
   const clearOptimisticActivePath = React.useCallback(() => setOptimisticActivePath(null), []);
 
   useEffect(() => {
+    if (TEST_AUTH_BYPASS_ENABLED) {
+      setCurrentEmail(TEST_AUTH_BYPASS_EMAIL);
+      setAuthStatus('authenticated');
+      return;
+    }
+
     if (!auth) {
       const cachedUser = getCurrentUser();
       setCurrentEmail(cachedUser);
@@ -213,7 +239,7 @@ function AppContent() {
   ];
   const updateVersionLabel = latestVersionData?.version ? `Version ${latestVersionData.version}` : null;
   const updateDateLabel = latestVersionData?.deployedAt
-    ? new Date(latestVersionData.deployedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+    ? formatDateDisplay(latestVersionData.deployedAt)
     : null;
 
   const handleLoginSuccess = () => {
@@ -224,12 +250,55 @@ function AppContent() {
   const accessRoleLabel = roleSession?.role === 'operator' ? (roleSession.operatorName || 'Staff') : 'Admin';
 
   const handleFullLogout = () => {
+    if (TEST_AUTH_BYPASS_ENABLED) {
+      clearAccessSession();
+      setRoleSession(null);
+      return;
+    }
     logout();
   };
 
   const handleAccessLogin = (session: { role: 'admin' | 'operator'; operatorId?: string; operatorName?: string; loginAt: string }) => {
     setRoleSession(session);
   };
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || roleSession?.role !== 'admin') return;
+    const reminderStartMs = new Date(ADMIN_REMINDER_START_DATE).getTime();
+    const nowMs = Date.now();
+    if (!Number.isFinite(reminderStartMs) || nowMs < reminderStartMs) return;
+    const lastShownMs = Number(window.localStorage.getItem(ADMIN_REMINDER_STORAGE_KEY) || 0);
+    if (Number.isFinite(lastShownMs) && lastShownMs > 0 && (nowMs - lastShownMs) < ADMIN_REMINDER_REPEAT_MS) return;
+
+    const data = loadData();
+    const customerDueEntries = (data.customers || [])
+      .map((customer) => getCanonicalCustomerBalanceResult(customer, data.transactions || [], data.upfrontOrders || []))
+      .filter((balance) => balance.status === 'ok' && balance.currentDue > 0.01);
+    const customerDueTotal = customerDueEntries.reduce((sum, balance) => sum + Number(balance.currentDue || 0), 0);
+
+    const supplierSummaries = (data.purchaseParties || [])
+      .filter((party) => !(party as { isDeleted?: boolean }).isDeleted)
+      .map((party) => buildPurchasePartyLedger({
+        partyId: party.id,
+        purchaseOrders: data.purchaseOrders || [],
+        supplierPayments: data.supplierPayments || [],
+        partyCreditLedger: data.partyCreditLedger || [],
+      }).summary)
+      .filter((summary) => summary.netPayable > 0.01);
+    const supplierPayableTotal = supplierSummaries.reduce((sum, summary) => sum + Number(summary.netPayable || 0), 0);
+
+    if (customerDueTotal <= 0.01 && supplierPayableTotal <= 0.01) return;
+
+    setAdminReminderSummary({
+      customerDueTotal,
+      customerDueCount: customerDueEntries.length,
+      supplierPayableTotal,
+      supplierPayableCount: supplierSummaries.length,
+      generatedAt: new Date().toISOString(),
+    });
+    setShowAdminReminder(true);
+    window.localStorage.setItem(ADMIN_REMINDER_STORAGE_KEY, String(nowMs));
+  }, [authStatus, roleSession]);
 
   useEffect(() => {
     if (authStatus !== 'authenticated' || roleSession) return;
@@ -501,7 +570,55 @@ function AppContent() {
         </main>
       </div>
       {authStatus === 'authenticated' && !roleSession && <RoleLoginModal onLogin={handleAccessLogin} />}
-    </>
+      {showAdminReminder && adminReminderSummary && roleSession?.role === 'admin' && (
+        <div className="fixed inset-0 z-[170] flex items-center justify-center bg-slate-900/30 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-2xl border bg-white shadow-2xl">
+            <div className="border-b px-5 py-4">
+              <div className="text-lg font-semibold text-slate-950">Admin collections and payable reminder</div>
+              <div className="mt-1 text-sm text-slate-500">
+                This reminder will begin on 19-07-2026 and then reappear every 7 days after an admin login.
+              </div>
+            </div>
+            <div className="grid gap-4 px-5 py-5 md:grid-cols-2">
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Customer collections</div>
+                <div className="mt-2 text-2xl font-bold text-emerald-900">Rs {adminReminderSummary.customerDueTotal.toFixed(2)}</div>
+                <div className="mt-1 text-sm text-emerald-800">{adminReminderSummary.customerDueCount} customer account(s) have receivable due.</div>
+              </div>
+              <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-orange-700">Supplier payables</div>
+                <div className="mt-2 text-2xl font-bold text-orange-900">Rs {adminReminderSummary.supplierPayableTotal.toFixed(2)}</div>
+                <div className="mt-1 text-sm text-orange-800">{adminReminderSummary.supplierPayableCount} party account(s) need payment attention.</div>
+              </div>
+            </div>
+            <div className="border-t px-5 py-4">
+              <div className="mb-3 text-xs text-slate-500">Generated on {formatDateDisplay(adminReminderSummary.generatedAt)}.</div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowAdminReminder(false);
+                    navigate('/customers');
+                  }}
+                >
+                  Review collections
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowAdminReminder(false);
+                    navigate('/purchase-panel');
+                  }}
+                >
+                  Review payables
+                </Button>
+                <Button onClick={() => setShowAdminReminder(false)}>Dismiss</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      </>
   );
 }
 

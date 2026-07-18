@@ -5,7 +5,7 @@ import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
 import { Customer, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
 import { NO_COLOR, NO_VARIANT, getProductStockRows, productHasCombinationStock } from '../services/productVariants';
-import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, analyzeMissingProductPurchaseHistoryRows, MissingProductPurchaseHistoryRowsAnalysis, tracePurchaseOrderProductHistoryLink, PurchaseOrderProductHistoryTraceResult } from '../services/storage';
+import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, analyzeMissingProductPurchaseHistoryRows, MissingProductPurchaseHistoryRowsAnalysis } from '../services/storage';
 import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge } from '../components/ui';
 import { Plus, Trash2, Edit, Save, X, Search, QrCode, Download, Share2, AlertCircle, Tags, FileDown, Package, Coins, AlertTriangle, Layers, ScanBarcode, Eye, TrendingUp, ChevronRight, MoreVertical } from 'lucide-react';
 import { ExportModal } from '../components/ExportModal';
@@ -165,8 +165,6 @@ export default function Admin() {
   const [purchaseEditUnitPrice, setPurchaseEditUnitPrice] = useState('');
   const [purchaseEditError, setPurchaseEditError] = useState<string | null>(null);
   const [missingHistoryAnalysis, setMissingHistoryAnalysis] = useState<MissingProductPurchaseHistoryRowsAnalysis | null>(null);
-  const [purchaseTraceOrderId, setPurchaseTraceOrderId] = useState('po-admin-1781847887520');
-  const [purchaseTraceResult, setPurchaseTraceResult] = useState<PurchaseOrderProductHistoryTraceResult | null>(null);
   const [selectedPhotoProduct, setSelectedPhotoProduct] = useState<Product | null>(null);
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
   const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
@@ -189,7 +187,6 @@ export default function Admin() {
   useEscapeLayer(Boolean(previewImage), () => setPreviewImage(null), { priority: 200 });
   useEscapeLayer(Boolean(barcodePreview), () => setBarcodePreview(null), { priority: 150 });
   useEscapeLayer(Boolean(purchaseEditTarget), () => setPurchaseEditTarget(null), { priority: 130 });
-  useEscapeLayer(Boolean(purchaseTraceResult), () => setPurchaseTraceResult(null), { priority: 126 });
   useEscapeLayer(Boolean(missingHistoryAnalysis), () => setMissingHistoryAnalysis(null), { priority: 125 });
   useEscapeLayer(Boolean(pendingPurchaseReverse), () => setPendingPurchaseReverse(null), { priority: 120 });
   useEscapeLayer(Boolean(pendingDeleteProductId), () => setPendingDeleteProductId(null), { priority: 120 });
@@ -998,8 +995,8 @@ export default function Admin() {
     const supplierPaid = supplierPaidRaw === '' ? 0 : Number(supplierPaidRaw);
     if (supplierSectionTouched) {
       if (!supplierName) return setError('Party / supplier name is required when supplier details are entered.');
-      if (!Number.isFinite(supplierPayable) || supplierPayable < 0) return setError('Total payable must be a valid number ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ 0.');
-      if (!Number.isFinite(supplierPaid) || supplierPaid < 0) return setError('Total paid must be a valid number ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ 0.');
+      if (!Number.isFinite(supplierPayable) || supplierPayable < 0) return setError('Total payable must be a valid number >= 0.');
+      if (!Number.isFinite(supplierPaid) || supplierPaid < 0) return setError('Total paid must be a valid number >= 0.');
       if (supplierPaid > supplierPayable) return setError('Total paid cannot exceed total payable.');
       if ((supplierPaid > 0 || supplierPayable > 0) && !supplierMethod) return setError('Payment method is required when payable/paid amount is entered.');
       if (supplierMethod === 'credit' && supplierPaid > 0) return setError('Credit purchase requires total paid = 0.');
@@ -1549,9 +1546,6 @@ export default function Admin() {
   const runMissingProductHistoryAnalysis = () => {
     setMissingHistoryAnalysis(analyzeMissingProductPurchaseHistoryRows());
   };
-  const runPurchaseOrderTrace = () => {
-    setPurchaseTraceResult(tracePurchaseOrderProductHistoryLink(purchaseTraceOrderId));
-  };
   const downloadMissingProductHistoryAnalysis = () => {
     if (!missingHistoryAnalysis) return;
     const payload = {
@@ -1572,23 +1566,6 @@ export default function Admin() {
     const link = document.createElement('a');
     link.href = url;
     link.download = `missing-product-history-analysis-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-  const downloadPurchaseTraceResult = () => {
-    if (!purchaseTraceResult) return;
-    const payload = {
-      generatedAt: new Date().toISOString(),
-      reportType: 'purchase_order_product_history_trace',
-      ...purchaseTraceResult,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `purchase-order-trace-${purchaseTraceResult.purchaseOrderId || 'unknown'}.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2374,10 +2351,10 @@ export default function Admin() {
           <Input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search products" />
           <Select value={operatorSortOption} onChange={(e) => setOperatorSortOption(e.target.value as any)}>
             <option value="name">Product Name</option>
-            <option value="stock-desc">Stock High ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Low</option>
-            <option value="stock-asc">Stock Low ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ High</option>
-            <option value="sell-desc">Sell Price High ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ Low</option>
-            <option value="sell-asc">Sell Price Low ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ High</option>
+            <option value="stock-desc">Stock High to Low</option>
+            <option value="stock-asc">Stock Low to High</option>
+            <option value="sell-desc">Sell Price High to Low</option>
+            <option value="sell-asc">Sell Price Low to High</option>
             <option value="category">Category</option>
           </Select>
           <Select value={operatorStockFilter} onChange={(e) => setOperatorStockFilter(e.target.value as any)}>
@@ -2410,7 +2387,7 @@ export default function Admin() {
             {operatorFilteredProducts.length > OPERATOR_INVENTORY_PAGE_SIZE && (
               <div className="flex items-center justify-between gap-2 p-3 text-sm">
                 <Button variant="outline" size="sm" onClick={() => setOperatorInventoryPage((prev) => Math.max(1, prev - 1))} disabled={operatorInventoryPage === 1}>Previous</Button>
-                <span className="text-xs text-muted-foreground">Showing {operatorPaginatedProducts.length} of {operatorFilteredProducts.length} products ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Page {operatorInventoryPage} of {operatorInventoryTotalPages}</span>
+                <span className="text-xs text-muted-foreground">Showing {operatorPaginatedProducts.length} of {operatorFilteredProducts.length} products | Page {operatorInventoryPage} of {operatorInventoryTotalPages}</span>
                 <Button variant="outline" size="sm" onClick={() => setOperatorInventoryPage((prev) => Math.min(operatorInventoryTotalPages, prev + 1))} disabled={operatorInventoryPage === operatorInventoryTotalPages}>Next</Button>
               </div>
             )}
@@ -2541,21 +2518,21 @@ export default function Admin() {
 
       {/* 2. Control Tower Toolbar (Responsive Refactor) */}
       <div className="bg-card border rounded-xl p-3 shadow-sm sticky top-0 z-20 bg-opacity-95 backdrop-blur-md">
-          <div className="flex flex-col md:flex-row gap-3">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
               
               {/* Row 1: Search (Full width on mobile, Flex on Desktop) */}
-              <div className="relative flex-1 group">
+              <div className="relative min-w-[220px] flex-1 group xl:max-w-md">
                   <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground group-focus-within:text-primary" />
                   <Input 
                       placeholder="Search products..." 
-                      className="pl-9 bg-muted/30 border-transparent focus:bg-background focus:border-input transition-all"
+                      className="w-full pl-9 bg-muted/30 border-transparent focus:bg-background focus:border-input transition-all"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                   />
               </div>
 
               {/* Row 2: Filters (2-col Grid on Mobile, Flex on Desktop) */}
-              <div className="grid grid-cols-2 gap-2 md:flex md:w-auto">
+              <div className="grid grid-cols-2 gap-2 md:flex md:w-auto md:flex-wrap">
                   <Select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="w-full md:w-[140px]">
                       {filterCategories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
                   </Select>
@@ -2568,7 +2545,7 @@ export default function Admin() {
               </div>
 
               {/* Row 3: Actions (Flex row on Mobile, Flex on Desktop) */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
                    <div className="w-px h-9 bg-border mx-1 hidden md:block"></div>
                    
                    <Button variant="outline" size="icon" onClick={() => setIsCategoryModalOpen(true)} title="Manage Categories" className="shrink-0">
@@ -2589,16 +2566,6 @@ export default function Admin() {
                    {SHOW_FORENSIC_ANALYZER && (
                      <>
                        <Button variant="outline" onClick={runMissingProductHistoryAnalysis} className="h-9">Analyze Missing Product History</Button>
-                       <div className="flex items-center gap-2 rounded-lg border border-dashed px-2 py-1">
-                         <Label className="text-xs font-medium text-muted-foreground">Trace Purchase Order</Label>
-                         <Input
-                           value={purchaseTraceOrderId}
-                           onChange={(e) => setPurchaseTraceOrderId(e.target.value)}
-                           className="h-8 w-[240px]"
-                           placeholder="po-admin-1781847887520"
-                         />
-                         <Button variant="outline" onClick={runPurchaseOrderTrace} className="h-8 px-3">Trace</Button>
-                       </div>
                      </>
                    )}
                    
@@ -4015,109 +3982,6 @@ export default function Admin() {
           </Card>
         </div>
       )}
-      {purchaseTraceResult && (
-        <div className="fixed inset-0 z-[141] flex items-center justify-center bg-black/60 p-4">
-          <Card className="w-full max-w-6xl max-h-[90vh] overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <div>
-                <CardTitle>Purchase Order Trace</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Read-only trace for <span className="font-mono">{purchaseTraceResult.purchaseOrderId}</span> using currently loaded app data.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={downloadPurchaseTraceResult}><Download className="w-4 h-4 mr-2" /> Download JSON</Button>
-                <Button variant="ghost" size="sm" onClick={() => setPurchaseTraceResult(null)}><X className="w-4 h-4" /></Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 overflow-y-auto max-h-[calc(90vh-84px)]">
-              <div className="grid gap-3 md:grid-cols-4">
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order Found</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.purchaseOrderFound ? 'Yes' : 'No'}</div>
-                </div>
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Verdict</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.verdict}</div>
-                </div>
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Line Count</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{purchaseTraceResult.purchaseOrder?.lineCount ?? 0}</div>
-                </div>
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</div>
-                  <div className="mt-1 text-lg font-bold text-slate-900">{Number(purchaseTraceResult.purchaseOrder?.total || 0).toFixed(2)}</div>
-                </div>
-              </div>
-              {purchaseTraceResult.purchaseOrder ? (
-                <div className="rounded-lg border bg-slate-50 p-3 text-sm">
-                  <div><span className="font-semibold">Date:</span> {purchaseTraceResult.purchaseOrder.date ? new Date(purchaseTraceResult.purchaseOrder.date).toLocaleString() : 'N/A'}</div>
-                  <div><span className="font-semibold">Party:</span> {purchaseTraceResult.purchaseOrder.partyName || 'N/A'}</div>
-                  <div><span className="font-semibold">Party ID:</span> <span className="font-mono text-xs">{purchaseTraceResult.purchaseOrder.partyId || 'N/A'}</span></div>
-                </div>
-              ) : (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  Purchase order was not found in the currently loaded data.
-                </div>
-              )}
-              {!!purchaseTraceResult.lines.length && (
-                <div className="overflow-x-auto rounded-lg border">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40">
-                      <tr>
-                        <th className="text-left p-3">Line</th>
-                        <th className="text-left p-3">Purchase Order Product</th>
-                        <th className="text-left p-3">Qty / Price / Total</th>
-                        <th className="text-left p-3">Resolved Product</th>
-                        <th className="text-left p-3">History Match</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {purchaseTraceResult.lines.map((line) => (
-                        <tr key={`${purchaseTraceResult.purchaseOrderId}-${line.lineIndex}-${line.productId}`} className="border-t align-top">
-                          <td className="p-3">{line.lineIndex + 1}</td>
-                          <td className="p-3">
-                            <div className="font-medium">{line.productName || 'Unknown product'}</div>
-                            <div className="font-mono text-xs text-muted-foreground">{line.productId || 'No productId'}</div>
-                            <div className="text-xs text-muted-foreground">Variant: {line.variant || NO_VARIANT} / {line.color || NO_COLOR}</div>
-                          </td>
-                          <td className="p-3">
-                            <div>Qty: {line.quantity}</div>
-                            <div>Unit Price: {line.unitPrice.toFixed(2)}</div>
-                            <div>Total: {line.lineTotal.toFixed(2)}</div>
-                          </td>
-                          <td className="p-3">
-                            <div className="font-medium">{line.productFound ? 'Product found' : 'Product missing'}</div>
-                            <div>{line.resolvedProductName || 'N/A'}</div>
-                            <div className="font-mono text-xs text-muted-foreground">{line.resolvedProductId || 'N/A'}</div>
-                            <div className="text-xs text-muted-foreground">purchaseHistory count: {line.productPurchaseHistoryCount}</div>
-                          </td>
-                          <td className="p-3">
-                            <div className="font-medium">{line.matchingHistoryRowFound ? 'Matching row present' : 'Matching row missing'}</div>
-                            <div className="text-xs text-muted-foreground">Matching rows: {line.matchingHistoryRows.length}</div>
-                            {line.matchingHistoryRows.slice(0, 2).map((row) => (
-                              <div key={row.id} className="mt-1 rounded border bg-slate-50 px-2 py-1 text-xs text-muted-foreground">
-                                <div>ID: {row.id}</div>
-                                <div>Date: {row.date ? new Date(row.date).toLocaleString() : 'N/A'}</div>
-                                <div>Qty: {Number(row.quantity || 0)} ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Unit: {Number(row.unitPrice || 0).toFixed(2)}</div>
-                              </div>
-                            ))}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div className="rounded-lg border bg-slate-50 p-3 text-sm">
-                <div className="font-semibold">Recommended next step</div>
-                <div className="mt-1 text-muted-foreground">{purchaseTraceResult.recommendedNextStep}</div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
       {isPhotoModalOpen && selectedPhotoProduct && (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4" onClick={() => setIsPhotoModalOpen(false)}>
           <Card className="w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>

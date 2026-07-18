@@ -14,6 +14,29 @@ import { getEffectiveAdminPin } from '../src/auth/permissions';
 import { isAdmin } from '../src/auth/simplePermissions';
 const isValidOperatorPin = (value: string) => /^\d{6,8}$/.test(value.trim());
 
+const THERMAL_STYLE_OPTIONS = [
+  { value: 'grocery', label: 'Grocery Classic' },
+  { value: 'classic', label: 'Counter Bold' },
+  { value: 'boxed', label: 'Boxed Modern' },
+  { value: 'minimal', label: 'Minimal Clean' },
+] as const;
+
+const THERMAL_DENSITY_OPTIONS = [
+  { value: 'compact', label: 'Compact' },
+  { value: 'balanced', label: 'Balanced' },
+  { value: 'comfortable', label: 'Comfortable' },
+] as const;
+
+const THERMAL_PREVIEW_ITEMS = [
+  { name: 'Basmati Rice 5kg', qty: 1, rate: 480, amount: 480 },
+  { name: 'Fortune Sunflower Oil 1L', qty: 2, rate: 165, amount: 330 },
+  { name: 'Aashirvaad Atta 10kg', qty: 1, rate: 525, amount: 525 },
+  { name: 'Surf Excel Easy Wash 1kg', qty: 1, rate: 210, amount: 210 },
+  { name: 'Tata Salt 1kg', qty: 3, rate: 30, amount: 90 },
+] as const;
+
+const formatPreviewCurrency = (value: number) => `₹${value.toFixed(2)}`;
+
 export default function Settings() {
   const adminAccess = isAdmin();
   const [profile, setProfile] = useState<StoreProfile>({
@@ -21,7 +44,7 @@ export default function Settings() {
     addressLine1: '', addressLine2: '', state: '',
     bankName: '', bankAccount: '', bankIfsc: '', bankHolder: '',
     defaultTaxRate: 0, defaultTaxLabel: 'None', signatureImage: '', logoImage: '', repairCenterEnabled: false, adminPin: '',
-    invoiceFormat: 'standard', thermalPaperWidth: '80mm'
+    invoiceFormat: 'standard', thermalPaperWidth: '80mm', thermalStyle: 'grocery', thermalDensity: 'compact', thermalFontScale: 1, thermalPaddingX: 2, thermalPaddingY: 1.5
   });
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -72,6 +95,11 @@ export default function Settings() {
         ...data.profile,
         invoiceFormat: data.profile?.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
         thermalPaperWidth: data.profile?.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
+        thermalStyle: data.profile?.thermalStyle === 'classic' || data.profile?.thermalStyle === 'boxed' || data.profile?.thermalStyle === 'minimal' ? data.profile.thermalStyle : 'grocery',
+        thermalDensity: data.profile?.thermalDensity === 'balanced' || data.profile?.thermalDensity === 'comfortable' ? data.profile.thermalDensity : 'compact',
+        thermalFontScale: Number.isFinite(Number(data.profile?.thermalFontScale)) ? Number(data.profile?.thermalFontScale) : 1,
+        thermalPaddingX: Number.isFinite(Number(data.profile?.thermalPaddingX)) ? Number(data.profile?.thermalPaddingX) : 2,
+        thermalPaddingY: Number.isFinite(Number(data.profile?.thermalPaddingY)) ? Number(data.profile?.thermalPaddingY) : 1.5,
         customerCatalogFirstPage: typeof data.profile?.customerCatalogFirstPage === 'string' ? data.profile.customerCatalogFirstPage : '',
         customerCatalogFirstPageName: typeof data.profile?.customerCatalogFirstPageName === 'string' ? data.profile.customerCatalogFirstPageName : '',
         customerCatalogFirstPageMimeType: typeof data.profile?.customerCatalogFirstPageMimeType === 'string' ? data.profile.customerCatalogFirstPageMimeType : '',
@@ -97,6 +125,11 @@ export default function Settings() {
       ...profile,
       invoiceFormat: profile.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
       thermalPaperWidth: profile.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
+      thermalStyle: profile.thermalStyle === 'classic' || profile.thermalStyle === 'boxed' || profile.thermalStyle === 'minimal' ? profile.thermalStyle : 'grocery',
+      thermalDensity: profile.thermalDensity === 'balanced' || profile.thermalDensity === 'comfortable' ? profile.thermalDensity : 'compact',
+      thermalFontScale: Number.isFinite(Number(profile.thermalFontScale)) ? Number(profile.thermalFontScale) : 1,
+      thermalPaddingX: Number.isFinite(Number(profile.thermalPaddingX)) ? Number(profile.thermalPaddingX) : 2,
+      thermalPaddingY: Number.isFinite(Number(profile.thermalPaddingY)) ? Number(profile.thermalPaddingY) : 1.5,
       customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
       customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
       customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
@@ -434,6 +467,33 @@ export default function Settings() {
     }
   };
 
+  const thermalPreviewSubtotal = useMemo(
+    () => THERMAL_PREVIEW_ITEMS.reduce((sum, item) => sum + item.amount, 0),
+    []
+  );
+  const thermalPreviewReceiptWidth = profile.thermalPaperWidth === '58mm' ? 240 : 320;
+  const thermalPreviewFontScale = Math.min(1.25, Math.max(0.85, Number(profile.thermalFontScale || 1)));
+  const thermalPreviewPaddingX = Math.min(4, Math.max(0.5, Number(profile.thermalPaddingX || 2)));
+  const thermalPreviewPaddingY = Math.min(4, Math.max(0.5, Number(profile.thermalPaddingY || 1.5)));
+  const thermalPreviewDensityClass = profile.thermalDensity === 'comfortable'
+    ? 'space-y-2'
+    : profile.thermalDensity === 'balanced'
+      ? 'space-y-1.5'
+      : 'space-y-1';
+  const thermalPreviewSurfaceClass = profile.thermalStyle === 'boxed'
+    ? 'border-2 border-slate-900 shadow-md'
+    : profile.thermalStyle === 'minimal'
+      ? 'border border-slate-300'
+      : profile.thermalStyle === 'classic'
+        ? 'border border-dashed border-slate-500 shadow-sm'
+        : 'border border-slate-900 shadow-sm';
+  const thermalPreviewRuleClass = profile.thermalStyle === 'minimal' ? 'border-slate-300' : 'border-slate-900';
+  const thermalPreviewHeaderClass = profile.thermalStyle === 'boxed'
+    ? 'bg-slate-900 text-white px-2 py-1 rounded-sm'
+    : profile.thermalStyle === 'classic'
+      ? 'uppercase tracking-[0.2em]'
+      : '';
+
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
       <div className="flex justify-between items-center">
@@ -543,7 +603,7 @@ export default function Settings() {
            </CardContent>
         </Card>}
 
-        {adminAccess && <Card>
+        <Card>
            <CardHeader><CardTitle className="flex items-center gap-2 text-primary"><FileText className="w-5 h-5" /> Invoice Settings</CardTitle></CardHeader>
            <CardContent className="space-y-4">
               <div className="space-y-2">
@@ -556,11 +616,143 @@ export default function Settings() {
               </div>
               <div className="p-3 bg-background rounded-lg border border-dashed text-[10px] text-muted-foreground">
                   {profile.invoiceFormat === 'thermal' ? (
-                      <p>Thermal format is optimized for 58mm/80mm roll printers and will open the browser print dialog.</p>
+                      <p>Thermal format is optimized for continuous grocery-style receipt printing. Admin and customer phone numbers are hidden on thermal receipts.</p>
                   ) : (
                       <p>Standard format generates a professional A4 PDF document for downloading or sharing.</p>
                   )}
               </div>
+              {profile.invoiceFormat === 'thermal' && (
+                <div className="space-y-4 rounded-xl border bg-slate-50/80 p-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Thermal Paper Width</Label>
+                      <Select value={profile.thermalPaperWidth || '80mm'} onChange={(e) => setProfile({ ...profile, thermalPaperWidth: e.target.value === '58mm' ? '58mm' : '80mm' })}>
+                        <option value="80mm">80mm</option>
+                        <option value="58mm">58mm</option>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Receipt Style</Label>
+                      <Select value={profile.thermalStyle || 'grocery'} onChange={(e) => setProfile({ ...profile, thermalStyle: (e.target.value as StoreProfile['thermalStyle']) || 'grocery' })}>
+                        {THERMAL_STYLE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Density</Label>
+                      <Select value={profile.thermalDensity || 'compact'} onChange={(e) => setProfile({ ...profile, thermalDensity: (e.target.value as StoreProfile['thermalDensity']) || 'compact' })}>
+                        {THERMAL_DENSITY_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Font Scale</Label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min="0.85"
+                          max="1.25"
+                          step="0.05"
+                          value={profile.thermalFontScale || 1}
+                          onChange={(e) => setProfile({ ...profile, thermalFontScale: Number(e.target.value) })}
+                          className="w-full"
+                        />
+                        <span className="w-12 text-right text-xs font-semibold">{Number(profile.thermalFontScale || 1).toFixed(2)}x</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Left / Right Padding</Label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="4"
+                          step="0.5"
+                          value={profile.thermalPaddingX || 2}
+                          onChange={(e) => setProfile({ ...profile, thermalPaddingX: Number(e.target.value) })}
+                          className="w-full"
+                        />
+                        <span className="w-12 text-right text-xs font-semibold">{Number(profile.thermalPaddingX || 2).toFixed(1)}mm</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Top / Bottom Padding</Label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="4"
+                          step="0.5"
+                          value={profile.thermalPaddingY || 1.5}
+                          onChange={(e) => setProfile({ ...profile, thermalPaddingY: Number(e.target.value) })}
+                          className="w-full"
+                        />
+                        <span className="w-12 text-right text-xs font-semibold">{Number(profile.thermalPaddingY || 1.5).toFixed(1)}mm</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    Thermal receipts are forced to print as a continuous bill until the content ends. Phone numbers are excluded from thermal output by design.
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Live Thermal Preview</Label>
+                    <div className="overflow-auto rounded-xl border bg-slate-200/70 p-4">
+                      <div
+                        className={`mx-auto bg-white text-slate-900 ${thermalPreviewSurfaceClass}`}
+                        style={{
+                          width: `${thermalPreviewReceiptWidth}px`,
+                          paddingLeft: `${thermalPreviewPaddingX * 3.78}px`,
+                          paddingRight: `${thermalPreviewPaddingX * 3.78}px`,
+                          paddingTop: `${thermalPreviewPaddingY * 3.78}px`,
+                          paddingBottom: `${thermalPreviewPaddingY * 3.78}px`,
+                          fontSize: `${10 * thermalPreviewFontScale}px`,
+                          lineHeight: profile.thermalDensity === 'comfortable' ? 1.45 : profile.thermalDensity === 'balanced' ? 1.3 : 1.15,
+                          fontFamily: '"Courier New", monospace',
+                        }}
+                      >
+                        <div className={`text-center font-bold ${thermalPreviewHeaderClass}`}>
+                          <div className="text-base font-bold">{profile.storeName || 'KDM Overseas'}</div>
+                          <div className="mt-1 text-[11px] uppercase tracking-[0.18em]">Tax Invoice</div>
+                        </div>
+                        <div className={`mt-2 border-t border-b py-2 text-[11px] ${thermalPreviewRuleClass}`}>
+                          <div className="flex justify-between"><span>Invoice</span><span>INV-20418</span></div>
+                          <div className="flex justify-between"><span>Bill To</span><span>Walk-in Customer</span></div>
+                          <div className="flex justify-between"><span>Date</span><span>18 Jul 2026</span></div>
+                        </div>
+                        <div className={`mt-2 ${thermalPreviewDensityClass}`}>
+                          <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-b pb-1 text-[11px] font-bold">
+                            <span>Item</span>
+                            <span>Qty</span>
+                            <span>Amt</span>
+                          </div>
+                          {THERMAL_PREVIEW_ITEMS.map((item) => (
+                            <div key={item.name} className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-dotted pb-1">
+                              <div>
+                                <div>{item.name}</div>
+                                <div className="text-[10px] text-slate-500">Rate {formatPreviewCurrency(item.rate)}</div>
+                              </div>
+                              <div className="text-right">{item.qty}</div>
+                              <div className="text-right font-semibold">{formatPreviewCurrency(item.amount)}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className={`mt-2 space-y-1 border-t pt-2 text-[11px] ${thermalPreviewRuleClass}`}>
+                          <div className="flex justify-between"><span>Subtotal</span><span>{formatPreviewCurrency(thermalPreviewSubtotal)}</span></div>
+                          <div className="flex justify-between"><span>Discount</span><span>{formatPreviewCurrency(35)}</span></div>
+                          <div className="flex justify-between font-bold text-[12px]"><span>Total</span><span>{formatPreviewCurrency(thermalPreviewSubtotal - 35)}</span></div>
+                        </div>
+                        <div className="mt-2 border-t pt-2 text-center text-[10px] text-slate-600">
+                          Thank you for your business
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -578,7 +770,7 @@ export default function Settings() {
                 Show Repair Center tab
               </label>}
            </CardContent>
-        </Card>}
+        </Card>
 
 
         {adminAccess && <Card>
