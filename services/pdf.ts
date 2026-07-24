@@ -83,15 +83,7 @@ const getThermalPaddingY = (profile?: Partial<StoreProfile> | null): number => {
 };
 
 const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((resolve, reject) => {
-  const width = 900;
-  const height = 720;
-  const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
-  const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
   const features = [
-    `width=${width}`,
-    `height=${height}`,
-    `left=${Math.round(left)}`,
-    `top=${Math.round(top)}`,
     'resizable=yes',
     'scrollbars=yes',
     'menubar=no',
@@ -898,6 +890,7 @@ const buildThermalInvoiceHtml = (
       width: var(--paper-width);
       min-width: var(--paper-width);
       max-width: var(--paper-width);
+      min-height: auto;
       background: #fff;
       color: #111827;
       font-family: "Courier New", Courier, monospace;
@@ -908,15 +901,16 @@ const buildThermalInvoiceHtml = (
     body.thermal-print-body {
       padding: 0;
       overflow: visible;
-      display: inline-block;
+      display: block;
     }
     .thermal-print-body .receipt {
       width: var(--receipt-width);
       padding: var(--receipt-padding-y) var(--receipt-padding-x);
       margin: 0;
       display: block;
-      page-break-after: avoid;
-      break-after: avoid-page;
+      height: auto;
+      min-height: auto;
+      overflow: visible;
     }
     .center { text-align: center; }
     .muted { color: var(--muted); }
@@ -1009,7 +1003,6 @@ const buildThermalInvoiceHtml = (
       border-bottom: ${thermalStyle === 'minimal' ? '1px solid #e5e7eb' : '1px dotted #d1d5db'};
       word-break: normal;
       overflow-wrap: anywhere;
-      break-inside: avoid-page;
     }
     tbody tr:last-child td {
       border-bottom: none;
@@ -1076,13 +1069,13 @@ const buildThermalInvoiceHtml = (
         width: var(--paper-width) !important;
         min-width: var(--paper-width) !important;
         max-width: var(--paper-width) !important;
+        min-height: auto !important;
         background: #fff !important;
         color: #111827 !important;
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
         height: auto !important;
-        overflow-x: hidden !important;
-        overflow-y: visible !important;
+        overflow: visible !important;
       }
       body.thermal-print-body {
         display: block !important;
@@ -1101,24 +1094,14 @@ const buildThermalInvoiceHtml = (
         max-width: var(--receipt-width) !important;
         margin: 0 !important;
         padding: var(--receipt-padding-y) var(--receipt-padding-x) !important;
-        page-break-after: avoid !important;
-        break-after: avoid-page !important;
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
       }
       body.thermal-print-body img,
       body.thermal-print-body canvas,
       body.thermal-print-body svg {
         max-width: 100% !important;
-        page-break-inside: avoid !important;
-        break-inside: avoid-page !important;
-      }
-      body.thermal-print-body table,
-      body.thermal-print-body thead,
-      body.thermal-print-body tbody,
-      body.thermal-print-body tr,
-      body.thermal-print-body td,
-      body.thermal-print-body th {
-        page-break-inside: avoid !important;
-        break-inside: avoid-page !important;
       }
     }
   </style>
@@ -1221,6 +1204,22 @@ export const generateReceiptPDF = (
         const absNum = Math.floor(Math.abs(num));
         return convert(absNum) + " Rupees only";
     };
+    const subtotalAmount = Math.max(0, Number(transaction.subtotal || transaction.total || 0));
+    const discountAmount = Math.max(0, Number(transaction.discount || 0));
+    const taxAmount = Math.max(0, Number(transaction.tax || 0));
+    const parsedTaxRate = Number(transaction.taxRate);
+    const fallbackTaxRateMatch = String(transaction.taxLabel || '').match(/(\d+(?:\.\d+)?)\s*%/);
+    const taxRateValue = Number.isFinite(parsedTaxRate)
+      ? Math.max(0, parsedTaxRate)
+      : (fallbackTaxRateMatch ? Math.max(0, Number(fallbackTaxRateMatch[1])) : 0);
+    const taxableAmount = Math.max(
+      0,
+      Number((transaction as any).taxableAmount ?? (subtotalAmount - discountAmount))
+    );
+    const formatTaxRateLabel = (value: number) => Number.isInteger(value) ? `${value}%` : `${value.toFixed(2)}%`;
+    const gstRateLabel = taxRateValue > 0
+      ? (String(transaction.taxLabel || '').trim() || `GST @ ${formatTaxRateLabel(taxRateValue)}`)
+      : (String(transaction.taxLabel || '').trim() || 'Tax');
 
     // --- Header Section ---
     const logoData = profile.logoImage && profile.logoImage.startsWith('data:image') ? profile.logoImage : '';
@@ -1314,6 +1313,9 @@ export const generateReceiptPDF = (
     const documentLabel = transaction.type === 'return' ? 'Credit Note No.' : 'Invoice No.';
     doc.text(`${documentLabel}: ${documentNo}`, pageWidth - 14, billSectionY + 7, { align: "right" });
     doc.text(`Date: ${new Date(transaction.date).toLocaleDateString()}`, pageWidth - 14, billSectionY + 13, { align: "right" });
+    if (taxAmount > 0) {
+      doc.text(`Tax Rate: ${gstRateLabel}`, pageWidth - 14, billSectionY + 19, { align: "right" });
+    }
 
     // --- Items Table ---
     const tableData = normalizeTransactionItems(transaction.items).map((item, idx) => [
@@ -1362,16 +1364,20 @@ export const generateReceiptPDF = (
     let summaryY = finalY;
     doc.setFontSize(9);
     doc.text("Sub Total", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(transaction.subtotal || 0)}`, totalsX, summaryY, { align: "right" });
+    doc.text(`${formatMoneyPrecise(subtotalAmount)}`, totalsX, summaryY, { align: "right" });
     
     summaryY += 6;
     doc.text("Discount", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(transaction.discount || 0)}`, totalsX, summaryY, { align: "right" });
+    doc.text(`${formatMoneyPrecise(discountAmount)}`, totalsX, summaryY, { align: "right" });
+
+    summaryY += 6;
+    doc.text("Taxable Amount", totalsLabelX, summaryY);
+    doc.text(`${formatMoneyPrecise(taxableAmount)}`, totalsX, summaryY, { align: "right" });
     
-    if (transaction.tax && transaction.tax > 0) {
+    if (taxAmount > 0) {
         summaryY += 6;
-        doc.text(transaction.taxLabel || "Tax", totalsLabelX, summaryY);
-        doc.text(`${formatMoneyPrecise(transaction.tax)}`, totalsX, summaryY, { align: "right" });
+        doc.text(gstRateLabel, totalsLabelX, summaryY);
+        doc.text(`${formatMoneyPrecise(taxAmount)}`, totalsX, summaryY, { align: "right" });
     }
 
     summaryY += 6;
