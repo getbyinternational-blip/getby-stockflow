@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { OperatorUser, StoreProfile, TAX_OPTIONS } from '../types';
+import { OperatorUser, StoreProfile, TAX_OPTIONS, resolveTaxOption } from '../types';
 import { loadData, updateOperatorUsers, updateStoreProfile, uploadImageFileToCloudinary } from '../services/storage';
 import { logout, getCurrentUser } from '../services/auth';
 import { auth } from '../services/firebase';
@@ -100,8 +100,11 @@ export default function Settings() {
   useEffect(() => {
     const refreshData = () => {
       const data = loadData();
+      const resolvedTaxOption = resolveTaxOption(data.profile?.defaultTaxLabel, data.profile?.defaultTaxRate);
       const baseProfile: StoreProfile = {
         ...data.profile,
+        defaultTaxLabel: resolvedTaxOption.label,
+        defaultTaxRate: resolvedTaxOption.value,
         invoiceFormat: data.profile?.invoiceFormat === 'thermal' ? 'thermal' : 'standard',
         thermalPaperWidth: data.profile?.thermalPaperWidth === '58mm' ? '58mm' : '80mm',
         thermalStyle: data.profile?.thermalStyle === 'classic' || data.profile?.thermalStyle === 'boxed' || data.profile?.thermalStyle === 'minimal' ? data.profile.thermalStyle : 'grocery',
@@ -180,7 +183,7 @@ export default function Settings() {
   };
 
   const handleTaxChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const selected = TAX_OPTIONS.find(o => o.label === e.target.value);
+      const selected = TAX_OPTIONS.find(o => o.label === e.target.value) || resolveTaxOption(e.target.value);
       if (selected) {
           setProfile({ ...profile, defaultTaxLabel: selected.label, defaultTaxRate: selected.value });
       }
@@ -575,7 +578,7 @@ export default function Settings() {
            <CardContent className="space-y-4">
               <div className="space-y-2">
                  <Label>Default GST Rate</Label>
-                 <p className="text-[10px] text-muted-foreground mb-1">Set the default tax percentage applied to all new sales.</p>
+                 <p className="text-[10px] text-muted-foreground mb-1">Choose `CGST+SGST` for same-state sales like Gujarat-to-Gujarat, and `IGST` for interstate sales.</p>
                  <Select value={profile.defaultTaxLabel} onChange={handleTaxChange} className="bg-background">
                     {TAX_OPTIONS.map(opt => (
                         <option key={opt.label} value={opt.label}>{opt.label} ({opt.value}%)</option>

@@ -6,7 +6,7 @@ import autoTable from 'jspdf-autotable';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower, safeText } from '../utils/productText';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Product, CartItem, Transaction, Customer, UpfrontOrder, TAX_OPTIONS } from '../types';
+import { Product, CartItem, Transaction, Customer, UpfrontOrder, TAX_OPTIONS, resolveTaxOption } from '../types';
 import { formatItemNameWithVariant, getAvailableStockForCombination, getProductStockRows, getResolvedBuyPriceForCombination, getResolvedSellPriceForCombination, NO_COLOR, NO_VARIANT, productHasCombinationStock } from '../services/productVariants';
 import { getStockBucketKey } from '../services/stockBuckets';
 import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft } from '../services/storage';
@@ -461,8 +461,8 @@ export default function Sales() {
       setTransactions(data.transactions);
       setUpfrontOrders(Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []);
       
-      if (data.profile.defaultTaxLabel) {
-          const defaultOpt = TAX_OPTIONS.find(o => o.label === data.profile.defaultTaxLabel) || TAX_OPTIONS[0];
+      if (data.profile.defaultTaxLabel || Number.isFinite(Number(data.profile.defaultTaxRate))) {
+          const defaultOpt = resolveTaxOption(data.profile.defaultTaxLabel, data.profile.defaultTaxRate);
           setSelectedTax(defaultOpt);
       }
   }

@@ -936,21 +936,42 @@ export interface AppState {
   repairHistoryEntries?: RepairHistoryEntry[];
 }
 
-export const TAX_OPTIONS = [
-    { label: 'None', value: 0 },
-    { label: 'Exempted', value: 0 },
-    { label: 'GST@0%', value: 0 },
-    { label: 'IGST@0%', value: 0 },
-    { label: 'GST@0.25%', value: 0.25 },
-    { label: 'IGST@0.25%', value: 0.25 },
-    { label: 'GST@3%', value: 3 },
-    { label: 'IGST@3%', value: 3 },
-    { label: 'GST@5%', value: 5 },
-    { label: 'IGST@5%', value: 5 },
-    { label: 'GST@12%', value: 12 },
-    { label: 'IGST@12%', value: 12 },
-    { label: 'GST@18%', value: 18 },
-    { label: 'IGST@18%', value: 18 },
-    { label: 'GST@28%', value: 28 },
-    { label: 'IGST@28%', value: 28 }
+export type TaxOption = {
+  label: string;
+  value: number;
+  mode?: 'none' | 'cgst_sgst' | 'igst';
+  legacyAliases?: string[];
+};
+
+export const TAX_OPTIONS: TaxOption[] = [
+    { label: 'None', value: 0, mode: 'none' },
+    { label: 'Exempted', value: 0, mode: 'none' },
+    { label: 'CGST+SGST@0%', value: 0, mode: 'cgst_sgst', legacyAliases: ['GST@0%'] },
+    { label: 'IGST@0%', value: 0, mode: 'igst' },
+    { label: 'CGST+SGST@0.25%', value: 0.25, mode: 'cgst_sgst', legacyAliases: ['GST@0.25%'] },
+    { label: 'IGST@0.25%', value: 0.25, mode: 'igst' },
+    { label: 'CGST+SGST@3%', value: 3, mode: 'cgst_sgst', legacyAliases: ['GST@3%'] },
+    { label: 'IGST@3%', value: 3, mode: 'igst' },
+    { label: 'CGST+SGST@5%', value: 5, mode: 'cgst_sgst', legacyAliases: ['GST@5%'] },
+    { label: 'IGST@5%', value: 5, mode: 'igst' },
+    { label: 'CGST+SGST@12%', value: 12, mode: 'cgst_sgst', legacyAliases: ['GST@12%'] },
+    { label: 'IGST@12%', value: 12, mode: 'igst' },
+    { label: 'CGST+SGST@18%', value: 18, mode: 'cgst_sgst', legacyAliases: ['GST@18%'] },
+    { label: 'IGST@18%', value: 18, mode: 'igst' },
+    { label: 'CGST+SGST@28%', value: 28, mode: 'cgst_sgst', legacyAliases: ['GST@28%'] },
+    { label: 'IGST@28%', value: 28, mode: 'igst' }
 ];
+
+export const resolveTaxOption = (label?: string, rate?: number): TaxOption => {
+  const normalizedLabel = String(label || '').trim();
+  const normalizedRate = Number(rate);
+  const exact = TAX_OPTIONS.find((option) => option.label === normalizedLabel);
+  if (exact) return exact;
+  const alias = TAX_OPTIONS.find((option) => option.legacyAliases?.includes(normalizedLabel));
+  if (alias) return alias;
+  if (Number.isFinite(normalizedRate)) {
+    const byRate = TAX_OPTIONS.find((option) => option.value === normalizedRate && option.mode === 'cgst_sgst');
+    if (byRate) return byRate;
+  }
+  return TAX_OPTIONS[0];
+};

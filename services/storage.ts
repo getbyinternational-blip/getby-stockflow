@@ -540,6 +540,7 @@ const getPurchaseReceiptPostingsCollectionRef = (uid: string) => collection(db!,
 const getExpensesCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'expenses');
 const getExpenseActivitiesCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'expenseActivities');
 const getFinanceStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'finance');
+const getTelegramStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'telegram');
 
 const ROOT_STORE_BLOCKED_ARRAY_FIELDS = [
   'products',
@@ -2818,6 +2819,7 @@ let hasInitialSynced = false;
 let hasLoggedInitKpiSnapshot = false;
 let unsubscribeSnapshot: any = null;
 let unsubscribeFinanceSnapshot: any = null;
+let unsubscribeTelegramSnapshot: any = null;
 let unsubscribeProductsSnapshot: any = null;
 let unsubscribeCustomersSnapshot: any = null;
 let unsubscribeTransactionsSnapshot: any = null;
@@ -2828,6 +2830,7 @@ let unsubscribePartyCreditLedgerSnapshot: any = null;
 let unsubscribeExpensesSnapshot: any = null;
 let unsubscribeRepairHistoryEntriesSnapshot: any = null;
 let financeDocumentCache: Record<string, unknown> | null = null;
+let telegramDocumentCache: Record<string, unknown> | null = null;
 
 const buildHydratedFinanceState = (
   rootData: Partial<AppState> & Record<string, unknown>,
@@ -2854,6 +2857,28 @@ const buildHydratedFinanceState = (
   return hydrated;
 };
 
+const buildHydratedTelegramProfile = (
+  rootProfile: Partial<StoreProfile> | null | undefined,
+  telegramData: Record<string, unknown> | null
+): StoreProfile => {
+  const baseProfile = { ...defaultProfile, ...(rootProfile || {}) } as StoreProfile;
+  if (!telegramData) return baseProfile;
+
+  return sanitizeStoreProfileForPersistence({
+    ...baseProfile,
+    telegramChannelId: String(telegramData.telegramChannelId || baseProfile.telegramChannelId || '').trim(),
+    telegramTemplate: String(telegramData.telegramTemplate || baseProfile.telegramTemplate || '').trim(),
+    telegramNotes: String(telegramData.telegramNotes || baseProfile.telegramNotes || '').trim(),
+    telegramCollections: Array.isArray(telegramData.telegramCollections)
+      ? (telegramData.telegramCollections as any[])
+      : (baseProfile.telegramCollections || []),
+    telegramPostActivity: Array.isArray(telegramData.telegramPostActivity)
+      ? (telegramData.telegramPostActivity as any[])
+      : (baseProfile.telegramPostActivity || []),
+    telegramActiveCollectionId: String(telegramData.telegramActiveCollectionId || baseProfile.telegramActiveCollectionId || '').trim(),
+  });
+};
+
 
 const unsubscribeCloudListeners = (uid: string | null, reason: string) => {
   if (unsubscribeSnapshot) {
@@ -2863,6 +2888,10 @@ const unsubscribeCloudListeners = (uid: string | null, reason: string) => {
   if (unsubscribeFinanceSnapshot) {
     unsubscribeFinanceSnapshot();
     unsubscribeFinanceSnapshot = null;
+  }
+  if (unsubscribeTelegramSnapshot) {
+    unsubscribeTelegramSnapshot();
+    unsubscribeTelegramSnapshot = null;
   }
   if (unsubscribeProductsSnapshot) {
     unsubscribeProductsSnapshot();
@@ -2930,6 +2959,7 @@ const resetCloudStateForUser = (uid: string | null, reason: string) => {
   legacyRootRepairHistoryEntriesCache = [];
   subcollectionRepairHistoryEntriesCache = [];
   financeDocumentCache = null;
+  telegramDocumentCache = null;
   activeSyncUid = uid;
   syncGeneration += 1;
   syncInitInFlight = false;
@@ -3160,6 +3190,19 @@ const syncFromCloud = async (): Promise<void> => {
         }, (error) => {
             logStockFlowError('financeState.listener_error', error, { uid: user.uid });
         });
+        unsubscribeTelegramSnapshot = onSnapshot(getTelegramStateDocumentRef(user.uid), (telegramSnap) => {
+            telegramDocumentCache = telegramSnap.exists()
+              ? (telegramSnap.data() as Record<string, unknown>)
+              : null;
+            memoryState = {
+              ...memoryState,
+              profile: buildHydratedTelegramProfile(memoryState.profile, telegramDocumentCache),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('telegramState.listener_error', error, { uid: user.uid });
+        });
         // expenseActivities are non-critical and are fetched on Finance open or manual refresh.
         unsubscribeSnapshot = onSnapshot(docRef, async (docSnap) => {
             if (docSnap.exists()) {
@@ -3228,7 +3271,7 @@ const syncFromCloud = async (): Promise<void> => {
                     partyCreditLedger: mergedPurchaseState.partyCreditLedger,
                     variantsMaster: cloudData.variantsMaster || [],
                     colorsMaster: cloudData.colorsMaster || [],
-                    profile: { ...defaultProfile, ...(cloudData.profile || {}) },
+                    profile: buildHydratedTelegramProfile(cloudData.profile as Partial<StoreProfile> | null | undefined, telegramDocumentCache),
                     ...buildHydratedFinanceState(cloudData as AppState & Record<string, unknown>, financeDocumentCache),
                 };
                 void backfillLegacyRootPurchasePartiesToSubcollection(user.uid, 'root_snapshot_hydration');
@@ -4557,6 +4600,40 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
     ],
   });
   return safeProfile;
+};
+
+export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramPostActivity' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
+  const nextProfile = sanitizeStoreProfileForPersistence({
+    ...memoryState.profile,
+    ...profilePatch,
+  } as StoreProfile);
+  const telegramPayload = sanitizeData({
+    telegramChannelId: nextProfile.telegramChannelId || '',
+    telegramTemplate: nextProfile.telegramTemplate || '',
+    telegramNotes: nextProfile.telegramNotes || '',
+    telegramCollections: Array.isArray(nextProfile.telegramCollections) ? nextProfile.telegramCollections : [],
+    telegramPostActivity: Array.isArray(nextProfile.telegramPostActivity) ? nextProfile.telegramPostActivity : [],
+    telegramActiveCollectionId: nextProfile.telegramActiveCollectionId || '',
+  }) as Record<string, unknown>;
+  const nextState = { ...memoryState, profile: nextProfile };
+
+  if (!db || !auth?.currentUser || !isCloudSynced) {
+    memoryState = nextState;
+    emitLocalStorageUpdate();
+    return nextProfile;
+  }
+
+  const user = await assertCloudWriteReady('updateTelegramProfileState');
+  await setDoc(getTelegramStateDocumentRef(user.uid), telegramPayload, { merge: true });
+  telegramDocumentCache = telegramPayload;
+  memoryState = nextState;
+  emitLocalStorageUpdate();
+  await writeAuditEvent('UPDATE', {
+    reason: 'updateTelegramProfileState_targeted',
+    telegramCollectionsCount: Array.isArray(nextProfile.telegramCollections) ? nextProfile.telegramCollections.length : 0,
+    telegramPostActivityCount: Array.isArray(nextProfile.telegramPostActivity) ? nextProfile.telegramPostActivity.length : 0,
+  });
+  return nextProfile;
 };
 
 

@@ -3,7 +3,7 @@ import { Clock3, FolderPlus, Image as ImageIcon, Pause, Play, Plus, Save, Search
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select } from '../components/ui';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { formatCurrency } from '../services/numberFormat';
-import { loadData, updateStoreProfile } from '../services/storage';
+import { loadData, updateTelegramProfileState } from '../services/storage';
 import {
   createTelegramProductPost,
   getLiveTelegramCollections,
@@ -350,7 +350,14 @@ export default function TelegramPosts() {
       telegramPostActivity: nextValues.telegramPostActivity ?? telegramActivity,
       telegramActiveCollectionId: nextValues.telegramActiveCollectionId ?? activeCollectionId,
     };
-    const saved = await updateStoreProfile(nextProfile);
+    const saved = await updateTelegramProfileState({
+      telegramChannelId: nextProfile.telegramChannelId,
+      telegramTemplate: nextProfile.telegramTemplate,
+      telegramNotes: nextProfile.telegramNotes,
+      telegramCollections: nextProfile.telegramCollections,
+      telegramPostActivity: nextProfile.telegramPostActivity,
+      telegramActiveCollectionId: nextProfile.telegramActiveCollectionId,
+    });
     setProfile(saved);
     setTelegramCollections(normalizeCollections(saved));
     setTelegramActivity(normalizeActivity(saved));

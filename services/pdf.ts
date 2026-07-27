@@ -82,6 +82,14 @@ const getThermalPaddingY = (profile?: Partial<StoreProfile> | null): number => {
   return Number.isFinite(value) ? Math.min(4, Math.max(0.5, value)) : 1.5;
 };
 
+const getTaxBreakupMode = (taxLabel?: string): 'igst' | 'cgst_sgst' | 'none' => {
+  const normalized = String(taxLabel || '').trim().toUpperCase();
+  if (!normalized || normalized === 'NONE' || normalized === 'EXEMPTED' || normalized === '0%') return 'none';
+  if (normalized.includes('IGST')) return 'igst';
+  if (normalized.includes('CGST') || normalized.includes('SGST') || normalized.includes('GST')) return 'cgst_sgst';
+  return 'cgst_sgst';
+};
+
 const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((resolve, reject) => {
   const features = [
     'resizable=yes',
@@ -128,11 +136,31 @@ const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((
     }, 0);
   };
 
-  const triggerPrint = () => {
+  const waitForPopupAssets = async () => {
+    const popupDocument = printWindow.document;
+    if ('fonts' in popupDocument && popupDocument.fonts?.ready) {
+      try {
+        await popupDocument.fonts.ready;
+      } catch {}
+    }
+    const images = Array.from(popupDocument.images || []);
+    if (images.length) {
+      await Promise.all(images.map((image) => (
+        image.complete
+          ? Promise.resolve()
+          : new Promise<void>((resolveImage) => {
+              image.addEventListener('load', () => resolveImage(), { once: true });
+              image.addEventListener('error', () => resolveImage(), { once: true });
+            })
+      )));
+    }
+  };
+
+  const triggerPrint = async () => {
     try {
+      await waitForPopupAssets();
       printWindow.addEventListener('afterprint', handleAfterPrint, { once: true });
       printWindow.focus();
-      console.log('[PAY_PRINT_OPEN_BROWSER_PRINT]');
       printWindow.print();
       closeFallbackTimer = window.setTimeout(() => {
         focusOpenerAndClose();
@@ -148,9 +176,9 @@ const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((
     printWindow.document.write(html);
     printWindow.document.close();
     printWindow.onload = () => {
-      window.setTimeout(() => finish(triggerPrint), 120);
+      window.setTimeout(() => finish(() => { void triggerPrint(); }), 120);
     };
-    window.setTimeout(() => finish(triggerPrint), 500);
+    window.setTimeout(() => finish(() => { void triggerPrint(); }), 500);
   } catch (error) {
     finish(() => reject(error instanceof Error ? error : new Error('Browser print failed.')));
   }
@@ -788,7 +816,9 @@ const buildThermalInvoiceHtml = (
     const headerFontSize = (paperWidth === '58mm' ? 14 : 16) * thermalFontScale;
     const titleFontSize = (paperWidth === '58mm' ? 10 : 11) * thermalFontScale;
     const smallFontSize = (paperWidth === '58mm' ? 8 : 9) * thermalFontScale;
-    const itemRows = normalizeTransactionItems(transaction.items).map((item, index) => {
+    const normalizedItems = normalizeTransactionItems(transaction.items);
+    const printPageLength = normalizedItems.length <= 5 ? '100mm' : normalizedItems.length <= 12 ? '200mm' : '300mm';
+    const itemRows = normalizedItems.map((item, index) => {
       const itemName = formatInvoiceItemName(item);
       const amount = Math.max(0, (Number(item.sellPrice || 0) * Number(item.quantity || 0)) - Number(item.discountAmount || 0));
       const metaBits = [
@@ -881,7 +911,8 @@ const buildThermalInvoiceHtml = (
       --header-tone: ${headerTone};
       --header-bg: ${headerBackground};
       --line-height: ${densityLineHeight};
-      --print-page-size: ${paperWidth} auto;
+      --print-page-length: ${printPageLength};
+      --print-page-size: ${paperWidth} ${printPageLength};
     }
     * { box-sizing: border-box; }
     html.thermal-print-root, body.thermal-print-body {
@@ -1056,12 +1087,12 @@ const buildThermalInvoiceHtml = (
     }
     @page {
       margin: 0 !important;
-      size: ${paperWidth} auto;
+      size: ${paperWidth} ${printPageLength};
     }
     @media print {
       @page {
         margin: 0 !important;
-        size: ${paperWidth} auto;
+        size: ${paperWidth} ${printPageLength};
       }
       html.thermal-print-root, body.thermal-print-body {
         margin: 0 !important;
@@ -1183,8 +1214,11 @@ export const generateReceiptPDF = (
         return;
     }
 
-    const doc = new jsPDF();
+    const doc = new jsPDF({ format: 'a4', unit: 'mm' });
     const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 8;
+    const contentWidth = pageWidth - (margin * 2);
 
     // Utility: Number to words (Simple version)
     const numberToWords = (num: number) => {
@@ -1217,255 +1251,328 @@ export const generateReceiptPDF = (
       Number((transaction as any).taxableAmount ?? (subtotalAmount - discountAmount))
     );
     const formatTaxRateLabel = (value: number) => Number.isInteger(value) ? `${value}%` : `${value.toFixed(2)}%`;
+    const taxBreakupMode = getTaxBreakupMode(transaction.taxLabel);
+    const cgstRate = taxBreakupMode === 'cgst_sgst' && taxRateValue > 0 ? taxRateValue / 2 : 0;
+    const sgstRate = taxBreakupMode === 'cgst_sgst' && taxRateValue > 0 ? taxRateValue / 2 : 0;
+    const cgstAmount = taxBreakupMode === 'cgst_sgst' && taxAmount > 0 ? taxAmount / 2 : 0;
+    const sgstAmount = taxBreakupMode === 'cgst_sgst' && taxAmount > 0 ? taxAmount / 2 : 0;
+    const igstRate = taxBreakupMode === 'igst' ? taxRateValue : 0;
+    const igstAmount = taxBreakupMode === 'igst' ? taxAmount : 0;
+    const roundOff = roundMoneyWhole(transaction.total) - transaction.total;
     const gstRateLabel = taxRateValue > 0
       ? (String(transaction.taxLabel || '').trim() || `GST @ ${formatTaxRateLabel(taxRateValue)}`)
       : (String(transaction.taxLabel || '').trim() || 'Tax');
-
-    // --- Header Section ---
-    const logoData = profile.logoImage && profile.logoImage.startsWith('data:image') ? profile.logoImage : '';
-    const logoX = 14;
-    const logoBoxW = 40.56; // +30% vs previous
-    const logoBoxH = 24.96; // +30% vs previous
-    const logoY = 4.24; // keep logo bottom aligned so header height stays stable
-    if (logoData) {
-      try {
-        const props = (doc as any).getImageProperties(logoData);
-        const ratio = props?.width && props?.height ? props.width / props.height : 1;
-        let drawW = logoBoxW;
-        let drawH = drawW / ratio;
-        if (drawH > logoBoxH) { drawH = logoBoxH; drawW = drawH * ratio; }
-        doc.addImage(logoData, props?.fileType || 'PNG', logoX, logoY, drawW, drawH, undefined, 'FAST');
-      } catch {}
-    }
-
-    const headerLeftX = 14;
-    const headerCenterX = pageWidth / 2;
-    doc.setFontSize(15);
-    doc.setFont("helvetica", "bold");
-    doc.text(profile.storeName || "StockFlow Store", headerCenterX, 14, { align: "center" });
-    
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "normal");
+    const customer = customers.find(c => c.id === transaction.customerId);
+    const customerPhone = transaction.customerPhone || customer?.phone || '-';
+    const customerGstName = String(transaction.gstName || customer?.gstName || '').trim();
+    const customerGstNumber = String(transaction.gstNumber || customer?.gstNumber || '').trim();
+    const shouldShowCustomerGst = Boolean(customerGstName || customerGstNumber);
     const cleanAddress1 = sanitizeHeaderText(profile.addressLine1);
     const cleanAddress2 = sanitizeHeaderText(profile.addressLine2);
     const cleanPhone = sanitizeHeaderText(profile.phone);
     const cleanEmail = sanitizeHeaderText(profile.email);
     const cleanGstin = sanitizeHeaderText(profile.gstin);
     const cleanState = sanitizeHeaderText(profile.state);
-    const headerLinesRaw = [
-        cleanAddress1,
-        cleanAddress2,
-        cleanPhone ? `Phone no.: ${cleanPhone}` : '',
-        cleanEmail ? `Email: ${cleanEmail}` : '',
-        cleanGstin ? `GSTIN: ${cleanGstin}` : '',
-        cleanState ? `State: ${cleanState}` : ''
-    ].filter(Boolean);
-    const headerLines = headerLinesRaw.flatMap(line => doc.splitTextToSize(line, 108) as string[]);
-    const headerLinesStartY = 20;
-    if (headerLines.length) doc.text(headerLines, headerCenterX, headerLinesStartY, { align: "center", lineHeightFactor: 1.2 });
-    const headerBottomY = Math.max(headerLinesStartY + (Math.max(0, headerLines.length - 1) * 4.2), 20) + 6;
-    doc.setDrawColor(214, 220, 229);
-    doc.line(headerLeftX, headerBottomY, pageWidth - headerLeftX, headerBottomY);
-
-    // --- Title ---
-    doc.setFontSize(16);
-    doc.setFont("helvetica", "bold");
-    doc.setTextColor(93, 58, 43); // Brown color from image
-    const titleY = headerBottomY + 10;
-    doc.text(transaction.type === 'return' ? "Return Invoice" : "Tax Invoice", pageWidth / 2, titleY, { align: "center" });
-    doc.setTextColor(0, 0, 0);
-
-    // --- Bill To & Invoice Details ---
-    doc.setFontSize(10);
-    const billSectionY = titleY + 10;
-    doc.text("Bill To", 14, billSectionY);
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "bold");
-    doc.text(transaction.customerName || "Walk-in Customer", 14, billSectionY + 7);
-    doc.setFont("helvetica", "normal");
-    const customer = customers.find(c => c.id === transaction.customerId);
-    const customerPhone = transaction.customerPhone || customer?.phone || "Walk-in";
-    doc.text(`Contact No.: ${customerPhone}`, 14, billSectionY + 13);
-    const gstDetailsStartY = billSectionY + 19;
-    let tableStartY = billSectionY + 20;
-    const customerGstName = String(transaction.gstName || customer?.gstName || '-').trim() || '-';
-    const customerGstNumber = String(transaction.gstNumber || customer?.gstNumber || '-').trim() || '-';
-    const shouldShowCustomerGst = Boolean(
-      String(transaction.gstName || '').trim()
-      || String(transaction.gstNumber || '').trim()
-      || String(customer?.gstName || '').trim()
-      || String(customer?.gstNumber || '').trim()
-    );
-    if (shouldShowCustomerGst) {
-      doc.text(`GST Name: ${customerGstName}`, 14, gstDetailsStartY);
-      doc.text(`GST Number: ${customerGstNumber}`, 14, gstDetailsStartY + 6);
-      tableStartY = gstDetailsStartY + 13;
-    }
-
-    doc.setFontSize(10);
-    doc.setFont("helvetica", "bold");
-    doc.text("Invoice Details", pageWidth - 14, billSectionY, { align: "right" });
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "normal");
+    const normalizedItems = normalizeTransactionItems(transaction.items);
+    const totalQty = normalizedItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity) || 0), 0);
+    const invoiceDate = new Date(transaction.date);
     const documentNo = transaction.type === 'return'
       ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-4)}`)
       : (transaction.invoiceNo || `IN-${transaction.id.slice(-4)}`);
-    const documentLabel = transaction.type === 'return' ? 'Credit Note No.' : 'Invoice No.';
-    doc.text(`${documentLabel}: ${documentNo}`, pageWidth - 14, billSectionY + 7, { align: "right" });
-    doc.text(`Date: ${new Date(transaction.date).toLocaleDateString()}`, pageWidth - 14, billSectionY + 13, { align: "right" });
-    if (taxAmount > 0) {
-      doc.text(`Tax Rate: ${gstRateLabel}`, pageWidth - 14, billSectionY + 19, { align: "right" });
-    }
-
-    // --- Items Table ---
-    const tableData = normalizeTransactionItems(transaction.items).map((item, idx) => [
-        idx + 1,
-        formatInvoiceItemName(item),
-        item.hsn || "-",
-        item.quantity,
-        `${formatMoneyPrecise(item.sellPrice)}`,
-        `${formatMoneyPrecise(item.discountAmount || 0)}`,
-        `${formatMoneyPrecise(item.sellPrice * item.quantity - (item.discountAmount || 0))}`
-    ]);
-
-    autoTable(doc, {
-        startY: tableStartY,
-        head: [['#', 'Item name', 'HSN/SAC', 'Quantity', 'Price/Unit', 'Discount', 'Amount']],
-        body: tableData,
-        theme: 'grid',
-        headStyles: { fillColor: [93, 58, 43], textColor: 255, fontSize: 8, fontStyle: 'bold' },
-        styles: { fontSize: 8, cellPadding: 2 },
-        columnStyles: {
-            0: { cellWidth: 8 },
-            1: { cellWidth: 'auto' },
-            3: { halign: 'center' },
-            4: { halign: 'right' },
-            5: { halign: 'right' },
-            6: { halign: 'right', cellWidth: 26 }
-        }
+    const documentTitle = transaction.type === 'return' ? 'Credit Note' : 'Invoice';
+    const leftColWidth = 140;
+    const rightColWidth = contentWidth - leftColWidth;
+    const boxHeaderFill: [number, number, number] = [245, 245, 245];
+    const lineItems = normalizedItems.map((item, idx) => {
+      const lineAmount = Math.max(0, (Number(item.sellPrice) || 0) * (Number(item.quantity) || 0) - (Number(item.discountAmount) || 0));
+      const proportionalTax = taxableAmount > 0 ? (taxAmount * lineAmount) / taxableAmount : 0;
+      return {
+        idx,
+        item,
+        lineAmount,
+        proportionalTax,
+        totalWithTax: lineAmount + proportionalTax,
+      };
     });
-
-    const finalY = (doc as any).lastAutoTable.finalY + 10;
-
-    // --- Footer Summary ---
-    const roundOff = roundMoneyWhole(transaction.total) - transaction.total;
-    
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "bold");
-    doc.text("Invoice Amount In Words", 14, finalY);
-    doc.setFont("helvetica", "normal");
-    const words = doc.splitTextToSize(numberToWords(transaction.total), 70);
-    doc.text(words, 14, finalY + 6);
-
-    // Totals Grid
-    const rightMargin = 20;
-    const totalsX = pageWidth - rightMargin;
-    const totalsLabelX = totalsX - 48;
-    let summaryY = finalY;
-    doc.setFontSize(9);
-    doc.text("Sub Total", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(subtotalAmount)}`, totalsX, summaryY, { align: "right" });
-    
-    summaryY += 6;
-    doc.text("Discount", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(discountAmount)}`, totalsX, summaryY, { align: "right" });
-
-    summaryY += 6;
-    doc.text("Taxable Amount", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(taxableAmount)}`, totalsX, summaryY, { align: "right" });
-    
-    if (taxAmount > 0) {
-        summaryY += 6;
-        doc.text(gstRateLabel, totalsLabelX, summaryY);
-        doc.text(`${formatMoneyPrecise(taxAmount)}`, totalsX, summaryY, { align: "right" });
-    }
-
-    summaryY += 6;
-    doc.text("Round off", totalsLabelX, summaryY);
-    doc.text(`${roundOff >= 0 ? "+" : "-"} ${formatMoneyPrecise(Math.abs(roundOff))}`, totalsX, summaryY, { align: "right" });
-
-    summaryY += 5;
-    doc.setFillColor(93, 58, 43);
-    const totalBarLeftX = totalsLabelX - 6;
-    const totalBarRightX = totalsX + 2;
-    doc.rect(totalBarLeftX, summaryY, totalBarRightX - totalBarLeftX, 8, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFont("helvetica", "bold");
-    doc.text("Total", totalsLabelX, summaryY + 5.5);
-    doc.text(`${formatMoneyWhole(transaction.total)}`, totalsX, summaryY + 5.5, { align: "right" });
-    doc.setTextColor(0, 0, 0);
-
-    summaryY += 13;
-    doc.setFont("helvetica", "normal");
+    const hsnSummaryMap = new Map<string, { hsn: string; taxable: number; tax: number }>();
+    lineItems.forEach(({ item, lineAmount, proportionalTax }) => {
+      const hsn = String(item.hsn || '-').trim() || '-';
+      const current = hsnSummaryMap.get(hsn) || { hsn, taxable: 0, tax: 0 };
+      current.taxable += lineAmount;
+      current.tax += proportionalTax;
+      hsnSummaryMap.set(hsn, current);
+    });
+    const hsnSummaryRows = Array.from(hsnSummaryMap.values()).map((row) => {
+      if (taxBreakupMode === 'igst') {
+        return [
+          row.hsn,
+          formatMoneyPrecise(row.taxable),
+          `${formatMoneyPrecise(row.tax)}\n(${formatTaxRateLabel(igstRate)})`,
+          formatMoneyPrecise(row.tax),
+        ];
+      }
+      const cgstValue = row.tax / 2;
+      const sgstValue = row.tax / 2;
+      return [
+        row.hsn,
+        formatMoneyPrecise(row.taxable),
+        `${formatMoneyPrecise(cgstValue)}\n(${formatTaxRateLabel(cgstRate)})`,
+        `${formatMoneyPrecise(sgstValue)}\n(${formatTaxRateLabel(sgstRate)})`,
+        formatMoneyPrecise(row.tax),
+      ];
+    });
     const isCashSale = transaction.type === 'sale' && transaction.paymentMethod === 'Cash';
     const hasCashDetails = isCashSale && (typeof paymentDetails?.cashReceived === 'number' || typeof transaction.cashReceived === 'number');
     const receivedAmount = hasCashDetails ? (paymentDetails?.cashReceived ?? transaction.cashReceived ?? roundMoneyWhole(transaction.total)) : roundMoneyWhole(transaction.total);
     const changeAmount = hasCashDetails
-        ? Math.max(0, paymentDetails?.changeReturned ?? transaction.changeReturned ?? (receivedAmount - transaction.total))
-        : 0;
+      ? Math.max(0, paymentDetails?.changeReturned ?? transaction.changeReturned ?? (receivedAmount - transaction.total))
+      : 0;
+    const balanceAmount = hasCashDetails ? changeAmount : Math.max(0, transaction.total - receivedAmount);
+    const drawLabelValue = (label: string, value: string, x: number, y: number, width: number) => {
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`${label}`, x, y);
+      doc.setFont('helvetica', 'bold');
+      doc.text(value, x + width, y, { align: 'right' });
+    };
 
-    doc.text("Received", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(receivedAmount)}`, totalsX, summaryY, { align: "right" });
-    
-    summaryY += 6;
-    doc.text(hasCashDetails ? "Change Returned" : "Balance", totalsLabelX, summaryY);
-    doc.text(`${formatMoneyPrecise(changeAmount)}`, totalsX, summaryY, { align: "right" });
+    doc.setLineWidth(0.25);
+    doc.setDrawColor(0, 0, 0);
+    doc.rect(margin, margin, contentWidth, pageHeight - (margin * 2));
 
-    const scUsed = Math.max(0, Number((transaction as any).storeCreditUsed || 0));
-    const scAdded = Math.max(0, Number((transaction as any).storeCreditCreated || 0));
-    if (scUsed > 0) {
-      summaryY += 6;
-      doc.text("Store Credit Used", totalsLabelX, summaryY);
-      doc.text(`${formatMoneyPrecise(scUsed)}`, totalsX, summaryY, { align: "right" });
-    }
-    if (scAdded > 0) {
-      summaryY += 6;
-      doc.text("Store Credit Added", totalsLabelX, summaryY);
-      doc.text(`${formatMoneyPrecise(scAdded)}`, totalsX, summaryY, { align: "right" });
-    }
-
-    const youSaved = transaction.discount || 0;
-    if (youSaved > 0) {
-        summaryY += 6;
-        doc.setFont("helvetica", "bold");
-        doc.text("You Saved", totalsLabelX, summaryY);
-        doc.text(`${formatMoneyPrecise(youSaved)}`, totalsX, summaryY, { align: "right" });
-    }
-
-    // --- Terms & Bank Details ---
-    const bankY = Math.max(summaryY + 20, (doc as any).lastAutoTable.finalY + 40);
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "bold");
-    doc.text("Terms And Conditions", 14, bankY - 15);
-    doc.setFont("helvetica", "normal");
-    doc.text("Thanks for doing business with us!", 14, bankY - 10);
-
-    doc.setFont("helvetica", "bold");
-    doc.text("Pay To:", 14, bankY);
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "normal");
-    const bankDetails = [
-        `Bank Name: ${profile.bankName || "-"}`,
-        `Bank Account No.: ${profile.bankAccount || "-"}`,
-        `Bank IFSC code: ${profile.bankIfsc || "-"}`,
-        `Account Holder's Name: ${profile.bankHolder || "-"}`
-    ];
-    doc.text(bankDetails, 14, bankY + 6);
-
-    // Signature Area
-    doc.setFontSize(9);
-    doc.text(`For: ${profile.storeName}`, pageWidth - 14, bankY, { align: "right" });
-    
-    if (profile.signatureImage) {
-        try {
-            doc.addImage(profile.signatureImage, 'PNG', pageWidth - 50, bankY + 5, 35, 12, undefined, 'FAST');
-        } catch (e) {
+    const logoData = profile.logoImage && profile.logoImage.startsWith('data:image') ? profile.logoImage : '';
+    if (logoData) {
+      try {
+        const props = (doc as any).getImageProperties(logoData);
+        const ratio = props?.width && props?.height ? props.width / props.height : 1;
+        let drawW = 22;
+        let drawH = drawW / ratio;
+        if (drawH > 16) {
+          drawH = 16;
+          drawW = drawH * ratio;
         }
+        doc.addImage(logoData, props?.fileType || 'PNG', margin + 2, margin + 2, drawW, drawH, undefined, 'FAST');
+      } catch {}
     }
 
-    doc.line(pageWidth - 60, bankY + 20, pageWidth - 14, bankY + 20);
-    doc.setFont("helvetica", "bold");
-    doc.text("Authorized Signatory", pageWidth - 14, bankY + 25, { align: "right" });
+    const headerTextX = logoData ? margin + 28 : margin + 4;
+    const headerRightX = pageWidth - margin - 4;
+    const headerTopY = margin + 6;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text(profile.storeName || 'StockFlow Store', headerTextX, headerTopY);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    const headerAddress = [cleanAddress1, cleanAddress2].filter(Boolean).join(', ');
+    const headerAddressLines = doc.splitTextToSize(headerAddress || '-', 106) as string[];
+    doc.text(headerAddressLines, headerTextX, headerTopY + 4.5);
+    const headerMetaY = headerTopY + 13;
+    doc.text(`Phone: ${cleanPhone || '-'}`, headerTextX, headerMetaY);
+    if (cleanEmail) doc.text(`Email: ${cleanEmail}`, headerTextX + 45, headerMetaY);
+    doc.text(`GSTIN: ${cleanGstin || '-'}`, headerRightX, headerTopY, { align: 'right' });
+    doc.text(`State: ${cleanState || '-'}`, headerRightX, headerTopY + 5, { align: 'right' });
+    const headerBottomY = margin + 22;
+    doc.line(margin, headerBottomY, pageWidth - margin, headerBottomY);
+
+    const billBoxY = headerBottomY;
+    const billBoxHeight = 28;
+    doc.rect(margin, billBoxY, leftColWidth, billBoxHeight);
+    doc.rect(margin + leftColWidth, billBoxY, rightColWidth, billBoxHeight);
+    doc.setFillColor(...boxHeaderFill);
+    doc.rect(margin + leftColWidth, billBoxY, rightColWidth, 7, 'F');
+    doc.line(margin + leftColWidth, billBoxY + 7, pageWidth - margin, billBoxY + 7);
+    doc.line(margin + leftColWidth + 18, billBoxY + 7, margin + leftColWidth + 18, billBoxY + billBoxHeight);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.text('Bill To:', margin + 3, billBoxY + 5);
+    doc.text(documentTitle, margin + leftColWidth + (rightColWidth / 2), billBoxY + 4.8, { align: 'center' });
+    doc.setFontSize(7.5);
+    doc.text('Number:', margin + leftColWidth + 2, billBoxY + 12);
+    doc.text('Date:', margin + leftColWidth + 2, billBoxY + 17);
+    doc.text('Time:', margin + leftColWidth + 2, billBoxY + 22);
+    doc.text('Place:', margin + leftColWidth + 2, billBoxY + 27);
+    doc.setFont('helvetica', 'bold');
+    doc.text(documentNo, pageWidth - margin - 2, billBoxY + 12, { align: 'right' });
+    doc.text(invoiceDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }), pageWidth - margin - 2, billBoxY + 17, { align: 'right' });
+    doc.text(invoiceDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), pageWidth - margin - 2, billBoxY + 22, { align: 'right' });
+    doc.text(cleanState || '-', pageWidth - margin - 2, billBoxY + 27, { align: 'right' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text(transaction.customerName || 'Walk-in Customer', margin + 24, billBoxY + 5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.4);
+    const billToLines = [
+      `Phone: ${customerPhone || '-'}`,
+      shouldShowCustomerGst && customerGstName ? `GST Name: ${customerGstName}` : '',
+      shouldShowCustomerGst && customerGstNumber ? `GSTIN: ${customerGstNumber}` : '',
+      taxRateValue > 0 ? gstRateLabel : '',
+    ].filter(Boolean);
+    const customerInfoLines = billToLines.flatMap((line) => doc.splitTextToSize(line, leftColWidth - 28) as string[]);
+    doc.text(customerInfoLines, margin + 24, billBoxY + 10);
+
+    const itemsTableStartY = billBoxY + billBoxHeight;
+    autoTable(doc, {
+      startY: itemsTableStartY,
+      head: [['#', 'Item', 'HSN', 'Qty', 'Rate', 'Discount', 'Amount']],
+      body: lineItems.map(({ idx, item, lineAmount }) => ([
+        idx + 1,
+        formatInvoiceItemName(item),
+        item.hsn || '-',
+        `${item.quantity}`,
+        formatMoneyPrecise(item.sellPrice),
+        formatMoneyPrecise(item.discountAmount || 0),
+        formatMoneyPrecise(lineAmount),
+      ])),
+      theme: 'grid',
+      margin: { left: margin, right: margin },
+      headStyles: { fillColor: [245, 245, 245], textColor: 0, lineColor: [0, 0, 0], lineWidth: 0.2, fontSize: 7.4, fontStyle: 'bold' },
+      styles: { fontSize: 7.2, cellPadding: 1.6, lineColor: [0, 0, 0], lineWidth: 0.15, textColor: 0, overflow: 'linebreak', valign: 'middle' },
+      columnStyles: {
+        0: { cellWidth: 8, halign: 'center' },
+        1: { cellWidth: 59 },
+        2: { cellWidth: 18, halign: 'center' },
+        3: { cellWidth: 20, halign: 'center' },
+        4: { cellWidth: 20, halign: 'right' },
+        5: { cellWidth: 21, halign: 'right' },
+        6: { cellWidth: 28, halign: 'right' },
+      },
+    });
+
+    let finalY = (doc as any).lastAutoTable.finalY;
+    doc.rect(margin, finalY, contentWidth, 8);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text(`Total qty`, margin + 60, finalY + 5.2);
+    doc.text(`${totalQty}`, margin + 85, finalY + 5.2);
+    doc.text(`Taxable Amount ${formatMoneyPrecise(taxableAmount)}`, margin + 100, finalY + 5.2);
+    finalY += 8;
+
+    const minimumSummarySpace = 92;
+    if (finalY > pageHeight - margin - minimumSummarySpace) {
+      doc.addPage();
+      doc.rect(margin, margin, contentWidth, pageHeight - (margin * 2));
+      finalY = margin + 6;
+    }
+
+    const summaryTopY = finalY;
+    const summaryLeftWidth = 126;
+    const summaryRightWidth = contentWidth - summaryLeftWidth;
+    doc.rect(margin, summaryTopY, summaryLeftWidth, 15);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.text('Net Payable in Words', margin + 2, summaryTopY + 4.5);
+    doc.setFontSize(7.8);
+    const amountWordsLines = doc.splitTextToSize(numberToWords(transaction.total), summaryLeftWidth - 4) as string[];
+    doc.text(amountWordsLines, margin + 2, summaryTopY + 10);
+
+    doc.rect(margin + summaryLeftWidth, summaryTopY, summaryRightWidth, 35);
+    drawLabelValue('Basic Amount', formatMoneyPrecise(taxableAmount), margin + summaryLeftWidth + 3, summaryTopY + 7, summaryRightWidth - 6);
+    if (taxBreakupMode === 'igst') {
+      drawLabelValue(`IGST ${formatTaxRateLabel(igstRate)}`, formatMoneyPrecise(igstAmount), margin + summaryLeftWidth + 3, summaryTopY + 13, summaryRightWidth - 6);
+      drawLabelValue('Round Off', `${roundOff >= 0 ? '+' : '-'} ${formatMoneyPrecise(Math.abs(roundOff))}`, margin + summaryLeftWidth + 3, summaryTopY + 19, summaryRightWidth - 6);
+      doc.line(margin + summaryLeftWidth + 2, summaryTopY + 22, pageWidth - margin - 2, summaryTopY + 22);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('Net Payable', margin + summaryLeftWidth + 3, summaryTopY + 29);
+      doc.text(formatMoneyPrecise(transaction.total), pageWidth - margin - 3, summaryTopY + 29, { align: 'right' });
+    } else {
+      drawLabelValue(`CGST ${formatTaxRateLabel(cgstRate)}`, formatMoneyPrecise(cgstAmount), margin + summaryLeftWidth + 3, summaryTopY + 13, summaryRightWidth - 6);
+      drawLabelValue(`SGST ${formatTaxRateLabel(sgstRate)}`, formatMoneyPrecise(sgstAmount), margin + summaryLeftWidth + 3, summaryTopY + 19, summaryRightWidth - 6);
+      drawLabelValue('Round Off', `${roundOff >= 0 ? '+' : '-'} ${formatMoneyPrecise(Math.abs(roundOff))}`, margin + summaryLeftWidth + 3, summaryTopY + 25, summaryRightWidth - 6);
+      doc.line(margin + summaryLeftWidth + 2, summaryTopY + 28, pageWidth - margin - 2, summaryTopY + 28);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('Net Payable', margin + summaryLeftWidth + 3, summaryTopY + 33);
+      doc.text(formatMoneyPrecise(transaction.total), pageWidth - margin - 3, summaryTopY + 33, { align: 'right' });
+    }
+
+    autoTable(doc, {
+      startY: summaryTopY + 15,
+      head: taxBreakupMode === 'igst'
+        ? [['HSN/SAC', 'Taxable Amount', `IGST ${formatTaxRateLabel(igstRate)}`, 'Tax Amount']]
+        : [['HSN/SAC', 'Taxable Amount', `CGST ${formatTaxRateLabel(cgstRate)}`, `SGST ${formatTaxRateLabel(sgstRate)}`, 'Tax Amount']],
+      body: taxBreakupMode === 'igst'
+        ? [
+            ...hsnSummaryRows,
+            ['Total', formatMoneyPrecise(taxableAmount), formatMoneyPrecise(igstAmount), formatMoneyPrecise(taxAmount)],
+          ]
+        : [
+            ...hsnSummaryRows,
+            ['Total', formatMoneyPrecise(taxableAmount), formatMoneyPrecise(cgstAmount), formatMoneyPrecise(sgstAmount), formatMoneyPrecise(taxAmount)],
+          ],
+      theme: 'grid',
+      margin: { left: margin, right: pageWidth - margin - summaryLeftWidth },
+      headStyles: { fillColor: [245, 245, 245], textColor: 0, lineColor: [0, 0, 0], lineWidth: 0.15, fontSize: 6.8, fontStyle: 'bold' },
+      styles: { fontSize: 6.8, cellPadding: 1.2, lineColor: [0, 0, 0], lineWidth: 0.12, textColor: 0, overflow: 'linebreak' },
+      columnStyles: taxBreakupMode === 'igst'
+        ? {
+            0: { cellWidth: 34 },
+            1: { cellWidth: 33, halign: 'right' },
+            2: { cellWidth: 32, halign: 'right' },
+            3: { cellWidth: 27, halign: 'right' },
+          }
+        : {
+            0: { cellWidth: 28 },
+            1: { cellWidth: 28, halign: 'right' },
+            2: { cellWidth: 24, halign: 'right' },
+            3: { cellWidth: 24, halign: 'right' },
+            4: { cellWidth: 22, halign: 'right' },
+          },
+    });
+
+    const hsnTableFinalY = (doc as any).lastAutoTable.finalY;
+    let footerTopY = Math.max(summaryTopY + 35, hsnTableFinalY);
+    const footerHeight = 44;
+    if (footerTopY > pageHeight - margin - footerHeight) {
+      doc.addPage();
+      doc.rect(margin, margin, contentWidth, pageHeight - (margin * 2));
+      footerTopY = margin + 8;
+    }
+
+    const footerLeftWidth = 96;
+    const footerCenterWidth = 38;
+    const footerRightWidth = contentWidth - footerLeftWidth - footerCenterWidth;
+    doc.rect(margin, footerTopY, footerLeftWidth, footerHeight);
+    doc.rect(margin + footerLeftWidth, footerTopY, footerCenterWidth, footerHeight);
+    doc.rect(margin + footerLeftWidth + footerCenterWidth, footerTopY, footerRightWidth, footerHeight);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.text('Bank Details', margin + 2, footerTopY + 5);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    const bankDetails = [
+      `Bank: ${profile.bankName || '-'}`,
+      `A/C: ${profile.bankAccount || '-'}`,
+      `IFSC: ${profile.bankIfsc || '-'}`,
+      `Holder: ${profile.bankHolder || '-'}`,
+    ];
+    doc.text(bankDetails, margin + 2, footerTopY + 10);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Terms and Conditions', margin + 2, footerTopY + 25);
+    doc.setFont('helvetica', 'normal');
+    const termsLines = [
+      'Goods once sold will not be accepted for return.',
+      'Interest may apply on delayed payments where applicable.',
+      `Received: ${formatMoneyPrecise(receivedAmount)} | ${hasCashDetails ? 'Change' : 'Balance'}: ${formatMoneyPrecise(balanceAmount)}`,
+    ];
+    const wrappedTerms = termsLines.flatMap((line) => doc.splitTextToSize(line, footerLeftWidth - 4) as string[]);
+    doc.text(wrappedTerms, margin + 2, footerTopY + 30);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text('Receiver Signature', margin + footerLeftWidth + (footerCenterWidth / 2), footerTopY + footerHeight - 3, { align: 'center' });
+
+    if (profile.signatureImage) {
+      try {
+        doc.addImage(profile.signatureImage, 'PNG', margin + footerLeftWidth + footerCenterWidth + 6, footerTopY + 12, footerRightWidth - 12, 14, undefined, 'FAST');
+      } catch {}
+    }
+    doc.line(margin + footerLeftWidth + footerCenterWidth + 4, footerTopY + footerHeight - 6, pageWidth - margin - 4, footerTopY + footerHeight - 6);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.text('Authorised Signature', margin + footerLeftWidth + footerCenterWidth + (footerRightWidth / 2), footerTopY + footerHeight - 3, { align: 'center' });
 
     if (options?.returnDataUrl) {
       return doc.output('datauristring');
