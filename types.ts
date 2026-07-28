@@ -358,6 +358,8 @@ export interface CashSession {
   endTime?: string;
   openingBalance: number;
   closingBalance?: number;
+  reservedCashOnHand?: number;
+  carryForwardBalance?: number;
   systemCashTotal?: number;
   sessionExpenseTotal?: number;
   difference?: number;

@@ -28,6 +28,7 @@ export const computeFinanceSnapshot = (state: AppState) => {
   const sales = todayTx.filter(tx => tx.type === 'sale');
   const returns = todayTx.filter(tx => tx.type === 'return');
   const payments = todayTx.filter(tx => tx.type === 'payment');
+  const customerCashOuts = todayTx.filter(tx => tx.type === 'customer_cash_out');
   const totalRevenue = sales.reduce((s, tx) => s + Math.abs(Number(tx.total || 0)), 0);
   const returnAmount = returns.reduce((s, tx) => s + Math.abs(Number(tx.total || 0)), 0);
   const netSales = totalRevenue - returnAmount;
@@ -36,10 +37,11 @@ export const computeFinanceSnapshot = (state: AppState) => {
   const cashCollections = payments.filter(tx => tx.paymentMethod === 'Cash').reduce((s, tx) => s + Math.abs(Number(tx.total || 0)), 0);
   const onlineCollections = payments.filter(tx => tx.paymentMethod === 'Online').reduce((s, tx) => s + Math.abs(Number(tx.total || 0)), 0);
   const cashRefunds = returns.filter(tx => tx.returnHandlingMode === 'refund_cash').reduce((s, tx) => s + Math.abs(Number(tx.total || 0)), 0);
+  const customerCashOutflow = customerCashOuts.filter(tx => tx.paymentMethod === 'Cash').reduce((s, tx) => s + Math.abs(Number(tx.total || 0)), 0);
   const expensesToday = (state.expenses || []).filter(e => isToday(e.createdAt)).reduce((s, e) => s + Math.abs(Number(e.amount || 0)), 0);
   const cashWithdrawalsToday = (state.cashAdjustments || []).filter(a => a.type === 'cash_withdrawal' && isToday(a.createdAt)).reduce((s, a) => s + Math.abs(Number(a.amount || 0)), 0);
   const supplierCashPayments = (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).filter(p => p.method === 'cash' && isToday(p.paidAt)).reduce((acc, p) => acc + Math.abs(Number(p.amount || 0)), 0), 0);
-  const expenseCashOutflow = expensesToday + cashWithdrawalsToday + supplierCashPayments;
+  const expenseCashOutflow = expensesToday + cashWithdrawalsToday + supplierCashPayments + customerCashOutflow;
   const netCashMovement = cashAtSale + cashCollections - cashRefunds - expenseCashOutflow;
   // Uses persisted customer totals to avoid circular dependency with storage.
   const totalReceivable = (state.customers || []).reduce((s, c) => s + Math.max(0, Number(c.totalDue || 0)), 0);
@@ -50,6 +52,6 @@ export const computeFinanceSnapshot = (state: AppState) => {
   const openingBalance = Number(openSession?.openingBalance || 0);
   const cogsToday = sales.reduce((sum, tx: Transaction) => sum + normalizeTransactionItems(tx.items).reduce((line, item) => line + Math.max(0, Number(item.buyPrice || 0)) * Math.max(0, Number(item.quantity || 0)), 0), 0);
   const netProfitToday = netSales - cogsToday - expensesToday;
-  return { 'Opening balance': openingBalance, 'Net sales today': netSales, 'Credit due created': creditDueCreated, 'Net profit today': netProfitToday, 'Cash at Sale today': cashAtSale, 'Cash Collections (payments) today': cashCollections, 'Online Collections (payments) today': onlineCollections, 'Cash Refunds today': cashRefunds, 'Expense (cash outflow) today': expenseCashOutflow, 'Net Cash Movement (after expenses) today': netCashMovement, 'Total revenue today': totalRevenue, 'Returns today': returnAmount, 'Net Sales today': netSales, 'Total receivable today': totalReceivable, 'Total Payable today': totalPayable, 'Inventory value cost today': inventoryValueCost, 'Total investment till date today': totalInvestmentTillDate };
+  return { 'Opening balance': openingBalance, 'Net sales today': netSales, 'Credit due created': creditDueCreated, 'Net profit today': netProfitToday, 'Cash at Sale today': cashAtSale, 'Cash Collections (payments) today': cashCollections, 'Online Collections (payments) today': onlineCollections, 'Cash Refunds today': cashRefunds, 'Customer Cash Out today': customerCashOutflow, 'Expense (cash outflow) today': expenseCashOutflow, 'Net Cash Movement (after expenses) today': netCashMovement, 'Total revenue today': totalRevenue, 'Returns today': returnAmount, 'Net Sales today': netSales, 'Total receivable today': totalReceivable, 'Total Payable today': totalPayable, 'Inventory value cost today': inventoryValueCost, 'Total investment till date today': totalInvestmentTillDate };
 };
 export const emitFinanceSnapshot = (reason: string, state: AppState, activity?: FinanceActivity) => { if (activity) logFinanceActivity(activity); logFinanceSnapshot(reason, computeFinanceSnapshot(state)); };

@@ -38,11 +38,8 @@ export const useVersionCheck = (currentVersion: string) => {
 
   useEffect(() => {
     void checkVersion();
-    const onFocus = () => { void checkVersion(); };
-    window.addEventListener('focus', onFocus);
     const interval = window.setInterval(() => { void checkVersion(); }, POLL_INTERVAL_MS);
     return () => {
-      window.removeEventListener('focus', onFocus);
       window.clearInterval(interval);
     };
   }, [checkVersion]);

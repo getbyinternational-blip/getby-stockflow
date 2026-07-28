@@ -130,6 +130,7 @@ export default function TelegramPosts() {
   const [telegramActivity, setTelegramActivity] = useState<TelegramPostActivity[]>([]);
   const [activeCollectionId, setActiveCollectionId] = useState('');
   const [collectionName, setCollectionName] = useState('');
+  const [collectionChannelId, setCollectionChannelId] = useState('');
   const [collectionCategory, setCollectionCategory] = useState('all');
   const [frequencyValue, setFrequencyValue] = useState(String(DEFAULT_FREQUENCY_VALUE));
   const [frequencyUnit, setFrequencyUnit] = useState<TelegramCollectionFrequencyUnit>(DEFAULT_FREQUENCY_UNIT);
@@ -164,6 +165,7 @@ export default function TelegramPosts() {
     const selectedCollection = collections.find((collection) => collection.id === storedActiveCollectionId) || null;
     setActiveCollectionId(selectedCollection?.id || '');
     setCollectionName(selectedCollection?.name || '');
+    setCollectionChannelId(selectedCollection?.channelId || safeText(safeProfile?.telegramChannelId));
     setCollectionCategory(selectedCollection?.category || 'all');
     setFrequencyValue(String(selectedCollection?.frequencyValue || DEFAULT_FREQUENCY_VALUE));
     setFrequencyUnit((selectedCollection?.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit);
@@ -171,6 +173,7 @@ export default function TelegramPosts() {
     setMaxFailuresBeforePause(String(selectedCollection?.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     if (selectedCollection) {
       setTelegramChannelId(selectedCollection.channelId || safeText(safeProfile?.telegramChannelId));
+      setCollectionChannelId(selectedCollection.channelId || safeText(safeProfile?.telegramChannelId));
       setTelegramTemplate(selectedCollection.template || safeText(safeProfile?.telegramTemplate, DEFAULT_TEMPLATE));
       setTelegramNotes(selectedCollection.notes || safeText(safeProfile?.telegramNotes));
       setPostMode(selectedCollection.postMode);
@@ -380,6 +383,7 @@ export default function TelegramPosts() {
     const collection = telegramCollections.find((item) => item.id === collectionId);
     setActiveCollectionId(collection?.id || '');
     setCollectionName(collection?.name || '');
+    setCollectionChannelId(collection?.channelId || safeText(profile?.telegramChannelId));
     setCollectionCategory(collection?.category || 'all');
     if (!collection) {
       setFrequencyValue(String(DEFAULT_FREQUENCY_VALUE));
@@ -433,7 +437,7 @@ export default function TelegramPosts() {
     setIsSavingCollection(true);
     setNotice(null);
     try {
-      const channelId = requireTelegramChannelId();
+      const channelId = safeText(collectionChannelId).trim() || requireTelegramChannelId();
       const now = new Date().toISOString();
       const nextCollection: TelegramPostCollection = {
         id: activeCollection?.id || `telegram-collection-${Date.now()}`,
@@ -464,6 +468,7 @@ export default function TelegramPosts() {
       if (saved) {
         setActiveCollectionId(nextCollection.id);
         setCollectionName(nextCollection.name);
+        setCollectionChannelId(nextCollection.channelId);
         setCollectionCategory(nextCollection.category);
         setNotice({ type: 'success', message: activeCollection ? 'Collection updated.' : 'Collection created.' });
       }
@@ -486,6 +491,7 @@ export default function TelegramPosts() {
       });
       setActiveCollectionId('');
       setCollectionName('');
+      setCollectionChannelId(safeText(profile?.telegramChannelId));
       setCollectionCategory(categoryFilter);
       setNotice({ type: 'success', message: 'Collection removed.' });
     } catch (error) {
@@ -498,6 +504,7 @@ export default function TelegramPosts() {
   const createFreshCollectionDraft = () => {
     setActiveCollectionId('');
     setCollectionName('');
+    setCollectionChannelId(telegramChannelId.trim());
     setCollectionCategory(categoryFilter);
     setFrequencyValue(String(DEFAULT_FREQUENCY_VALUE));
     setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
@@ -521,7 +528,7 @@ export default function TelegramPosts() {
       ...target,
       name: collectionName.trim() || target.name,
       category: nextCategory,
-      channelId: telegramChannelId.trim(),
+      channelId: collectionChannelId.trim() || telegramChannelId.trim(),
       template: telegramTemplate.trim() || DEFAULT_TEMPLATE,
       notes: telegramNotes.trim(),
       postMode,
@@ -574,10 +581,11 @@ export default function TelegramPosts() {
     postMode,
     queuedProductIds,
     telegramActivity,
-    telegramChannelId,
     telegramCollections,
     telegramNotes,
     telegramTemplate,
+    telegramChannelId,
+    collectionChannelId,
     frequencyUnit,
     frequencyValue,
     maxFailuresBeforePause,
@@ -589,7 +597,7 @@ export default function TelegramPosts() {
     if (!trimmedName) {
       throw new Error('Collection name is required.');
     }
-    const channelId = requireTelegramChannelId();
+    const channelId = safeText(collectionChannelId).trim() || requireTelegramChannelId();
     const now = new Date().toISOString();
     const nextCollection: TelegramPostCollection = {
       id: activeCollection?.id || `telegram-collection-${Date.now()}`,
@@ -622,6 +630,7 @@ export default function TelegramPosts() {
     }
     setActiveCollectionId(nextCollection.id);
     setCollectionName(nextCollection.name);
+    setCollectionChannelId(nextCollection.channelId);
     setCollectionCategory(nextCollection.category);
     return nextCollection;
   };
@@ -1024,10 +1033,19 @@ export default function TelegramPosts() {
                   </Select>
                 </div>
               </div>
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_220px]">
                 <div className="space-y-2">
                   <Label>Collection Name</Label>
                   <Input value={collectionName} onChange={(event) => setCollectionName(event.target.value)} placeholder="e.g. Home & Kitchen Offers" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Collection Channel ID</Label>
+                  <Input
+                    value={collectionChannelId}
+                    onChange={(event) => setCollectionChannelId(event.target.value)}
+                    placeholder="@stockflow_offers"
+                  />
+                  <p className="text-xs text-muted-foreground">Update and save this if the selected collection should post to a different Telegram channel.</p>
                 </div>
                 <label className="flex items-center gap-2 self-end rounded-lg border bg-slate-50 px-3 py-3 text-sm">
                   <input type="checkbox" checked={liveSyncCollection} onChange={(event) => setLiveSyncCollection(event.target.checked)} />
@@ -1089,6 +1107,7 @@ export default function TelegramPosts() {
                 <div className="flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                   <div>
                     <div className="font-semibold">{activeCollection.name}</div>
+                    <div className="text-xs">Channel: {activeCollection.channelId || 'Not set'}</div>
                     <div className="text-xs">Last posted: {formatDateTime(activeCollection.lastPostedAt)}{activeCollection.lastPostedProductName ? ` • ${activeCollection.lastPostedProductName}` : ''}</div>
                   </div>
                   <Button type="button" variant="outline" size="sm" onClick={() => void deleteCollection()} disabled={isSavingCollection}>

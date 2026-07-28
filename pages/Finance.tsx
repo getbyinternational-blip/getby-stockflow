@@ -287,6 +287,22 @@ const evaluateCarryForwardSession = (session: CashSession) => {
   return { valid: true, reason: 'ok' as const };
 };
 
+const getSessionReservedCash = (session: CashSession) => {
+  const reserved = Number(session.reservedCashOnHand);
+  if (!Number.isFinite(reserved) || reserved < 0) return 0;
+  return roundMoney(reserved);
+};
+
+const getSessionCarryForwardBalance = (session: CashSession) => {
+  const explicitCarryForward = Number(session.carryForwardBalance);
+  if (Number.isFinite(explicitCarryForward) && explicitCarryForward >= 0) {
+    return roundMoney(explicitCarryForward);
+  }
+  const countedClosing = Number(session.closingBalance);
+  if (!Number.isFinite(countedClosing) || countedClosing < 0) return 0;
+  return roundMoney(Math.max(0, countedClosing - getSessionReservedCash(session)));
+};
+
 const getLastValidClosingSession = (sessions: CashSession[]) => {
   const sorted = [...sessions].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
   for (const session of sorted) {
@@ -346,6 +362,18 @@ const aggregateSaleSettlementContributions = (sales: Transaction[]) => sales.red
   acc.totalSales = roundMoney(acc.totalSales + contribution.totalSales);
   return acc;
 }, { cashPaid: 0, onlinePaid: 0, creditDue: 0, totalSales: 0 });
+
+const getCustomerCashOutBreakdown = (transactions: Transaction[]) => transactions.reduce((acc, tx) => {
+  if (tx.type !== 'customer_cash_out') return acc;
+  const amount = Math.abs(Number(tx.total || 0));
+  if (!(amount > 0)) return acc;
+  if (tx.paymentMethod === 'Online') {
+    acc.onlineOutflow = roundMoney(acc.onlineOutflow + amount);
+  } else {
+    acc.cashOutflow = roundMoney(acc.cashOutflow + amount);
+  }
+  return acc;
+}, { cashOutflow: 0, onlineOutflow: 0 });
 
 const accumulateCanonicalReturnEffects = (transactionsAsc: Transaction[], scopedReturnIds: Set<string>) => {
   let runningDue = 0;
@@ -523,6 +551,7 @@ const getSessionCashTotals = (
   const scopedReturnIds = new Set<string>(scopedTransactions.filter(t => t.type === 'return').map(t => t.id));
   const returnEffects = accumulateCanonicalReturnEffects(sortedTransactionsAsc, scopedReturnIds);
   const cashRefunds = returnEffects.cashRefunds;
+  const customerCashOutflow = getCustomerCashOutBreakdown(scopedTransactions);
   const cashCollections = scopedTransactions
     .filter(t => t.type === 'payment' && t.paymentMethod === 'Cash')
     .reduce((sum, t) => sum + Math.abs(t.total), 0);
@@ -601,17 +630,19 @@ const getSessionCashTotals = (
     deletedSaleCashIncluded: explicitDeletedSaleCashIncluded,
     cashRefunds,
     deleteCompensationRefunds: deleteCompensationOutflow,
+    customerCashOutflow: customerCashOutflow.cashOutflow,
+    customerOnlineOutflow: customerCashOutflow.onlineOutflow,
     customerCashCollections: cashCollections,
     customOrderCashCollections: customOrderCashIn,
     cashCollections: cashCollections + customOrderCashIn,
     cashAdditions: cashAdded + manualCashIn,
     supplierCashPayments,
     expenses: expenseTotal,
-    cashWithdrawals: cashWithdrawn + manualCashOut,
+    cashWithdrawals: cashWithdrawn + manualCashOut + customerCashOutflow.cashOutflow,
     expenseTotal,
     manualCashIn,
     manualCashOut,
-    systemCashTotal: cashSales + cashCollections + customOrderCashIn + cashAdded + manualCashIn - cashRefunds - deleteCompensationOutflow - supplierCashPayments - expenseTotal - cashWithdrawn - manualCashOut
+    systemCashTotal: cashSales + cashCollections + customOrderCashIn + cashAdded + manualCashIn - cashRefunds - deleteCompensationOutflow - supplierCashPayments - expenseTotal - cashWithdrawn - manualCashOut - customerCashOutflow.cashOutflow
   };
   if (FINANCE_SHIFT_RECON_DEBUG_ENABLED) {
   }
@@ -645,6 +676,7 @@ const buildShiftCashMovementBreakdown = (
       if (s.cashPaid > 0) pushRow({ id: `sale-${tx.id}`, date: tx.date, type: 'Cash Sale', direction: 'in', name: tx.customerName || 'Walk-in', ref: tx.id.slice(-6), description: 'Cash from sale invoice', amount: s.cashPaid, source: 'salesCash' });
     }
     if (tx.type === 'payment' && tx.paymentMethod === 'Cash') pushRow({ id: `pay-${tx.id}`, date: tx.date, type: 'Customer Collection', direction: 'in', name: tx.customerName || 'Customer', ref: tx.id.slice(-6), description: 'Cash collection', amount: Math.abs(tx.total), source: 'customerCollections' });
+    if (tx.type === 'customer_cash_out' && tx.paymentMethod === 'Cash') pushRow({ id: `cashout-${tx.id}`, date: tx.date, type: 'Cash Out', direction: 'out', name: tx.customerName || 'Customer', ref: (tx.receiptNo || tx.id).slice(-6), description: 'Customer cash out / withdrawal', amount: Math.abs(tx.total), source: 'customerCashOut' });
     if (tx.type === 'return') {
       const effects = getReturnFinancialEffectsForFinance(tx);
       if (effects.affectsCash) pushRow({ id: `ret-${tx.id}`, date: tx.date, type: 'Cash Refund', direction: 'out', name: tx.customerName || 'Customer', ref: tx.id.slice(-6), description: 'Cash refund / return', amount: Math.abs(tx.total), source: 'refunds' });
@@ -861,6 +893,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [editingOpeningBalance, setEditingOpeningBalance] = useState(false);
   const [openingBalanceEditValue, setOpeningBalanceEditValue] = useState('');
   const [closingBalance, setClosingBalance] = useState('');
+  const [closingReserveAmount, setClosingReserveAmount] = useState('');
   const [cashHistoryRange, setCashHistoryRange] = useState<'today' | '7d' | '30d' | 'all'>('today');
   const [closingCounts, setClosingCounts] = useState<Record<number, number>>(() => buildEmptyCounts());
   const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] = useState(false);
@@ -869,6 +902,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [activeHistoryDetailSessionId, setActiveHistoryDetailSessionId] = useState<string | null>(null);
   const [editingClosingSessionId, setEditingClosingSessionId] = useState<string | null>(null);
   const [editingClosingAmount, setEditingClosingAmount] = useState('');
+  const [editingClosingReserveAmount, setEditingClosingReserveAmount] = useState('');
   const [editingClosingNote, setEditingClosingNote] = useState('');
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [deleteSessionReason, setDeleteSessionReason] = useState('');
@@ -1059,6 +1093,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           opening: session.openingBalance,
           systemCash: session.systemCashTotal ?? null,
           closingBalance: session.closingBalance ?? null,
+          reservedCash: getSessionReservedCash(session),
+          carryForwardBalance: getSessionCarryForwardBalance(session),
           difference: session.difference ?? null,
         });
         return session;
@@ -1071,6 +1107,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           opening: session.openingBalance,
           systemCash: session.systemCashTotal ?? null,
           closingBalance: session.closingBalance ?? null,
+          reservedCash: getSessionReservedCash(session),
+          carryForwardBalance: getSessionCarryForwardBalance(session),
           difference: session.difference ?? null,
         });
       }
@@ -1104,6 +1142,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       ...scanSessionHistory(cashSessions),
       latestClosedSessionId: latestCarryForwardSession?.id ?? null,
       latestClosedBalance: latestCarryForwardSession?.closingBalance ?? null,
+      latestCarryForwardBalance: latestCarryForwardSession ? getSessionCarryForwardBalance(latestCarryForwardSession) : null,
       openSessionId: openSession?.id ?? null,
     });
   }, [cashSessions, latestCarryForwardSession, openSession]);
@@ -1161,15 +1200,17 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   useEffect(() => {
     if (openSession || openingBalance.trim() || editingOpeningBalance) return;
 
-    if (latestCarryForwardSession?.closingBalance !== undefined) {
+    const carryForwardBalance = latestCarryForwardSession ? getSessionCarryForwardBalance(latestCarryForwardSession) : undefined;
+    if (carryForwardBalance !== undefined) {
       financeShiftDiag('[FIN][SHIFT][AUTOFILL]', {
         updatedAt: new Date().toISOString(),
-        mode: 'autofill-last-closing',
+        mode: 'autofill-last-carry-forward',
         latestClosedSessionId: latestCarryForwardSession.id,
         latestClosedBalance: latestCarryForwardSession.closingBalance,
+        latestCarryForwardBalance: carryForwardBalance,
         previousOpeningField: openingBalance || '',
       });
-      setOpeningBalance(latestCarryForwardSession.closingBalance.toFixed(2));
+      setOpeningBalance(carryForwardBalance.toFixed(2));
       setOpeningBalanceAutoFilled(true);
       return;
     }
@@ -1179,8 +1220,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       mode: 'no-latest-closed-session',
       latestClosedSessionId: null,
       latestClosedBalance: null,
+      latestCarryForwardBalance: null,
       openingFieldValue: openingBalance || '',
-      fallbackPreview: (latestCarryForwardSession?.closingBalance ?? 0).toFixed(0),
+      fallbackPreview: (latestCarryForwardSession ? getSessionCarryForwardBalance(latestCarryForwardSession) : 0).toFixed(0),
     });
     setOpeningBalanceAutoFilled(false);
   }, [openSession, openingBalance, latestCarryForwardSession, editingOpeningBalance]);
@@ -1260,6 +1302,19 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     return { cashAtSale, customerCashCollections, customOrderCashCollections, cashCollections, cashRefunds, deleteCompensationRefunds, supplierCashPayments, expenseCashOutflow, cashWithdrawals, netCashMovementAfterExpenses };
   }, [dailyCashTotals]);
   const expectedClosingForOpenSession = openSession ? (openSession.openingBalance + dailyCashTotals.systemCashTotal) : 0;
+  const submittedClosingValue = useMemo(() => {
+    if (!openSession) return 0;
+    const raw = closingBalance.trim() ? Number(closingBalance) : closingCountTotal;
+    return Number.isFinite(raw) && raw >= 0 ? raw : 0;
+  }, [openSession, closingBalance, closingCountTotal]);
+  const closingReserveValue = useMemo(() => {
+    const raw = closingReserveAmount.trim() ? Number(closingReserveAmount) : 0;
+    return Number.isFinite(raw) && raw >= 0 ? raw : 0;
+  }, [closingReserveAmount]);
+  const carryForwardPreview = useMemo(
+    () => roundMoney(Math.max(0, submittedClosingValue - closingReserveValue)),
+    [submittedClosingValue, closingReserveValue],
+  );
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
     const cashAtSale = dailyCashTotals.cashSales || 0;
@@ -1296,7 +1351,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     };
   }, [openSession, dailyCashTotals, expectedClosingForOpenSession]);
 
-  const closingVariance = openSession ? (closingCountTotal - expectedClosingForOpenSession) : 0;
+  const closingVariance = openSession ? (submittedClosingValue - expectedClosingForOpenSession) : 0;
 
   useEffect(() => {
     if (!openSession) return;
@@ -2090,8 +2145,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const freshLatestClosedSession = getLastValidClosingSession(freshCashSessions.filter(session => !session.deletedAt));
 
     const parsedOpeningBalance = openingBalance.trim() ? Number(openingBalance) : Number.NaN;
-    const autoCarryBalance = latestCarryForwardSession?.closingBalance;
-    const freshAutoCarryBalance = freshLatestClosedSession?.closingBalance;
+    const autoCarryBalance = latestCarryForwardSession ? getSessionCarryForwardBalance(latestCarryForwardSession) : undefined;
+    const freshAutoCarryBalance = freshLatestClosedSession ? getSessionCarryForwardBalance(freshLatestClosedSession) : undefined;
     const value = Number.isFinite(parsedOpeningBalance) ? parsedOpeningBalance : (freshAutoCarryBalance !== undefined ? freshAutoCarryBalance : Number.NaN);
     const freshDerivedValue = value;
     financeShiftDiag('[FIN][SHIFT][START_CLICK]', {
@@ -2099,9 +2154,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       uiOpeningFieldRaw: openingBalance,
       uiOpeningFieldTrimmed: openingBalance.trim(),
       localLatestClosedSessionId: latestCarryForwardSession?.id ?? null,
-      localLatestClosedBalance: autoCarryBalance ?? null,
+      localLatestCarryForwardBalance: autoCarryBalance ?? null,
       freshLatestClosedSessionId: freshLatestClosedSession?.id ?? null,
-      freshLatestClosedBalance: freshAutoCarryBalance ?? null,
+      freshLatestCarryForwardBalance: freshAutoCarryBalance ?? null,
       submitValueFromLocalSnapshot: Number.isFinite(value) ? value : null,
       submitValueFromFreshRead: Number.isFinite(freshDerivedValue) ? freshDerivedValue : null,
       localCounts: getStateEntityCounts(data),
@@ -2136,7 +2191,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       localSessionCount: cashSessions.length,
     });
     const session: CashSession = { id: buildCashSessionId(freshCashSessions), startTime: new Date().toISOString(), openingBalance: value, status: 'open' };
-    financeLog.shift('START', { openingCash: value });
+    financeLog.shift('START', { openingCash: value, startMode: Number.isFinite(parsedOpeningBalance) ? 'manual' : 'carry_forward' });
     await persistState({ cashSessions: [session, ...freshCashSessions] });
     setOpeningBalance('');
     setOpeningBalanceAutoFilled(false);
@@ -2154,11 +2209,15 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
     const counted = closingBalance.trim() ? Number(closingBalance) : closingCountTotal;
     if (!Number.isFinite(counted) || counted < 0) return setErrors('Please enter a valid closing cash value.');
+    const reservedCash = closingReserveAmount.trim() ? Number(closingReserveAmount) : 0;
+    if (!Number.isFinite(reservedCash) || reservedCash < 0) return setErrors('Please enter a valid reserved cash amount.');
+    if (reservedCash > counted) return setErrors('Reserved cash cannot be more than counted closing cash.');
 
     const closedAt = new Date().toISOString();
     const { systemCashTotal, expenseTotal } = getSessionCashTotals(fresh.transactions, freshExpenses, freshCashAdjustments, fresh.deleteCompensations || [], fresh.deletedTransactions || [], fresh.purchaseOrders || [], fresh.manualCashbookEntries || [], freshOpenSession.startTime, closedAt, freshOpenSession.id, Array.isArray(fresh.upfrontOrders) ? fresh.upfrontOrders : [], fresh.supplierPayments || []);
     const expectedClosing = freshOpenSession.openingBalance + systemCashTotal;
     const difference = counted - expectedClosing;
+    const carryForwardBalance = roundMoney(Math.max(0, counted - reservedCash));
     const currentRole = getCurrentRole();
     let shiftApprovedBy: 'operator' | 'admin' = currentRole === 'operator' ? 'operator' : 'admin';
     let adminOverrideAt: string | undefined;
@@ -2177,6 +2236,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       outflow: expenseTotal,
       expected: expectedClosing,
       actual: counted,
+      reservedCash,
+      carryForwardBalance,
       variance: difference,
     });
 
@@ -2185,6 +2246,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       freshSessionCount: freshCashSessions.length,
       closingSessionId: freshOpenSession.id,
       countedCash: counted,
+      reservedCash,
+      carryForwardBalance,
       expectedClosing,
     });
 
@@ -2192,6 +2255,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       ...session,
       endTime: closedAt,
       closingBalance: counted,
+      reservedCashOnHand: reservedCash,
+      carryForwardBalance,
       systemCashTotal,
       sessionExpenseTotal: expenseTotal,
       difference,
@@ -2207,6 +2272,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
     await persistState({ cashSessions: updated });
     setClosingBalance('');
+    setClosingReserveAmount('');
     resetClosingCounts();
     setOpeningUnlocked(false);
     setUnlockPinInput('');
@@ -2217,6 +2283,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     if (session.status !== 'closed') return;
     setEditingClosingSessionId(session.id);
     setEditingClosingAmount((session.closingBalance ?? 0).toFixed(2));
+    setEditingClosingReserveAmount(getSessionReservedCash(session).toFixed(2));
     setEditingClosingNote(session.closingEditNote || '');
   };
 
@@ -2224,6 +2291,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     if (!editingClosingSession || editingClosingSession.status !== 'closed') return;
     const nextClosing = Number(editingClosingAmount);
     if (!Number.isFinite(nextClosing) || nextClosing < 0) return setErrors('Please enter a valid closing cash value.');
+    const nextReservedCash = Number(editingClosingReserveAmount || '0');
+    if (!Number.isFinite(nextReservedCash) || nextReservedCash < 0) return setErrors('Please enter a valid reserved cash amount.');
+    if (nextReservedCash > nextClosing) return setErrors('Reserved cash cannot be more than counted closing cash.');
     const fresh = loadData();
     const freshSessions = Array.isArray(fresh.cashSessions) ? fresh.cashSessions : [];
     const updatedSessions = freshSessions.map(session => {
@@ -2231,6 +2301,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       return {
         ...session,
         closingBalance: nextClosing,
+        reservedCashOnHand: nextReservedCash,
+        carryForwardBalance: roundMoney(Math.max(0, nextClosing - nextReservedCash)),
         difference: nextClosing - expectedClosing,
         closingEditedAt: new Date().toISOString(),
         closingEditNote: editingClosingNote.trim() || undefined,
@@ -2239,6 +2311,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     await persistState({ cashSessions: updatedSessions });
     setEditingClosingSessionId(null);
     setEditingClosingAmount('');
+    setEditingClosingReserveAmount('');
     setEditingClosingNote('');
   };
 
@@ -2279,6 +2352,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     if (editingClosingSessionId === target.id) {
       setEditingClosingSessionId(null);
       setEditingClosingAmount('');
+      setEditingClosingReserveAmount('');
       setEditingClosingNote('');
     }
     setDeletingSessionId(null);
@@ -3824,10 +3898,10 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <Button onClick={startShift}>Start Shift</Button>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Button type="button" variant="outline" size="sm" onClick={() => setOpeningBalance((latestCarryForwardSession?.closingBalance ?? 0).toFixed(0))}>Use last closing: {formatINR(latestCarryForwardSession?.closingBalance ?? 0)}</Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => setOpeningBalance((latestCarryForwardSession ? getSessionCarryForwardBalance(latestCarryForwardSession) : 0).toFixed(0))}>Use last carry-forward: {formatINR(latestCarryForwardSession ? getSessionCarryForwardBalance(latestCarryForwardSession) : 0)}</Button>
                         <Button type="button" variant="outline" size="sm" onClick={() => setOpeningBalance('0')}>Set to 0</Button>
                       </div>
-                      {openingBalanceAutoFilled && <p className="text-xs text-muted-foreground">Auto-filled from last closed shift.</p>}
+                      {openingBalanceAutoFilled && <p className="text-xs text-muted-foreground">Auto-filled from last shift carry-forward after reserve.</p>}
                     </div>
                   ) : (
                     <div className="flex items-center justify-between gap-2">
@@ -3863,11 +3937,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <p className="text-sm text-muted-foreground">Start a shift to begin till counting and close shift.</p>
                   ) : (
                     <>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
                         <button type="button" className="text-left" onClick={() => setIsExpectedClosingBreakdownOpen(true)}>
                           <StatCard label="Expected Closing" value={formatINRSummary(expectedClosingForOpenSession)} />
                         </button>
                         <StatCard label="Counted Total" value={formatINRSummary(closingCountTotal)} />
+                        <StatCard label="Reserved Cash" value={formatINRSummary(closingReserveValue)} />
+                        <StatCard label="Next Shift Opening" value={formatINRSummary(carryForwardPreview)} />
                         <StatCard label="Variance" value={formatINRSummary(closingVariance)} tone={closingVariance === 0 ? 'good' : (closingVariance > 0 ? 'neutral' : 'bad')} />
                       </div>
 
@@ -3899,9 +3975,27 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         ))}
                       </div>
 
-                      <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
+                      <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
                         <Label>Closing Balance</Label>
-                        <Input type="number" min="0" value={closingBalance} onChange={e => setClosingBalance(e.target.value)} placeholder="Enter closing balance or use counted total" />
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div>
+                            <Input type="number" min="0" value={closingBalance} onChange={e => setClosingBalance(e.target.value)} placeholder="Enter closing balance or use counted total" />
+                          </div>
+                          <div>
+                            <Label className="mb-2 block">Reserve Cash on Hand</Label>
+                            <Input type="number" min="0" value={closingReserveAmount} onChange={e => setClosingReserveAmount(e.target.value)} placeholder="0.00" />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                            Reserved cash stays out of the next shift.
+                            <div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(closingReserveValue)}</div>
+                          </div>
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
+                            Next shift will open with this carry-forward cash.
+                            <div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(carryForwardPreview)}</div>
+                          </div>
+                        </div>
                         <div className="flex flex-wrap gap-2">
                           <Button type="button" variant="outline" onClick={applyCountedTotalToClosing}>Use Counted Total</Button>
                           <Button type="button" variant="outline" onClick={resetClosingCounts}>Reset Counts</Button>
@@ -3955,12 +4049,18 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <div><span className="text-muted-foreground">Opening</span><div>{formatINR(editingClosingSession.openingBalance)}</div></div>
                         <div><span className="text-muted-foreground">Expected</span><div>{formatINR(expectedClosing)}</div></div>
                         <div><span className="text-muted-foreground">Current closing</span><div>{formatINR(editingClosingSession.closingBalance ?? 0)}</div></div>
+                        <div><span className="text-muted-foreground">Reserved cash</span><div>{formatINR(getSessionReservedCash(editingClosingSession))}</div></div>
+                        <div><span className="text-muted-foreground">Carry-forward</span><div>{formatINR(getSessionCarryForwardBalance(editingClosingSession))}</div></div>
                       </div>
                       <div><Label>New Closing Amount</Label><Input type="number" min="0" value={editingClosingAmount} onChange={e => setEditingClosingAmount(e.target.value)} /></div>
+                      <div><Label>Reserve Cash on Hand</Label><Input type="number" min="0" value={editingClosingReserveAmount} onChange={e => setEditingClosingReserveAmount(e.target.value)} /></div>
                       <div><Label>Note (optional)</Label><Input value={editingClosingNote} onChange={e => setEditingClosingNote(e.target.value)} placeholder="Reason for correction" /></div>
-                      <div className="text-sm">Variance Preview: <span className="font-semibold">{formatINR(previewVariance)}</span></div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-sm">
+                        <div>Variance Preview: <span className="font-semibold">{formatINR(previewVariance)}</span></div>
+                        <div>Carry-forward Preview: <span className="font-semibold">{formatINR(Math.max(0, (Number(editingClosingAmount) || 0) - (Number(editingClosingReserveAmount) || 0)))}</span></div>
+                      </div>
                       <div className="flex gap-2 justify-end">
-                        <Button variant="outline" onClick={() => { setEditingClosingSessionId(null); setEditingClosingAmount(''); setEditingClosingNote(''); }}>Cancel</Button>
+                        <Button variant="outline" onClick={() => { setEditingClosingSessionId(null); setEditingClosingAmount(''); setEditingClosingReserveAmount(''); setEditingClosingNote(''); }}>Cancel</Button>
                         <Button onClick={() => saveEditedClosingAmount(expectedClosing)}>Save</Button>
                       </div>
                     </CardContent>
@@ -4043,13 +4143,17 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <div className="px-4 pb-2 text-[11px] text-muted-foreground">Close this shift before editing closing amount.</div>
                       )}
 
-                      <div className="grid grid-cols-1 gap-2 px-4 pb-4 sm:grid-cols-3">
+                      <div className="grid grid-cols-1 gap-2 px-4 pb-4 sm:grid-cols-4">
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Opening cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(session.openingBalance)}</div></div>
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Counted cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(session.closingBalance ?? 0)}</div></div>
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">System cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(systemCashTotal)}</div></div>
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3"><div className="text-[11px] font-medium text-amber-700">Reserved cash</div><div className="mt-1 text-sm font-semibold text-amber-900">{formatINR(getSessionReservedCash(session))}</div></div>
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div className="text-[11px] font-medium text-emerald-700">Carry-forward</div><div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(getSessionCarryForwardBalance(session))}</div></div>
                       </div>
                       <div className="px-4 pb-4">
-                        <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">Cash out in this shift: <span className="font-semibold text-slate-900">{formatINR(sessionExpenseTotal)}</span></div>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">System cash movement in this shift: <span className="font-semibold text-slate-900">{formatINR(systemCashTotal)}</span></div>
+                          <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">Cash out in this shift: <span className="font-semibold text-slate-900">{formatINR(sessionExpenseTotal)}</span></div>
+                        </div>
                         {session.closingEditedAt && (
                           <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">Closing edited {new Date(session.closingEditedAt).toLocaleString()}{session.closingEditNote ? ` • ${session.closingEditNote}` : ''}</div>
                         )}
@@ -4145,12 +4249,16 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <Button type="button" variant="outline" size="sm" onClick={() => setActiveHistoryDetailSessionId(null)}>Hide details</Button>
                       </div>
 
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Opening cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(activeHistorySession.openingBalance)}</div></div>
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Counted cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(activeHistorySession.closingBalance ?? 0)}</div></div>
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">System cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(activeHistorySession.openingBalance + systemCashTotal)}</div></div>
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3"><div className="text-[11px] font-medium text-amber-700">Reserved cash</div><div className="mt-1 text-sm font-semibold text-amber-900">{formatINR(getSessionReservedCash(activeHistorySession))}</div></div>
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div className="text-[11px] font-medium text-emerald-700">Carry-forward</div><div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(getSessionCarryForwardBalance(activeHistorySession))}</div></div>
                       </div>
-                      <div className="text-xs text-slate-600">Cash out in this shift: <span className="font-semibold text-slate-800">{formatINR(movement.cashOutTotal)}</span></div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs text-slate-600">
+                        <div>System cash movement in this shift: <span className="font-semibold text-slate-800">{formatINR(systemCashTotal)}</span></div>
+                        <div>Cash out in this shift: <span className="font-semibold text-slate-800">{formatINR(movement.cashOutTotal)}</span></div>
+                      </div>
 
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3"><div className="text-[11px] text-emerald-700">Cash In</div><div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(movement.cashInTotal)}</div></div>

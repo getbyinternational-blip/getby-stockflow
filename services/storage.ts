@@ -2696,6 +2696,10 @@ const computeCashEstimateFromTransactions = (transactions: Transaction[], delete
     const historical = arr.slice(index + 1);
     return sum - getReturnCashRefundAmount(tx, historical);
   }
+  if (tx.type === 'customer_cash_out') {
+    if (tx.paymentMethod === 'Cash') return sum - amount;
+    return sum;
+  }
   return sum;
   }, 0);
   const deleteCompensationOutflow = (deleteCompensations || [])
@@ -2739,6 +2743,7 @@ const buildKpiSnapshotPayload = (state: AppState, windowType: 'init' | 'after_tx
   const saleTransactions = state.transactions.filter(tx => tx.type === 'sale');
   const paymentTransactions = state.transactions.filter(tx => tx.type === 'payment');
   const returnTransactions = state.transactions.filter(tx => tx.type === 'return');
+  const customerCashOutTransactions = state.transactions.filter(tx => tx.type === 'customer_cash_out');
   const saleSettlementTotals = saleTransactions.reduce((acc, tx) => {
     const settlement = getSaleSettlementBreakdown(tx);
     acc.cashPaid = roundCurrency(acc.cashPaid + settlement.cashPaid);
@@ -2754,6 +2759,9 @@ const buildKpiSnapshotPayload = (state: AppState, windowType: 'init' | 'after_tx
     const historical = arr.slice(index + 1).concat(paymentTransactions, saleTransactions);
     return roundCurrency(sum + getReturnCashRefundAmount(tx, historical));
   }, 0);
+  const customerCashOutTotal = customerCashOutTransactions
+    .filter(tx => tx.paymentMethod === 'Cash')
+    .reduce((sum, tx) => roundCurrency(sum + Math.abs(tx.total)), 0);
   const onlineCollections = paymentTransactions
     .filter(tx => tx.paymentMethod === 'Online')
     .reduce((sum, tx) => roundCurrency(sum + Math.abs(tx.total)), 0);
@@ -2769,7 +2777,7 @@ const buildKpiSnapshotPayload = (state: AppState, windowType: 'init' | 'after_tx
   const netProfit = roundCurrency(grossProfit - expenses);
   const currentDueTotal = state.customers.reduce((sum, customer) => roundCurrency(sum + toFiniteNonNegative(customer.totalDue)), 0);
   const currentStoreCreditTotal = state.customers.reduce((sum, customer) => roundCurrency(sum + toFiniteNonNegative(customer.storeCredit)), 0);
-  const sessionCashTotal = roundCurrency(saleSettlementTotals.cashPaid + cashCollections - cashRefunds - expenses);
+  const sessionCashTotal = roundCurrency(saleSettlementTotals.cashPaid + cashCollections - cashRefunds - customerCashOutTotal - expenses);
   const profitBeforeClose = netProfit;
 
   return {
@@ -2787,6 +2795,7 @@ const buildKpiSnapshotPayload = (state: AppState, windowType: 'init' | 'after_tx
     returns: logMoney(returns),
     totalSales: logMoney(saleSettlementTotals.totalSales),
     expenses: logMoney(expenses),
+    customerCashOutTotal: logMoney(customerCashOutTotal),
     profitBeforeClose: logMoney(profitBeforeClose),
     currentDueTotal: logMoney(currentDueTotal),
     currentStoreCreditTotal: logMoney(currentStoreCreditTotal),

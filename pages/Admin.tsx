@@ -177,6 +177,7 @@ export default function Admin() {
   const [purchaseParties, setPurchaseParties] = useState<PurchaseParty[]>([]);
   const [selectedPurchasePartyId, setSelectedPurchasePartyId] = useState('');
   const [supplierPayableManuallyEdited, setSupplierPayableManuallyEdited] = useState(false);
+  const [stockManuallyEdited, setStockManuallyEdited] = useState(false);
 
   const [showSupplierPartyModal, setShowSupplierPartyModal] = useState(false);
   const [supplierPartyPickerContext, setSupplierPartyPickerContext] = useState<'product' | 'purchase'>('product');
@@ -246,6 +247,7 @@ export default function Admin() {
     setShowAddCategoryInline(false);
     setNewInlineCategory('');
     setSupplierPayableManuallyEdited(false);
+    setStockManuallyEdited(false);
   }, { priority: 100 });
   useEscapeLayer(isCategoryModalOpen, () => setIsCategoryModalOpen(false), { priority: 100 });
   useEscapeLayer(isLowStockModalOpen, () => setIsLowStockModalOpen(false), { priority: 100 });
@@ -1309,7 +1311,9 @@ export default function Admin() {
     const hasVariantAxes = !!(formData.variants?.length || formData.colors?.length);
     const hasCombos = hasVariantAxes && Array.isArray(formData.stockByVariantColor) && formData.stockByVariantColor.length > 0;
 
-    const openingStockValue = cleanOptionalNumber(formData.stock, 0);
+    const stockBlank = formData.stock === '' || formData.stock === null || formData.stock === undefined;
+    const suggestedStockValue = getSuggestedStock(formData.totalPurchase, formData.totalSold);
+    const openingStockValue = stockBlank ? suggestedStockValue : cleanOptionalNumber(formData.stock, 0);
     const totalPurchaseBlank = formData.totalPurchase === '' || formData.totalPurchase === null || formData.totalPurchase === undefined;
     const effectiveTotalPurchase = totalPurchaseBlank && openingStockValue > 0 ? openingStockValue : cleanOptionalNumber(formData.totalPurchase, 0);
     const supplierName = String(formData.supplierName || '').trim();
@@ -1332,7 +1336,7 @@ export default function Admin() {
 
     const totalComboStock = hasCombos
       ? formData.stockByVariantColor.reduce((sum: number, row: any) => sum + toNonNegativeNumber(row.stock), 0)
-      : toNonNegativeNumber(formData.stock);
+      : openingStockValue;
 
     const productPayload = {
       id: editingProduct ? editingProduct.id : Date.now().toString(),
@@ -1821,6 +1825,20 @@ export default function Admin() {
   }, [formData.stock, formData.totalPurchase, editingProduct]);
 
   useEffect(() => {
+    if (editingProduct || stockManuallyEdited) return;
+    if (formData.variants?.length || formData.colors?.length) return;
+    const totalPurchaseBlank = formData.totalPurchase === '' || formData.totalPurchase === null || formData.totalPurchase === undefined;
+    const totalSoldBlank = formData.totalSold === '' || formData.totalSold === null || formData.totalSold === undefined;
+    if (totalPurchaseBlank && totalSoldBlank) return;
+    const suggestedStock = String(getSuggestedStock(formData.totalPurchase, formData.totalSold));
+    setFormData((prev: any) => (
+      String(prev.stock ?? '') === suggestedStock
+        ? prev
+        : { ...prev, stock: suggestedStock }
+    ));
+  }, [editingProduct, formData.totalPurchase, formData.totalSold, formData.variants, formData.colors, stockManuallyEdited]);
+
+  useEffect(() => {
     if (editingProduct || supplierPayableManuallyEdited) return;
     const buyPrice = toNonNegativeNumber(formData.buyPrice);
     const openingStock = toNonNegativeNumber(formData.stock);
@@ -2295,6 +2313,7 @@ export default function Admin() {
 
   const openModal = (product?: Product) => {
     setSupplierPayableManuallyEdited(false);
+    setStockManuallyEdited(false);
     setError(null);
     if (product) {
       setEditingProduct(product);
@@ -2328,6 +2347,7 @@ export default function Admin() {
 
   const closeModal = () => {
     setSupplierPayableManuallyEdited(false);
+    setStockManuallyEdited(false);
     setIsModalOpen(false);
     setEditingProduct(null);
     setBatchEditProductIds([]);
@@ -4123,7 +4143,10 @@ export default function Admin() {
                           <Input
                             type="number"
                             value={formData.stock ?? ''}
-                            onChange={e => setFormData({ ...formData, stock: e.target.value })}
+                            onChange={e => {
+                              setStockManuallyEdited(true);
+                              setFormData({ ...formData, stock: e.target.value });
+                            }}
                             placeholder={String(getSuggestedStock(formData.totalPurchase, formData.totalSold))}
                           />
                         ) : (
@@ -4153,7 +4176,11 @@ export default function Admin() {
 
                       <div className="space-y-2">
                         <Label>Total Purchase</Label>
-                        <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => setFormData({ ...formData, totalPurchase: e.target.value })} placeholder="0" />
+                        <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => {
+                          const value = e.target.value;
+                          if (value === '') setStockManuallyEdited(false);
+                          setFormData({ ...formData, totalPurchase: value });
+                        }} placeholder="0" />
                       </div>
 
                       <div className="space-y-2">

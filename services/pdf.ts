@@ -817,7 +817,7 @@ const buildThermalInvoiceHtml = (
     const titleFontSize = (paperWidth === '58mm' ? 10 : 11) * thermalFontScale;
     const smallFontSize = (paperWidth === '58mm' ? 8 : 9) * thermalFontScale;
     const normalizedItems = normalizeTransactionItems(transaction.items);
-    const printPageLength = normalizedItems.length <= 5 ? '100mm' : normalizedItems.length <= 12 ? '200mm' : '300mm';
+    const printPageLength = '300mm';
     const itemRows = normalizedItems.map((item, index) => {
       const itemName = formatInvoiceItemName(item);
       const amount = Math.max(0, (Number(item.sellPrice || 0) * Number(item.quantity || 0)) - Number(item.discountAmount || 0));
@@ -912,7 +912,6 @@ const buildThermalInvoiceHtml = (
       --header-bg: ${headerBackground};
       --line-height: ${densityLineHeight};
       --print-page-length: ${printPageLength};
-      --print-page-size: ${paperWidth} ${printPageLength};
     }
     * { box-sizing: border-box; }
     html.thermal-print-root, body.thermal-print-body {
