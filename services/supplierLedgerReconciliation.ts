@@ -85,15 +85,17 @@ const addIssue = (issues: SupplierLedgerIssue[], issue: SupplierLedgerIssue) => 
   issues.push(issue);
 };
 
-export const analyzeSupplierPurchaseLedger = (partyId: string, data: AppState = loadData()): SupplierLedgerAnalysis => {
+export const analyzeSupplierPurchaseLedger = (partyId: string, data: AppState = loadData(), relatedPartyIds?: string[]): SupplierLedgerAnalysis => {
   const purchaseOrders = data.purchaseOrders || [];
   const supplierPayments = data.supplierPayments || [];
   const partyCreditLedger = data.partyCreditLedger || [];
-  const orders = purchaseOrders.filter((order) => order.partyId === partyId && order.status !== 'cancelled');
-  const payments = supplierPayments.filter((payment) => payment.partyId === partyId && !payment.deletedAt);
-  const credits = partyCreditLedger.filter((entry) => entry.partyId === partyId);
+  const relatedIds = new Set((relatedPartyIds && relatedPartyIds.length ? relatedPartyIds : [partyId]).map((value) => String(value || '').trim()).filter(Boolean));
+  const matchesParty = (value?: string) => relatedIds.has(String(value || '').trim());
+  const orders = purchaseOrders.filter((order) => matchesParty(order.partyId) && order.status !== 'cancelled');
+  const payments = supplierPayments.filter((payment) => matchesParty(payment.partyId) && !payment.deletedAt);
+  const credits = partyCreditLedger.filter((entry) => matchesParty(entry.partyId));
   const partyName = resolvePartyName(partyId, orders, payments, credits);
-  const ledger = buildPurchasePartyLedger({ partyId, purchaseOrders, supplierPayments, partyCreditLedger });
+  const ledger = buildPurchasePartyLedger({ partyId, relatedPartyIds, purchaseOrders, supplierPayments, partyCreditLedger });
   const issues: SupplierLedgerIssue[] = [];
 
   ledger.warnings.forEach((warning) => {
@@ -262,8 +264,8 @@ export const analyzeSupplierPurchaseLedger = (partyId: string, data: AppState = 
   return { partyId, partyName, expected, stored, issues, generatedAt: new Date().toISOString() };
 };
 
-export const repairSupplierPurchaseLedgerDryRun = (partyId: string, data: AppState = loadData()): SupplierLedgerDryRunPlan => {
-  const analysis = analyzeSupplierPurchaseLedger(partyId, data);
+export const repairSupplierPurchaseLedgerDryRun = (partyId: string, data: AppState = loadData(), relatedPartyIds?: string[]): SupplierLedgerDryRunPlan => {
+  const analysis = analyzeSupplierPurchaseLedger(partyId, data, relatedPartyIds);
   const patches: SupplierLedgerDryRunPlan['patches'] = { purchaseOrders: [], supplierPayments: [], partyCreditLedger: [] };
   const unsafeRows = analysis.issues.filter((issue) => !issue.safeToAutoFix);
   const unsafeSourceKeys = new Set(unsafeRows.map((issue) => `${issue.sourceCollection}:${issue.sourceId}`));

@@ -6,7 +6,7 @@ type VersionPayload = {
   targetUrl?: string;
 };
 
-const POLL_INTERVAL_MS = 60_000;
+const VERSION_CHECK_SESSION_KEY = 'stockflow:version-check:done';
 
 const isValidVersionPayload = (value: unknown): value is VersionPayload => {
   if (!value || typeof value !== 'object') return false;
@@ -37,11 +37,13 @@ export const useVersionCheck = (currentVersion: string) => {
   }, [currentVersion]);
 
   useEffect(() => {
+    try {
+      if (window.sessionStorage.getItem(VERSION_CHECK_SESSION_KEY) === currentVersion) return;
+      window.sessionStorage.setItem(VERSION_CHECK_SESSION_KEY, currentVersion);
+    } catch {
+      // Ignore storage access issues and still perform a single best-effort check.
+    }
     void checkVersion();
-    const interval = window.setInterval(() => { void checkVersion(); }, POLL_INTERVAL_MS);
-    return () => {
-      window.clearInterval(interval);
-    };
   }, [checkVersion]);
 
   const updateAvailable = useMemo(() => {

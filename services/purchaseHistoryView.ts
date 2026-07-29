@@ -830,7 +830,15 @@ const buildLegacyMigrationProposal = (
   const paidAmount = Math.max(0, roundMoney(row.paidAmount || 0));
   const now = row.date || new Date().toISOString();
   const paymentMethod = String(row.paymentMethod || '').trim().toLowerCase();
-  const normalizedPaymentMethod = paymentMethod === 'online' ? 'online' : paymentMethod === 'cash' ? 'cash' : null;
+  const normalizedPaymentMethod: 'cash' | 'online' | undefined = paymentMethod === 'online'
+    ? 'online'
+    : paymentMethod === 'cash'
+      ? 'cash'
+      : undefined;
+  const paymentNoteParts = [
+    row.reference || 'Legacy purchaseHistory migration preview',
+    paymentMethod ? `Legacy payment method: ${paymentMethod}` : '',
+  ].filter(Boolean);
   return {
     id: `po-legacy-migration-${row.legacyHistoryId}`,
     partyId: party?.id || '',
@@ -863,12 +871,12 @@ const buildLegacyMigrationProposal = (
     totalAmount,
     totalPaid: paidAmount,
     remainingAmount: Math.max(0, roundMoney((row.remainingAmount ?? (totalAmount - paidAmount)))),
-    paymentHistory: normalizedPaymentMethod && paidAmount > 0 ? [{
+    paymentHistory: paidAmount > 0 ? [{
       id: `pop-legacy-migration-${row.legacyHistoryId}`,
       paidAt: now,
       amount: paidAmount,
       method: normalizedPaymentMethod,
-      note: row.reference || 'Legacy purchaseHistory migration preview',
+      note: paymentNoteParts.join(' | '),
     }] : [],
     receivedQuantity: row.quantity,
     createdAt: now,

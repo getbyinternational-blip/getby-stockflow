@@ -7,6 +7,7 @@ import { DISPLAY_FALLBACK, formatINRPrecise, formatOptionalText, joinDisplayPart
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { buildPurchasePartyLedger } from '../services/purchaseLedger';
+import { buildPurchasePartyCanonicalView } from '../services/purchasePartyIdentity';
 import { analyzeSupplierPurchaseLedger, repairSupplierPurchaseLedgerDryRun, SupplierLedgerAnalysis, SupplierLedgerDryRunPlan } from '../services/supplierLedgerReconciliation';
 import { generateLedgerStatementPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay, buildSupplierStatementRowsFromCanonicalLedger } from '../services/ledgerStatements';
@@ -287,6 +288,18 @@ export default function Dashboard() {
   }, [partyCreditLedger]);
 
   const canonicalSnapshot = useMemo(() => getCanonicalCustomerBalanceSnapshot(customers, transactions, upfrontOrders), [customers, transactions, upfrontOrders]);
+  const canonicalPartyView = useMemo(() => buildPurchasePartyCanonicalView(
+    parties,
+    {
+      purchaseOrders: orders,
+      supplierPayments,
+      partyCreditLedger,
+    },
+  ), [parties, orders, supplierPayments, partyCreditLedger]);
+  const visibleDashboardParties = useMemo(() => canonicalPartyView.visibleParties, [canonicalPartyView]);
+  const getDashboardRelatedPartyIds = useCallback((partyId: string): string[] => (
+    canonicalPartyView.canonicalIdToRelatedIds.get(partyId) || [partyId]
+  ), [canonicalPartyView]);
 
   const canonicalReplayBalanceByCustomerId = useMemo(() => {
     const map = new Map<string, CanonicalCustomerDashboardBalance>();
@@ -418,44 +431,58 @@ export default function Dashboard() {
   const allPartyDashboardRows = useMemo<PartyPayableRow[]>(() => {
     if (!dashboardDetailsReady) return [];
     const partyMap = new Map<string, PartyPayableRow>();
-    parties.forEach((party) => partyMap.set(party.id, { ...party, payable: 0, dueOrders: [], partyCredit: 0 }));
+    visibleDashboardParties.forEach((party) => {
+      partyMap.set(party.id, { ...party, payable: 0, dueOrders: [], partyCredit: 0 });
+    });
+
+    const ensureOrphanParty = (id: string, seed: Partial<PurchaseParty>) => {
+      const normalizedId = String(id || '').trim();
+      if (!normalizedId || partyMap.has(normalizedId) || canonicalPartyView.partyIdToCanonicalId.has(normalizedId)) return;
+      partyMap.set(normalizedId, {
+        id: normalizedId,
+        name: String(seed.name || 'Unknown Party'),
+        phone: String(seed.phone || ''),
+        gst: String(seed.gst || ''),
+        location: String(seed.location || ''),
+        contactPerson: String(seed.contactPerson || ''),
+        notes: String(seed.notes || ''),
+        createdAt: String(seed.createdAt || new Date().toISOString()),
+        updatedAt: String(seed.updatedAt || seed.createdAt || new Date().toISOString()),
+        payable: 0,
+        dueOrders: [],
+        partyCredit: 0,
+      });
+    };
+
     orders.forEach((order) => {
-      if (!partyMap.has(order.partyId)) {
-        partyMap.set(order.partyId, {
-          id: order.partyId,
-          name: order.partyName || 'Unknown Party',
-          phone: order.partyPhone || '',
-          gst: order.partyGst || '',
-          location: order.partyLocation || '',
-          createdAt: order.createdAt || order.orderDate || new Date().toISOString(),
-          updatedAt: order.updatedAt || order.createdAt || order.orderDate || new Date().toISOString(),
-          payable: 0,
-          dueOrders: [],
-          partyCredit: 0,
-        });
-      }
+      ensureOrphanParty(order.partyId, {
+        name: order.partyName,
+        phone: order.partyPhone,
+        gst: order.partyGst,
+        location: order.partyLocation,
+        createdAt: order.createdAt || order.orderDate,
+        updatedAt: order.updatedAt || order.createdAt || order.orderDate,
+      });
     });
     supplierPayments.forEach((payment) => {
-      if (!partyMap.has(payment.partyId)) {
-        partyMap.set(payment.partyId, {
-          id: payment.partyId,
-          name: payment.partyName || 'Unknown Party',
-          phone: '',
-          gst: '',
-          location: '',
-          createdAt: payment.createdAt || payment.paidAt || new Date().toISOString(),
-          updatedAt: payment.updatedAt || payment.createdAt || payment.paidAt || new Date().toISOString(),
-          payable: 0,
-          dueOrders: [],
-          partyCredit: 0,
-        });
-      }
+      ensureOrphanParty(payment.partyId, {
+        name: payment.partyName,
+        createdAt: payment.createdAt || payment.paidAt,
+        updatedAt: payment.updatedAt || payment.createdAt || payment.paidAt,
+      });
     });
 
     partyMap.forEach((party, id) => {
-      const partyOrders = purchaseOrdersByPartyId.get(id) || [];
-      const ledger = buildPurchasePartyLedger({ partyId: id, purchaseOrders: partyOrders, supplierPayments: supplierPaymentsByPartyId.get(id) || [], partyCreditLedger: partyCreditLedgerByPartyId.get(id) || [] });
-      const dueOrders = partyOrders.filter((order) => Math.max(0, Number(order.remainingAmount || 0)) > 0);
+      const relatedIds = getDashboardRelatedPartyIds(id);
+      const relatedIdSet = new Set(relatedIds.map((value) => String(value || '').trim()).filter(Boolean));
+      const dueOrders = orders.filter((order) => relatedIdSet.has(String(order.partyId || '').trim()) && Math.max(0, Number(order.remainingAmount || 0)) > 0);
+      const ledger = buildPurchasePartyLedger({
+        partyId: id,
+        relatedPartyIds: relatedIds,
+        purchaseOrders: orders,
+        supplierPayments,
+        partyCreditLedger,
+      });
       partyMap.set(id, {
         ...party,
         payable: Math.max(0, Number(ledger.summary.currentPayable || ledger.summary.netPayable || 0)),
@@ -465,7 +492,7 @@ export default function Dashboard() {
     });
 
     return Array.from(partyMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [dashboardDetailsReady, parties, orders, supplierPayments, purchaseOrdersByPartyId, supplierPaymentsByPartyId, partyCreditLedgerByPartyId]);
+  }, [dashboardDetailsReady, visibleDashboardParties, canonicalPartyView, getDashboardRelatedPartyIds, orders, supplierPayments, partyCreditLedger]);
   const payablePartyRows = useMemo(() => allPartyDashboardRows.filter((p) => p.payable > 0), [allPartyDashboardRows]);
   const creditPartyRows = useMemo(() => allPartyDashboardRows.filter((p) => p.payable <= 0 && Math.max(0, Number(p.partyCredit || 0)) > 0), [allPartyDashboardRows]);
   const zeroDuePartyRows = useMemo(() => allPartyDashboardRows.filter((p) => p.payable <= 0 && Math.max(0, Number(p.partyCredit || 0)) <= 0), [allPartyDashboardRows]);
@@ -551,7 +578,13 @@ export default function Dashboard() {
       ));
       const matchingPartyCreditLedgerEntries = partyCreditLedger.filter((entry) => entry.partyId === row.id);
       const matchedPurchaseParties = parties.filter((p) => p.id === row.id || normalize(p.name) === normalize(row.name));
-      const canonicalLedger = buildPurchasePartyLedger({ partyId: row.id, purchaseOrders: orders, supplierPayments, partyCreditLedger });
+      const canonicalLedger = buildPurchasePartyLedger({
+        partyId: row.id,
+        relatedPartyIds: getDashboardRelatedPartyIds(row.id),
+        purchaseOrders: orders,
+        supplierPayments,
+        partyCreditLedger,
+      });
       const sourceOrders = matchingPurchaseOrders.filter((o) => Math.max(0, Number(o.remainingAmount || 0)) > 0).map((o) => ({
         id: o.id,
         billNumber: o.billNumber,
@@ -667,10 +700,13 @@ export default function Dashboard() {
         console.log('[PAYABLE_TRACE_JSON] ' + JSON.stringify({ ...payload, traceType: 'FOCUSED_PARTY' }, null, 2));
       }
     });
-  }, [isPayableTraceEnabled, totalPayable, allPartyDashboardRows, payablePartyRows, creditPartyRows, zeroDuePartyRows, orders.length, supplierPayments.length, partyCreditLedger.length, parties.length, orders, supplierPayments, partyCreditLedger, parties]);
+  }, [isPayableTraceEnabled, totalPayable, allPartyDashboardRows, payablePartyRows, creditPartyRows, zeroDuePartyRows, orders.length, supplierPayments.length, partyCreditLedger.length, parties.length, orders, supplierPayments, partyCreditLedger, parties, getDashboardRelatedPartyIds]);
 
   const selectedCustomer = useMemo(() => customers.find(c => c.id === statementCustomerId) || null, [customers, statementCustomerId]);
-  const selectedParty = useMemo(() => parties.find(p => p.id === statementPartyId) || null, [parties, statementPartyId]);
+  const selectedParty = useMemo(
+    () => allPartyDashboardRows.find((party) => party.id === statementPartyId) || null,
+    [allPartyDashboardRows, statementPartyId],
+  );
   useEffect(() => { setSupplierLedgerAnalysis(null); setSupplierLedgerDryRun(null); }, [statementPartyId]);
 
 
@@ -683,8 +719,10 @@ export default function Dashboard() {
 
   const partyStatement = useMemo(() => {
     if (!selectedParty) return null;
+    const relatedPartyIds = getDashboardRelatedPartyIds(selectedParty.id);
     const result = buildPurchasePartyLedger({
       partyId: selectedParty.id,
+      relatedPartyIds,
       purchaseOrders: orders,
       supplierPayments,
       partyCreditLedger,
@@ -725,7 +763,7 @@ export default function Dashboard() {
       lastPaymentAt: result.rows.filter((r) => r.type === 'supplier_payment').slice(-1)[0]?.date || '',
       lastPurchaseAt: result.rows.filter((r) => r.type === 'purchase').slice(-1)[0]?.date || '',
     };
-  }, [selectedParty, orders, supplierPayments, partyCreditLedger]);
+  }, [selectedParty, getDashboardRelatedPartyIds, orders, supplierPayments, partyCreditLedger]);
   const isPurchaseLedgerDebugEnabled = useMemo(() => {
     if (typeof window === 'undefined') return false;
     if (!(import.meta.env.DEV || isAdmin())) return false;
@@ -735,18 +773,20 @@ export default function Dashboard() {
   }, []);
   const dashboardLedgerDebugPayload = useMemo(() => {
     if (!isPurchaseLedgerDebugEnabled || !selectedParty) return null;
-    const partyOrders = (orders || []).filter((o) => o.partyId === selectedParty.id).map((o) => ({
+    const relatedPartyIds = getDashboardRelatedPartyIds(selectedParty.id);
+    const relatedPartyIdSet = new Set(relatedPartyIds.map((value) => String(value || '').trim()).filter(Boolean));
+    const partyOrders = (orders || []).filter((o) => relatedPartyIdSet.has(String(o.partyId || '').trim())).map((o) => ({
       id: o.id, billNumber: o.billNumber, date: o.orderDate || o.createdAt, totalAmount: o.totalAmount, remainingAmount: o.remainingAmount, paymentHistory: o.paymentHistory || [],
     }));
-    const partyPayments = (supplierPayments || []).filter((p) => p.partyId === selectedParty.id && !p.deletedAt).map((p) => ({
+    const partyPayments = (supplierPayments || []).filter((p) => relatedPartyIdSet.has(String(p.partyId || '').trim()) && !p.deletedAt).map((p) => ({
       id: p.id, voucherNo: p.voucherNo, date: p.paidAt || p.createdAt, amount: p.amount, paymentAppliedToPayable: p.paymentAppliedToPayable, payableApplied: (p as any).payableApplied, partyCreditCreated: p.partyCreditCreated,
     }));
-    const partyCredits = (partyCreditLedger || []).filter((c) => c.partyId === selectedParty.id).map((c) => ({
+    const partyCredits = (partyCreditLedger || []).filter((c) => relatedPartyIdSet.has(String(c.partyId || '').trim())).map((c) => ({
       id: c.id, partyId: c.partyId, sourceRef: c.sourceVoucherNo || c.sourcePaymentId, amountCreated: c.amountCreated, remainingAmount: c.remainingAmount, usedAmount: c.usageHistory?.reduce((s, u: any) => s + Math.max(0, Number(u.amount || 0)), 0) || 0,
     }));
-    const helperOutput = buildPurchasePartyLedger({ partyId: selectedParty.id, purchaseOrders: orders, supplierPayments, partyCreditLedger });
+    const helperOutput = buildPurchasePartyLedger({ partyId: selectedParty.id, relatedPartyIds, purchaseOrders: orders, supplierPayments, partyCreditLedger });
     return {
-      party: { id: selectedParty.id, name: selectedParty.name },
+      party: { id: selectedParty.id, name: selectedParty.name, relatedPartyIds },
       purchaseOrders: partyOrders,
       supplierPayments: partyPayments,
       partyCreditLedger: partyCredits,
@@ -755,7 +795,7 @@ export default function Dashboard() {
         summary: helperOutput.summary,
       },
     };
-  }, [isPurchaseLedgerDebugEnabled, selectedParty, orders, supplierPayments, partyCreditLedger]);
+  }, [isPurchaseLedgerDebugEnabled, selectedParty, getDashboardRelatedPartyIds, orders, supplierPayments, partyCreditLedger]);
   useEffect(() => {
     if (!dashboardLedgerDebugPayload) return;
     console.log('[PURCHASE_LEDGER_DEBUG]', dashboardLedgerDebugPayload);
@@ -862,8 +902,10 @@ export default function Dashboard() {
   };
 
   const buildPartyStatementProjection = (party: PurchaseParty) => {
+    const relatedPartyIds = getDashboardRelatedPartyIds(party.id);
     const result = buildPurchasePartyLedger({
       partyId: party.id,
+      relatedPartyIds,
       purchaseOrders: orders,
       supplierPayments,
       partyCreditLedger,
@@ -906,7 +948,13 @@ export default function Dashboard() {
   };
 
   const generatePartyStatementPdfBlob = async (party: PurchaseParty) => {
-    const statement = buildSupplierStatementRowsFromCanonicalLedger(party, orders, supplierPayments, partyCreditLedger);
+    const statement = buildSupplierStatementRowsFromCanonicalLedger(
+      party,
+      orders,
+      supplierPayments,
+      partyCreditLedger,
+      getDashboardRelatedPartyIds(party.id),
+    );
     const profile = loadData().profile;
     const blob = await generateLedgerStatementPDF({
       profile,
@@ -1016,7 +1064,13 @@ export default function Dashboard() {
     try {
       setStatementPdfError(null);
       setIsGeneratingPartyPdf(true);
-      const statement = buildSupplierStatementRowsFromCanonicalLedger(selectedParty, orders, supplierPayments, partyCreditLedger);
+      const statement = buildSupplierStatementRowsFromCanonicalLedger(
+        selectedParty,
+        orders,
+        supplierPayments,
+        partyCreditLedger,
+        getDashboardRelatedPartyIds(selectedParty.id),
+      );
       await generateLedgerStatementPDF({
         profile: loadData().profile,
         ...statement,
@@ -1129,15 +1183,17 @@ export default function Dashboard() {
     if (row.type !== 'Purchase') return null;
     if (!selectedParty) return null;
     if (!row.id.startsWith('po-')) return null;
+    const relatedPartyIds = getDashboardRelatedPartyIds(selectedParty.id);
+    const relatedPartyIdSet = new Set(relatedPartyIds.map((value) => String(value || '').trim()).filter(Boolean));
     const orderId = row.id.replace('po-', '');
-    const order = orders.find((o) => o.id === orderId && o.partyId === selectedParty.id);
+    const order = orders.find((o) => o.id === orderId && relatedPartyIdSet.has(String(o.partyId || '').trim()));
     if (!order) return null;
     const remainingAmount = Math.max(0, Number(order.remainingAmount || 0));
     if (remainingAmount <= 0) return null;
     const hasPartyCreditHistory = (order.paymentHistory || []).some((entry) => String(entry.method || '').toLowerCase() === 'party_credit' && Math.max(0, Number(entry.amount || 0)) > 0);
     if (hasPartyCreditHistory) return null;
     const availablePartyCredit = (partyCreditLedger || [])
-      .filter((entry) => entry.partyId === selectedParty.id)
+      .filter((entry) => relatedPartyIdSet.has(String(entry.partyId || '').trim()))
       .reduce((sum, entry) => sum + Math.max(0, Number(entry.remainingAmount || 0)), 0);
     if (availablePartyCredit <= 0) return null;
     const amount = Math.min(remainingAmount, availablePartyCredit);
@@ -1157,8 +1213,9 @@ export default function Dashboard() {
   const handleAnalyzeSupplierLedger = () => {
     if (!selectedParty) return;
     const latestData = loadData();
-    setSupplierLedgerAnalysis(analyzeSupplierPurchaseLedger(selectedParty.id, latestData));
-    setSupplierLedgerDryRun(repairSupplierPurchaseLedgerDryRun(selectedParty.id, latestData));
+    const relatedPartyIds = getDashboardRelatedPartyIds(selectedParty.id);
+    setSupplierLedgerAnalysis(analyzeSupplierPurchaseLedger(selectedParty.id, latestData, relatedPartyIds));
+    setSupplierLedgerDryRun(repairSupplierPurchaseLedgerDryRun(selectedParty.id, latestData, relatedPartyIds));
   };
 
   return (

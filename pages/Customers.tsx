@@ -20,7 +20,7 @@ import { Users, Phone, Calendar, ArrowRight, History, X, Eye, IndianRupee, FileT
 import { DISPLAY_FALLBACK, formatGstText, formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, formatOptionalText, sanitizeDisplayText } from '../services/numberFormat';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { normalizeTransactionItems } from '../utils/transactionItems';
-import { analyzeCustomerLedgerBalances, buildCorrectCustomerLedgerPreview, getEffectiveTransactionType, repairCustomerLedgerBalancesDryRun } from '../services/customerLedger';
+import { analyzeCustomerLedgerBalances, buildCorrectCustomerLedgerPreview, getEffectiveTransactionType, repairCustomerLedgerBalancesDryRun, transactionMatchesCustomer } from '../services/customerLedger';
 import { CanonicalCustomerBalanceResult, assertCanonicalBalanceErrorDoesNotTrustSnapshot, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
@@ -61,6 +61,19 @@ const getTransactionProductSummary = (tx: Transaction, maxItems = 2): string => 
   const unique = Array.from(new Set(labels));
   const shown = unique.slice(0, maxItems).join(', ');
   return unique.length > maxItems ? `${shown} +${unique.length - maxItems} more` : shown;
+};
+
+const getCustomerTransactionDisplayName = (tx: Transaction): string => {
+  const effectiveType = getEffectiveTransactionType(tx);
+  if (effectiveType === 'payment') {
+    return tx.type === 'historical_reference'
+      ? `Historical Payment${tx.paymentMethod ? ` (${tx.paymentMethod})` : ''}`
+      : `${tx.paymentMethod || 'Cash'} Payment`;
+  }
+  if (effectiveType === 'customer_credit') return 'Manual Credit Added';
+  if (effectiveType === 'customer_cash_out') return `Cash Refund${tx.paymentMethod ? ` (${tx.paymentMethod})` : ''}`;
+  if (effectiveType === 'return') return `Sales Return${tx.creditNoteNo ? ` #${tx.creditNoteNo}` : ''}`;
+  return getTransactionProductSummary(tx);
 };
 
 const formatCompactDate = (date: string): string => formatDateDisplay(date);
@@ -123,6 +136,30 @@ const getRunningBalanceDisplay = (runningBalance: number): { label: string; clas
   if (runningBalance > 0.005) return { label: `₹${formatMoneyWhole(runningBalance)} Due`, className: 'text-orange-700' };
   if (runningBalance < -0.005) return { label: `Store owes ₹${formatMoneyWhole(Math.abs(runningBalance))}`, className: 'text-blue-700' };
   return { label: 'Settled', className: 'text-slate-500' };
+};
+
+const getMoneyLedgerTypeDetail = (row: {
+  type: string;
+  originalType?: string;
+  referenceType?: string;
+  paymentMethod?: string;
+  description?: string;
+}): string => {
+  if (row.type === 'payment') {
+    if (row.originalType === 'historical_reference') {
+      return `Historical payment${row.paymentMethod ? ` via ${row.paymentMethod}` : ''}`;
+    }
+    return `${row.paymentMethod || 'Cash'} payment collection`;
+  }
+  if (row.type === 'sale') {
+    if (row.originalType === 'historical_reference') return 'Historical sale replay';
+    if (row.originalType === 'upfront_order') return 'Custom order receivable';
+    return 'Sale created due';
+  }
+  if (row.type === 'return') return 'Return adjusted receivable';
+  if (row.type === 'customer_credit') return 'Manual receivable increase';
+  if (row.type === 'customer_cash_out') return `Cash given to customer${row.paymentMethod ? ` via ${row.paymentMethod}` : ''}`;
+  return row.description || 'Ledger entry';
 };
 
 
@@ -1087,15 +1124,18 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const businessTransactionRows = useMemo(() => {
     if (!viewingCustomerCanonical) return [];
     const txRows = transactions
-      .filter((tx) => tx.customerId === viewingCustomerCanonical.id)
+      .filter((tx) => transactionMatchesCustomer(tx, viewingCustomerCanonical))
       .map((tx) => {
         const items = normalizeTransactionItems<any>(tx.items);
         const primaryItem = items[0];
-        const primaryProductName = primaryItem ? formatItemNameWithVariant(getLineProductName(primaryItem), primaryItem?.selectedVariant, primaryItem?.selectedColor) : getTransactionProductSummary(tx);
+        const effectiveType = getEffectiveTransactionType(tx);
+        const primaryProductName = primaryItem
+          ? formatItemNameWithVariant(getLineProductName(primaryItem), primaryItem?.selectedVariant, primaryItem?.selectedColor)
+          : getCustomerTransactionDisplayName(tx);
         return {
           id: tx.id,
           date: tx.date,
-          type: getEffectiveTransactionType(tx),
+          type: effectiveType,
           originalType: tx.type,
           referenceType: (tx as any).referenceTransactionType || '',
           image: primaryItem?.image || '',
@@ -1122,7 +1162,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         sourceKind: 'upfront_order' as const,
       }));
     return [...txRows, ...customOrderRows]
-      .filter((row) => ['sale', 'return', 'custom_order'].includes(String(row.type)))
+      .filter((row) => ['sale', 'return', 'payment', 'customer_credit', 'customer_cash_out', 'custom_order'].includes(String(row.type)))
       .sort(newestLedgerRowFirst);
   }, [transactions, upfrontOrders, viewingCustomerCanonical]);
 
@@ -1149,6 +1189,8 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         type: row.effectiveType,
         originalType: row.originalType,
         referenceType: row.referenceType,
+        description: row.description,
+        paymentMethod: sourceTx?.paymentMethod || (sourceOrder ? 'Advance' : undefined),
         image: primaryItem?.image || sourceOrder?.productImage || '',
         reference: row.ref || sourceTx?.invoiceNo || sourceTx?.receiptNo || sourceTx?.creditNoteNo || sourceOrder?.id.slice(-6) || row.id.slice(-6),
         amountMovement,
@@ -1293,7 +1335,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
 
   const customerHistory = useMemo(() => {
       if (!viewingCustomer) return [];
-      const txs = transactions.filter(t => t.customerId === viewingCustomer.id);
+      const txs = transactions.filter((tx) => transactionMatchesCustomer(tx, viewingCustomer));
       const orders = upfrontOrders.filter(o => o.customerId === viewingCustomer.id);
       
       const combined = [
@@ -1305,10 +1347,8 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   }, [transactions, upfrontOrders, viewingCustomer]);
   const customerLedgerRows = useMemo(() => {
       if (!viewingCustomer) return [];
-      const candidateName = normalizeName(viewingCustomer.name);
-      const candidatePhone = normalizePhone(viewingCustomer.phone);
       const txHistory = transactions
-        .filter(tx => tx.customerId === viewingCustomer.id || (normalizePhone(tx.customerPhone) && normalizePhone(tx.customerPhone) === candidatePhone) || (normalizeName(tx.customerName) && normalizeName(tx.customerName) === candidateName))
+        .filter((tx) => transactionMatchesCustomer(tx, viewingCustomer))
         .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
       const customEffects = buildUpfrontOrderLedgerEffects(upfrontOrders.filter((o) => o.customerId === viewingCustomer.id), [viewingCustomer]);
       return buildCustomerLedgerRows(txHistory, customEffects);
@@ -2134,7 +2174,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           </div>
         </div>
       )}
-      {isInitialLoading && <LightweightLoader label="Loading dataÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦" />}
+      {isInitialLoading && <LightweightLoader label="Loading data..." />}
       {loadError && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
       )}
@@ -2186,7 +2226,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                      <AlertCircle className="w-5 h-5" />
                      <span className="text-xs font-bold uppercase tracking-wider">Overall Outstanding Dues</span>
                  </div>
-                 <span className="text-lg font-bold text-red-800">?{formatMoneyWhole(filteredData.totalDues)}</span>
+                 <span className="text-lg font-bold text-red-800">{formatINRWhole(filteredData.totalDues)}</span>
              </div>
           )}
 
@@ -2236,9 +2276,9 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                 <p className="mt-1 text-xs text-blue-900/80">Uses referenceTransactionType for historical rows in a separate chronological receivable replay. It does not save, repair, migrate, or update customer data.</p>
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
-                <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Receivable</div><div className="font-black">?{formatMoneyWhole(correctLedgerViewSummary.totalStoredReceivable)}</div></div>
-                <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Corrected Receivable</div><div className="font-black text-blue-700">?{formatMoneyWhole(correctLedgerViewSummary.totalCorrectedReceivable)}</div></div>
-                <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Difference</div><div className={`font-black ${correctLedgerViewSummary.totalDifference === 0 ? 'text-slate-700' : correctLedgerViewSummary.totalDifference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>?{formatMoneyWhole(correctLedgerViewSummary.totalDifference)}</div></div>
+                <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Receivable</div><div className="font-black">{formatINRWhole(correctLedgerViewSummary.totalStoredReceivable)}</div></div>
+                <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Corrected Receivable</div><div className="font-black text-blue-700">{formatINRWhole(correctLedgerViewSummary.totalCorrectedReceivable)}</div></div>
+                <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Difference</div><div className={`font-black ${correctLedgerViewSummary.totalDifference === 0 ? 'text-slate-700' : correctLedgerViewSummary.totalDifference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatINRWhole(correctLedgerViewSummary.totalDifference)}</div></div>
                 <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Customers Diff</div><div className="font-black text-amber-700">{correctLedgerViewSummary.customersWithDifferences}</div></div>
                 <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Hist Payments</div><div className="font-black text-purple-700">{correctLedgerViewSummary.historicalPaymentsCorrected}</div></div>
                 <div className="rounded-xl border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Warnings</div><div className="font-black text-red-700">{correctLedgerViewSummary.warningsCount}</div></div>
@@ -2274,15 +2314,15 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4 xl:grid-cols-7">
               <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Customers</div><div className="font-black">{customerLedgerBalanceAnalysis?.totalCustomers || 0}</div></div>
               <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Affected</div><div className="font-black text-amber-700">{customerLedgerBalanceAnalysis?.affectedCustomers || 0}</div></div>
-              <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Due</div><div className="font-black">?{formatMoneyWhole(customerLedgerBalanceAnalysis?.totalStoredDue || 0)}</div></div>
-              <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Corrected Due</div><div className="font-black text-blue-700">?{formatMoneyWhole(customerLedgerBalanceAnalysis?.totalCorrectedDue || 0)}</div></div>
-              <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Difference</div><div className={`font-black ${(customerLedgerBalanceAnalysis?.totalDifference || 0) === 0 ? 'text-slate-700' : (customerLedgerBalanceAnalysis?.totalDifference || 0) > 0 ? 'text-red-700' : 'text-emerald-700'}`}>?{formatMoneyWhole(customerLedgerBalanceAnalysis?.totalDifference || 0)}</div></div>
+              <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Due</div><div className="font-black">{formatINRWhole(customerLedgerBalanceAnalysis?.totalStoredDue || 0)}</div></div>
+              <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Corrected Due</div><div className="font-black text-blue-700">{formatINRWhole(customerLedgerBalanceAnalysis?.totalCorrectedDue || 0)}</div></div>
+              <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Difference</div><div className={`font-black ${(customerLedgerBalanceAnalysis?.totalDifference || 0) === 0 ? 'text-slate-700' : (customerLedgerBalanceAnalysis?.totalDifference || 0) > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatINRWhole(customerLedgerBalanceAnalysis?.totalDifference || 0)}</div></div>
               <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Warnings</div><div className="font-black text-red-700">{customerLedgerBalanceAnalysis?.totalWarnings || 0}</div></div>
               <div className="rounded-xl border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Dry-run Patches</div><div className="font-black text-purple-700">{customerLedgerBalanceDryRun?.patches.length || 0}</div></div>
             </div>
             {customerLedgerApplyStatus && (
               <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
-                Applied: <b>{customerLedgerApplyStatus.applied}</b> ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Skipped: <b>{customerLedgerApplyStatus.skipped}</b> ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Failed: <b>{customerLedgerApplyStatus.failed}</b>
+                Applied: <b>{customerLedgerApplyStatus.applied}</b> | Skipped: <b>{customerLedgerApplyStatus.skipped}</b> | Failed: <b>{customerLedgerApplyStatus.failed}</b>
               </div>
             )}
             {customerLedgerApplyError && (
@@ -2315,11 +2355,11 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                     <tr key={issue.customerId} className="border-t">
                       <td className="p-2"><input type="checkbox" disabled={!canApply} checked={selectedCustomerLedgerPatchIds.includes(issue.customerId)} onChange={() => toggleCustomerLedgerPatchSelected(issue.customerId)} /></td>
                       <td className="p-2 font-semibold">{issue.customerName}</td>
-                      <td className="p-2 text-right">?{formatMoneyWhole(issue.storedDue)}</td>
-                      <td className="p-2 text-right text-blue-700">?{formatMoneyWhole(issue.correctedDue)}</td>
-                      <td className={`p-2 text-right font-bold ${issue.difference === 0 ? 'text-slate-600' : issue.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>?{formatMoneyWhole(issue.difference)}</td>
-                      <td className="p-2 text-right">?{formatMoneyWhole(issue.storedStoreCredit)}</td>
-                      <td className="p-2 text-right text-emerald-700">?{formatMoneyWhole(issue.correctedStoreCredit)}</td>
+                      <td className="p-2 text-right">{formatINRWhole(issue.storedDue)}</td>
+                      <td className="p-2 text-right text-blue-700">{formatINRWhole(issue.correctedDue)}</td>
+                      <td className={`p-2 text-right font-bold ${issue.difference === 0 ? 'text-slate-600' : issue.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatINRWhole(issue.difference)}</td>
+                      <td className="p-2 text-right">{formatINRWhole(issue.storedStoreCredit)}</td>
+                      <td className="p-2 text-right text-emerald-700">{formatINRWhole(issue.correctedStoreCredit)}</td>
                       <td className="p-2 text-right">{issue.warningCount}</td>
                     </tr>
                     );
@@ -2346,15 +2386,15 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                         <span>{preview.customer.name}</span>
                         {preview.warnings.length > 0 && <Badge className="bg-amber-100 text-amber-800">{preview.warnings.length} warning{preview.warnings.length === 1 ? '' : 's'}</Badge>}
                       </CardTitle>
-                      <div className="mt-1 text-xs text-muted-foreground">{preview.customer.phone || 'No phone'} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Difference: <span className={preview.summary.difference === 0 ? 'text-slate-700' : preview.summary.difference > 0 ? 'text-red-700 font-bold' : 'text-emerald-700 font-bold'}>?{formatMoneyWhole(preview.summary.difference)}</span></div>
+                      <div className="mt-1 text-xs text-muted-foreground">{preview.customer.phone || 'No phone'} | Difference: <span className={preview.summary.difference === 0 ? 'text-slate-700' : preview.summary.difference > 0 ? 'text-red-700 font-bold' : 'text-emerald-700 font-bold'}>{formatINRWhole(preview.summary.difference)}</span></div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4 xl:grid-cols-8">
-                      <div className="rounded-lg border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Due</div><b>?{formatMoneyWhole(preview.summary.storedCurrentDue)}</b></div>
-                      <div className="rounded-lg border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored SC</div><b>?{formatMoneyWhole(preview.summary.storedStoreCredit)}</b></div>
-                      <div className="rounded-lg border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Net</div><b>?{formatMoneyWhole(preview.summary.storedNetReceivable)}</b></div>
-                      <div className="rounded-lg border bg-blue-50 p-2"><div className="text-[10px] uppercase text-blue-700">Corrected Due</div><b className="text-blue-800">?{formatMoneyWhole(preview.summary.correctedCurrentDue)}</b></div>
-                      <div className="rounded-lg border bg-emerald-50 p-2"><div className="text-[10px] uppercase text-emerald-700">Corrected SC</div><b className="text-emerald-800">?{formatMoneyWhole(preview.summary.correctedStoreCredit)}</b></div>
-                      <div className="rounded-lg border bg-indigo-50 p-2"><div className="text-[10px] uppercase text-indigo-700">Corrected Net</div><b className="text-indigo-800">?{formatMoneyWhole(preview.summary.correctedNetReceivable)}</b></div>
+                      <div className="rounded-lg border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Due</div><b>{formatINRWhole(preview.summary.storedCurrentDue)}</b></div>
+                      <div className="rounded-lg border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored SC</div><b>{formatINRWhole(preview.summary.storedStoreCredit)}</b></div>
+                      <div className="rounded-lg border bg-slate-50 p-2"><div className="text-[10px] uppercase text-muted-foreground">Stored Net</div><b>{formatINRWhole(preview.summary.storedNetReceivable)}</b></div>
+                      <div className="rounded-lg border bg-blue-50 p-2"><div className="text-[10px] uppercase text-blue-700">Corrected Due</div><b className="text-blue-800">{formatINRWhole(preview.summary.correctedCurrentDue)}</b></div>
+                      <div className="rounded-lg border bg-emerald-50 p-2"><div className="text-[10px] uppercase text-emerald-700">Corrected SC</div><b className="text-emerald-800">{formatINRWhole(preview.summary.correctedStoreCredit)}</b></div>
+                      <div className="rounded-lg border bg-indigo-50 p-2"><div className="text-[10px] uppercase text-indigo-700">Corrected Net</div><b className="text-indigo-800">{formatINRWhole(preview.summary.correctedNetReceivable)}</b></div>
                       <div className="rounded-lg border bg-amber-50 p-2"><div className="text-[10px] uppercase text-amber-700">Warnings</div><b className="text-amber-800">{preview.warnings.length}</b></div>
                       <Button size="sm" variant="outline" className="h-full min-h-12" onClick={() => toggleCorrectCustomerExpanded(preview.customer.id)}>{expanded ? 'Hide Ledger' : 'Show Ledger'}</Button>
                     </div>
@@ -2400,22 +2440,22 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                             <tr key={row.id} className={`border-t align-top ${row.warnings.length ? 'bg-amber-50/50' : ''}`}>
                               <td className="p-2 whitespace-nowrap">{new Date(row.date).toLocaleDateString()}</td>
                               <td className="p-2 whitespace-nowrap"><Badge className="bg-slate-100 text-slate-700">{row.effectiveType}</Badge></td>
-                              <td className="p-2 whitespace-nowrap">{row.originalType || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 whitespace-nowrap">{row.referenceType || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
+                              <td className="p-2 whitespace-nowrap">{row.originalType || DISPLAY_FALLBACK}</td>
+                              <td className="p-2 whitespace-nowrap">{row.referenceType || DISPLAY_FALLBACK}</td>
                               <td className="p-2 whitespace-nowrap">{row.ref}</td>
                               <td className="p-2 min-w-[220px]">{row.description}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.saleTotal ? `?${formatMoneyWhole(row.saleTotal)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.paidNow ? `?${formatMoneyWhole(row.paidNow)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.creditDue ? `?${formatMoneyWhole(row.creditDue)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.paymentReceived ? `?${formatMoneyWhole(row.paymentReceived)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.returnAmount ? `?${formatMoneyWhole(row.returnAmount)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.displayStoreCreditUsed ? `?${formatMoneyWhole(row.displayStoreCreditUsed)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap">{row.storeCreditCreated ? `?${formatMoneyWhole(row.storeCreditCreated)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className={`p-2 text-right whitespace-nowrap font-bold ${row.receivableImpact < 0 ? 'text-emerald-700' : row.receivableImpact > 0 ? 'text-orange-700' : 'text-slate-500'}`}>{row.receivableImpact ? `?${formatMoneyWhole(row.receivableImpact)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
-                              <td className="p-2 text-right whitespace-nowrap font-semibold">?{formatMoneyWhole(row.runningDue)}</td>
-                              <td className="p-2 text-right whitespace-nowrap font-semibold text-emerald-700">?{formatMoneyWhole(row.runningStoreCredit)}</td>
-                              <td className="p-2 text-right whitespace-nowrap font-black text-blue-700">?{formatMoneyWhole(row.netReceivable)}</td>
-                              <td className="p-2 min-w-[220px] text-amber-800">{row.warnings.length ? row.warnings.map((warning) => <div key={warning}>ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ {warning}</div>) : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.saleTotal ? formatINRWhole(row.saleTotal) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.paidNow ? formatINRWhole(row.paidNow) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.creditDue ? formatINRWhole(row.creditDue) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.paymentReceived ? formatINRWhole(row.paymentReceived) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.returnAmount ? formatINRWhole(row.returnAmount) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.displayStoreCreditUsed ? formatINRWhole(row.displayStoreCreditUsed) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap">{row.storeCreditCreated ? formatINRWhole(row.storeCreditCreated) : DISPLAY_FALLBACK}</td>
+                              <td className={`p-2 text-right whitespace-nowrap font-bold ${row.receivableImpact < 0 ? 'text-emerald-700' : row.receivableImpact > 0 ? 'text-orange-700' : 'text-slate-500'}`}>{row.receivableImpact ? formatINRWhole(row.receivableImpact) : DISPLAY_FALLBACK}</td>
+                              <td className="p-2 text-right whitespace-nowrap font-semibold">{formatINRWhole(row.runningDue)}</td>
+                              <td className="p-2 text-right whitespace-nowrap font-semibold text-emerald-700">{formatINRWhole(row.runningStoreCredit)}</td>
+                              <td className="p-2 text-right whitespace-nowrap font-black text-blue-700">{formatINRWhole(row.netReceivable)}</td>
+                              <td className="p-2 min-w-[220px] text-amber-800">{row.warnings.length ? row.warnings.map((warning) => <div key={warning}>- {warning}</div>) : DISPLAY_FALLBACK}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -2974,11 +3014,19 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                         tabIndex={isTransactionRow ? 0 : undefined}
                                       >
                                         <td className="whitespace-nowrap px-2 py-1.5 text-[13px] font-medium text-slate-600">{formatCompactDate(row.date)}</td>
-                                        <td className="px-2 py-1.5"><Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge></td>
+                                        <td className="px-2 py-1.5">
+                                          <div className="min-w-0">
+                                            <Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge>
+                                            <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={getMoneyLedgerTypeDetail(row)}>{getMoneyLedgerTypeDetail(row)}</div>
+                                          </div>
+                                        </td>
                                         <td className="min-w-0 px-2 py-1.5">
-                                          <div className="flex min-w-0 items-center gap-1.5">
-                                            <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
-                                            {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
+                                          <div className="min-w-0">
+                                            <div className="flex min-w-0 items-center gap-1.5">
+                                              <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
+                                              {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
+                                            </div>
+                                            {row.description && <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={row.description}>{row.description}</div>}
                                           </div>
                                         </td>
                                         <td className={`overflow-hidden truncate whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${movement.className}`}>{movement.label}</td>
@@ -3063,11 +3111,19 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                         tabIndex={isTransactionRow ? 0 : undefined}
                                       >
                                         <td className="whitespace-nowrap px-2 py-1.5 text-[13px] font-medium text-slate-600">{formatCompactDate(row.date)}</td>
-                                        <td className="px-2 py-1.5"><Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge></td>
+                                        <td className="px-2 py-1.5">
+                                          <div className="min-w-0">
+                                            <Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge>
+                                            <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={getMoneyLedgerTypeDetail(row)}>{getMoneyLedgerTypeDetail(row)}</div>
+                                          </div>
+                                        </td>
                                         <td className="min-w-0 px-2 py-1.5">
-                                          <div className="flex min-w-0 items-center gap-1.5">
-                                            <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
-                                            {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
+                                          <div className="min-w-0">
+                                            <div className="flex min-w-0 items-center gap-1.5">
+                                              <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
+                                              {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
+                                            </div>
+                                            {row.description && <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={row.description}>{row.description}</div>}
                                           </div>
                                         </td>
                                         <td className={`overflow-hidden truncate whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${movement.className}`}>{movement.label}</td>
@@ -3479,9 +3535,9 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
             <CardContent className="p-4 space-y-3 overflow-auto">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 <div className="rounded border p-2"><div className="text-muted-foreground">Mismatch Count</div><div className="font-bold">{paymentAuditResult.summary.mismatchCount}</div></div>
-                <div className="rounded border p-2"><div className="text-muted-foreground">Saved Store Credit</div><div className="font-bold">?{formatMoneyPrecise(paymentAuditResult.summary.totalSavedStoreCreditCreated)}</div></div>
-                <div className="rounded border p-2"><div className="text-muted-foreground">Natural Store Credit</div><div className="font-bold">?{formatMoneyPrecise(paymentAuditResult.summary.totalNaturalStoreCreditCreated)}</div></div>
-                <div className="rounded border p-2"><div className="text-muted-foreground">Store Credit Difference</div><div className="font-bold">?{formatMoneyPrecise(paymentAuditResult.summary.storeCreditDelta)}</div></div>
+                <div className="rounded border p-2"><div className="text-muted-foreground">Saved Store Credit</div><div className="font-bold">{formatINRPrecise(paymentAuditResult.summary.totalSavedStoreCreditCreated)}</div></div>
+                <div className="rounded border p-2"><div className="text-muted-foreground">Natural Store Credit</div><div className="font-bold">{formatINRPrecise(paymentAuditResult.summary.totalNaturalStoreCreditCreated)}</div></div>
+                <div className="rounded border p-2"><div className="text-muted-foreground">Store Credit Difference</div><div className="font-bold">{formatINRPrecise(paymentAuditResult.summary.storeCreditDelta)}</div></div>
               </div>
               <div className="overflow-auto border rounded-lg">
                 <table className="w-full min-w-[1050px] text-xs">
@@ -3503,12 +3559,12 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                       <tr key={row.transactionId} className="border-t">
                         <td className="p-2 whitespace-nowrap">{new Date(row.date).toLocaleString()}</td>
                         <td className="p-2 font-mono">{row.transactionId.slice(-8)}</td>
-                        <td className="p-2 text-right">?{formatMoneyPrecise(row.amount)}</td>
-                        <td className="p-2 text-right">?{formatMoneyPrecise(row.saved.paymentAppliedToReceivable || (row.saved.paymentAppliedToCanonicalReceivable + row.saved.paymentAppliedToCustomOrderReceivable))}</td>
-                        <td className="p-2 text-right">?{formatMoneyPrecise(row.saved.storeCreditCreated)}</td>
-                        <td className="p-2 text-right">?{formatMoneyPrecise(row.natural.paymentAppliedToReceivable)}</td>
-                        <td className="p-2 text-right">?{formatMoneyPrecise(row.natural.storeCreditCreated)}</td>
-                        <td className="p-2 text-right">Applied ÃƒÅ½Ã¢â‚¬Â ?{formatMoneyPrecise(row.delta.paymentAppliedToReceivable)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Credit ÃƒÅ½Ã¢â‚¬Â ?{formatMoneyPrecise(row.delta.storeCreditCreated)}</td>
+                        <td className="p-2 text-right">{formatINRPrecise(row.amount)}</td>
+                        <td className="p-2 text-right">{formatINRPrecise(row.saved.paymentAppliedToReceivable || (row.saved.paymentAppliedToCanonicalReceivable + row.saved.paymentAppliedToCustomOrderReceivable))}</td>
+                        <td className="p-2 text-right">{formatINRPrecise(row.saved.storeCreditCreated)}</td>
+                        <td className="p-2 text-right">{formatINRPrecise(row.natural.paymentAppliedToReceivable)}</td>
+                        <td className="p-2 text-right">{formatINRPrecise(row.natural.storeCreditCreated)}</td>
+                        <td className="p-2 text-right">{`Applied delta: ${formatINRPrecise(row.delta.paymentAppliedToReceivable)} | Credit delta: ${formatINRPrecise(row.delta.storeCreditCreated)}`}</td>
                         <td className="p-2">{row.needsRepair ? <span className="text-red-600 font-semibold">Yes</span> : <span className="text-emerald-700 font-semibold">No</span>}</td>
                       </tr>
                     ))}
@@ -3537,21 +3593,21 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
                 <div className="rounded border p-2">
                   <div className="font-semibold mb-1">Current View</div>
-                  <div>Current Dues: ?{formatMoneyPrecise(updatedViewPreview.current.totalDue)}</div>
-                  <div>Store Credit: ?{formatMoneyPrecise(updatedViewPreview.current.storeCredit)}</div>
-                  <div>Net Receivable: ?{formatMoneyPrecise(updatedViewPreview.current.netReceivable)}</div>
+                  <div>Current Dues: {formatINRPrecise(updatedViewPreview.current.totalDue)}</div>
+                  <div>Store Credit: {formatINRPrecise(updatedViewPreview.current.storeCredit)}</div>
+                  <div>Net Receivable: {formatINRPrecise(updatedViewPreview.current.netReceivable)}</div>
                 </div>
                 <div className="rounded border p-2">
                   <div className="font-semibold mb-1">Repaired Preview</div>
-                  <div>Current Dues: ?{formatMoneyPrecise(updatedViewPreview.repairedPreview.totalDue)}</div>
-                  <div>Store Credit: ?{formatMoneyPrecise(updatedViewPreview.repairedPreview.storeCredit)}</div>
-                  <div>Net Receivable: ?{formatMoneyPrecise(updatedViewPreview.repairedPreview.netReceivable)}</div>
+                  <div>Current Dues: {formatINRPrecise(updatedViewPreview.repairedPreview.totalDue)}</div>
+                  <div>Store Credit: {formatINRPrecise(updatedViewPreview.repairedPreview.storeCredit)}</div>
+                  <div>Net Receivable: {formatINRPrecise(updatedViewPreview.repairedPreview.netReceivable)}</div>
                 </div>
                 <div className="rounded border p-2">
                   <div className="font-semibold mb-1">Difference</div>
-                  <div>Dues ÃƒÅ½Ã¢â‚¬Â: ?{formatMoneyPrecise(updatedViewPreview.delta.totalDue)}</div>
-                  <div>Store Credit ÃƒÅ½Ã¢â‚¬Â: ?{formatMoneyPrecise(updatedViewPreview.delta.storeCredit)}</div>
-                  <div>Net Receivable ÃƒÅ½Ã¢â‚¬Â: ?{formatMoneyPrecise(updatedViewPreview.delta.netReceivable)}</div>
+                  <div>Dues delta: {formatINRPrecise(updatedViewPreview.delta.totalDue)}</div>
+                  <div>Store Credit delta: {formatINRPrecise(updatedViewPreview.delta.storeCredit)}</div>
+                  <div>Net Receivable delta: {formatINRPrecise(updatedViewPreview.delta.netReceivable)}</div>
                 </div>
               </div>
               <div className="rounded border p-2 text-xs">
@@ -3577,12 +3633,12 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <tr key={`upd-${row.transactionId}`} className={`border-t ${row.needsRepair ? 'bg-red-50/50' : ''}`}>
                             <td className="p-2 whitespace-nowrap">{new Date(row.date).toLocaleString()}</td>
                             <td className="p-2 font-mono">{row.transactionId.slice(-8)}</td>
-                            <td className="p-2 text-right">?{formatMoneyPrecise(row.amount)}</td>
-                            <td className="p-2 text-right">?{formatMoneyPrecise(row.saved.paymentAppliedToReceivable || (row.saved.paymentAppliedToCanonicalReceivable + row.saved.paymentAppliedToCustomOrderReceivable))}</td>
-                            <td className="p-2 text-right">?{formatMoneyPrecise(row.saved.storeCreditCreated)}</td>
-                            <td className="p-2 text-right">?{formatMoneyPrecise(row.natural.paymentAppliedToReceivable)}</td>
-                            <td className="p-2 text-right">?{formatMoneyPrecise(row.natural.storeCreditCreated)}</td>
-                            <td className="p-2 text-right">Applied ÃƒÅ½Ã¢â‚¬Â ?{formatMoneyPrecise(row.delta.paymentAppliedToReceivable)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Credit ÃƒÅ½Ã¢â‚¬Â ?{formatMoneyPrecise(row.delta.storeCreditCreated)}</td>
+                            <td className="p-2 text-right">{formatINRPrecise(row.amount)}</td>
+                            <td className="p-2 text-right">{formatINRPrecise(row.saved.paymentAppliedToReceivable || (row.saved.paymentAppliedToCanonicalReceivable + row.saved.paymentAppliedToCustomOrderReceivable))}</td>
+                            <td className="p-2 text-right">{formatINRPrecise(row.saved.storeCreditCreated)}</td>
+                            <td className="p-2 text-right">{formatINRPrecise(row.natural.paymentAppliedToReceivable)}</td>
+                            <td className="p-2 text-right">{formatINRPrecise(row.natural.storeCreditCreated)}</td>
+                            <td className="p-2 text-right">{`Applied delta: ${formatINRPrecise(row.delta.paymentAppliedToReceivable)} | Credit delta: ${formatINRPrecise(row.delta.storeCreditCreated)}`}</td>
                             <td className="p-2">{row.needsRepair ? <span className="text-red-700 font-semibold">Yes</span> : <span className="text-emerald-700 font-semibold">No</span>}</td>
                           </tr>
                         ))}

@@ -8,6 +8,9 @@ import {
 
 let hasLoggedTelegramServerUrl = false;
 const TELEGRAM_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_TELEGRAM_LOGS || 'false').toLowerCase() === 'true';
+const TELEGRAM_SERVER_URL = String(
+  import.meta.env.VITE_TELEGRAM_SERVER_URL || ''
+).trim().replace(/\/+$/, '');
 
 const logTelegramDebug = (event: string, payload: Record<string, unknown>) => {
   if (!TELEGRAM_DEBUG_LOGS_ENABLED) return;
@@ -17,16 +20,15 @@ const logTelegramDebug = (event: string, payload: Record<string, unknown>) => {
 const getTelegramServerUrl = () => {
   if (!hasLoggedTelegramServerUrl) {
     logTelegramDebug('telegram.server_url', {
-      telegramServerUrl: import.meta.env.VITE_TELEGRAM_SERVER_URL,
-      hasTelegramServerUrl: Boolean(import.meta.env.VITE_TELEGRAM_SERVER_URL),
+      telegramServerUrl: TELEGRAM_SERVER_URL,
+      hasTelegramServerUrl: Boolean(TELEGRAM_SERVER_URL),
     });
     hasLoggedTelegramServerUrl = true;
   }
-  const value = String(import.meta.env.VITE_TELEGRAM_SERVER_URL || '').trim().replace(/\/$/, '');
-  if (!value) {
+  if (!TELEGRAM_SERVER_URL) {
     throw new Error('Telegram server URL is not configured. Set VITE_TELEGRAM_SERVER_URL and try again.');
   }
-  return value;
+  return TELEGRAM_SERVER_URL;
 };
 
 const getTelegramHeaders = () => {

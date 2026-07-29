@@ -268,6 +268,64 @@ const mergeByIdPreferPrimaryRespectDeletes = <T extends { id?: string }>(primary
   return [...visiblePrimary, ...fallbackMissingFromPrimary];
 };
 
+const getReferencedPurchasePartyIdsFromHydrationCaches = () => {
+  const referencedPartyIds = new Set<string>();
+  [
+    ...subcollectionPurchaseOrdersCache,
+    ...legacyRootPurchaseOrdersCache,
+  ].forEach((order) => {
+    const partyId = String(order?.partyId || '').trim();
+    if (partyId) referencedPartyIds.add(partyId);
+  });
+  [
+    ...subcollectionSupplierPaymentsCache,
+    ...legacyRootSupplierPaymentsCache,
+  ].forEach((payment) => {
+    if (payment?.deletedAt) return;
+    const partyId = String(payment?.partyId || '').trim();
+    if (partyId) referencedPartyIds.add(partyId);
+  });
+  [
+    ...subcollectionPartyCreditLedgerCache,
+    ...legacyRootPartyCreditLedgerCache,
+  ].forEach((entry) => {
+    const partyId = String(entry?.partyId || '').trim();
+    if (partyId) referencedPartyIds.add(partyId);
+  });
+  return referencedPartyIds;
+};
+
+const mergePurchasePartiesForHydration = (
+  primaryRows: PurchaseParty[] = [],
+  fallbackRows: PurchaseParty[] = [],
+): PurchaseParty[] => {
+  const referencedPartyIds = getReferencedPurchasePartyIdsFromHydrationCaches();
+  const primaryById = new Map(
+    primaryRows
+      .map((row) => [String(row?.id || '').trim(), row] as const)
+      .filter(([id]) => Boolean(id)),
+  );
+  const visiblePrimary = primaryRows.filter((row) => !isSoftDeletedRow(row));
+  const merged = new Map(
+    visiblePrimary
+      .map((row) => [String(row?.id || '').trim(), row] as const)
+      .filter(([id]) => Boolean(id)),
+  );
+
+  fallbackRows.forEach((row) => {
+    if (isSoftDeletedRow(row)) return;
+    const rowId = String(row?.id || '').trim();
+    if (!rowId || merged.has(rowId)) return;
+    const primaryRow = primaryById.get(rowId);
+    const primaryShadowsActiveFallback = Boolean(primaryRow) && isSoftDeletedRow(primaryRow);
+    if (!primaryRow || (primaryShadowsActiveFallback && referencedPartyIds.has(rowId))) {
+      merged.set(rowId, row);
+    }
+  });
+
+  return [...merged.values()];
+};
+
 const sortExpensesDesc = (expenses: Expense[] = []) => [...expenses]
   .sort((a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime());
 
@@ -469,7 +527,7 @@ const logEmergencyPurchaseFallbackIfNeeded = (uid: string, source: string) => {
 
 const buildMergedPurchaseHydrationState = (uid: string, source: string) => {
   const purchaseOrders = sortPurchaseOrdersDesc(mergeByIdPreferPrimary(subcollectionPurchaseOrdersCache, legacyRootPurchaseOrdersCache));
-  const purchaseParties = mergeByIdPreferPrimaryRespectDeletes(subcollectionPurchasePartiesCache, legacyRootPurchasePartiesCache)
+  const purchaseParties = mergePurchasePartiesForHydration(subcollectionPurchasePartiesCache, legacyRootPurchasePartiesCache)
     .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   const supplierPayments = sortSupplierPaymentsDesc(mergeByIdPreferPrimary(subcollectionSupplierPaymentsCache, legacyRootSupplierPaymentsCache));
   const partyCreditLedger = sortPartyCreditLedgerDesc(mergeByIdPreferPrimary(subcollectionPartyCreditLedgerCache, legacyRootPartyCreditLedgerCache));
@@ -540,6 +598,7 @@ const getPurchaseReceiptPostingsCollectionRef = (uid: string) => collection(db!,
 const getExpensesCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'expenses');
 const getExpenseActivitiesCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'expenseActivities');
 const getFinanceStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'finance');
+const getSettingsStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'settings');
 const getTelegramStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'telegram');
 
 const ROOT_STORE_BLOCKED_ARRAY_FIELDS = [
@@ -824,9 +883,13 @@ let purchasePartyLegacyBackfillPromise: Promise<void> | null = null;
 
 const backfillLegacyRootPurchasePartiesToSubcollection = async (uid: string, reason: string) => {
   if (!db) return;
+  const referencedPartyIds = getReferencedPurchasePartyIdsFromHydrationCaches();
   const rootOnlyParties = legacyRootPurchasePartiesCache.filter((party) => {
     const partyId = String(party?.id || '').trim();
-    return Boolean(partyId) && !subcollectionPurchasePartiesCache.some((subcollectionParty) => String(subcollectionParty?.id || '').trim() === partyId);
+    if (!partyId || isSoftDeletedRow(party)) return false;
+    const subcollectionParty = subcollectionPurchasePartiesCache.find((item) => String(item?.id || '').trim() === partyId);
+    if (!subcollectionParty) return true;
+    return isSoftDeletedRow(subcollectionParty) && referencedPartyIds.has(partyId);
   });
   if (!rootOnlyParties.length) return;
   if (purchasePartyLegacyBackfillPromise) return purchasePartyLegacyBackfillPromise;
@@ -1460,6 +1523,20 @@ const getClampedStoreCreditUsed = (transaction: Transaction, customer: Customer)
   return Math.min(requested, total, available);
 };
 
+const inferCanonicalHistoricalReferenceType = (tx: Transaction): 'sale' | 'payment' | 'return' | 'customer_credit' | 'customer_cash_out' | 'unknown' => {
+  const noteText = `${(tx as any)?.notes || ''} ${(tx as any)?.sourceRef || ''} ${(tx as any)?.legacyRef || ''}`.toLowerCase();
+  const paymentHint = `${(tx as any)?.receiptNo || ''} ${(tx as any)?.paymentMethod || ''} ${(tx as any)?.paidAmount || ''}`.toLowerCase();
+  const hasItems = normalizeTransactionItems((tx as any)?.items).length > 0;
+  const hasSaleSettlement = Boolean(tx.saleSettlement) || Number(tx.subtotal || 0) > 0 || Number(tx.tax || 0) > 0 || Number(tx.discount || 0) > 0;
+  const hasCreditNote = String((tx as any)?.creditNoteNo || '').trim().length > 0;
+  const hasInvoice = String((tx as any)?.invoiceNo || '').trim().length > 0;
+
+  if (hasCreditNote || noteText.includes('return') || noteText.includes('credit note')) return 'return';
+  if (paymentHint.includes('receipt') || paymentHint.includes('payment') || paymentHint.includes('cash') || paymentHint.includes('online')) return 'payment';
+  if (hasItems || hasInvoice || hasSaleSettlement) return 'sale';
+  return 'unknown';
+};
+
 const getCanonicalLedgerEffectiveTransactionType = (tx: Transaction): 'sale' | 'payment' | 'return' | 'customer_credit' | 'customer_cash_out' | 'unknown' => {
   const normalize = (value: unknown) => String(value || '').trim().toLowerCase().replace(/[\s_-]+/g, ' ');
   const originalType = normalize(tx.type);
@@ -1469,7 +1546,7 @@ const getCanonicalLedgerEffectiveTransactionType = (tx: Transaction): 'sale' | '
     if (referenceType === 'payment' || referenceType === 'credit received' || referenceType === 'receipt') return 'payment';
     if (referenceType === 'sale' || referenceType === 'sell') return 'sale';
     if (referenceType === 'return' || referenceType === 'sales return') return 'return';
-    return 'unknown';
+    return inferCanonicalHistoricalReferenceType(tx);
   }
 
   if (originalType === 'sale') return 'sale';
@@ -2828,6 +2905,7 @@ let hasInitialSynced = false;
 let hasLoggedInitKpiSnapshot = false;
 let unsubscribeSnapshot: any = null;
 let unsubscribeFinanceSnapshot: any = null;
+let unsubscribeSettingsSnapshot: any = null;
 let unsubscribeTelegramSnapshot: any = null;
 let unsubscribeProductsSnapshot: any = null;
 let unsubscribeCustomersSnapshot: any = null;
@@ -2839,6 +2917,7 @@ let unsubscribePartyCreditLedgerSnapshot: any = null;
 let unsubscribeExpensesSnapshot: any = null;
 let unsubscribeRepairHistoryEntriesSnapshot: any = null;
 let financeDocumentCache: Record<string, unknown> | null = null;
+let settingsDocumentCache: Record<string, unknown> | null = null;
 let telegramDocumentCache: Record<string, unknown> | null = null;
 
 const buildHydratedFinanceState = (
@@ -2864,6 +2943,30 @@ const buildHydratedFinanceState = (
   }
 
   return hydrated;
+};
+
+const buildHydratedSettingsState = (
+  rootData: Partial<AppState> & Record<string, unknown>,
+  settingsData: Record<string, unknown> | null
+): Pick<AppState, 'profile' | 'operatorUsers'> => {
+  const rootProfile = isPlainSerializableObject(rootData.profile)
+    ? (rootData.profile as Partial<StoreProfile>)
+    : null;
+  const baseProfile = { ...defaultProfile, ...(rootProfile || {}) } as StoreProfile;
+  const profile = settingsData && isPlainSerializableObject(settingsData.profile)
+    ? sanitizeStoreProfileForPersistence({
+        ...baseProfile,
+        ...(settingsData.profile as Partial<StoreProfile>),
+      } as StoreProfile)
+    : sanitizeStoreProfileForPersistence(baseProfile);
+
+  const operatorUsers = Array.isArray(settingsData?.operatorUsers)
+    ? (settingsData!.operatorUsers as OperatorUser[])
+    : Array.isArray(rootData.operatorUsers)
+      ? (rootData.operatorUsers as OperatorUser[])
+      : [];
+
+  return { profile, operatorUsers };
 };
 
 const buildHydratedTelegramProfile = (
@@ -2897,6 +3000,10 @@ const unsubscribeCloudListeners = (uid: string | null, reason: string) => {
   if (unsubscribeFinanceSnapshot) {
     unsubscribeFinanceSnapshot();
     unsubscribeFinanceSnapshot = null;
+  }
+  if (unsubscribeSettingsSnapshot) {
+    unsubscribeSettingsSnapshot();
+    unsubscribeSettingsSnapshot = null;
   }
   if (unsubscribeTelegramSnapshot) {
     unsubscribeTelegramSnapshot();
@@ -2968,6 +3075,7 @@ const resetCloudStateForUser = (uid: string | null, reason: string) => {
   legacyRootRepairHistoryEntriesCache = [];
   subcollectionRepairHistoryEntriesCache = [];
   financeDocumentCache = null;
+  settingsDocumentCache = null;
   telegramDocumentCache = null;
   activeSyncUid = uid;
   syncGeneration += 1;
@@ -3199,6 +3307,21 @@ const syncFromCloud = async (): Promise<void> => {
         }, (error) => {
             logStockFlowError('financeState.listener_error', error, { uid: user.uid });
         });
+        unsubscribeSettingsSnapshot = onSnapshot(getSettingsStateDocumentRef(user.uid), (settingsSnap) => {
+            settingsDocumentCache = settingsSnap.exists()
+              ? (settingsSnap.data() as Record<string, unknown>)
+              : null;
+            const hydratedSettingsState = buildHydratedSettingsState(memoryState as AppState & Record<string, unknown>, settingsDocumentCache);
+            memoryState = {
+              ...memoryState,
+              ...hydratedSettingsState,
+              profile: buildHydratedTelegramProfile(hydratedSettingsState.profile, telegramDocumentCache),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('settingsState.listener_error', error, { uid: user.uid });
+        });
         unsubscribeTelegramSnapshot = onSnapshot(getTelegramStateDocumentRef(user.uid), (telegramSnap) => {
             telegramDocumentCache = telegramSnap.exists()
               ? (telegramSnap.data() as Record<string, unknown>)
@@ -3256,6 +3379,7 @@ const syncFromCloud = async (): Promise<void> => {
                   cloudData as unknown as Record<string, unknown>,
                   hydratedCustomers,
                 );
+                const hydratedSettingsState = buildHydratedSettingsState(cloudData as AppState & Record<string, unknown>, settingsDocumentCache);
                 memoryState = {
                     ...initialData,
                     ...cloudData,
@@ -3280,7 +3404,8 @@ const syncFromCloud = async (): Promise<void> => {
                     partyCreditLedger: mergedPurchaseState.partyCreditLedger,
                     variantsMaster: cloudData.variantsMaster || [],
                     colorsMaster: cloudData.colorsMaster || [],
-                    profile: buildHydratedTelegramProfile(cloudData.profile as Partial<StoreProfile> | null | undefined, telegramDocumentCache),
+                    operatorUsers: hydratedSettingsState.operatorUsers,
+                    profile: buildHydratedTelegramProfile(hydratedSettingsState.profile, telegramDocumentCache),
                     ...buildHydratedFinanceState(cloudData as AppState & Record<string, unknown>, financeDocumentCache),
                 };
                 void backfillLegacyRootPurchasePartiesToSubcollection(user.uid, 'root_snapshot_hydration');
@@ -4577,7 +4702,12 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
   }
 
   const user = await assertCloudWriteReady('updateStoreProfile');
-  await retryRootStoreWriteAfterLegacyCleanup(user.uid, sanitizeData({ profile: safeProfile }) as Record<string, unknown>, 'updateStoreProfile');
+  const settingsPayload = sanitizeData({
+    profile: safeProfile,
+    operatorUsers: Array.isArray(memoryState.operatorUsers) ? memoryState.operatorUsers : [],
+  }) as Record<string, unknown>;
+  await setDoc(getSettingsStateDocumentRef(user.uid), settingsPayload, { merge: true });
+  settingsDocumentCache = settingsPayload;
   memoryState = nextState;
   emitLocalStorageUpdate();
   await writeAuditEvent('UPDATE', {
@@ -4663,7 +4793,12 @@ export const updateOperatorUsers = async (operatorUsers: OperatorUser[]): Promis
   }
 
   const user = await assertCloudWriteReady('updateOperatorUsers');
-  await setDoc(doc(db, 'stores', user.uid), sanitizeData({ operatorUsers: safeOperators }), { merge: true });
+  const settingsPayload = sanitizeData({
+    profile: memoryState.profile,
+    operatorUsers: safeOperators,
+  }) as Record<string, unknown>;
+  await setDoc(getSettingsStateDocumentRef(user.uid), settingsPayload, { merge: true });
+  settingsDocumentCache = settingsPayload;
   memoryState = { ...memoryState, operatorUsers: safeOperators };
   emitLocalStorageUpdate();
   await writeAuditEvent('UPDATE', {

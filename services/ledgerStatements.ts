@@ -85,9 +85,10 @@ export const buildSupplierStatementRowsFromCanonicalLedger = (
   party: PurchaseParty,
   purchaseOrders: PurchaseOrder[],
   supplierPayments: SupplierPaymentLedgerEntry[],
-  partyCreditLedger: PartyCreditLedgerEntry[]
+  partyCreditLedger: PartyCreditLedgerEntry[],
+  relatedPartyIds?: string[],
 ): BuiltLedgerStatement => {
-  const ledger = buildPurchasePartyLedger({ partyId: party.id, purchaseOrders, supplierPayments, partyCreditLedger });
+  const ledger = buildPurchasePartyLedger({ partyId: party.id, relatedPartyIds, purchaseOrders, supplierPayments, partyCreditLedger });
   const columns: LedgerStatementColumn[] = [
     { header: 'Date', key: 'date', width: 15 },
     { header: 'Type', key: 'type', width: 15 },

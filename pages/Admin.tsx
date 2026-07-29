@@ -2599,7 +2599,7 @@ export default function Admin() {
       orders: purchaseOrders,
       parties: purchaseParties,
     });
-  }, [filteredProducts, purchaseOrders]);
+  }, [filteredProducts, purchaseOrders, purchaseParties]);
   const purchaseHistoryReviewFilteredRows = useMemo(() => {
     const confidenceOrder: Record<LegacyPurchaseHistoryConversionMatchConfidence, number> = {
       exact: 5,
@@ -3704,7 +3704,7 @@ export default function Admin() {
                             <td className="p-2 text-right">{row.quantity}</td>
                             <td className="p-2 text-right">{row.unitCost.toFixed(2)}</td>
                             <td className="p-2 text-right font-semibold">{row.lineTotal.toFixed(2)}</td>
-                            <td className="p-2">{row.reference || row.purchaseOrderId || row.legacyHistoryId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
+                            <td className="p-2">{row.reference || row.purchaseOrderId || row.legacyHistoryId || '�'}</td>
                             <td className="p-2"><div className="font-medium">{row.suggestedAction}</div><div className="text-[11px] text-muted-foreground">{row.reviewReason}</div></td>
                           </tr>
                         ))}
@@ -3787,21 +3787,21 @@ export default function Admin() {
                         <React.Fragment key={row.id}>
                           <tr className="cursor-pointer border-t align-top hover:bg-slate-50/70" onClick={() => toggleExpandedValue(row.id, setExpandedPurchaseHistoryReviewIds)}>
                             <td className="p-2"><Badge variant="outline">{row.source}</Badge></td>
-                            <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.reference || row.notes || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</div></td>
-                            <td className="p-2">{row.productId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
-                            <td className="p-2">{row.productCode || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
-                            <td className="p-2">{row.partyName || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
-                            <td className="p-2">{row.partyId || row.suggestedPartyId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
+                            <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.reference || row.notes || '�'}</div></td>
+                            <td className="p-2">{row.productId || '�'}</td>
+                            <td className="p-2">{row.productCode || '�'}</td>
+                            <td className="p-2">{row.partyName || '�'}</td>
+                            <td className="p-2">{row.partyId || row.suggestedPartyId || '�'}</td>
                             <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
                             <td className="p-2 text-right">{row.quantity}</td>
                             <td className="p-2 text-right">{row.unitCost.toFixed(2)}</td>
                             <td className="p-2 text-right font-semibold">{row.lineTotal.toFixed(2)}</td>
                             <td className="p-2">{row.paymentStatus}</td>
-                            <td className="p-2 text-right">{row.paidAmount == null ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â' : `${row.paidAmount.toFixed(2)}`}</td>
-                            <td className="p-2 text-right">{row.remainingAmount == null ? 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â' : `${row.remainingAmount.toFixed(2)}`}</td>
-                            <td className="p-2">{row.paymentMethod || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
-                            <td className="p-2">{row.purchaseOrderId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
-                            <td className="p-2">{row.legacyHistoryId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</td>
+                            <td className="p-2 text-right">{row.paidAmount == null ? '�' : `${row.paidAmount.toFixed(2)}`}</td>
+                            <td className="p-2 text-right">{row.remainingAmount == null ? '�' : `${row.remainingAmount.toFixed(2)}`}</td>
+                            <td className="p-2">{row.paymentMethod || '�'}</td>
+                            <td className="p-2">{row.purchaseOrderId || '�'}</td>
+                            <td className="p-2">{row.legacyHistoryId || '�'}</td>
                             <td className="p-2"><Badge variant="outline">{row.matchStatus}</Badge></td>
                             <td className="p-2">{row.matchConfidence}</td>
                             <td className="p-2">{row.suggestedAction}</td>
@@ -3817,18 +3817,18 @@ export default function Admin() {
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Reference Detail</div>
-                                    <div className="mt-1 text-muted-foreground">Reference: {row.reference || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</div>
-                                    <div className="mt-1 text-muted-foreground">Notes: {row.notes || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</div>
-                                    <div className="mt-1 text-muted-foreground">Matched row: {row.matchedRowId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</div>
+                                    <div className="mt-1 text-muted-foreground">Reference: {row.reference || '�'}</div>
+                                    <div className="mt-1 text-muted-foreground">Notes: {row.notes || '�'}</div>
+                                    <div className="mt-1 text-muted-foreground">Matched row: {row.matchedRowId || '�'}</div>
                                   </div>
                                   <div className="rounded-lg border bg-white p-3">
                                     <div className="font-semibold">Conversion Preview</div>
                                     {row.proposedPurchaseOrder ? (
                                       <div className="mt-1 space-y-1 text-muted-foreground">
                                         <div>Proposed PO ID: {row.proposedPurchaseOrder.id}</div>
-                                        <div>Supplier: {row.proposedPurchaseOrder.partyName || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</div>
+                                        <div>Supplier: {row.proposedPurchaseOrder.partyName || '�'}</div>
                                         <div>Total: {Number(row.proposedPurchaseOrder.totalAmount || 0).toFixed(2)}</div>
-                                        <div>Created By: {row.proposedPurchaseOrder.createdBy || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</div>
+                                        <div>Created By: {row.proposedPurchaseOrder.createdBy || '�'}</div>
                                       </div>
                                     ) : (
                                       <div className="mt-1 text-muted-foreground">No conversion preview for this row.</div>
@@ -4956,9 +4956,9 @@ export default function Admin() {
             <Card className="w-full max-w-lg">
               <CardHeader><CardTitle>Edit Purchase Entry</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <div>Product: <span className="font-medium">{targetProduct?.name || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</span></div>
-                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</span></div>
-                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â'}</span></div>
+                <div>Product: <span className="font-medium">{targetProduct?.name || '�'}</span></div>
+                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || '�'}</span></div>
+                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || '�'}</span></div>
                 <div className="grid grid-cols-2 gap-2 text-xs rounded border p-2">
                   <div>Old quantity: {oldQty}</div>
                   <div>Old unit price: {oldUnitPrice.toFixed(2)}</div>
@@ -5049,3 +5049,4 @@ export default function Admin() {
     </div>
   );
 }
+

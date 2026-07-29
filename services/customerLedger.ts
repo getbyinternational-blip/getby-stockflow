@@ -56,6 +56,8 @@ const roundMoney = (value: unknown): number => {
 };
 
 const positiveMoney = (value: unknown): number => Math.max(0, roundMoney(value));
+const normalizePhone = (value?: string): string => String(value || '').replace(/\D/g, '');
+const normalizeName = (value?: string): string => String(value || '').trim().toLowerCase();
 const normalizeDueAndStoreCredit = (due: number, credit: number): { due: number; credit: number; netReceivable: number } => {
   const safeDue = positiveMoney(due);
   const safeCredit = positiveMoney(credit);
@@ -89,6 +91,20 @@ const getProductSummary = (tx: Transaction): string => {
   return Array.from(new Set(items.map((item: any) => getLineProductName(item)))).slice(0, 2).join(', ');
 };
 
+const inferHistoricalReferenceType = (tx: Transaction): EffectiveTransactionType => {
+  const noteText = `${(tx as any)?.notes || ''} ${(tx as any)?.sourceRef || ''} ${(tx as any)?.legacyRef || ''}`.toLowerCase();
+  const paymentHint = `${(tx as any)?.receiptNo || ''} ${(tx as any)?.paymentMethod || ''} ${(tx as any)?.paidAmount || ''}`.toLowerCase();
+  const hasItems = normalizeTransactionItems((tx as any)?.items).length > 0;
+  const hasSaleSettlement = Boolean(tx.saleSettlement) || Number(tx.subtotal || 0) > 0 || Number(tx.tax || 0) > 0 || Number(tx.discount || 0) > 0;
+  const hasCreditNote = String((tx as any)?.creditNoteNo || '').trim().length > 0;
+  const hasInvoice = String((tx as any)?.invoiceNo || '').trim().length > 0;
+
+  if (hasCreditNote || noteText.includes('return') || noteText.includes('credit note')) return 'return';
+  if (paymentHint.includes('receipt') || paymentHint.includes('payment') || paymentHint.includes('cash') || paymentHint.includes('online')) return 'payment';
+  if (hasItems || hasInvoice || hasSaleSettlement) return 'sale';
+  return 'unknown';
+};
+
 export const getEffectiveTransactionType = (tx: Transaction): EffectiveTransactionType => {
   const originalType = normalizeKind(tx.type);
   const referenceType = normalizeKind((tx as any).referenceTransactionType);
@@ -97,7 +113,7 @@ export const getEffectiveTransactionType = (tx: Transaction): EffectiveTransacti
     if (referenceType === 'payment' || referenceType === 'credit received' || referenceType === 'receipt') return 'payment';
     if (referenceType === 'sale' || referenceType === 'sell') return 'sale';
     if (referenceType === 'return' || referenceType === 'sales return') return 'return';
-    return 'unknown';
+    return inferHistoricalReferenceType(tx);
   }
 
   if (originalType === 'sale') return 'sale';
@@ -106,6 +122,25 @@ export const getEffectiveTransactionType = (tx: Transaction): EffectiveTransacti
   if (originalType === 'customer credit') return 'customer_credit';
   if (originalType === 'customer cash out') return 'customer_cash_out';
   return 'unknown';
+};
+
+export const transactionMatchesCustomer = (tx: Transaction, customer: Customer): boolean => {
+  if (!customer) return false;
+  if (tx.customerId === customer.id) return true;
+
+  const customerPhone = normalizePhone(customer.phone);
+  const transactionPhone = normalizePhone(tx.customerPhone);
+  if (customerPhone && transactionPhone && customerPhone === transactionPhone) {
+    return true;
+  }
+
+  const customerName = normalizeName(customer.name);
+  const transactionName = normalizeName(tx.customerName);
+  if (!transactionPhone && customerName && transactionName && customerName === transactionName) {
+    return true;
+  }
+
+  return false;
 };
 
 type LedgerReplayPolicy = 'legacy' | 'normalized_v2';
@@ -118,7 +153,7 @@ const buildCustomerLedgerPreviewForPolicy = (
 ): CorrectCustomerLedgerPreview => {
   const warnings: CorrectCustomerLedgerWarning[] = [];
   const rows: CorrectCustomerLedgerRow[] = [];
-  const customerTx = transactions.filter((tx) => tx.customerId === customer.id);
+  const customerTx = transactions.filter((tx) => transactionMatchesCustomer(tx, customer));
   const upfrontEffects = buildUpfrontOrderLedgerEffects(upfrontOrders.filter((order) => order.customerId === customer.id), [customer])
     .filter((effect) => effect.type !== 'legacy_custom_order_info');
   const events = [
@@ -183,11 +218,11 @@ const buildCustomerLedgerPreviewForPolicy = (
     const tx = event.tx;
     const effectiveType = getEffectiveTransactionType(tx);
     const originalType = String(tx.type || '');
-    const referenceType = String((tx as any).referenceTransactionType || '');
+    const referenceType = String((tx as any).referenceTransactionType || (tx.type === 'historical_reference' ? effectiveType : '') || '');
     const amount = positiveMoney(Math.abs(Number(tx.total || 0)));
     const ref = (tx as any).invoiceNo || (tx as any).receiptNo || (tx as any).creditNoteNo || tx.id.slice(-6);
 
-    if (tx.type === 'historical_reference' && !referenceType) {
+    if (tx.type === 'historical_reference' && effectiveType === 'unknown') {
       rowWarnings.push(pushWarning('historical_reference_missing_reference_type', `Historical row ${tx.id.slice(-6)} is missing referenceTransactionType; it is not assumed to be a sale.`, tx.id));
     }
 
@@ -252,7 +287,9 @@ const buildCustomerLedgerPreviewForPolicy = (
         originalType,
         referenceType,
         ref,
-        description: tx.type === 'historical_reference' ? 'Historical payment classified by referenceTransactionType.' : `${tx.paymentMethod || 'Cash'} payment; excess becomes store credit.`,
+        description: tx.type === 'historical_reference'
+          ? 'Historical payment classified from referenceTransactionType or fallback receipt/payment fields.'
+          : `${tx.paymentMethod || 'Cash'} payment; excess becomes store credit.`,
         saleTotal: 0,
         paidNow: 0,
         creditDue: 0,
