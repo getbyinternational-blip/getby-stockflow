@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import JsBarcode from 'jsbarcode';
@@ -6,7 +6,7 @@ import jsPDF from 'jspdf';
 import { Customer, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
 import { NO_COLOR, NO_VARIANT, getProductStockRows, productHasCombinationStock } from '../services/productVariants';
 import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, analyzeMissingProductPurchaseHistoryRows, MissingProductPurchaseHistoryRowsAnalysis } from '../services/storage';
-import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge } from '../components/ui';
+import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge, LightweightLoader } from '../components/ui';
 import { Plus, Trash2, Edit, Save, X, Search, QrCode, Download, Share2, AlertCircle, Tags, FileDown, Package, Coins, AlertTriangle, Layers, ScanBarcode, Eye, TrendingUp, ChevronRight, MoreVertical } from 'lucide-react';
 import { ExportModal } from '../components/ExportModal';
 import { exportProductsToExcel } from '../services/excel';
@@ -15,7 +15,7 @@ import { CustomerCatalogOptionsModal, CustomerCatalogOptions } from '../componen
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadInventoryData, downloadInventoryTemplate, importInventoryFromFile } from '../services/importExcel';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { formatCurrency, formatCurrencyWhole } from '../services/numberFormat';
+import { formatCurrency, formatCurrencyWhole, sanitizeDisplayText } from '../services/numberFormat';
 import { buildPurchasePartyCanonicalView, resolveCanonicalPurchasePartyForDraft, resolvePurchasePartyIdentity } from '../services/purchasePartyIdentity';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
 
@@ -23,30 +23,16 @@ const STORAGE_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_S
 import {
   buildLegacyPurchaseHistoryConversionDryRun,
   LegacyProductPurchaseHistoryFallbackRow,
-  LegacyPurchaseHistoryConversionDryRun,
-  LegacyPurchaseHistoryConversionMatchConfidence,
-  LegacyPurchaseHistoryConversionReviewRow,
   PurchaseOrderDerivedHistoryRow,
   compareProductPurchaseHistoryForProduct,
   getBrokenPurchaseLinkRowsForProduct,
   getLegacyOnlyPurchaseHistoryRowsForProduct,
   getResolvedPurchaseHistoryRowsFromPurchaseOrdersForProduct,
 } from '../services/purchaseHistoryView';
-import { analyzeCustomerLedgerPolicyChangeDryRun, buildCorrectCustomerLedgerPreview } from '../services/customerLedger';
-import { getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
 const SHOW_FORENSIC_ANALYZER = Boolean((import.meta as any).env?.DEV);
-const BALANCE_AUDIT_SOURCE_LABELS = {
-  overpayment: 'Overpayment',
-  return_credit: 'Return Credit',
-  cash_change_saved: 'Cash Change Saved',
-  advance_order_payment: 'Advance Order Payment',
-  manual_adjustment: 'Manual Adjustment',
-  unknown: 'Unknown',
-} as const;
-type BalanceAuditSourceKey = keyof typeof BALANCE_AUDIT_SOURCE_LABELS;
 type UnifiedPurchaseHistoryRow = {
   id: string;
   date: string;
@@ -93,7 +79,7 @@ function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel
 
 export default function Admin() {
   const navigate = useNavigate();
-  const INVENTORY_PAGE_SIZE = 25;
+  const INVENTORY_PAGE_SIZE = 100;
   const [products, setProducts] = useState<Product[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -210,15 +196,8 @@ export default function Admin() {
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [inventoryViewTab, setInventoryViewTab] = useState<'inventory' | 'lost-damage' | 'purchase-history-reconciliation' | 'purchase-history-conversion-dry-run' | 'customer-balance-audit'>('inventory');
-  const [expandedBalanceAuditViolationIds, setExpandedBalanceAuditViolationIds] = useState<string[]>([]);
-  const [expandedBalanceAuditOrderIds, setExpandedBalanceAuditOrderIds] = useState<string[]>([]);
-  const [expandedBalanceAuditSourceKeys, setExpandedBalanceAuditSourceKeys] = useState<string[]>([]);
-  const [expandedBalanceAuditSimulationIds, setExpandedBalanceAuditSimulationIds] = useState<string[]>([]);
-  const [purchaseHistoryReviewSearch, setPurchaseHistoryReviewSearch] = useState('');
-  const [purchaseHistoryReviewFilter, setPurchaseHistoryReviewFilter] = useState<'all' | 'matched' | 'legacy-only' | 'purchaseOrder-only' | 'duplicate-candidate' | 'needs-supplier-review' | 'needs-value-review'>('all');
-  const [purchaseHistoryReviewSort, setPurchaseHistoryReviewSort] = useState<'date' | 'product' | 'supplier' | 'amount' | 'match-confidence'>('date');
-  const [expandedPurchaseHistoryReviewIds, setExpandedPurchaseHistoryReviewIds] = useState<string[]>([]);
+  const [inventoryViewTab, setInventoryViewTab] = useState<'inventory' | 'lost-damage'>('inventory');
+  const [isInventoryTableReady, setIsInventoryTableReady] = useState(false);
   const [openActionMenuProductId, setOpenActionMenuProductId] = useState<string | null>(null);
   const [editingLocationProductId, setEditingLocationProductId] = useState<string | null>(null);
   const [locationDraft, setLocationDraft] = useState({ locationZone: '', locationRow: '', locationRack: '', locationShelf: '' });
@@ -469,259 +448,6 @@ export default function Admin() {
     const total = Number((order as any).finalTotal ?? order.totalCost ?? (((order as any).orderTotalCustomer || 0) + ((order as any).expenseAmount || 0)));
     return Number.isFinite(total) ? Math.max(0, total) : 0;
   };
-  const roundAuditMoney = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100) / 100;
-  const toggleExpandedValue = (value: string, setter: React.Dispatch<React.SetStateAction<string[]>>) => {
-    setter((prev) => (prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]));
-  };
-  const customerBalanceAudit = useMemo(() => {
-    const canonicalBalanceByCustomerId = new Map<string, ReturnType<typeof getCanonicalCustomerBalanceResult>>();
-    const ledgerPreviewByCustomerId = new Map<string, ReturnType<typeof buildCorrectCustomerLedgerPreview>>();
-    const openOrders = upfrontOrders.filter((order) => Math.max(0, Number(order.remainingAmount || 0)) > 0.005);
-    const openOrderCustomerIds = new Set(openOrders.map((order) => order.customerId).filter(Boolean));
-    const sourceEntries: Array<{
-      id: string;
-      customerId: string;
-      customerName: string;
-      source: BalanceAuditSourceKey;
-      amount: number;
-      date: string;
-      ref: string;
-      description: string;
-    }> = [];
-
-    const nonUpfrontBalanceByCustomerId = new Map<string, { due: number; storeCredit: number }>();
-    const legacyOrderInfoByCustomerId = new Map<string, number>();
-
-    customers.forEach((customer) => {
-      const canonicalBalance = getCanonicalCustomerBalanceResult(customer, transactions, upfrontOrders);
-      const preview = buildCorrectCustomerLedgerPreview(customer, transactions, upfrontOrders);
-      canonicalBalanceByCustomerId.set(customer.id, canonicalBalance);
-      ledgerPreviewByCustomerId.set(customer.id, preview);
-
-      let nonUpfrontDue = 0;
-      let nonUpfrontStoreCredit = 0;
-      preview.rows.forEach((row) => {
-        if (row.originalType !== 'upfront_order') {
-          nonUpfrontDue = roundAuditMoney(Math.max(0, nonUpfrontDue + Number(row.receivableImpact || 0)));
-          nonUpfrontStoreCredit = roundAuditMoney(Math.max(0, nonUpfrontStoreCredit - Number(row.storeCreditUsed || 0)) + Math.max(0, Number(row.storeCreditCreated || 0)));
-        }
-        const created = Math.max(0, Number(row.storeCreditCreated || 0));
-        if (created <= 0.005) return;
-        let source: BalanceAuditSourceKey = 'unknown';
-        if (row.originalType === 'upfront_order' && row.referenceType === 'custom_order_payment') source = 'advance_order_payment';
-        else if (row.effectiveType === 'return') source = 'return_credit';
-        else if (row.originalType === 'sale') source = 'cash_change_saved';
-        else if (row.effectiveType === 'payment') source = 'overpayment';
-        else if (row.effectiveType === 'customer_credit' || row.effectiveType === 'customer_cash_out') source = 'manual_adjustment';
-        sourceEntries.push({
-          id: row.id,
-          customerId: customer.id,
-          customerName: customer.name,
-          source,
-          amount: created,
-          date: row.date,
-          ref: row.ref,
-          description: row.description,
-        });
-      });
-
-      nonUpfrontBalanceByCustomerId.set(customer.id, { due: nonUpfrontDue, storeCredit: nonUpfrontStoreCredit });
-      const legacyOrderCount = upfrontOrders.filter((order) => order.customerId === customer.id && (!Array.isArray(order.paymentHistory) || order.paymentHistory.length === 0)).length;
-      if (legacyOrderCount > 0) legacyOrderInfoByCustomerId.set(customer.id, legacyOrderCount);
-    });
-
-    const sourceSummary = (Object.keys(BALANCE_AUDIT_SOURCE_LABELS) as BalanceAuditSourceKey[]).map((source) => {
-      const entries = sourceEntries.filter((entry) => entry.source === source);
-      return {
-        source,
-        label: BALANCE_AUDIT_SOURCE_LABELS[source],
-        count: entries.length,
-        totalAmount: roundAuditMoney(entries.reduce((sum, entry) => sum + entry.amount, 0)),
-        customerCount: new Set(entries.map((entry) => entry.customerId)).size,
-        entries,
-      };
-    });
-
-    const dueCreditViolations = customers
-      .filter((customer) => Math.max(0, Number(customer.totalDue || 0)) > 0.005 && Math.max(0, Number(customer.storeCredit || 0)) > 0.005)
-      .map((customer) => {
-        const canonicalBalance = canonicalBalanceByCustomerId.get(customer.id);
-        const storedDue = Math.max(0, Number(customer.totalDue || 0));
-        const storedStoreCredit = Math.max(0, Number(customer.storeCredit || 0));
-        const storedNet = roundAuditMoney(Math.max(0, storedDue - storedStoreCredit));
-        const canonicalNet = canonicalBalance?.status === 'ok' ? canonicalBalance.netReceivable : 0;
-        return {
-          customerId: customer.id,
-          customerName: customer.name,
-          phone: customer.phone || '',
-          storedDue,
-          storedStoreCredit,
-          canonicalDue: canonicalBalance?.status === 'ok' ? canonicalBalance.currentDue : 0,
-          canonicalStoreCredit: canonicalBalance?.status === 'ok' ? canonicalBalance.storeCredit : 0,
-          canonicalNet,
-          difference: roundAuditMoney(canonicalNet - storedNet),
-          warnings: ledgerPreviewByCustomerId.get(customer.id)?.warnings || [],
-          openOrders: openOrders.filter((order) => order.customerId === customer.id),
-        };
-      })
-      .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference) || a.customerName.localeCompare(b.customerName));
-
-    const openAdvanceOrders = openOrders
-      .map((order) => ({
-        id: order.id,
-        customerId: order.customerId,
-        customerName: (order as any).customerName || customers.find((customer) => customer.id === order.customerId)?.name || 'Unknown Customer',
-        status: String(order.status || 'unpaid'),
-        orderNo: String((order as any).orderNumber || (order as any).orderNo || order.id.slice(-6)),
-        orderTotal: getUpfrontOrderTotal(order),
-        advancePaid: Math.max(0, Number(order.advancePaid || 0)),
-        remaining: Math.max(0, Number(order.remainingAmount || 0)),
-        paymentHistoryCount: Array.isArray(order.paymentHistory) ? order.paymentHistory.length : 0,
-        productName: String(order.productName || 'Custom Order'),
-        notes: String(order.notes || ''),
-      }))
-      .sort((a, b) => b.remaining - a.remaining || a.customerName.localeCompare(b.customerName));
-
-    const simulationRows = customers.map((customer) => {
-      const current = canonicalBalanceByCustomerId.get(customer.id);
-      const preview = ledgerPreviewByCustomerId.get(customer.id);
-      const nonUpfront = nonUpfrontBalanceByCustomerId.get(customer.id) || { due: 0, storeCredit: 0 };
-      const customerOpenOrders = openAdvanceOrders.filter((order) => order.customerId === customer.id);
-      const simulatedDue = roundAuditMoney(nonUpfront.due + customerOpenOrders.reduce((sum, order) => sum + order.remaining, 0));
-      const simulatedStoreCredit = roundAuditMoney(nonUpfront.storeCredit);
-      const simulatedNet = roundAuditMoney(Math.max(0, simulatedDue - simulatedStoreCredit));
-      const currentDue = current?.status === 'ok' ? current.currentDue : 0;
-      const currentStoreCredit = current?.status === 'ok' ? current.storeCredit : 0;
-      const currentNet = current?.status === 'ok' ? current.netReceivable : 0;
-      const difference = roundAuditMoney(simulatedNet - currentNet);
-      const advanceOrderCreditEntries = sourceEntries.filter((entry) => entry.customerId === customer.id && entry.source === 'advance_order_payment');
-      const unknownEntries = sourceEntries.filter((entry) => entry.customerId === customer.id && entry.source === 'unknown');
-      const legacyOrderCount = legacyOrderInfoByCustomerId.get(customer.id) || 0;
-      const risk: 'Safe' | 'Review' | 'Unknown' = unknownEntries.length > 0 || legacyOrderCount > 0 || (preview?.warnings.length || 0) > 0
-        ? 'Unknown'
-        : Math.abs(difference) > 0.01 || (currentDue > 0.005 && currentStoreCredit > 0.005) || advanceOrderCreditEntries.length > 0
-          ? 'Review'
-          : 'Safe';
-      return {
-        customerId: customer.id,
-        customerName: customer.name,
-        phone: customer.phone || '',
-        currentDue,
-        currentStoreCredit,
-        currentNet,
-        simulatedDue,
-        simulatedStoreCredit,
-        simulatedNet,
-        difference,
-        risk,
-        advanceOrderCreditTotal: roundAuditMoney(advanceOrderCreditEntries.reduce((sum, entry) => sum + entry.amount, 0)),
-        unknownCreditTotal: roundAuditMoney(unknownEntries.reduce((sum, entry) => sum + entry.amount, 0)),
-        openOrders: customerOpenOrders,
-        warningCount: preview?.warnings.length || 0,
-      };
-    }).filter((row) => row.currentDue > 0.005 && row.currentStoreCredit > 0.005 || Math.abs(row.difference) > 0.01 || row.advanceOrderCreditTotal > 0.005 || row.unknownCreditTotal > 0.005)
-      .sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference) || a.customerName.localeCompare(b.customerName));
-
-    return {
-      summary: {
-        totalCustomers: customers.length,
-        dueAndCreditCustomers: dueCreditViolations.length,
-        openAdvanceOrders: openAdvanceOrders.length,
-        totalOpenOrderValue: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.orderTotal, 0)),
-        totalAdvancePaid: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.advancePaid, 0)),
-        totalRemaining: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.remaining, 0)),
-        unknownCreditSourceCount: sourceSummary.find((row) => row.source === 'unknown')?.count || 0,
-      },
-      dueCreditViolations,
-      openAdvanceOrders,
-      sourceSummary,
-      simulationRows,
-      exportPayload: {
-        generatedAt: new Date().toISOString(),
-        summary: {
-          totalCustomers: customers.length,
-          dueAndCreditCustomers: dueCreditViolations.length,
-          openAdvanceOrders: openAdvanceOrders.length,
-          totalOpenOrderValue: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.orderTotal, 0)),
-          totalAdvancePaid: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.advancePaid, 0)),
-          totalRemaining: roundAuditMoney(openAdvanceOrders.reduce((sum, order) => sum + order.remaining, 0)),
-          unknownCreditSourceCount: sourceSummary.find((row) => row.source === 'unknown')?.count || 0,
-        },
-        dueCreditViolations,
-        openAdvanceOrders,
-        sourceSummary: sourceSummary.map(({ source, label, count, totalAmount, customerCount }) => ({ source, label, count, totalAmount, customerCount })),
-        simulationRows,
-      },
-    };
-  }, [customers, transactions, upfrontOrders]);
-  const customerBalancePolicyDryRun = useMemo(
-    () => analyzeCustomerLedgerPolicyChangeDryRun({ customers, transactions, upfrontOrders }),
-    [customers, transactions, upfrontOrders]
-  );
-  const handleExportCustomerBalanceAuditJson = () => {
-    const blob = new Blob([JSON.stringify({
-      ...customerBalanceAudit.exportPayload,
-      policyDryRun: customerBalancePolicyDryRun,
-    }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `customer-balance-audit-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-  const handleExportLegacyPurchaseHistoryDryRunJson = () => {
-    const blob = new Blob([JSON.stringify(legacyPurchaseHistoryConversionDryRun, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `legacy-purchase-history-conversion-dry-run-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-  const handleExportLegacyPurchaseHistoryReviewCsv = () => {
-    const rows = purchaseHistoryReviewFilteredRows.map((row) => ({
-      Source: row.source,
-      ProductName: row.productName,
-      ProductId: row.productId || '',
-      ProductCode: row.productCode || '',
-      SupplierName: row.partyName || '',
-      SupplierId: row.partyId || '',
-      Date: row.date,
-      Quantity: row.quantity,
-      UnitCost: row.unitCost,
-      LineTotal: row.lineTotal,
-      PaymentStatus: row.paymentStatus,
-      PaidAmount: row.paidAmount ?? '',
-      RemainingAmount: row.remainingAmount ?? '',
-      PaymentMethod: row.paymentMethod || '',
-      PurchaseOrderId: row.purchaseOrderId || '',
-      LegacyHistoryId: row.legacyHistoryId || '',
-      Reference: row.reference || '',
-      Notes: row.notes || '',
-      MatchStatus: row.matchStatus,
-      MatchConfidence: row.matchConfidence,
-      DuplicateKey: row.duplicateKey,
-      SuggestedAction: row.suggestedAction,
-      ReviewReason: row.reviewReason || '',
-    }));
-    const headers = Object.keys(rows[0] || {
-      Source: '', ProductName: '', ProductId: '', ProductCode: '', SupplierName: '', SupplierId: '', Date: '', Quantity: '', UnitCost: '', LineTotal: '', PaymentStatus: '', PaidAmount: '', RemainingAmount: '', PaymentMethod: '', PurchaseOrderId: '', LegacyHistoryId: '', Reference: '', Notes: '', MatchStatus: '', MatchConfidence: '', DuplicateKey: '', SuggestedAction: '', ReviewReason: '',
-    });
-    const escapeCsv = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-    const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => escapeCsv((row as Record<string, unknown>)[header])).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `legacy-purchase-history-review-${new Date().toISOString().slice(0, 10)}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-  const openCustomerCorrectLedger = (customerId: string) => {
-    navigate(`/customers?showCorrectLedger=1&auditCustomerId=${encodeURIComponent(customerId)}`);
-  };
-
   const getSuggestedStock = (totalPurchase: any, totalSold: any) => {
     const purchase = toNonNegativeNumber(totalPurchase);
     const sold = toNonNegativeNumber(totalSold);
@@ -928,7 +654,7 @@ export default function Admin() {
           const remainingPayable = h.remainingPayable == null ? null : toNonNegativeNumber(h.remainingPayable);
           const paymentSummary = h.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 };
           const partyName = h.partyName || 'Not linked / Unknown';
-          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || '—';
+          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || 'â€”';
           const isReviewRow = h.linkStatus === 'needs_review';
           const purchaseOrderActionHelp = 'Edit/delete for purchase-order history will be handled from Purchase Orders.';
 
@@ -947,7 +673,7 @@ export default function Admin() {
             </div>
           )}
           <div className="text-muted-foreground">
-            <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(h.variant, NO_VARIANT)} &nbsp;•&nbsp;
+            <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(h.variant, NO_VARIANT)} &nbsp;â€¢&nbsp;
             <span className="font-medium text-foreground">Color:</span> {formatVariantColorValue(h.color, NO_COLOR)}
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -956,8 +682,8 @@ export default function Admin() {
             <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">{lineTotal.toFixed(2)}</div></div>
           </div>
           <div className="space-y-1 text-[11px]">
-            <div><span className="text-muted-foreground">Reference:</span> {h.reference || '—'}</div>
-            <div><span className="text-muted-foreground">Notes:</span> {h.notes || '—'}</div>
+            <div><span className="text-muted-foreground">Reference:</span> {h.reference || 'â€”'}</div>
+            <div><span className="text-muted-foreground">Notes:</span> {h.notes || 'â€”'}</div>
             {isReviewRow && (
               <div className="text-amber-700">
                 <span className="font-medium">Review:</span> {h.reviewReason || 'Purchase order line needs a product link review.'}
@@ -970,9 +696,9 @@ export default function Admin() {
               <div><span className="text-muted-foreground">Party:</span> <span className="font-medium">{partyName}</span></div>
               <div><span className="text-muted-foreground">PO:</span> <span className="font-medium">{poLabel}</span></div>
               <div><span className="text-muted-foreground">Line Total:</span> <span className="font-medium">{lineTotal.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `${orderTotal.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `${orderPaid.toFixed(2)}` : '—'}</span></div>
-              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `${remainingPayable.toFixed(2)}` : '—'}</span></div>
+              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `${orderTotal.toFixed(2)}` : 'â€”'}</span></div>
+              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `${orderPaid.toFixed(2)}` : 'â€”'}</span></div>
+              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `${remainingPayable.toFixed(2)}` : 'â€”'}</span></div>
               <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">{paymentSummary.partyCredit.toFixed(2)}</span></div>
               <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">{paymentSummary.cash.toFixed(2)}</span></div>
               <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">{paymentSummary.online.toFixed(2)}</span></div>
@@ -1012,14 +738,14 @@ export default function Admin() {
           partyName,
           row.reference ? `Ref ${row.reference}` : null,
           row.purchaseOrderId ? `PO ${poLabel}` : null,
-        ].filter(Boolean).join(' • ');
+        ].filter(Boolean).join(' â€¢ ');
         const secondaryAuditMeta = [
           row.legacyHistoryId ? `Legacy ID ${row.legacyHistoryId}` : null,
           row.productName && row.productName !== productName ? `Order name ${row.productName}` : null,
           row.previousStock != null ? `Prev stock ${row.previousStock}` : null,
           row.previousBuyPrice != null ? `Prev buy ${row.previousBuyPrice.toFixed(2)}` : null,
           row.nextBuyPrice != null ? `Next buy ${row.nextBuyPrice.toFixed(2)}` : null,
-        ].filter(Boolean).join(' • ');
+        ].filter(Boolean).join(' â€¢ ');
         const canEditSnapshot = !!row.legacyHistoryId;
         const canAddToLedger = row.ledgerIndicatorLabel === 'Not Counted' && !!row.legacyHistoryId;
         const canOpenLedger = !canAddToLedger && !!row.purchaseOrderId;
@@ -1064,11 +790,11 @@ export default function Admin() {
               </div>
               <div className="rounded-lg bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Paid</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{orderPaid != null ? orderPaid.toFixed(2) : '—'}</div>
+                <div className="mt-1 text-lg font-semibold text-slate-950">{orderPaid != null ? orderPaid.toFixed(2) : 'â€”'}</div>
               </div>
               <div className="rounded-lg bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Due</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{remainingPayable != null ? remainingPayable.toFixed(2) : '—'}</div>
+                <div className="mt-1 text-lg font-semibold text-slate-950">{remainingPayable != null ? remainingPayable.toFixed(2) : 'â€”'}</div>
               </div>
             </div>
 
@@ -1108,7 +834,7 @@ export default function Admin() {
                     }
                   }}
                 >
-                  {addingLedgerHistoryId === row.legacyHistoryId ? 'Adding…' : secondaryActionLabel}
+                  {addingLedgerHistoryId === row.legacyHistoryId ? 'Addingâ€¦' : secondaryActionLabel}
                 </Button>
               </div>
             </div>
@@ -1119,7 +845,7 @@ export default function Admin() {
                 <div className="grid gap-1 text-sm text-slate-700">
                   <div><span className="text-slate-500">Variant:</span> <span className="font-medium text-slate-900">{formatVariantColorValue(row.variant, NO_VARIANT)}</span></div>
                   <div><span className="text-slate-500">Color:</span> <span className="font-medium text-slate-900">{formatVariantColorValue(row.color, NO_COLOR)}</span></div>
-                  <div><span className="text-slate-500">Payment Method:</span> <span className="font-medium text-slate-900">{row.paymentMethod || '—'}</span></div>
+                  <div><span className="text-slate-500">Payment Method:</span> <span className="font-medium text-slate-900">{row.paymentMethod || 'â€”'}</span></div>
                   {row.notes ? <div><span className="text-slate-500">Notes:</span> <span className="font-medium text-slate-900">{row.notes}</span></div> : null}
                 </div>
               </div>
@@ -1127,7 +853,7 @@ export default function Admin() {
               <div className="space-y-2 rounded-lg border border-slate-200 p-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Payment Breakdown</div>
                 <div className="grid gap-1 text-sm text-slate-700">
-                  <div><span className="text-slate-500">Order Total:</span> <span className="font-medium text-slate-900">{orderTotal != null ? orderTotal.toFixed(2) : '—'}</span></div>
+                  <div><span className="text-slate-500">Order Total:</span> <span className="font-medium text-slate-900">{orderTotal != null ? orderTotal.toFixed(2) : 'â€”'}</span></div>
                   <div><span className="text-slate-500">Cash:</span> <span className="font-medium text-slate-900">{paymentSummary.cash.toFixed(2)}</span></div>
                   <div><span className="text-slate-500">Online/Bank:</span> <span className="font-medium text-slate-900">{paymentSummary.online.toFixed(2)}</span></div>
                   <div><span className="text-slate-500">Party Credit:</span> <span className="font-medium text-slate-900">{paymentSummary.partyCredit.toFixed(2)}</span></div>
@@ -1144,7 +870,7 @@ export default function Admin() {
                 )}
                 {row.compatibilityWarnings.length > 0 && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                    <span className="font-semibold text-slate-900">Legacy notes:</span> {row.compatibilityWarnings.join(' • ')}
+                    <span className="font-semibold text-slate-900">Legacy notes:</span> {row.compatibilityWarnings.join(' â€¢ ')}
                   </div>
                 )}
                 {secondaryAuditMeta && (
@@ -1175,10 +901,10 @@ export default function Admin() {
               <div className="text-muted-foreground">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
             </div>
             <div className="rounded border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-900">
-              Legacy-only history row — not part of canonical purchase ledger.
+              Legacy-only history row â€” not part of canonical purchase ledger.
             </div>
             <div className="text-muted-foreground">
-              <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(row.variant, NO_VARIANT)} &nbsp;•&nbsp;
+              <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(row.variant, NO_VARIANT)} &nbsp;â€¢&nbsp;
               <span className="font-medium text-foreground">Color:</span> {formatVariantColorValue(row.color, NO_COLOR)}
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -1187,10 +913,10 @@ export default function Admin() {
               <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">{lineTotal.toFixed(2)}</div></div>
             </div>
             <div className="space-y-1 text-[11px]">
-              <div><span className="text-muted-foreground">Reference:</span> {row.reference || '—'}</div>
-              <div><span className="text-muted-foreground">Notes:</span> {row.notes || '—'}</div>
+              <div><span className="text-muted-foreground">Reference:</span> {row.reference || 'â€”'}</div>
+              <div><span className="text-muted-foreground">Notes:</span> {row.notes || 'â€”'}</div>
               <div><span className="text-muted-foreground">Linked Purchase Order:</span> {row.purchaseOrderLabel || row.purchaseOrderId || 'Not linked'}</div>
-              <div><span className="text-muted-foreground">Party:</span> {row.partyName || '—'}</div>
+              <div><span className="text-muted-foreground">Party:</span> {row.partyName || 'â€”'}</div>
             </div>
           </div>
         );
@@ -2593,63 +2319,6 @@ export default function Admin() {
       })
       .slice(0, 30);
   }, [inventoryPurchaseHistoryAuditRows]);
-  const legacyPurchaseHistoryConversionDryRun = useMemo<LegacyPurchaseHistoryConversionDryRun>(() => {
-    return buildLegacyPurchaseHistoryConversionDryRun({
-      products: filteredProducts,
-      orders: purchaseOrders,
-      parties: purchaseParties,
-    });
-  }, [filteredProducts, purchaseOrders, purchaseParties]);
-  const purchaseHistoryReviewFilteredRows = useMemo(() => {
-    const confidenceOrder: Record<LegacyPurchaseHistoryConversionMatchConfidence, number> = {
-      exact: 5,
-      strong: 4,
-      possible: 3,
-      weak: 2,
-      none: 1,
-    };
-    const query = purchaseHistoryReviewSearch.trim().toLowerCase();
-    const matchesFilter = (row: LegacyPurchaseHistoryConversionReviewRow) => {
-      if (purchaseHistoryReviewFilter === 'all') return true;
-      if (purchaseHistoryReviewFilter === 'matched') return row.matchStatus === 'matched';
-      if (purchaseHistoryReviewFilter === 'legacy-only') return row.matchStatus === 'legacy-only';
-      if (purchaseHistoryReviewFilter === 'purchaseOrder-only') return row.matchStatus === 'purchaseOrder-only';
-      if (purchaseHistoryReviewFilter === 'duplicate-candidate') return row.matchStatus === 'duplicate-candidate';
-      if (purchaseHistoryReviewFilter === 'needs-supplier-review') return row.suggestedAction === 'review supplier';
-      if (purchaseHistoryReviewFilter === 'needs-value-review') return row.suggestedAction === 'review value';
-      return true;
-    };
-    return legacyPurchaseHistoryConversionDryRun.allReviewRows
-      .filter((row) => {
-        if (!matchesFilter(row)) return false;
-        if (!query) return true;
-        return [
-          row.source,
-          row.productName,
-          row.productId,
-          row.productCode,
-          row.partyName,
-          row.partyId,
-          row.purchaseOrderId,
-          row.legacyHistoryId,
-          row.reference,
-          row.notes,
-          row.matchStatus,
-          row.matchConfidence,
-          row.suggestedAction,
-          row.reviewReason,
-          row.duplicateKey,
-        ].join(' ').toLowerCase().includes(query);
-      })
-      .slice()
-      .sort((a, b) => {
-        if (purchaseHistoryReviewSort === 'product') return a.productName.localeCompare(b.productName);
-        if (purchaseHistoryReviewSort === 'supplier') return String(a.partyName || '').localeCompare(String(b.partyName || ''));
-        if (purchaseHistoryReviewSort === 'amount') return b.lineTotal - a.lineTotal;
-        if (purchaseHistoryReviewSort === 'match-confidence') return confidenceOrder[b.matchConfidence] - confidenceOrder[a.matchConfidence];
-        return new Date(b.date || '').getTime() - new Date(a.date || '').getTime();
-      });
-  }, [legacyPurchaseHistoryConversionDryRun, purchaseHistoryReviewFilter, purchaseHistoryReviewSearch, purchaseHistoryReviewSort]);
   const inventoryTotalPages = Math.max(1, Math.ceil(filteredProducts.length / INVENTORY_PAGE_SIZE));
   const paginatedProducts = useMemo(
     () => filteredProducts.slice((inventoryPage - 1) * INVENTORY_PAGE_SIZE, inventoryPage * INVENTORY_PAGE_SIZE),
@@ -2708,6 +2377,18 @@ export default function Admin() {
   useEffect(() => {
     setInventoryPage((prev) => Math.min(prev, inventoryTotalPages));
   }, [inventoryTotalPages]);
+
+  useEffect(() => {
+    if (inventoryViewTab !== 'inventory') {
+      setIsInventoryTableReady(false);
+      return;
+    }
+    setIsInventoryTableReady(false);
+    const timer = window.setTimeout(() => {
+      setIsInventoryTableReady(true);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [inventoryViewTab]);
 
   useEffect(() => {
     setOperatorInventoryPage((prev) => Math.min(prev, operatorInventoryTotalPages));
@@ -2942,7 +2623,7 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
-        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">{formatCurrency(p.sellPrice)}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
+        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || 'ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">{formatCurrency(p.sellPrice)}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
 
       </div>
     );
@@ -2950,192 +2631,178 @@ export default function Admin() {
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
-      
-      {/* 1. Header & Stats Section */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-          <div className="col-span-full md:col-span-2 lg:col-span-2 space-y-1">
-              <h1 className="text-3xl font-bold tracking-tight text-foreground">Inventory</h1>
-              <p className="text-muted-foreground">Manage your stock, products, and pricing.</p>
-          </div>
-          
-	          {/* Executive Stats Cards */}
-            {inventoryViewTab === 'inventory' ? (
-		          <>
-              <Card className="bg-blue-50/50 border-blue-100 shadow-sm relative overflow-hidden group">
-               <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
-                   <div>
-                       <p className="text-xs font-bold text-blue-600 uppercase tracking-widest">Inventory Value (Cost)</p>
-                       <p className="text-2xl font-bold text-blue-900 mt-1">{formatCurrency(stats.totalInventoryValue)}</p>
-                   </div>
-                   <div className="absolute right-2 top-2 p-2 bg-blue-100 rounded-lg text-blue-600 opacity-50 group-hover:opacity-100 transition-opacity">
-                       <Coins className="w-5 h-5" />
-                   </div>
-               </CardContent>
-		          </Card>
 
-	            <Card className="bg-emerald-50/50 border-emerald-100 shadow-sm relative overflow-hidden group">
-               <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
-                   <div>
-                       <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest">Total Investment till date</p>
-                       <p className="text-2xl font-bold text-emerald-900 mt-1">{formatCurrency(stats.totalInvestmentTillDate)}</p>
-                   </div>
-                   <div className="absolute right-2 top-2 p-2 bg-emerald-100 rounded-lg text-emerald-600 opacity-50 group-hover:opacity-100 transition-opacity">
-                       <TrendingUp className="w-5 h-5" />
-                   </div>
-               </CardContent>
-		          </Card>
+      <section className="space-y-4">
+        <div className={`grid gap-3 ${inventoryViewTab === 'inventory' ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+          {inventoryViewTab === 'inventory' ? (
+            <>
+              <Card className="rounded-2xl border border-blue-100 bg-blue-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-blue-700">Inventory Value (Cost)</p>
+                      <p className="mt-2 text-2xl font-bold leading-none text-blue-950">{formatCurrency(stats.totalInventoryValue)}</p>
+                      <p className="mt-2 text-xs text-blue-700/80">Current stock valuation at buy cost.</p>
+                    </div>
+                    <div className="shrink-0 rounded-xl bg-blue-100 p-2.5 text-blue-700"><Coins className="w-5 h-5" /></div>
+                  </div>
+                </CardContent>
+              </Card>
 
-		          <Card 
-            className="bg-amber-50/50 border-amber-100 shadow-sm relative overflow-hidden group cursor-pointer hover:bg-amber-100/50 transition-colors"
-            onClick={() => setIsLowStockModalOpen(true)}
-          >
-               <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
-                   <div>
-                       <p className="text-xs font-bold text-amber-600 uppercase tracking-widest">Low Stock Alerts</p>
-                       <div className="flex items-end gap-2 mt-1">
-                           <p className="text-2xl font-bold text-amber-900">{stats.lowStockCount}</p>
-                           {stats.outOfStockCount > 0 && (
-                               <span className="text-xs font-medium text-red-600 bg-red-100 px-1.5 py-0.5 rounded">
-                                   {stats.outOfStockCount} Out
-                               </span>
-                           )}
-                       </div>
-                   </div>
-                   <div className="absolute right-2 top-2 p-2 bg-amber-100 rounded-lg text-amber-600 opacity-50 group-hover:opacity-100 transition-opacity">
-                       <AlertTriangle className="w-5 h-5" />
-                   </div>
-	               </CardContent>
-		          </Card>
-              </>
-            ) : inventoryViewTab === 'customer-balance-audit' ? (
-              <>
-              <Card className="bg-indigo-50/60 border-indigo-100 shadow-sm">
-                <CardContent className="p-4">
-                  <p className="text-xs font-bold uppercase tracking-widest text-indigo-600">Total Customers</p>
-                  <p className="mt-1 text-2xl font-bold text-indigo-950">{customerBalanceAudit.summary.totalCustomers}</p>
+              <Card className="rounded-2xl border border-emerald-100 bg-emerald-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Total Investment Till Date</p>
+                      <p className="mt-2 text-2xl font-bold leading-none text-emerald-950">{formatCurrency(stats.totalInvestmentTillDate)}</p>
+                      <p className="mt-2 text-xs text-emerald-700/80">All recorded purchase-side investment.</p>
+                    </div>
+                    <div className="shrink-0 rounded-xl bg-emerald-100 p-2.5 text-emerald-700"><TrendingUp className="w-5 h-5" /></div>
+                  </div>
                 </CardContent>
               </Card>
-              <Card className="bg-amber-50/60 border-amber-100 shadow-sm">
-                <CardContent className="p-4">
-                  <p className="text-xs font-bold uppercase tracking-widest text-amber-600">Due + Credit Violations</p>
-                  <p className="mt-1 text-2xl font-bold text-amber-950">{customerBalanceAudit.summary.dueAndCreditCustomers}</p>
-                </CardContent>
-              </Card>
-              <Card className="bg-sky-50/60 border-sky-100 shadow-sm">
-                <CardContent className="p-4">
-                  <p className="text-xs font-bold uppercase tracking-widest text-sky-600">Open Advance Orders</p>
-                  <p className="mt-1 text-2xl font-bold text-sky-950">{customerBalanceAudit.summary.openAdvanceOrders}</p>
-                  <div className="mt-1 text-xs text-sky-800">Open value {formatCurrency(customerBalanceAudit.summary.totalOpenOrderValue)}</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-emerald-50/60 border-emerald-100 shadow-sm">
-                <CardContent className="p-4">
-                  <p className="text-xs font-bold uppercase tracking-widest text-emerald-600">Advance Paid</p>
-                  <p className="mt-1 text-2xl font-bold text-emerald-950">{formatCurrency(customerBalanceAudit.summary.totalAdvancePaid)}</p>
-                  <div className="mt-1 text-xs text-emerald-800">Remaining {formatCurrency(customerBalanceAudit.summary.totalRemaining)}</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-rose-50/60 border-rose-100 shadow-sm">
-                <CardContent className="p-4">
-                  <p className="text-xs font-bold uppercase tracking-widest text-rose-600">Unknown Credit Sources</p>
-                  <p className="mt-1 text-2xl font-bold text-rose-950">{customerBalanceAudit.summary.unknownCreditSourceCount}</p>
-                </CardContent>
-              </Card>
-              </>
-            ) : (
-              <>
-              <Card className="bg-rose-50/50 border-rose-100 shadow-sm relative overflow-hidden group">
-	               <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
-	                   <div>
-	                       <p className="text-xs font-bold text-rose-600 uppercase tracking-widest">Lost & Damage Products</p>
-	                       <p className="text-2xl font-bold text-rose-900 mt-1">{lostDamageStats.totalProducts}</p>
-	                   </div>
-	                   <div className="text-xs text-rose-700 mt-1">Qty: {lostDamageStats.totalQty}</div>
-	               </CardContent>
-		          </Card>
-		          <Card className="bg-red-50/50 border-red-100 shadow-sm relative overflow-hidden group">
-	               <CardContent className="p-4 flex flex-col justify-between h-full relative z-10">
-	                   <div>
-	                       <p className="text-xs font-bold text-red-600 uppercase tracking-widest">Total Loss Amount</p>
-                        <p className="text-2xl font-bold text-red-900 mt-1">{formatCurrency(lostDamageStats.totalAmount)}</p>
-	                   </div>
-	               </CardContent>
-		          </Card>
-              </>
-            )}
-	      </div>
 
-      {/* 2. Control Tower Toolbar (Responsive Refactor) */}
-      <div className="bg-card border rounded-xl p-3 shadow-sm sticky top-0 z-20 bg-opacity-95 backdrop-blur-md">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
-              
-              {/* Row 1: Search (Full width on mobile, Flex on Desktop) */}
-              <div className="relative min-w-[220px] flex-1 group xl:max-w-md">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground group-focus-within:text-primary" />
-                  <Input 
-                      placeholder="Search products..." 
-                      className="w-full pl-9 bg-muted/30 border-transparent focus:bg-background focus:border-input transition-all"
+              <Card className="cursor-pointer rounded-2xl border border-amber-100 bg-amber-50/90 shadow-sm transition-colors hover:bg-amber-100/80" onClick={() => setIsLowStockModalOpen(true)}>
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-amber-700">Low Stock Alerts</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <p className="text-2xl font-bold leading-none text-amber-950">{stats.lowStockCount}</p>
+                        {stats.outOfStockCount > 0 && (
+                          <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700">
+                            {stats.outOfStockCount} Out
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-2 text-xs text-amber-700/80">Review low and out-of-stock products.</p>
+                    </div>
+                    <div className="shrink-0 rounded-xl bg-amber-100 p-2.5 text-amber-700"><AlertTriangle className="w-5 h-5" /></div>
+                  </div>
+                </CardContent>
+              </Card>
+            </>
+          ) : (
+            <>
+              <Card className="rounded-2xl border border-rose-100 bg-rose-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-rose-700">Lost & Damage Products</p>
+                  <p className="mt-2 text-2xl font-bold leading-none text-rose-950">{lostDamageStats.totalProducts}</p>
+                  <p className="mt-2 text-xs text-rose-700/80">Qty affected: {lostDamageStats.totalQty}</p>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border border-red-100 bg-red-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-red-700">Total Loss Amount</p>
+                  <p className="mt-2 text-2xl font-bold leading-none text-red-950">{formatCurrency(lostDamageStats.totalAmount)}</p>
+                  <p className="mt-2 text-xs text-red-700/80">Estimated value impact.</p>
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </div>
+
+        <Card className="rounded-[24px] border border-slate-200 bg-white shadow-sm">
+          <CardContent className="p-4 md:p-5">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant={inventoryViewTab === 'inventory' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('inventory')} className={inventoryViewTab === 'inventory' ? 'shadow-sm' : ''}>Inventory</Button>
+                  <Button size="sm" variant={inventoryViewTab === 'lost-damage' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('lost-damage')} className={inventoryViewTab === 'lost-damage' ? 'shadow-sm' : ''}>Lost & Damage</Button>
+                  {selectedProductIds.length > 0 && (
+                    <Badge variant="outline" className="h-8 rounded-full border-slate-300 px-3 text-xs font-semibold text-slate-700">
+                      {selectedProductIds.length} selected
+                    </Badge>
+                  )}
+                  <div className="hidden h-6 w-px bg-slate-200 lg:block" />
+                  <Button variant="outline" size="icon" onClick={() => setIsCategoryModalOpen(true)} title="Manage Categories" className="h-9 w-9 rounded-xl bg-white">
+                    <Layers className="w-4 h-4" />
+                  </Button>
+                  <Button variant="outline" size="icon" onClick={() => { setExportType('inventory'); setIsExportModalOpen(true); }} title="Download Catalog" className="h-9 w-9 rounded-xl bg-white">
+                    <FileDown className="w-4 h-4" />
+                  </Button>
+                  <Button variant="outline" onClick={() => downloadInventoryData()} className="h-9 rounded-xl bg-white">Download Data</Button>
+                  <Button variant="outline" onClick={() => setIsImportModalOpen(true)} className="h-9 rounded-xl bg-white">Upload Existing File</Button>
+                  {SHOW_FORENSIC_ANALYZER && (
+                    <Button variant="outline" onClick={runMissingProductHistoryAnalysis} className="h-9 rounded-xl bg-white">Analyze Missing Product History</Button>
+                  )}
+                  <Button onClick={() => openModal()} className="h-9 rounded-xl bg-slate-950 px-4 text-white shadow-sm hover:bg-slate-800">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Product
+                  </Button>
+                </div>
+
+                {selectedProductIds.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                    <Button variant="outline" onClick={() => downloadInventoryData(selectedProducts)} className="h-10 rounded-xl">Download Selected</Button>
+                    <Button variant="outline" onClick={handleBatchEditProducts} className="h-10 rounded-xl">Batch Edit ({selectedProductIds.length})</Button>
+                    <Button variant="destructive" onClick={() => void handleBatchDeleteProducts()} className="h-10 rounded-xl">Batch Delete</Button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_220px_220px_auto]">
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Search Products</div>
+                  <div className="relative group">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-700" />
+                    <Input
+                      placeholder="Search products, barcode, or category..."
+                      className="h-11 rounded-xl border-slate-200 bg-slate-50/80 pl-10 focus:bg-white"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                  />
-              </div>
-
-              {/* Row 2: Filters (2-col Grid on Mobile, Flex on Desktop) */}
-              <div className="grid grid-cols-2 gap-2 md:flex md:w-auto md:flex-wrap">
-                  <Select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="w-full md:w-[140px]">
-                      {filterCategories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Category</div>
+                  <Select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="h-11 rounded-xl border-slate-200 bg-slate-50/80">
+                    {filterCategories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
                   </Select>
-                  <Select value={sortOption} onChange={(e) => setSortOption(e.target.value)} className="w-full md:w-[140px]">
-                      <option value="name-asc">Name (A-Z)</option>
-                      <option value="price-asc">Buy Price (Low-High)</option>
-                      <option value="price-desc">Buy Price (High-Low)</option>
-                      <option value="stock-asc">Stock (Low-High)</option>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Sort</div>
+                  <Select value={sortOption} onChange={(e) => setSortOption(e.target.value)} className="h-11 rounded-xl border-slate-200 bg-slate-50/80">
+                    <option value="name-asc">Name (A-Z)</option>
+                    <option value="price-asc">Buy Price (Low-High)</option>
+                    <option value="price-desc">Buy Price (High-Low)</option>
+                    <option value="stock-asc">Stock (Low-High)</option>
                   </Select>
+                </div>
+                {inventoryViewTab === 'inventory' && filteredProducts.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Pagination</div>
+                    <div className="flex h-11 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-3">
+                      <div className="min-w-0 text-xs text-slate-500">
+                        <span>{Math.min(filteredProducts.length, INVENTORY_PAGE_SIZE)} per page</span>
+                        <span className="mx-1.5 text-slate-300">•</span>
+                        <span>Page {inventoryPage} of {inventoryTotalPages}</span>
+                      </div>
+                      {filteredProducts.length > INVENTORY_PAGE_SIZE && (
+                        <div className="flex shrink-0 items-center gap-1">
+                          <Button variant="outline" size="sm" onClick={() => setInventoryPage((prev) => Math.max(1, prev - 1))} disabled={inventoryPage === 1} className="h-7 rounded-lg px-2">Prev</Button>
+                          <Button variant="outline" size="sm" onClick={() => setInventoryPage((prev) => Math.min(inventoryTotalPages, prev + 1))} disabled={inventoryPage === inventoryTotalPages} className="h-7 rounded-lg px-2">Next</Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-
-              {/* Row 3: Actions (Flex row on Mobile, Flex on Desktop) */}
-              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                   <div className="w-px h-9 bg-border mx-1 hidden md:block"></div>
-                   
-                   <Button variant="outline" size="icon" onClick={() => setIsCategoryModalOpen(true)} title="Manage Categories" className="shrink-0">
-                       <Layers className="w-4 h-4" />
-                   </Button>
-                   <Button variant="outline" size="icon" onClick={() => { setExportType('inventory'); setIsExportModalOpen(true); }} title="Download Catalog" className="shrink-0">
-                       <FileDown className="w-4 h-4" />
-                   </Button>
-                   <Button variant="outline" onClick={() => downloadInventoryData()} className="h-9">Download Data</Button>
-                   {selectedProductIds.length > 0 && (
-                     <>
-                       <Button variant="outline" onClick={() => downloadInventoryData(selectedProducts)} className="h-9">Download Selected</Button>
-                       <Button variant="outline" onClick={handleBatchEditProducts} className="h-9">Batch Edit ({selectedProductIds.length})</Button>
-                       <Button variant="destructive" onClick={() => void handleBatchDeleteProducts()} className="h-9">Batch Delete</Button>
-                     </>
-                   )}
-                   <Button variant="outline" onClick={() => setIsImportModalOpen(true)} className="h-9">Upload Existing File</Button>
-                   {SHOW_FORENSIC_ANALYZER && (
-                     <>
-                       <Button variant="outline" onClick={runMissingProductHistoryAnalysis} className="h-9">Analyze Missing Product History</Button>
-                     </>
-                   )}
-                   
-                   <Button onClick={() => openModal()} className="bg-primary hover:bg-primary/90 text-white shadow-md hover:shadow-lg transition-all flex-1 md:flex-none">
-                       <Plus className="w-4 h-4 mr-2" /> <span className="md:inline">Add Product</span>
-                   </Button>
-              </div>
-          </div>
-      </div>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
 
       {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${notice.type === 'error' ? 'border-red-200 bg-red-50 text-red-700' : notice.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>{notice.message}</div>}
-      <div className="flex items-center gap-2">
-        <Button size="sm" variant={inventoryViewTab === 'inventory' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('inventory')}>Inventory</Button>
-        <Button size="sm" variant={inventoryViewTab === 'lost-damage' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('lost-damage')}>Lost & Damage</Button>
-        <Button size="sm" variant={inventoryViewTab === 'purchase-history-reconciliation' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-reconciliation')}>Purchase History Reconciliation Dashboard</Button>
-        <Button size="sm" variant={inventoryViewTab === 'purchase-history-conversion-dry-run' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('purchase-history-conversion-dry-run')}>Convert Legacy Purchase History to purchaseOrders</Button>
-        <Button size="sm" variant={inventoryViewTab === 'customer-balance-audit' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('customer-balance-audit')}>Customer Balance Audit</Button>
-      </div>
       {inventoryViewTab === 'inventory' ? (
       <>
       <div className="border rounded-xl bg-card overflow-visible">
+        {!isInventoryTableReady ? (
+          <div className="min-h-[360px] px-4 py-10">
+            <LightweightLoader label="Loading inventory..." className="min-h-[280px]" />
+          </div>
+        ) : (
+        <>
         <div className="overflow-x-auto overflow-y-visible">
           <table className="w-full text-sm">
           <thead className="bg-muted/40">
@@ -3195,7 +2862,7 @@ export default function Admin() {
                             {product.stockByVariantColor.map((row, idx) => (
                               <div key={`${row.variant}-${row.color}-${idx}`} className="rounded border p-2 text-[11px]">
                                 <div className="font-semibold">{row.variant || NO_VARIANT} / {row.color || NO_COLOR}</div>
-                                <div className="text-muted-foreground">Stock: {toNonNegativeNumber(row.stock)} ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Buy: {toNonNegativeNumber(row.buyPrice)} ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Sell: {toNonNegativeNumber(row.sellPrice)}</div>
+                                <div className="text-muted-foreground">Stock: {toNonNegativeNumber(row.stock)} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Buy: {toNonNegativeNumber(row.buyPrice)} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Sell: {toNonNegativeNumber(row.sellPrice)}</div>
                               </div>
                             ))}
                           </div>
@@ -3264,701 +2931,11 @@ export default function Admin() {
             </Button>
           </div>
         )}
+        </>
+        )}
       </div>
-      {filteredProducts.length > INVENTORY_PAGE_SIZE && (
-        <div className="mt-3 flex items-center justify-between rounded-lg border bg-card p-2">
-          <Button variant="outline" size="sm" onClick={() => setInventoryPage((prev) => Math.max(1, prev - 1))} disabled={inventoryPage === 1}>Prev</Button>
-          <span className="text-xs text-muted-foreground">Page {inventoryPage} of {inventoryTotalPages}</span>
-          <Button variant="outline" size="sm" onClick={() => setInventoryPage((prev) => Math.min(inventoryTotalPages, prev + 1))} disabled={inventoryPage === inventoryTotalPages}>Next</Button>
-        </div>
-      )}
       </>
-      ) : inventoryViewTab === 'customer-balance-audit' ? (
-        <div className="space-y-4">
-          <Card className="border-slate-200 bg-slate-50/70">
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <CardTitle className="text-lg">Customer Balance Audit</CardTitle>
-                  <p className="text-sm text-muted-foreground">Admin-only runtime audit against the currently loaded live app state. Read-only, no repair, no writes.</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline">{customerBalanceAudit.summary.totalCustomers} customers scanned</Badge>
-                  <Button size="sm" variant="outline" onClick={handleExportCustomerBalanceAuditJson}>
-                    <Download className="mr-2 h-4 w-4" /> Export JSON
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-          </Card>
-
-          <Card className="border-blue-200 bg-blue-50/50">
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <CardTitle className="text-base text-blue-950">Canonical Replay Policy Dry-run</CardTitle>
-                  <p className="text-xs text-blue-900/80">Compares the previous canonical replay against the new normalized replay. Read-only preview only.</p>
-                </div>
-                <Badge variant="outline">{customerBalancePolicyDryRun.affectedCustomers} affected customers</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-0">
-              <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Customers</div><div className="mt-1 text-xl font-black">{customerBalancePolicyDryRun.totalCustomers}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Affected</div><div className="mt-1 text-xl font-black text-amber-700">{customerBalancePolicyDryRun.affectedCustomers}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Current Due</div><div className="mt-1 text-xl font-black">{customerBalancePolicyDryRun.totalCurrentDue.toFixed(2)}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Due</div><div className="mt-1 text-xl font-black text-blue-700">{customerBalancePolicyDryRun.totalNewDue.toFixed(2)}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Current Store Credit</div><div className="mt-1 text-xl font-black">{customerBalancePolicyDryRun.totalCurrentStoreCredit.toFixed(2)}</div></div>
-                <div className="rounded-lg border bg-white p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">New Store Credit</div><div className="mt-1 text-xl font-black text-emerald-700">{customerBalancePolicyDryRun.totalNewStoreCredit.toFixed(2)}</div></div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] text-xs">
-                  <thead className="bg-white/80 text-slate-600">
-                    <tr>
-                      <th className="p-2 text-left">Customer</th>
-                      <th className="p-2 text-right">Current Due</th>
-                      <th className="p-2 text-right">Current Store Credit</th>
-                      <th className="p-2 text-right">Current Net</th>
-                      <th className="p-2 text-right">New Due</th>
-                      <th className="p-2 text-right">New Store Credit</th>
-                      <th className="p-2 text-right">New Net</th>
-                      <th className="p-2 text-right">Difference</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerBalancePolicyDryRun.rows.slice(0, 20).map((row) => (
-                      <tr key={row.customerId} className="border-t bg-white">
-                        <td className="p-2 font-semibold">{row.customerName}</td>
-                        <td className="p-2 text-right">{row.currentDue.toFixed(2)}</td>
-                        <td className="p-2 text-right">{row.currentStoreCredit.toFixed(2)}</td>
-                        <td className="p-2 text-right">{row.currentNetReceivable.toFixed(2)}</td>
-                        <td className="p-2 text-right text-blue-700">{row.newDue.toFixed(2)}</td>
-                        <td className="p-2 text-right text-emerald-700">{row.newStoreCredit.toFixed(2)}</td>
-                        <td className="p-2 text-right font-semibold">{row.newNetReceivable.toFixed(2)}</td>
-                        <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                    {customerBalancePolicyDryRun.rows.length === 0 && (
-                      <tr><td colSpan={8} className="p-4 text-center text-muted-foreground">No customers change under the new canonical replay policy.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {customerBalancePolicyDryRun.rows.length > 20 && <div className="text-[11px] text-muted-foreground">Showing first 20 affected customers in the dry-run table. Export JSON for the full audit dataset.</div>}
-            </CardContent>
-          </Card>
-
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Due + Credit Violations</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="p-2 text-left">Customer</th>
-                      <th className="p-2 text-right">Stored Due</th>
-                      <th className="p-2 text-right">Stored Store Credit</th>
-                      <th className="p-2 text-right">Canonical Due</th>
-                      <th className="p-2 text-right">Canonical Store Credit</th>
-                      <th className="p-2 text-right">Net Receivable</th>
-                      <th className="p-2 text-right">Difference</th>
-                      <th className="p-2 text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerBalanceAudit.dueCreditViolations.map((row) => {
-                      const expanded = expandedBalanceAuditViolationIds.includes(row.customerId);
-                      return (
-                        <React.Fragment key={row.customerId}>
-                          <tr className="cursor-pointer border-t hover:bg-slate-50/70" onClick={() => toggleExpandedValue(row.customerId, setExpandedBalanceAuditViolationIds)}>
-                            <td className="p-2">
-                              <div className="font-semibold">{row.customerName}</div>
-                              <div className="text-[11px] text-muted-foreground">{row.phone || 'No phone'}</div>
-                            </td>
-                            <td className="p-2 text-right">{row.storedDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-emerald-700">{row.storedStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">{row.canonicalDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">{row.canonicalStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">{row.canonicalNet.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
-                            <td className="p-2 text-right">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openCustomerCorrectLedger(row.customerId);
-                                }}
-                              >
-                                Open Correct Ledger
-                              </Button>
-                            </td>
-                          </tr>
-                          {expanded && (
-                            <tr className="border-t bg-slate-50/60">
-                              <td colSpan={8} className="p-3 text-xs">
-                                <div className="grid gap-2 md:grid-cols-3">
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Stored Net</div>
-                                    <div className="mt-1 text-muted-foreground">{Math.max(0, row.storedDue - row.storedStoreCredit).toFixed(2)}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Open Advance Orders</div>
-                                    <div className="mt-1 text-muted-foreground">{row.openOrders.length}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Ledger Warnings</div>
-                                    <div className="mt-1 text-muted-foreground">{row.warnings.length}</div>
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {customerBalanceAudit.dueCreditViolations.length === 0 && (
-                      <tr><td colSpan={8} className="p-4 text-center text-muted-foreground">No customers currently have both Due and Store Credit stored at the same time.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Open Advance Orders</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[940px] text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="p-2 text-left">Customer</th>
-                      <th className="p-2 text-left">Order No</th>
-                      <th className="p-2 text-left">Status</th>
-                      <th className="p-2 text-right">Order Total</th>
-                      <th className="p-2 text-right">Advance Paid</th>
-                      <th className="p-2 text-right">Remaining</th>
-                      <th className="p-2 text-right">Payment History Count</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerBalanceAudit.openAdvanceOrders.map((order) => {
-                      const expanded = expandedBalanceAuditOrderIds.includes(order.id);
-                      return (
-                        <React.Fragment key={order.id}>
-                          <tr className="cursor-pointer border-t hover:bg-slate-50/70" onClick={() => toggleExpandedValue(order.id, setExpandedBalanceAuditOrderIds)}>
-                            <td className="p-2 font-semibold">{order.customerName}</td>
-                            <td className="p-2">{order.orderNo}</td>
-                            <td className="p-2"><Badge variant="outline">{order.status}</Badge></td>
-                            <td className="p-2 text-right">{order.orderTotal.toFixed(2)}</td>
-                            <td className="p-2 text-right">{order.advancePaid.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold text-amber-700">{order.remaining.toFixed(2)}</td>
-                            <td className="p-2 text-right">{order.paymentHistoryCount}</td>
-                          </tr>
-                          {expanded && (
-                            <tr className="border-t bg-slate-50/60">
-                              <td colSpan={7} className="p-3 text-xs">
-                                <div className="grid gap-2 md:grid-cols-2">
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Product</div>
-                                    <div className="mt-1 text-muted-foreground">{order.productName}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Notes</div>
-                                    <div className="mt-1 text-muted-foreground">{order.notes || 'No notes'}</div>
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {customerBalanceAudit.openAdvanceOrders.length === 0 && (
-                      <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">No open advance/custom/upfront orders found in the loaded state.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Store Credit Source Classification</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px] text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="p-2 text-left">Source</th>
-                      <th className="p-2 text-right">Contributions</th>
-                      <th className="p-2 text-right">Customers</th>
-                      <th className="p-2 text-right">Total Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerBalanceAudit.sourceSummary.map((group) => {
-                      const expanded = expandedBalanceAuditSourceKeys.includes(group.source);
-                      return (
-                        <React.Fragment key={group.source}>
-                          <tr className="cursor-pointer border-t hover:bg-slate-50/70" onClick={() => toggleExpandedValue(group.source, setExpandedBalanceAuditSourceKeys)}>
-                            <td className="p-2 font-semibold">{group.label}</td>
-                            <td className="p-2 text-right">{group.count}</td>
-                            <td className="p-2 text-right">{group.customerCount}</td>
-                            <td className="p-2 text-right font-semibold">{group.totalAmount.toFixed(2)}</td>
-                          </tr>
-                          {expanded && (
-                            <tr className="border-t bg-slate-50/60">
-                              <td colSpan={4} className="p-3">
-                                {!group.entries.length ? (
-                                  <div className="text-xs text-muted-foreground">No contributions in this group.</div>
-                                ) : (
-                                  <div className="space-y-2">
-                                    {group.entries.slice(0, 12).map((entry) => (
-                                      <div key={entry.id} className="flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-xs">
-                                        <div>
-                                          <div className="font-semibold">{entry.customerName}</div>
-                                          <div className="text-muted-foreground">{entry.description}</div>
-                                        </div>
-                                        <div className="text-right">
-                                          <div className="font-semibold">{entry.amount.toFixed(2)}</div>
-                                          <div className="text-muted-foreground">{entry.ref}</div>
-                                        </div>
-                                      </div>
-                                    ))}
-                                    {group.entries.length > 12 && <div className="text-[11px] text-muted-foreground">Showing first 12 contributions in this group.</div>}
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Simulation</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[1080px] text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="p-2 text-left">Customer</th>
-                      <th className="p-2 text-right">Current Due</th>
-                      <th className="p-2 text-right">Current Store Credit</th>
-                      <th className="p-2 text-right">Current Net</th>
-                      <th className="p-2 text-right">Simulated Due</th>
-                      <th className="p-2 text-right">Simulated Store Credit</th>
-                      <th className="p-2 text-right">Simulated Net</th>
-                      <th className="p-2 text-right">Difference</th>
-                      <th className="p-2 text-right">Risk</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerBalanceAudit.simulationRows.map((row) => {
-                      const expanded = expandedBalanceAuditSimulationIds.includes(row.customerId);
-                      return (
-                        <React.Fragment key={row.customerId}>
-                          <tr className="cursor-pointer border-t hover:bg-slate-50/70" onClick={() => toggleExpandedValue(row.customerId, setExpandedBalanceAuditSimulationIds)}>
-                            <td className="p-2">
-                              <div className="font-semibold">{row.customerName}</div>
-                              <div className="text-[11px] text-muted-foreground">{row.phone || 'No phone'}</div>
-                            </td>
-                            <td className="p-2 text-right">{row.currentDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-emerald-700">{row.currentStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">{row.currentNet.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">{row.simulatedDue.toFixed(2)}</td>
-                            <td className="p-2 text-right text-blue-700">{row.simulatedStoreCredit.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">{row.simulatedNet.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-semibold ${Math.abs(row.difference) <= 0.01 ? 'text-slate-600' : row.difference > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{row.difference.toFixed(2)}</td>
-                            <td className="p-2 text-right">
-                              <Badge variant={row.risk === 'Safe' ? 'success' : 'outline'}>{row.risk}</Badge>
-                            </td>
-                          </tr>
-                          {expanded && (
-                            <tr className="border-t bg-slate-50/60">
-                              <td colSpan={9} className="p-3 text-xs">
-                                <div className="grid gap-2 md:grid-cols-4">
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Open Orders</div>
-                                    <div className="mt-1 text-muted-foreground">{row.openOrders.length}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Advance-Order Credit</div>
-                                    <div className="mt-1 text-muted-foreground">{row.advanceOrderCreditTotal.toFixed(2)}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Unknown Credit</div>
-                                    <div className="mt-1 text-muted-foreground">{row.unknownCreditTotal.toFixed(2)}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Warnings</div>
-                                    <div className="mt-1 text-muted-foreground">{row.warningCount}</div>
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {customerBalanceAudit.simulationRows.length === 0 && (
-                      <tr><td colSpan={9} className="p-4 text-center text-muted-foreground">No customers currently require simulation review from the loaded state.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-	      ) : inventoryViewTab === 'purchase-history-conversion-dry-run' ? (
-        <div className="space-y-4">
-          <Card className="border-slate-200 bg-slate-50/70">
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <CardTitle className="text-lg">Convert Legacy Purchase History to purchaseOrders</CardTitle>
-                  <p className="text-sm text-muted-foreground">Admin-only migration dry-run. No writes, no conversion, no repair. Uses the currently filtered Inventory product set and loaded purchaseOrders state.</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline">{legacyPurchaseHistoryConversionDryRun.summary.totalLegacyRowsScanned} legacy rows scanned</Badge>
-                  <Button size="sm" variant="outline" onClick={handleExportLegacyPurchaseHistoryDryRunJson}>
-                    <Download className="mr-2 h-4 w-4" /> Export JSON
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-          </Card>
-
-          <Card className="border-slate-200 bg-white">
-            <CardContent className="grid gap-3 pt-6 md:grid-cols-3 xl:grid-cols-8">
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Legacy Rows</div><div className="mt-1 text-2xl font-black">{legacyPurchaseHistoryConversionDryRun.summary.totalLegacyRowsScanned}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Already Matched</div><div className="mt-1 text-2xl font-black text-emerald-700">{legacyPurchaseHistoryConversionDryRun.summary.alreadyMatchedRows}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Proposed purchaseOrders</div><div className="mt-1 text-2xl font-black text-blue-700">{legacyPurchaseHistoryConversionDryRun.summary.proposedNewPurchaseOrders}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Skipped Rows</div><div className="mt-1 text-2xl font-black text-amber-700">{legacyPurchaseHistoryConversionDryRun.summary.skippedRows}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Needs Supplier Review</div><div className="mt-1 text-2xl font-black text-amber-700">{legacyPurchaseHistoryConversionDryRun.summary.needsSupplierReviewRows}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Needs Value Review</div><div className="mt-1 text-2xl font-black text-rose-700">{legacyPurchaseHistoryConversionDryRun.summary.needsValueReviewRows}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Duplicate Candidates</div><div className="mt-1 text-2xl font-black text-amber-700">{legacyPurchaseHistoryConversionDryRun.summary.duplicateCandidateRows}</div></div>
-              <div className="rounded-lg border bg-slate-50 p-3"><div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Proposed Amount</div><div className="mt-1 text-2xl font-black">{legacyPurchaseHistoryConversionDryRun.summary.totalProposedPurchaseAmount.toFixed(2)}</div></div>
-            </CardContent>
-          </Card>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <Card className="border-slate-200"><CardContent className="pt-6"><div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Affected Suppliers</div><div className="mt-1 text-xl font-black">{legacyPurchaseHistoryConversionDryRun.summary.affectedSuppliers}</div></CardContent></Card>
-            <Card className="border-slate-200"><CardContent className="pt-6"><div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Affected Products</div><div className="mt-1 text-xl font-black">{legacyPurchaseHistoryConversionDryRun.summary.affectedProducts}</div></CardContent></Card>
-            <Card className="border-slate-200"><CardContent className="pt-6"><div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">purchaseOrder-only Rows</div><div className="mt-1 text-xl font-black">{legacyPurchaseHistoryConversionDryRun.summary.purchaseOrderOnlyRows}</div></CardContent></Card>
-          </div>
-
-          {[
-            { title: 'Safe to Convert', rows: legacyPurchaseHistoryConversionDryRun.safeToConvertRows, empty: 'No safe legacy rows are ready for purchaseOrder conversion in the current filter set.' },
-            { title: 'Needs Supplier Review', rows: legacyPurchaseHistoryConversionDryRun.needsSupplierReviewRows, empty: 'No legacy rows require supplier review in the current filter set.' },
-            { title: 'Needs Value Review', rows: legacyPurchaseHistoryConversionDryRun.needsValueReviewRows, empty: 'No legacy rows require value review in the current filter set.' },
-            { title: 'Duplicate Candidates', rows: legacyPurchaseHistoryConversionDryRun.duplicateCandidateRows, empty: 'No duplicate legacy candidates found in the current filter set.' },
-            { title: 'Already Matched', rows: legacyPurchaseHistoryConversionDryRun.alreadyMatchedRows, empty: 'No already-matched legacy rows found in the current filter set.' },
-          ].map((section) => (
-            <Card key={section.title} className="border-slate-200">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="text-base">{section.title}</CardTitle>
-                  <Badge variant="outline">{section.rows.length} rows</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="pt-0">
-                {!section.rows.length ? (
-                  <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{section.empty}</div>
-                ) : (
-                  <div className="overflow-x-auto rounded-lg border">
-                    <table className="w-full min-w-[980px] text-xs">
-                      <thead className="bg-slate-50 text-slate-600">
-                        <tr>
-                          <th className="p-2 text-left">Product</th>
-                          <th className="p-2 text-left">Supplier</th>
-                          <th className="p-2 text-left">Date</th>
-                          <th className="p-2 text-right">Qty</th>
-                          <th className="p-2 text-right">Unit Cost</th>
-                          <th className="p-2 text-right">Line Total</th>
-                          <th className="p-2 text-left">Reference</th>
-                          <th className="p-2 text-left">Suggested Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {section.rows.map((row) => (
-                          <tr key={row.id} className="border-t align-top">
-                            <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.productCode || row.productId || 'No code'}</div></td>
-                            <td className="p-2"><div>{row.partyName || 'Unknown supplier'}</div><div className="text-[11px] text-muted-foreground">{row.suggestedPartyName && row.suggestedPartyName !== row.partyName ? `Suggested: ${row.suggestedPartyName}` : row.partyId || row.suggestedPartyId || ''}</div></td>
-                            <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
-                            <td className="p-2 text-right">{row.quantity}</td>
-                            <td className="p-2 text-right">{row.unitCost.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">{row.lineTotal.toFixed(2)}</td>
-                            <td className="p-2">{row.reference || row.purchaseOrderId || row.legacyHistoryId || '�'}</td>
-                            <td className="p-2"><div className="font-medium">{row.suggestedAction}</div><div className="text-[11px] text-muted-foreground">{row.reviewReason}</div></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ))}
-
-          <Card className="border-slate-200">
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <CardTitle className="text-base">All Purchase History Rows Review</CardTitle>
-                  <p className="text-xs text-muted-foreground">Unified side-by-side review of purchaseOrders rows and legacy snapshot rows for manual migration inspection.</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" onClick={handleExportLegacyPurchaseHistoryReviewCsv}>
-                    <Download className="mr-2 h-4 w-4" /> Export CSV
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={handleExportLegacyPurchaseHistoryDryRunJson}>
-                    <Download className="mr-2 h-4 w-4" /> Export JSON
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-0">
-              <div className="grid gap-2 md:grid-cols-4">
-                <Input value={purchaseHistoryReviewSearch} onChange={(e) => setPurchaseHistoryReviewSearch(e.target.value)} placeholder="Search product, supplier, PO id, legacy id, reference..." />
-                <Select value={purchaseHistoryReviewFilter} onChange={(e) => setPurchaseHistoryReviewFilter(e.target.value as typeof purchaseHistoryReviewFilter)}>
-                  <option value="all">All</option>
-                  <option value="matched">Matched</option>
-                  <option value="legacy-only">Legacy-only</option>
-                  <option value="purchaseOrder-only">purchaseOrder-only</option>
-                  <option value="duplicate-candidate">Duplicate candidates</option>
-                  <option value="needs-supplier-review">Needs supplier review</option>
-                  <option value="needs-value-review">Needs value review</option>
-                </Select>
-                <Select value={purchaseHistoryReviewSort} onChange={(e) => setPurchaseHistoryReviewSort(e.target.value as typeof purchaseHistoryReviewSort)}>
-                  <option value="date">Sort by date</option>
-                  <option value="product">Sort by product</option>
-                  <option value="supplier">Sort by supplier</option>
-                  <option value="amount">Sort by amount</option>
-                  <option value="match-confidence">Sort by match confidence</option>
-                </Select>
-                <div className="rounded-lg border bg-slate-50 px-3 py-2 text-sm text-slate-600">{purchaseHistoryReviewFilteredRows.length} review rows</div>
-              </div>
-
-              <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full min-w-[1700px] text-xs">
-                  <thead className="bg-slate-50 text-slate-600">
-                    <tr>
-                      <th className="p-2 text-left">Source</th>
-                      <th className="p-2 text-left">Product</th>
-                      <th className="p-2 text-left">Product ID</th>
-                      <th className="p-2 text-left">Product Code</th>
-                      <th className="p-2 text-left">Supplier</th>
-                      <th className="p-2 text-left">Supplier ID</th>
-                      <th className="p-2 text-left">Date/Time</th>
-                      <th className="p-2 text-right">Qty</th>
-                      <th className="p-2 text-right">Unit Cost</th>
-                      <th className="p-2 text-right">Line Total</th>
-                      <th className="p-2 text-left">Payment</th>
-                      <th className="p-2 text-right">Paid</th>
-                      <th className="p-2 text-right">Remaining</th>
-                      <th className="p-2 text-left">Method</th>
-                      <th className="p-2 text-left">PO ID</th>
-                      <th className="p-2 text-left">Legacy ID</th>
-                      <th className="p-2 text-left">Match</th>
-                      <th className="p-2 text-left">Confidence</th>
-                      <th className="p-2 text-left">Suggested Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {purchaseHistoryReviewFilteredRows.map((row) => {
-                      const expanded = expandedPurchaseHistoryReviewIds.includes(row.id);
-                      return (
-                        <React.Fragment key={row.id}>
-                          <tr className="cursor-pointer border-t align-top hover:bg-slate-50/70" onClick={() => toggleExpandedValue(row.id, setExpandedPurchaseHistoryReviewIds)}>
-                            <td className="p-2"><Badge variant="outline">{row.source}</Badge></td>
-                            <td className="p-2"><div className="font-semibold">{row.productName}</div><div className="text-[11px] text-muted-foreground">{row.reference || row.notes || '�'}</div></td>
-                            <td className="p-2">{row.productId || '�'}</td>
-                            <td className="p-2">{row.productCode || '�'}</td>
-                            <td className="p-2">{row.partyName || '�'}</td>
-                            <td className="p-2">{row.partyId || row.suggestedPartyId || '�'}</td>
-                            <td className="p-2">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</td>
-                            <td className="p-2 text-right">{row.quantity}</td>
-                            <td className="p-2 text-right">{row.unitCost.toFixed(2)}</td>
-                            <td className="p-2 text-right font-semibold">{row.lineTotal.toFixed(2)}</td>
-                            <td className="p-2">{row.paymentStatus}</td>
-                            <td className="p-2 text-right">{row.paidAmount == null ? '�' : `${row.paidAmount.toFixed(2)}`}</td>
-                            <td className="p-2 text-right">{row.remainingAmount == null ? '�' : `${row.remainingAmount.toFixed(2)}`}</td>
-                            <td className="p-2">{row.paymentMethod || '�'}</td>
-                            <td className="p-2">{row.purchaseOrderId || '�'}</td>
-                            <td className="p-2">{row.legacyHistoryId || '�'}</td>
-                            <td className="p-2"><Badge variant="outline">{row.matchStatus}</Badge></td>
-                            <td className="p-2">{row.matchConfidence}</td>
-                            <td className="p-2">{row.suggestedAction}</td>
-                          </tr>
-                          {expanded && (
-                            <tr className="border-t bg-slate-50/50">
-                              <td colSpan={19} className="p-3 text-xs">
-                                <div className="grid gap-3 md:grid-cols-3">
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Match Detail</div>
-                                    <div className="mt-1 text-muted-foreground">{row.reviewReason || 'No review reason.'}</div>
-                                    <div className="mt-2 text-muted-foreground">Duplicate key: {row.duplicateKey}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Reference Detail</div>
-                                    <div className="mt-1 text-muted-foreground">Reference: {row.reference || '�'}</div>
-                                    <div className="mt-1 text-muted-foreground">Notes: {row.notes || '�'}</div>
-                                    <div className="mt-1 text-muted-foreground">Matched row: {row.matchedRowId || '�'}</div>
-                                  </div>
-                                  <div className="rounded-lg border bg-white p-3">
-                                    <div className="font-semibold">Conversion Preview</div>
-                                    {row.proposedPurchaseOrder ? (
-                                      <div className="mt-1 space-y-1 text-muted-foreground">
-                                        <div>Proposed PO ID: {row.proposedPurchaseOrder.id}</div>
-                                        <div>Supplier: {row.proposedPurchaseOrder.partyName || '�'}</div>
-                                        <div>Total: {Number(row.proposedPurchaseOrder.totalAmount || 0).toFixed(2)}</div>
-                                        <div>Created By: {row.proposedPurchaseOrder.createdBy || '�'}</div>
-                                      </div>
-                                    ) : (
-                                      <div className="mt-1 text-muted-foreground">No conversion preview for this row.</div>
-                                    )}
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {!purchaseHistoryReviewFilteredRows.length && (
-                      <tr><td colSpan={19} className="p-4 text-center text-muted-foreground">No rows match the current purchase-history review filters.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-	      ) : inventoryViewTab === 'purchase-history-reconciliation' ? (
-        <Card className="border-slate-200 bg-slate-50/60">
-          <CardHeader className="pb-3">
-            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div>
-                <CardTitle className="text-lg">Purchase History Reconciliation Dashboard</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Read-only comparison for the current Inventory filter set. `purchaseOrders` is the canonical source, and embedded `product.purchaseHistory` is legacy snapshot data.
-                </p>
-              </div>
-              <Badge variant={inventoryPurchaseHistoryAuditSummary.totalIssues > 0 ? 'outline' : 'success'}>
-                {inventoryPurchaseHistoryAuditSummary.totalIssues > 0
-                  ? `${inventoryPurchaseHistoryAuditSummary.productsWithIssues}/${inventoryPurchaseHistoryAuditSummary.productsScanned} products need review`
-                  : 'All filtered products aligned'}
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Products Scanned</div>
-                <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.productsScanned}</div>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Products With Issues</div>
-                <div className="mt-1 text-2xl font-bold text-amber-700">{inventoryPurchaseHistoryAuditSummary.productsWithIssues}</div>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">purchaseOrders Rows</div>
-                <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.canonicalRows}</div>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Legacy Snapshot Rows</div>
-                <div className="mt-1 text-2xl font-bold text-slate-900">{inventoryPurchaseHistoryAuditSummary.embeddedRows}</div>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Needs Link Review</div>
-                <div className="mt-1 text-2xl font-bold text-amber-700">{inventoryPurchaseHistoryAuditSummary.needsLinkReviewRows}</div>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Business Issues</div>
-                <div className="mt-1 text-2xl font-bold text-rose-700">
-                  {inventoryPurchaseHistoryAuditSummary.productsWithLinkIssues + inventoryPurchaseHistoryAuditSummary.productsWithValueMismatch}
-                </div>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto rounded-lg border bg-white">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40">
-                  <tr>
-                    <th className="p-3 text-left">Product</th>
-                    <th className="p-3 text-right">purchaseOrders</th>
-                    <th className="p-3 text-right">Legacy Snapshot</th>
-                    <th className="p-3 text-right">Issues</th>
-                    <th className="p-3 text-left">Primary Gap</th>
-                    <th className="p-3 text-left">Implication</th>
-                    <th className="p-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {inventoryPurchaseHistoryAuditTopRows.map(({ product, audit, implication }) => {
-                    const primaryGap = audit.brokenProductLinkCount > 0
-                      ? 'Needs product link review'
-                      : audit.missingPurchaseOrderCount > 0
-                        ? 'Missing purchase order'
-                        : audit.legacySnapshotMissingCount > 0
-                          ? 'Legacy snapshot missing'
-                          : audit.quantityMismatchCount > 0 || audit.amountMismatchCount > 0
-                            ? 'Value mismatch'
-                            : 'Aligned';
-
-                    return (
-                      <tr key={product.id} className="border-t align-top">
-                        <td className="p-3">
-                          <div className="font-medium">{getProductName(product)}</div>
-                          <div className="text-xs text-muted-foreground">{getProductBarcode(product)}</div>
-                        </td>
-                        <td className="p-3 text-right">{audit.canonicalCount}</td>
-                        <td className="p-3 text-right">{audit.legacyCount}</td>
-                        <td className="p-3 text-right font-semibold">{audit.issueCount}</td>
-                        <td className="p-3">
-                          <Badge variant={audit.issueCount > 0 ? 'outline' : 'success'}>{primaryGap}</Badge>
-                        </td>
-                        <td className="p-3 text-xs text-muted-foreground">{implication}</td>
-                        <td className="p-3 text-right">
-                        <Button size="sm" variant="outline" onClick={() => { setViewingProduct(product); setViewingProductAuditMode(true); }}>
-                          Open History
-                        </Button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!inventoryPurchaseHistoryAuditTopRows.length && (
-                    <tr>
-                      <td className="p-6 text-center text-muted-foreground" colSpan={7}>
-                        No products available for purchase-history comparison in the current filter set.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Showing the top 30 filtered products, ordered by highest mismatch count first. Use search/category filters above to narrow the audit scope.
-            </p>
-          </CardContent>
-        </Card>
-	      ) : (
+      ) : (
 	        <div className="space-y-3">
 	          <div className="border rounded-xl bg-card overflow-hidden">
 	            <table className="w-full text-sm">
@@ -4206,7 +3183,7 @@ export default function Admin() {
                           <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowAddSupplierPartyModal(true); }}>+ Add Party</Button>
                         </div>
                       </div>
-                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity ÃƒÆ’Ã¢â‚¬â€ purchase price. You can edit it.</p></div>
+                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â purchase price. You can edit it.</p></div>
                       <div className="space-y-2"><Label>Total Paid</Label><Input type="number" min="0" value={formData.supplierTotalPaid ?? ''} onChange={e => setFormData({ ...formData, supplierTotalPaid: e.target.value })} placeholder="0" /></div>
                       <div className="space-y-2">
                         <Label>Payment Method</Label>
@@ -4242,7 +3219,7 @@ export default function Admin() {
             <CardContent className="space-y-3">
               <Input value={supplierPartySearch} onChange={e => setSupplierPartySearch(e.target.value)} placeholder="Search party by name / phone / GST" />
               <div className="max-h-[50vh] overflow-y-auto border rounded-md">
-                {visiblePurchaseParties.filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? `ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ GST ${p.gst}` : ''}</div></button>)}
+                {visiblePurchaseParties.filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? `ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ GST ${p.gst}` : ''}</div></button>)}
                 {!visiblePurchaseParties.filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).length && (
                   <div className="p-4 text-sm text-muted-foreground">No parties found. <button type="button" className="text-primary" onClick={() => { setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(true); }}>Add Party</button></div>
                 )}
@@ -4291,7 +3268,7 @@ export default function Admin() {
                   </div>
                   <div>
                     <div className="font-semibold text-base">{purchaseTarget.name}</div>
-                    <div className="text-xs text-muted-foreground">{purchaseTarget.category} • HSN: {purchaseTarget.hsn || 'N/A'}</div>
+                    <div className="text-xs text-muted-foreground">{purchaseTarget.category} â€¢ HSN: {purchaseTarget.hsn || 'N/A'}</div>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -4312,7 +3289,7 @@ export default function Admin() {
                   >
                     {purchaseVariantRows.map((row) => (
                       <option key={row.key} value={row.key}>
-                        {row.variant || NO_VARIANT} / {row.color || NO_COLOR} • Stock {toNonNegativeNumber(row.stock)} • Buy {toNonNegativeNumber(row.buyPrice)}
+                        {row.variant || NO_VARIANT} / {row.color || NO_COLOR} â€¢ Stock {toNonNegativeNumber(row.stock)} â€¢ Buy {toNonNegativeNumber(row.buyPrice)}
                       </option>
                     ))}
                   </select>
@@ -4353,7 +3330,7 @@ export default function Admin() {
                               }}
                             >
                               <div className="text-sm font-medium">{party.name}</div>
-                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` • GST ${party.gst}` : ''}</div>
+                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` â€¢ GST ${party.gst}` : ''}</div>
                             </button>
                           ))}
                         </div>
@@ -4394,7 +3371,7 @@ export default function Admin() {
               {purchaseError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{purchaseError}</div>}
               <div className="sticky bottom-0 mt-2 flex flex-col gap-2 rounded-lg border bg-background/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm">
-                  <span className="font-semibold">Total:</span> {purchaseTotalCost.toFixed(2)} • <span className="font-semibold">Paid:</span> {purchaseEffectivePaidAmount.toFixed(2)} • <span className="font-semibold">Due:</span> {purchaseRemainingDue.toFixed(2)}
+                  <span className="font-semibold">Total:</span> {purchaseTotalCost.toFixed(2)} â€¢ <span className="font-semibold">Paid:</span> {purchaseEffectivePaidAmount.toFixed(2)} â€¢ <span className="font-semibold">Due:</span> {purchaseRemainingDue.toFixed(2)}
                 </div>
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={() => setPurchaseTarget(null)}>Cancel</Button>
@@ -4517,18 +3494,35 @@ export default function Admin() {
                       </tr>
                     </thead>
                     <tbody>
-                      {missingHistoryAnalysis.missingRows.map((row) => (
+                      {missingHistoryAnalysis.missingRows.map((row) => {
+                        const linkedProduct = products.find((product) => product.id === row.productId);
+                        const linkedProductImage = getProductImageUrl(linkedProduct);
+                        const previewVariant = formatVariantColorValue(row.expectedHistoryRowPreview.variant, NO_VARIANT);
+                        const previewColor = formatVariantColorValue(row.expectedHistoryRowPreview.color, NO_COLOR);
+                        const previewPaymentMethod = sanitizeDisplayText(row.expectedHistoryRowPreview.paymentMethod || 'N/A');
+                        return (
                         <tr key={`${row.purchaseOrderId}-${row.productId}-${row.expectedHistoryRowPreview.id}`} className="border-t align-top">
                           <td className="p-3 font-mono text-xs">{row.purchaseOrderId}</td>
                           <td className="p-3">
-                            <div className="font-medium">{row.productName}</div>
-                            <div className="text-xs text-muted-foreground">{row.productId}</div>
-                            <div className="text-xs text-muted-foreground">
-                              Preview: {row.expectedHistoryRowPreview.variant || NO_VARIANT} / {row.expectedHistoryRowPreview.color || NO_COLOR}
+                            <div className="flex items-start gap-3">
+                              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border bg-muted/20 flex items-center justify-center">
+                                {linkedProductImage ? (
+                                  <img src={linkedProductImage} alt={sanitizeDisplayText(row.productName)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                                ) : (
+                                  <Package className="w-5 h-5 text-muted-foreground" />
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-medium">{sanitizeDisplayText(row.productName)}</div>
+                                <div className="text-xs text-muted-foreground">{row.productId}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  Preview: {previewVariant} / {previewColor}
+                                </div>
+                              </div>
                             </div>
                           </td>
                           <td className="p-3">
-                            <div>{row.partyName}</div>
+                            <div>{sanitizeDisplayText(row.partyName)}</div>
                             <div className="text-xs text-muted-foreground">{row.partyId}</div>
                           </td>
                           <td className="p-3">{row.date ? new Date(row.date).toLocaleString() : 'N/A'}</td>
@@ -4538,11 +3532,11 @@ export default function Admin() {
                           <td className="p-3">
                             <div className="font-medium">{row.reason === 'product_not_found' ? 'Product doc missing' : 'History row missing'}</div>
                             <div className="text-xs text-muted-foreground">
-                              Preview payment: {row.expectedHistoryRowPreview.paymentMethod || 'N/A'} ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Paid {Number(row.expectedHistoryRowPreview.paidAmount || 0).toFixed(2)}
+                              Preview payment: {previewPaymentMethod} • Paid {Number(row.expectedHistoryRowPreview.paidAmount || 0).toFixed(2)}
                             </div>
                           </td>
                         </tr>
-                      ))}
+                      )})}
                     </tbody>
                   </table>
                 </div>
@@ -4956,9 +3950,9 @@ export default function Admin() {
             <Card className="w-full max-w-lg">
               <CardHeader><CardTitle>Edit Purchase Entry</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <div>Product: <span className="font-medium">{targetProduct?.name || '�'}</span></div>
-                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || '�'}</span></div>
-                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || '�'}</span></div>
+                <div>Product: <span className="font-medium">{targetProduct?.name || '—'}</span></div>
+                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || '—'}</span></div>
+                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || '—'}</span></div>
                 <div className="grid grid-cols-2 gap-2 text-xs rounded border p-2">
                   <div>Old quantity: {oldQty}</div>
                   <div>Old unit price: {oldUnitPrice.toFixed(2)}</div>
@@ -5049,4 +4043,5 @@ export default function Admin() {
     </div>
   );
 }
+
 

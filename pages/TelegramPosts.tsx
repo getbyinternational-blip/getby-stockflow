@@ -279,11 +279,21 @@ export default function TelegramPosts() {
   const totalPostedCount = recentActivity.reduce((sum, entry) => sum + toNonNegativeNumber(entry.successCount), 0);
   const categoryCollections = telegramCollections.filter((collection) => collection.category === categoryFilter || (categoryFilter === 'all' && collection.category === 'all'));
   const failedProducts = selectedCollectionActivity.filter((entry) => entry.error);
-  const livePostedCount = runningCollections.reduce((sum, entry) => sum + toNonNegativeNumber(entry.sentCount), 0);
+  const ownedRunningCollectionIds = useMemo(() => {
+    return new Set(
+      telegramCollections
+        .map((collection) => safeText(collection.id))
+        .filter(Boolean)
+    );
+  }, [telegramCollections]);
   const visibleRunningCollections = runningCollections.filter((collection) => {
     const status = safeText(collection.status).toLowerCase();
-    return status !== 'stopped' && status !== 'completed';
+    if (status === 'stopped' || status === 'completed') return false;
+    const backendCollectionId = safeText(collection.collectionId || collection.id);
+    return Boolean(backendCollectionId) && ownedRunningCollectionIds.has(backendCollectionId);
   });
+  const hiddenForeignRunningCollectionsCount = Math.max(0, runningCollections.length - visibleRunningCollections.length);
+  const livePostedCount = visibleRunningCollections.reduce((sum, entry) => sum + toNonNegativeNumber(entry.sentCount), 0);
 
   const buildCaption = (product: Product | null) => {
     if (!product) return '';
@@ -825,6 +835,11 @@ export default function TelegramPosts() {
               <CardTitle className="text-base tracking-wide uppercase text-slate-700">Running Collections</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {hiddenForeignRunningCollectionsCount > 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Hidden {hiddenForeignRunningCollectionsCount} live collection{hiddenForeignRunningCollectionsCount === 1 ? '' : 's'} that do not belong to this store profile.
+                </div>
+              )}
               {visibleRunningCollections.length > 0 ? (
                 <div className="grid gap-4">
                   {visibleRunningCollections.map((collection) => {

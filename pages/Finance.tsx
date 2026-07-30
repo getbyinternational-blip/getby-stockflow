@@ -920,10 +920,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [expenseRepairSubmitting, setExpenseRepairSubmitting] = useState(false);
   const [embeddedExpenseEditorOpen, setEmbeddedExpenseEditorOpen] = useState(false);
   const [newCategory, setNewCategory] = useState('');
-  const [expenseDateFilter, setExpenseDateFilter] = useState(todayISO());
+  const [expenseDateFilter] = useState(todayISO());
   const [expensePreset, setExpensePreset] = useState<ExpenseDatePreset>('today');
   const [expenseCustomFrom, setExpenseCustomFrom] = useState('');
   const [expenseCustomTo, setExpenseCustomTo] = useState('');
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState('');
+  const [expenseCategoryFilter, setExpenseCategoryFilter] = useState<'all' | string>('all');
   const [cashAddAmount, setCashAddAmount] = useState('');
   const [cashAddNote, setCashAddNote] = useState('');
   const [cashWithdrawAmount, setCashWithdrawAmount] = useState('');
@@ -1311,9 +1313,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const raw = closingReserveAmount.trim() ? Number(closingReserveAmount) : 0;
     return Number.isFinite(raw) && raw >= 0 ? raw : 0;
   }, [closingReserveAmount]);
-  const carryForwardPreview = useMemo(
-    () => roundMoney(Math.max(0, submittedClosingValue - closingReserveValue)),
+  const countedClosingValue = useMemo(
+    () => roundMoney(submittedClosingValue + closingReserveValue),
     [submittedClosingValue, closingReserveValue],
+  );
+  const carryForwardPreview = useMemo(
+    () => roundMoney(Math.max(0, submittedClosingValue)),
+    [submittedClosingValue],
   );
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
@@ -1351,7 +1357,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     };
   }, [openSession, dailyCashTotals, expectedClosingForOpenSession]);
 
-  const closingVariance = openSession ? (submittedClosingValue - expectedClosingForOpenSession) : 0;
+  const closingVariance = openSession ? (countedClosingValue - expectedClosingForOpenSession) : 0;
 
   useEffect(() => {
     if (!openSession) return;
@@ -1398,47 +1404,48 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
   const expenseActivities: ExpenseActivity[] = useMemo(() => (Array.isArray(data.expenseActivities) ? data.expenseActivities : []), [data]);
 
+  const filterExpensesCollection = (
+    sourceExpenses: Expense[],
+    options?: {
+      searchQuery?: string;
+      categoryFilter?: string;
+    },
+  ) => {
+    const normalizedSearch = (options?.searchQuery ?? expenseSearchQuery).trim().toLowerCase();
+    const normalizedCategory = (options?.categoryFilter ?? expenseCategoryFilter).trim().toLowerCase();
+
+    return [...sourceExpenses]
+      .filter((expense) => {
+        if (normalizedCategory && normalizedCategory !== 'all' && expense.category.trim().toLowerCase() !== normalizedCategory) {
+          return false;
+        }
+        if (!normalizedSearch) return true;
+        const haystack = [expense.title, expense.note || '', expense.category || '', expense.id].join(' ').toLowerCase();
+        return haystack.includes(normalizedSearch);
+      })
+      .sort((a, b) => new Date(getExpenseEffectiveDate(b)).getTime() - new Date(getExpenseEffectiveDate(a)).getTime());
+  };
+
   const filteredExpenses = useMemo(() => {
-    const now = new Date();
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-
-    if (expensePreset === 'today') {
-      return expenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= startOfToday);
-    }
-
-    if (expensePreset === '7d' || expensePreset === '15d') {
-      const daysBack = expensePreset === '7d' ? 7 : 15;
-      const cutoff = new Date(startOfToday);
-      cutoff.setDate(cutoff.getDate() - (daysBack - 1));
-      return expenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= cutoff);
-    }
-
-    if (expensePreset === 'month') {
-      return expenses.filter(e => monthKeyOf(getExpenseEffectiveDate(e)) === monthKeyOf(now.toISOString()));
-    }
-
-    if (expensePreset === 'custom' && expenseCustomFrom && expenseCustomTo) {
-      const from = new Date(`${expenseCustomFrom}T00:00:00`).getTime();
-      const to = new Date(`${expenseCustomTo}T23:59:59`).getTime();
-      return expenses.filter(e => {
-        const t = new Date(getExpenseEffectiveDate(e)).getTime();
-        return t >= from && t <= to;
-      });
-    }
-
-    return expenses;
-  }, [expenses, expensePreset, expenseCustomFrom, expenseCustomTo]);
+    return filterExpensesCollection(expenses);
+  }, [expenses, expenseSearchQuery, expenseCategoryFilter]);
 
   const expensesTotalForDate = useMemo(() => filteredExpenses.reduce((sum, e) => sum + e.amount, 0), [filteredExpenses]);
   const expenseReportFilterLabel = useMemo(() => {
-    if (expensePreset === 'today') return `Today (${todayISO()})`;
-    if (expensePreset === '7d') return 'Last 7 Days';
-    if (expensePreset === '15d') return 'Last 15 Days';
-    if (expensePreset === 'month') return `This Month (${new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })})`;
-    if (expensePreset === 'custom' && expenseCustomFrom && expenseCustomTo) return `${expenseCustomFrom} to ${expenseCustomTo}`;
-    return expenseDateFilter || 'All Dates';
-  }, [expenseCustomFrom, expenseCustomTo, expenseDateFilter, expensePreset]);
+    const labels = ['All expenses'];
+    if (expenseCategoryFilter !== 'all') labels.push(`Category: ${expenseCategoryFilter}`);
+    if (expenseSearchQuery.trim()) labels.push(`Search: ${expenseSearchQuery.trim()}`);
+    return labels.join(' | ');
+  }, [expenseCategoryFilter, expenseSearchQuery]);
+  const expenseFilterLabel = expenseReportFilterLabel;
+  const allExpensesTotal = useMemo(() => expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0), [expenses]);
+  const thisMonthExpensesTotal = useMemo(() => {
+    const currentMonthKey = monthKeyOf(new Date().toISOString());
+    return expenses
+      .filter((expense) => monthKeyOf(getExpenseEffectiveDate(expense)) === currentMonthKey)
+      .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  }, [expenses]);
+  const latestExpenseLoggedAt = filteredExpenses[0] ? getExpenseEffectiveDate(filteredExpenses[0]) : '';
 
 
   const canonicalCustomerBalanceById = useMemo(() => {
@@ -1976,6 +1983,30 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   }), [currentWindowRows]);
 
   const todayFinanceBreakdown = todayLayerBreakdowns[reportingLayerMode];
+  const financeMovementSummary = useMemo(() => {
+    const shiftStartingBalance = openSession ? openSession.openingBalance : Number(openingBalance || 0) || 0;
+    const cashInMovement = roundMoney(
+      (cashManagementKpis.cashAtSale || 0)
+      + (cashManagementKpis.cashCollections || 0)
+      + (dailyCashTotals.cashAdditions || 0)
+    );
+    const cashOutMovement = roundMoney(
+      (cashManagementKpis.cashRefunds || 0)
+      + (cashManagementKpis.deleteCompensationRefunds || 0)
+      + (cashManagementKpis.supplierCashPayments || 0)
+      + (cashManagementKpis.expenseCashOutflow || 0)
+      + (cashManagementKpis.cashWithdrawals || 0)
+    );
+    const bankInMovement = roundMoney(
+      (todayFinanceBreakdown.onlineSalesAtSale || 0)
+      + (todayFinanceBreakdown.onlineCollections || 0)
+    );
+    const bankOutMovement = roundMoney(
+      (todayFinanceBreakdown.onlineRefunds || 0)
+      + (dailyCashTotals.customerOnlineOutflow || 0)
+    );
+    return { shiftStartingBalance, cashInMovement, cashOutMovement, bankInMovement, bankOutMovement };
+  }, [openSession, openingBalance, cashManagementKpis, dailyCashTotals, todayFinanceBreakdown]);
 
   const dailySummary = useMemo(() => {
     const dayStart = new Date(`${profitDate}T00:00:00`).getTime();
@@ -2207,9 +2238,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const freshExpenses = Array.isArray(fresh.expenses) ? fresh.expenses : [];
     const freshCashAdjustments = Array.isArray(fresh.cashAdjustments) ? fresh.cashAdjustments : [];
 
-    const counted = closingBalance.trim() ? Number(closingBalance) : closingCountTotal;
+    const counted = roundMoney((closingBalance.trim() ? Number(closingBalance) : closingCountTotal) + closingReserveValue);
     if (!Number.isFinite(counted) || counted < 0) return setErrors('Please enter a valid closing cash value.');
-    const reservedCash = closingReserveAmount.trim() ? Number(closingReserveAmount) : 0;
+    const reservedCash = closingReserveValue;
     if (!Number.isFinite(reservedCash) || reservedCash < 0) return setErrors('Please enter a valid reserved cash amount.');
     if (reservedCash > counted) return setErrors('Reserved cash cannot be more than counted closing cash.');
 
@@ -2365,11 +2396,23 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   };
 
   const applyCountedTotalToClosing = () => {
-    setClosingBalance(closingCountTotal.toFixed(2));
+    setClosingBalance(Math.max(0, closingCountTotal - closingReserveValue).toFixed(2));
   };
 
   const resetClosingCounts = () => {
     setClosingCounts(buildEmptyCounts());
+  };
+
+  const handleClosingReserveAmountChange = (rawValue: string) => {
+    const sanitizedValue = rawValue.replace(/[^\d.]/g, '');
+    const nextReserveRaw = sanitizedValue.trim() ? Number(sanitizedValue) : 0;
+    const nextReserveValue = Number.isFinite(nextReserveRaw) && nextReserveRaw >= 0 ? nextReserveRaw : 0;
+    setClosingBalance(prev => {
+      const prevClosingRaw = prev.trim() ? Number(prev) : expectedClosingForOpenSession;
+      const prevClosingValue = Number.isFinite(prevClosingRaw) && prevClosingRaw >= 0 ? prevClosingRaw : 0;
+      return Math.max(0, roundMoney(prevClosingValue + closingReserveValue - nextReserveValue)).toFixed(2);
+    });
+    setClosingReserveAmount(sanitizedValue);
   };
 
   const handleManagerUnlock = () => {
@@ -2499,38 +2542,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         : draft.kind === 'delete_expense' && draft.oldExpense
           ? expenses.filter((expense) => expense.id !== draft.oldExpense!.id)
           : expenses;
-    const nextFiltered = (() => {
-      if (expensePreset === 'today') {
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0);
-        return nextExpenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= startOfToday);
-      }
-      if (expensePreset === '7d') {
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - 6);
-        cutoff.setHours(0, 0, 0, 0);
-        return nextExpenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= cutoff);
-      }
-      if (expensePreset === '15d') {
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - 14);
-        cutoff.setHours(0, 0, 0, 0);
-        return nextExpenses.filter(e => new Date(getExpenseEffectiveDate(e)) >= cutoff);
-      }
-      if (expensePreset === 'month') {
-        const now = new Date();
-        return nextExpenses.filter(e => monthKeyOf(getExpenseEffectiveDate(e)) === monthKeyOf(now.toISOString()));
-      }
-      if (expensePreset === 'custom' && expenseCustomFrom && expenseCustomTo) {
-        const from = new Date(`${expenseCustomFrom}T00:00:00`).getTime();
-        const to = new Date(`${expenseCustomTo}T23:59:59.999`).getTime();
-        return nextExpenses.filter(e => {
-          const t = new Date(getExpenseEffectiveDate(e)).getTime();
-          return t >= from && t <= to;
-        });
-      }
-      return nextExpenses;
-    })();
+    const nextFiltered = filterExpensesCollection(nextExpenses);
     const nextTotal = nextFiltered.reduce((sum, e) => sum + e.amount, 0);
     return {
       beforeExpenseTotal: roundMoney(currentTotal),
@@ -3475,7 +3487,10 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       },
     });
 
-    doc.save(`expenses-${expensePreset === 'custom' ? `${expenseCustomFrom || 'from'}-to-${expenseCustomTo || 'to'}` : expensePreset}.pdf`);
+    const exportSuffix = expenseCategoryFilter === 'all'
+      ? 'all'
+      : expenseCategoryFilter.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'filtered';
+    doc.save(`expenses-${exportSuffix}.pdf`);
     return;
 
     let y = 36;
@@ -3496,7 +3511,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
     doc.setFontSize(12);
     doc.text(`Total Expenses: ${expensesTotalForDate.toFixed(2)}`, 14, y + 8);
-    doc.save(`expenses-${expenseDateFilter}.pdf`);
+    doc.save('expenses-all.pdf');
   };
 
   const collectPayment = async () => {
@@ -3563,15 +3578,6 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   }, [data.transactions, data.expenses, data.cashSessions]);
 
 
-  const expenseFilterLabel = useMemo(() => {
-    if (expensePreset === 'today') return 'Today';
-    if (expensePreset === '7d') return 'Last 7 days';
-    if (expensePreset === '15d') return 'Last 15 days';
-    if (expensePreset === 'month') return 'This month';
-    if (expenseCustomFrom && expenseCustomTo) return `${expenseCustomFrom} → ${expenseCustomTo}`;
-    return 'Custom range';
-  }, [expensePreset, expenseCustomFrom, expenseCustomTo]);
-
   const chartMax = Math.max(monthlySummary.netSales, monthlySummary.todayExpenses, Math.abs(monthlySummary.grossProfit), 1);
 
   const tabs: Array<{ key: FinanceTabKey; label: string; icon: React.ReactNode }> = [
@@ -3583,14 +3589,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8 space-y-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Finance</h1>
-            <p className="text-sm text-slate-600">Track cash movement, expenses, shifts, and transaction-level operating effects.</p>
-          </div>
-          <Button type="button" variant="outline" onClick={() => void refreshFinanceNonCriticalData()}>Refresh finance data</Button>
-        </div>
+      <div className="w-full px-3 py-4 sm:px-4 lg:px-6 space-y-4">
 
         {errors && (
           <div className="text-destructive text-sm bg-destructive/10 border border-destructive/20 p-3 rounded-lg flex items-center gap-2">
@@ -3809,77 +3808,14 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Revenue</p>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      <StatCard label="Gross Sales" value={formatINRSummary(todayFinanceBreakdown.grossSales)} />
-                      <StatCard label="Sales Returns" value={formatINRSummary(todayFinanceBreakdown.salesReturns)} tone={todayFinanceBreakdown.salesReturns > 0 ? 'bad' : 'neutral'} />
-                      <StatCard label="Net Sales" value={formatINRSummary(todayFinanceBreakdown.netSales)} tone={todayFinanceBreakdown.netSales >= 0 ? 'good' : 'bad'} />
-                      <StatCard label="Credit Due Created (at sale)" value={formatINRSummary(todayFinanceBreakdown.creditSalesCreated)} />
-                      <StatCard label="Online Sales (at sale)" value={formatINRSummary(todayFinanceBreakdown.onlineSalesAtSale)} />
-                    </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    <StatCard label="Shift Starting Balance" value={formatINRSummary(financeMovementSummary.shiftStartingBalance)} />
+                    <StatCard label="Cash In Movement" value={formatINRSummary(financeMovementSummary.cashInMovement)} tone={financeMovementSummary.cashInMovement >= 0 ? 'good' : 'neutral'} />
+                    <StatCard label="Cash Out Movement" value={formatINRSummary(financeMovementSummary.cashOutMovement)} tone={financeMovementSummary.cashOutMovement > 0 ? 'bad' : 'neutral'} />
+                    <StatCard label="Bank In Movement" value={formatINRSummary(financeMovementSummary.bankInMovement)} tone={financeMovementSummary.bankInMovement >= 0 ? 'good' : 'neutral'} />
+                    <StatCard label="Bank Out Movement" value={formatINRSummary(financeMovementSummary.bankOutMovement)} tone={financeMovementSummary.bankOutMovement > 0 ? 'bad' : 'neutral'} />
+                    <StatCard label="Closing Balance" value={formatINRSummary(openSession ? submittedClosingValue : 0)} tone={openSession ? 'good' : 'neutral'} />
                   </div>
-                  {can('analytics') && (
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Margin</p>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      <StatCard label="COGS (net of returns)" value={formatINRSummary(todayFinanceBreakdown.cogs)} />
-                      <StatCard label="Gross Profit" value={formatINRSummary(todayFinanceBreakdown.grossProfit)} tone={todayFinanceBreakdown.grossProfit >= 0 ? 'good' : 'bad'} />
-                    </div>
-                  </div>
-                  )}
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Operating</p>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      <StatCard label="Expenses" value={formatINRSummary(todayFinanceBreakdown.todayExpenses)} tone={todayFinanceBreakdown.todayExpenses > 0 ? 'bad' : 'neutral'} />
-                      <StatCard label="Net Profit" value={formatINRSummary(todayFinanceBreakdown.netProfit)} tone={todayFinanceBreakdown.netProfit >= 0 ? 'good' : 'bad'} />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Collections & cash movement (selected layer)</p>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      <StatCard label="Cash at Sale" value={formatINRSummary(cashManagementKpis.cashAtSale)} />
-                      <StatCard label="Cash Collections (payments)" value={formatINRSummary(cashManagementKpis.customerCashCollections)} />
-                      <StatCard label="Custom Order Cash Collections" value={formatINRSummary(cashManagementKpis.customOrderCashCollections)} />
-                      <StatCard label="Online Collections (payments)" value={formatINRSummary(todayFinanceBreakdown.onlineCollections)} />
-                      <StatCard label="Cash Refunds" value={formatINRSummary(cashManagementKpis.cashRefunds)} tone={cashManagementKpis.cashRefunds > 0 ? 'bad' : 'neutral'} />
-                      <StatCard label="Expense (cash outflow)" value={formatINRSummary(cashManagementKpis.expenseCashOutflow)} tone={cashManagementKpis.expenseCashOutflow > 0 ? 'bad' : 'neutral'} />
-                      <StatCard label="Net Cash Movement (after expenses)" value={formatINRSummary(cashManagementKpis.netCashMovementAfterExpenses)} tone={cashManagementKpis.netCashMovementAfterExpenses >= 0 ? 'good' : 'bad'} />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Return effects by handling mode (selected layer)</p>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <StatCard label="Cash Refunds" value={formatINRSummary(todayFinanceBreakdown.cashRefunds)} tone={todayFinanceBreakdown.cashRefunds > 0 ? 'bad' : 'neutral'} />
-                      <StatCard label="Online Refunds" value={formatINRSummary(todayFinanceBreakdown.onlineRefunds)} tone={todayFinanceBreakdown.onlineRefunds > 0 ? 'bad' : 'neutral'} />
-                      <StatCard label="Due Reduction (returns)" value={formatINRSummary(todayFinanceBreakdown.dueReductionFromReturns)} />
-                      <StatCard label="Store Credit Created" value={formatINRSummary(todayFinanceBreakdown.storeCreditCreatedFromReturns)} />
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border bg-muted/20 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs text-muted-foreground">Opening</div>
-                        <div className="mt-1 text-2xl font-semibold">{openSession ? formatINR(openSession.openingBalance) : (openingBalance ? formatINR(Number(openingBalance || 0)) : '—')}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xs text-muted-foreground">Cashier</div>
-                        <div className="mt-1 text-sm font-semibold truncate">{cashierName}</div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-2 gap-3">
-                      <div className="rounded-xl border bg-background p-3">
-                        <div className="text-xs text-muted-foreground">{openSession ? 'Started' : 'Status'}</div>
-                        <div className="mt-1 text-sm font-semibold">{openSession ? new Date(openSession.startTime).toLocaleString() : 'Not started'}</div>
-                      </div>
-                      <div className="rounded-xl border bg-background p-3">
-                        <div className="text-xs text-muted-foreground">Duration</div>
-                        <div className="mt-1 text-sm font-semibold">{openSession ? shiftDurationLabel : '—'}</div>
-                      </div>
-                    </div>
-                  </div>
-
                   {!openSession ? (
                     <div className="space-y-2">
                       <Label>Enter opening amount</Label>
@@ -3937,16 +3873,6 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <p className="text-sm text-muted-foreground">Start a shift to begin till counting and close shift.</p>
                   ) : (
                     <>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
-                        <button type="button" className="text-left" onClick={() => setIsExpectedClosingBreakdownOpen(true)}>
-                          <StatCard label="Expected Closing" value={formatINRSummary(expectedClosingForOpenSession)} />
-                        </button>
-                        <StatCard label="Counted Total" value={formatINRSummary(closingCountTotal)} />
-                        <StatCard label="Reserved Cash" value={formatINRSummary(closingReserveValue)} />
-                        <StatCard label="Next Shift Opening" value={formatINRSummary(carryForwardPreview)} />
-                        <StatCard label="Variance" value={formatINRSummary(closingVariance)} tone={closingVariance === 0 ? 'good' : (closingVariance > 0 ? 'neutral' : 'bad')} />
-                      </div>
-
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {[HIGH_DENOMS, LOW_DENOMS].map((bucket, idx) => (
                           <div key={idx} className="rounded-xl border bg-background p-2 space-y-1.5">
@@ -3983,7 +3909,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           </div>
                           <div>
                             <Label className="mb-2 block">Reserve Cash on Hand</Label>
-                            <Input type="number" min="0" value={closingReserveAmount} onChange={e => setClosingReserveAmount(e.target.value)} placeholder="0.00" />
+                            <Input type="number" min="0" value={closingReserveAmount} onChange={e => handleClosingReserveAmountChange(e.target.value)} placeholder="0.00" />
                           </div>
                         </div>
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -4381,6 +4307,268 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         )}
 
         {activeTab === 'expense' && (
+          <div className="w-full space-y-4 rounded-2xl bg-slate-50 text-slate-900">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px,minmax(0,1fr)]">
+              <div className="space-y-4">
+                <Card className="border-slate-200 shadow-sm">
+                  <CardHeader className="border-b border-slate-200">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <CardTitle>{repairMode && editingExpenseId ? 'Edit Expense' : 'Add Expense'}</CardTitle>
+                        <p className="mt-1 text-sm text-slate-600">Log a cash expense and it will appear instantly in the register.</p>
+                      </div>
+                      <Pill tone="neutral">{repairMode && editingExpenseId ? 'Editing' : 'New entry'}</Pill>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4 pt-5">
+                    <div className="space-y-1.5">
+                      <Label>Title</Label>
+                      <Input value={expenseTitle} onChange={e => setExpenseTitle(e.target.value)} placeholder="Tea, Diesel, Packaging, Loading..." />
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label>Amount</Label>
+                        <Input value={expenseAmount} onChange={e => setExpenseAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="0.00" inputMode="decimal" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Category</Label>
+                        <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={expenseCategory} onChange={e => setExpenseCategory(e.target.value)}>
+                          {expenseCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label>Note</Label>
+                      <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional note or vendor detail" />
+                    </div>
+
+                    {repairMode && (
+                      <>
+                        <div className="space-y-1.5">
+                          <Label>Financial Date</Label>
+                          <Input type="datetime-local" value={expenseFinancialDate} onChange={e => setExpenseFinancialDate(e.target.value)} />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label>Repair Reason</Label>
+                          <Input value={expenseRepairReason} onChange={e => setExpenseRepairReason(e.target.value)} placeholder="Required for repair flow" />
+                        </div>
+                      </>
+                    )}
+
+                    <div className="flex flex-col gap-2">
+                      <Button onClick={addExpense} disabled={!(expenseTitle.trim().length > 0 && Number(expenseAmount) > 0)}>
+                        {repairMode ? (editingExpenseId ? 'Preview Edit Expense' : 'Preview Add Expense') : 'Add Expense'}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingExpenseId(null);
+                          setExpenseTitle('');
+                          setExpenseAmount('');
+                          setExpenseCategory('General');
+                          setExpenseNote('');
+                          setExpenseFinancialDate(toDateTimeLocalNow());
+                          setExpenseRepairReason('');
+                        }}
+                      >
+                        Clear Form
+                      </Button>
+                      {repairMode && editingExpenseId && (
+                        <Button variant="outline" className="text-rose-600" onClick={() => void removeExpense(editingExpenseId)}>
+                          Preview Delete Expense
+                        </Button>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {can('cashWithdrawal') && (
+                  <Card className="border-amber-200 bg-amber-50/70 shadow-sm">
+                    <CardHeader className="border-b border-amber-200">
+                      <CardTitle className="text-amber-900">Withdraw Cash</CardTitle>
+                      <p className="text-sm text-amber-800">Move drawer cash out without leaving the expense workspace.</p>
+                    </CardHeader>
+                    <CardContent className="space-y-3 pt-5">
+                      <div className="rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-sm text-amber-900">
+                        Available cash: <span className="font-semibold">{formatINR(openSession ? (openSession.openingBalance + dailyCashTotals.systemCashTotal) : dailyCashTotals.systemCashTotal)}</span>
+                      </div>
+                      <Input value={cashWithdrawAmount} onChange={e => setCashWithdrawAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="Withdraw amount" inputMode="decimal" />
+                      <Input value={cashWithdrawNote} onChange={e => setCashWithdrawNote(e.target.value)} placeholder="Reason or note" />
+                      <Button variant="outline" onClick={() => addCashAdjustment('cash_withdrawal')} disabled={!(Number(cashWithdrawAmount) > 0)}>
+                        Withdraw Cash
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )}
+
+                <Card className="border-slate-200 shadow-sm">
+                  <CardHeader className="border-b border-slate-200">
+                    <div className="flex items-center justify-between gap-3">
+                      <CardTitle>Expense Categories</CardTitle>
+                      <Pill tone="neutral">{expenseCategories.length}</Pill>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3 pt-5">
+                    <div className="flex gap-2">
+                      <Input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="Add category" />
+                      <Button variant="outline" onClick={addExpenseCategory} disabled={!newCategory.trim()}>Add</Button>
+                    </div>
+                    <div className="max-h-52 overflow-auto rounded-xl border border-slate-200">
+                      <div className="divide-y divide-slate-200">
+                        {expenseCategories.map(category => (
+                          <div key={category} className="flex items-center justify-between gap-2 px-3 py-2.5">
+                            <div className="truncate text-sm font-medium text-slate-900">{category}</div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => deleteExpenseCategory(category)}
+                              disabled={category === 'General'}
+                              className={category === 'General' ? 'text-slate-300' : 'text-rose-600'}
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500">General stays as the base fallback category.</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="min-w-0 space-y-4">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">All Expenses</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">{formatINR(allExpensesTotal)}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Visible Total</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">{formatINR(expensesTotalForDate)}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Entries</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">{filteredExpenses.length}</div>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">This Month</div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">{formatINR(thisMonthExpensesTotal)}</div>
+                  </div>
+                </div>
+
+                <Card className="border-slate-200 shadow-sm">
+                  <CardHeader className="border-b border-slate-200">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div>
+                        <CardTitle>Expense Register</CardTitle>
+                        <p className="mt-1 text-sm text-slate-600">All expenses are shown by default. Use search or category to narrow the register.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="outline" onClick={exportExpensePDF}>Download PDF</Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4 pt-5">
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr),220px,220px]">
+                      <div className="space-y-1.5">
+                        <Label>Search Expenses</Label>
+                        <Input
+                          value={expenseSearchQuery}
+                          onChange={e => setExpenseSearchQuery(e.target.value)}
+                          placeholder="Search title, note, category, or ID"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Category</Label>
+                        <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={expenseCategoryFilter} onChange={e => setExpenseCategoryFilter(e.target.value)}>
+                          <option value="all">All Categories</option>
+                          {expenseCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                        </select>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Latest Logged</div>
+                        <div className="mt-1 text-sm font-semibold text-slate-900">{latestExpenseLoggedAt ? new Date(latestExpenseLoggedAt).toLocaleString() : 'No expenses logged yet'}</div>
+                      </div>
+                    </div>
+
+                    {filteredExpenses.length === 0 ? (
+                      <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+                        <div>
+                          <div className="text-base font-semibold text-slate-900">No matching expenses</div>
+                          <div className="mt-1 text-sm text-slate-600">Try clearing the search, changing the category filter, or adding a new expense.</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="max-h-[72vh] space-y-3 overflow-auto pr-1">
+                        {filteredExpenses.map(expense => (
+                          <div key={expense.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/70">
+                            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <div className="text-base font-semibold text-slate-900">{expense.title}</div>
+                                  <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">{expense.category}</span>
+                                </div>
+                                <div className="mt-2 text-sm text-slate-600">{expense.note?.trim() || 'No note added.'}</div>
+                                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                                  <span>Logged: {new Date(getExpenseEffectiveDate(expense)).toLocaleString()}</span>
+                                  <span>ID: {expense.id}</span>
+                                </div>
+                              </div>
+                              <div className="flex min-w-[220px] flex-col items-start gap-3 lg:items-end">
+                                <div className="text-right">
+                                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Amount</div>
+                                  <div className="mt-1 text-xl font-semibold text-slate-900">{formatINR(expense.amount)}</div>
+                                </div>
+                                <div className="flex flex-wrap gap-2 lg:justify-end">
+                                  {repairMode ? (
+                                    <>
+                                      <Button type="button" variant="outline" size="sm" onClick={() => startEditExpense(expense)}>Edit</Button>
+                                      <Button type="button" variant="outline" size="sm" onClick={() => startDeleteExpenseRepair(expense)} className="text-rose-600">Delete</Button>
+                                    </>
+                                  ) : (
+                                    <Button type="button" variant="outline" size="sm" onClick={() => removeExpense(expense.id)} className="text-rose-600">Delete</Button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+
+                  <div className="border-t border-slate-200 px-6 py-4 text-sm text-slate-600">
+                    <span className="font-medium text-slate-900">Latest activity:</span>{' '}
+                    {expenseActivities[0] ? `${expenseActivities[0].message} | ${new Date(expenseActivities[0].createdAt).toLocaleString()}` : 'No recent activity'}
+                  </div>
+
+                  {repairMode && (
+                    <div className="border-t border-slate-200 px-6 py-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Repair History</div>
+                      <div className="mt-3 space-y-2 text-sm text-slate-600">
+                        {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 8).map((entry) => (
+                          <div key={entry.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+                            <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
+                            <div className="mt-1 text-xs text-slate-500">{entry.entityName} | {entry.reason} | {new Date(entry.createdAt).toLocaleString()}</div>
+                          </div>
+                        ))}
+                        {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').length === 0 && (
+                          <div className="text-sm text-slate-500">No repair history yet.</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </Card>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === '__legacy_expense__' && (
           <div className="h-[calc(100vh-220px)] w-full bg-slate-50 text-slate-900 rounded-2xl">
             <div className="mx-auto flex h-full max-w-6xl flex-col px-4 py-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">

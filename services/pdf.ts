@@ -1193,10 +1193,11 @@ export const generateReceiptPDF = (
   transaction: Transaction,
   customers: Customer[],
   paymentDetails?: ReceiptPaymentDetails,
-  options?: { returnDataUrl?: boolean }
+  options?: { returnDataUrl?: boolean; invoiceFormatOverride?: 'standard' | 'thermal' }
 ) => {
     const { profile: rawProfile } = loadData();
     const profile = resolveInvoicePrintProfile(rawProfile);
+    const invoiceFormat = options?.invoiceFormatOverride || getInvoiceFormat(profile);
     const sanitizeHeaderText = (value?: string) => {
       const raw = String(value || '');
       const cleaned = raw
@@ -1207,7 +1208,7 @@ export const generateReceiptPDF = (
       return cleaned;
     };
     
-    if (getInvoiceFormat(profile) === 'thermal') {
+    if (invoiceFormat === 'thermal') {
         if (options?.returnDataUrl) throw new Error('Thermal invoice data URL preview is not supported yet.');
         void printThermalInvoice(transaction, customers, paymentDetails);
         return;

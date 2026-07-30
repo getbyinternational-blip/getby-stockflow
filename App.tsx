@@ -7,7 +7,7 @@ import { auth } from './services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { loadData } from './services/storage';
 import { emitFinanceSnapshot } from './utils/financeDebugLogger';
-import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, Truck, ClipboardList, BarChart3, Wrench, Send } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, ClipboardList, BarChart3, Send } from 'lucide-react';
 import { Button, LightweightLoader } from './components/ui';
 import { useVersionCheck } from './src/hooks/useVersionCheck';
 import Settings from './pages/Settings';
@@ -33,13 +33,10 @@ const Transactions = lazy(() => import('./pages/Transactions'));
 const Customers = lazy(() => import('./pages/Customers'));
 const Finance = lazy(() => import('./pages/Finance'));
 const ExpenseRepair = lazy(() => import('./pages/ExpenseRepair'));
-const FreightBooking = lazy(() => import('./pages/FreightBooking'));
 const PurchasePanel = lazy(() => import('./pages/PurchasePanel'));
-const PurchasePartyRepair = lazy(() => import('./pages/PurchasePartyRepair'));
 const ProductAnalytics = lazy(() => import('./pages/ProductAnalytics'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Cashbook = lazy(() => import('./pages/Cashbook'));
-const RepairCenter = lazy(() => import('./pages/RepairCenter'));
 const TelegramPosts = lazy(() => import('./pages/TelegramPosts'));
 const ADMIN_REMINDER_START_DATE = '2026-07-19T00:00:00';
 const ADMIN_REMINDER_REPEAT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -128,7 +125,6 @@ function AppContent() {
   const [authStatus, setAuthStatus] = useState<'loading' | 'authenticated' | 'unverified' | 'unauthenticated'>('loading');
   const [currentEmail, setCurrentEmail] = useState<string | null>(getCurrentUser());
   const [storeName, setStoreName] = useState('StockFlow');
-  const [repairCenterEnabled, setRepairCenterEnabled] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<{ status: string; message?: string }>({ status: navigator.onLine ? 'loading' : 'offline' });
   const [opStatus, setOpStatus] = useState<{ phase: 'start' | 'success' | 'error'; message: string; op?: string } | null>(null);
   const [salesCartCount, setSalesCartCount] = useState(0);
@@ -136,6 +132,7 @@ function AppContent() {
   const [showAdminReminder, setShowAdminReminder] = useState(false);
   const [adminReminderSummary, setAdminReminderSummary] = useState<AdminReminderSummary | null>(null);
   const clearOptimisticActivePath = React.useCallback(() => setOptimisticActivePath(null), []);
+  const isFinanceRoute = location.pathname === '/finance';
 
   useEffect(() => {
     if (TEST_AUTH_BYPASS_ENABLED) {
@@ -172,14 +169,12 @@ function AppContent() {
       if (authStatus === 'authenticated') {
           const data = loadData();
           setStoreName(data.profile.storeName || 'StockFlow');
-          setRepairCenterEnabled(Boolean(data.profile.repairCenterEnabled));
           emitFinanceSnapshot('app_load', data, { type: 'app_load', source: 'app' });
       }
 
       const handleStorageUpdate = () => {
          const data = loadData();
           setStoreName(data.profile.storeName || 'StockFlow');
-         setRepairCenterEnabled(Boolean(data.profile.repairCenterEnabled));
       };
 
       window.addEventListener('local-storage-update', handleStorageUpdate);
@@ -246,7 +241,6 @@ function AppContent() {
       setAuthStatus('authenticated');
   };
 
-  const canShowRepairCenter = repairCenterEnabled;
   const accessRoleLabel = roleSession?.role === 'operator' ? (roleSession.operatorName || 'Staff') : 'Admin';
 
   const handleFullLogout = () => {
@@ -415,11 +409,9 @@ function AppContent() {
             {can('analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             <NavItem to="/customers" icon={Users} label="Customers" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
             {can('reports') && <NavItem to="/pdf" icon={FileText} label="Reports" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
-            {canShowRepairCenter && <NavItem to="/repair-center" icon={Wrench} label="Repair Center" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             {can('settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" labelClassName="text-red-600" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             <NavItem to="/finance" icon={Landmark} label="Finance" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            {can('freight') && <NavItem to="/freight-booking" icon={Truck} label="Freight Booking" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
             {can('purchases') && <NavItem to="/purchase-panel" icon={ClipboardList} label="Purchase Parties" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
 
           </nav>
@@ -502,12 +494,6 @@ function AppContent() {
                               </div>
                               <span className="font-medium text-sm">Finance</span>
                          </Link>
-                         {can('freight') && <Link to="/freight-booking" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-orange-100 text-orange-600 rounded-full mb-2">
-                                  <Truck className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Freight Booking</span>
-                         </Link>}
                          {can('purchases') && <Link to="/purchase-panel" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
                               <div className="p-3 bg-cyan-100 text-cyan-600 rounded-full mb-2">
                                   <ClipboardList className="w-6 h-6" />
@@ -519,12 +505,6 @@ function AppContent() {
                                   <SettingsIcon className="w-6 h-6" />
                               </div>
                               <span className="font-medium text-sm">Settings</span>
-                         </Link>}
-                         {canShowRepairCenter && <Link to="/repair-center" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-amber-100 text-amber-700 rounded-full mb-2">
-                                  <Wrench className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Repair Center</span>
                          </Link>}
                          <button onClick={handleFullLogout} className="flex flex-col items-center justify-center p-4 bg-red-50 rounded-xl hover:bg-red-100 transition-colors border border-red-200">
                               <div className="p-3 bg-white text-red-600 rounded-full mb-2 shadow-sm">
@@ -539,7 +519,7 @@ function AppContent() {
 
         {/* Main Content */}
         <main className="flex-1 overflow-auto bg-background">
-          <div className="min-h-full p-4 md:p-8 pb-20 md:pb-8 max-w-7xl mx-auto">
+          <div className={isFinanceRoute ? 'min-h-full pb-20 md:pb-8' : 'min-h-full p-4 md:p-8 pb-20 md:pb-8 max-w-7xl mx-auto'}>
             <Suspense fallback={<LightweightLoader label="Loading page…" className="min-h-[320px]" />}>
               <Routes>
                 <Route path="/" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Admin /></ProtectedRoute>} />
@@ -549,15 +529,12 @@ function AppContent() {
                 <Route path="/product-analytics" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="analytics" label="Product Analytics"><ProductAnalytics /></AccessControlledRoute>} />
                 <Route path="/customers" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Customers /></ProtectedRoute>} />
                 <Route path="/pdf" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="reports" label="Reports"><Reports /></AccessControlledRoute>} />
-                <Route path="/repair-center" element={canShowRepairCenter ? <ProtectedRoute isVerified={authStatus === "authenticated"}><RepairCenter /></ProtectedRoute> : <Navigate to={can('settings') ? "/settings" : "/"} replace />} />
                 <Route path="/settings" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="Settings"><Settings /></AccessControlledRoute>} />
                 <Route path="/whatsapp-logs" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="WhatsApp Logs"><WhatsAppLogs /></AccessControlledRoute>} />
                 <Route path="/cashbook" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="cashbook" label="Cashbook"><Cashbook /></AccessControlledRoute>} />
                 <Route path="/finance" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Finance /></ProtectedRoute>} />
                 <Route path="/expense-repair" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="Expense Repair"><ExpenseRepair /></AccessControlledRoute>} />
-                <Route path="/freight-booking" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="freight" label="Freight Booking"><FreightBooking /></AccessControlledRoute>} />
                 <Route path="/purchase-panel" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="purchases" label="Purchase Parties"><PurchasePanel /></AccessControlledRoute>} />
-                <Route path="/purchase-party-repair" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="purchases" label="Purchase Party Repair"><PurchasePartyRepair /></AccessControlledRoute>} />
                 
                 {/* Unprotected Route (POS) */}
                 <Route path="/sales" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Sales /></ProtectedRoute>} />

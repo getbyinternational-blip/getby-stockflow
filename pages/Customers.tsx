@@ -7,13 +7,10 @@ import { Customer, RepairHistoryEntry, Transaction, Product, UpfrontOrder } from
 import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, allocateCustomerPaymentAgainstCompositeReceivable, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, loadData, processTransaction, deleteCustomer, addCustomer, addUpfrontOrder, updateUpfrontOrder, collectUpfrontPayment, updateCustomer, updateTransaction, auditCustomerPaymentAllocations, previewCustomerRepairedAllocationView, applyCustomerLedgerBalanceSnapshotPatch, appendRepairHistoryEntry, deleteTransaction, deleteUpfrontOrder, updateUpfrontOrderPayment, deleteUpfrontOrderPayment, recomputeUpfrontOrderPaymentState, getUpfrontOrderAccountingMode, getUpfrontOrderAdvancePaidAmount, getUpfrontOrderCurrentDueImpact, getUpfrontOrderLegacyDueImpact, getUpfrontOrderTotalAmount, buildReceivableOnlyRepairAdvanceEntries } from '../services/storage';
 import { generateLedgerStatementPDF, generateReceiptPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay } from '../services/ledgerStatements';
-import { shareCustomerLedgerViaWhatsApp } from '../services/whatsappShare';
-import { appendWhatsAppLog } from '../services/whatsappLogs';
 import { auth } from '../services/firebase';
 import { ExportModal } from '../components/ExportModal';
 import { exportCustomersToExcel, exportInvoiceToExcel, exportCustomerStatementToExcel } from '../services/excel';
-import { UploadImportModal } from '../components/UploadImportModal';
-import { downloadCustomersData, downloadCustomersTemplate, importCustomersFromFile } from '../services/importExcel';
+import { downloadCustomersData } from '../services/importExcel';
 import { Card, CardContent, CardHeader, CardTitle, Badge, Button, Select, Input, Label, LightweightLoader } from '../components/ui';
 import { formatItemNameWithVariant } from '../services/productVariants';
 import { Users, Phone, Calendar, ArrowRight, History, X, Eye, IndianRupee, FileText, Download, Filter, Search, ArrowUpDown, ArrowUp, ArrowDown, PhoneCall, ChevronRight, Wallet, CreditCard, Coins, CheckCircle, AlertCircle, Trash2, Plus, UserPlus, Package, Trophy, Star, Activity, Award, Gem, UserCheck, TrendingUp, ShoppingBag, Edit } from 'lucide-react';
@@ -648,7 +645,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const [batchEditCustomerIds, setBatchEditCustomerIds] = useState<string[]>([]);
   const [batchEditCustomerIndex, setBatchEditCustomerIndex] = useState(0);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [exportType, setExportType] = useState<'statement' | 'dues_report' | 'invoice'>('statement');
   const [txToExport, setTxToExport] = useState<Transaction | null>(null);
 
@@ -661,7 +657,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const [addCustomerError, setAddCustomerError] = useState<string | null>(null);
   const [upfrontOrderError, setUpfrontOrderError] = useState<string | null>(null);
   const [collectPaymentError, setCollectPaymentError] = useState<string | null>(null);
-  const [waSendingStage, setWaSendingStage] = useState<string | null>(null);
   const [customerEditError, setCustomerEditError] = useState<string | null>(null);
   
   const [newCustomer, setNewCustomer] = useState({ name: '', phone: '', gstName: '', gstNumber: '' });
@@ -2114,31 +2109,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       autoTable(doc, { startY: 50, head: [['Name', 'Phone', 'Total Spend', 'Current Due', 'Store Credit', 'Net Receivable']], body: tableBody, theme: 'striped', columnStyles: { 5: { halign: 'right', fontStyle: 'bold', textColor: [220, 38, 38] } } });
       doc.save(`Customer_Dues_Report.pdf`);
   };
-
-
-  const handleShareCustomerLedger = async (customer: Customer) => {
-    if (!customer.phone) return setWaSendingStage('Failed: Customer phone number is missing.');
-    try {
-      setWaSendingStage('Preparing PDF...');
-      const statement = buildCustomerStatementRowsFromCanonicalReplay(customer, transactions, upfrontOrders);
-      const pdfBlob = await generateLedgerStatementPDF({
-        profile: loadData().profile || {},
-        ...statement,
-        fileName: `Statement_${customer.name.replace(/\s+/g, '_')}.pdf`,
-        returnBlob: true,
-      });
-      setWaSendingStage('Sending WhatsApp message...');
-      const result = await shareCustomerLedgerViaWhatsApp(customer, pdfBlob instanceof Blob ? pdfBlob : undefined);
-      const uid = auth?.currentUser?.uid || '';
-      await appendWhatsAppLog(uid, { type: 'ledger', customerId: customer.id, customerName: customer.name, customerPhone: customer.phone, ledgerId: `LEDGER-${customer.id}`, pdfUrl: '', status: result.ok ? 'sent' : 'failed', error: result.ok ? null : result.reason, sentAt: result.ok ? new Date().toISOString() : null, createdBy: uid, meta: { customerId: customer.id } });
-      setWaSendingStage(result.ok ? 'Sent successfully' : `Failed: ${result.message}`);
-    } catch (error) {
-      setWaSendingStage('Failed: Ledger PDF could not be prepared. Please try again.');
-    } finally {
-      setTimeout(() => setWaSendingStage(null), 1200);
-    }
-  };
-
   const handleExport = (format: 'pdf' | 'excel') => {
       if (exportType === 'statement' && viewingCustomer) {
           if (format === 'pdf') {
@@ -2166,104 +2136,98 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
 
   return (
     <div className="space-y-6 pb-24 md:pb-0 relative">
-      {waSendingStage && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="rounded-lg bg-background p-4 shadow-lg min-w-[280px]">
-            <p className="text-sm font-medium mb-2">{waSendingStage}</p>
-            <div className="h-2 w-full rounded bg-muted overflow-hidden"><div className="h-full w-2/3 animate-pulse bg-primary" /></div>
-          </div>
-        </div>
-      )}
       {isInitialLoading && <LightweightLoader label="Loading data..." />}
       {loadError && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
       )}
-      <div className="sticky top-0 z-30 -mx-4 px-4 py-3 bg-background/80 backdrop-blur-md border-b shadow-sm space-y-3">
-          <div className="flex justify-between items-center">
-              <div>
-                <h1 className="text-xl md:text-3xl font-bold tracking-tight text-slate-900">Customers</h1>
-                <p className="text-xs md:text-sm text-muted-foreground hidden sm:block font-medium">Credit tracking and customer database.</p>
+      <div className="sticky top-0 z-30 -mx-4 border-b bg-background/92 px-4 py-3 shadow-sm backdrop-blur-md">
+        <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="space-y-3">
+              <div className="relative min-w-0">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search customer by name, phone, or series..."
+                  className="h-11 rounded-xl border-slate-200 bg-slate-50 pl-9 pr-3 shadow-none"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                />
               </div>
-              {!hideStandardHeaderActions && (
-              <div className="flex gap-2">
-                  <Button variant="outline" size="sm" className="h-8 md:h-9" onClick={() => downloadCustomersData()}>Download Data</Button>
-                  {selectedCustomerIds.length > 0 && (
-                    <>
-                      <Button variant="outline" size="sm" className="h-8 md:h-9" onClick={() => downloadCustomersData(selectedCustomers)}>Download Selected</Button>
-                      <Button variant="outline" size="sm" className="h-8 md:h-9" onClick={handleBatchEditCustomers}>Batch Edit ({selectedCustomerIds.length})</Button>
-                      {can('analytics') && <Button variant="destructive" size="sm" className="h-8 md:h-9" onClick={handleBatchDeleteCustomers}>Batch Delete</Button>}
-                    </>
-                  )}
-                  <Button variant="outline" size="sm" className="h-8 md:h-9" onClick={() => setIsImportModalOpen(true)}>Upload Existing File</Button>
-                  <Button onClick={() => setIsAddModalOpen(true)} size="sm" className="h-8 md:h-9 bg-primary shadow-sm">
-                      <Plus className="w-4 h-4 md:mr-2" /> <span className="hidden md:inline">Add Customer</span>
-                  </Button>
-                  {can('analytics') && <Button
-                      onClick={() => setShowCorrectLedgerView((prev) => !prev)}
-                      variant={showCorrectLedgerView ? 'default' : 'outline'}
-                      size="sm"
-                      className="h-8 md:h-9 shadow-sm"
-                  >
-                      <Activity className="w-4 h-4 md:mr-2" /> <span className="hidden md:inline">Correct Ledger View</span>
-                  </Button>}
-                  <Button onClick={() => { setExportType('dues_report'); setIsExportModalOpen(true); }} variant="outline" size="sm" className="h-8 md:h-9 shadow-sm">
-                      <FileText className="w-4 h-4 md:mr-2" /> <span className="hidden md:inline">Dues Report</span>
-                  </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="min-w-[170px] flex-1 sm:flex-none">
+                  <Select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="h-10 rounded-xl border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-none">
+                    <option value="all_time">All Customers</option>
+                    <option value="has_due">Has Due</option>
+                    <option value="high_value">High Spend</option>
+                    <option value="has_store_credit">Store Credit</option>
+                    <option value="recent_30_days">Recent 30 Days</option>
+                    <option value="has_phone">Has Phone</option>
+                    <option value="missing_phone">Missing Phone</option>
+                  </Select>
+                </div>
+                <div className="min-w-[170px] flex-1 sm:flex-none">
+                  <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="h-10 rounded-xl border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 shadow-none">
+                    <option value="name">Sort: Name</option>
+                    <option value="phone">Sort: Phone</option>
+                    <option value="visits">Sort: Visits</option>
+                    <option value="spend">Sort: Spend</option>
+                    <option value="due">Sort: Due</option>
+                    <option value="storeCredit">Sort: Credit</option>
+                    <option value="lastVisit">Sort: Recent</option>
+                  </Select>
+                </div>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-10 w-10 rounded-xl border-slate-200 bg-white text-slate-500 shadow-none hover:bg-slate-50"
+                  title={sortOrder === 'asc' ? 'Ascending order' : 'Descending order'}
+                  onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                >
+                  {sortOrder === 'asc' ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
+                </Button>
+                {!hideStandardHeaderActions && (
+                  <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+                    <Button variant="outline" size="sm" className="h-10 rounded-xl border-slate-200 bg-white px-3 shadow-none" onClick={() => downloadCustomersData()}>Download Data</Button>
+                    {selectedCustomerIds.length > 0 && (
+                      <>
+                        <Button variant="outline" size="sm" className="h-10 rounded-xl border-slate-200 bg-white px-3 shadow-none" onClick={() => downloadCustomersData(selectedCustomers)}>Download Selected</Button>
+                        <Button variant="outline" size="sm" className="h-10 rounded-xl border-slate-200 bg-white px-3 shadow-none" onClick={handleBatchEditCustomers}>Batch Edit ({selectedCustomerIds.length})</Button>
+                        {can('analytics') && <Button variant="destructive" size="sm" className="h-10 rounded-xl px-3 shadow-none" onClick={handleBatchDeleteCustomers}>Batch Delete</Button>}
+                      </>
+                    )}
+                    <Button onClick={() => { setExportType('dues_report'); setIsExportModalOpen(true); }} variant="outline" size="sm" className="h-10 rounded-xl border-slate-200 bg-white px-3 shadow-none">
+                      <FileText className="mr-2 h-4 w-4" /> Dues Report
+                    </Button>
+                    <Button onClick={() => setIsAddModalOpen(true)} size="sm" className="h-10 rounded-xl bg-primary px-3 shadow-none">
+                      <Plus className="mr-2 h-4 w-4" /> Add Customer
+                    </Button>
+                  </div>
+                )}
               </div>
+              {canonicalBalanceUnavailableSummary.count > 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  <div className="font-semibold">Ledger calculation unavailable</div>
+                  <div>{canonicalBalanceUnavailableSummary.count} customer balance(s) are hidden because canonical replay failed. Stored snapshot fields are not shown as trusted balances.</div>
+                </div>
               )}
+            </div>
+            {can('analytics') && filteredData.totalDues > 0 && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+                <div className="flex items-center gap-2 text-red-700">
+                  <AlertCircle className="h-5 w-5" />
+                  <span className="text-xs font-bold uppercase tracking-[0.12em]">Outstanding Dues</span>
+                </div>
+                <div className="mt-3 text-3xl font-bold tracking-tight text-red-800">{formatINRWhole(filteredData.totalDues)}</div>
+                <div className="mt-1 text-xs text-red-700/80">Current total receivable pending across customers.</div>
+              </div>
+            )}
           </div>
-          
-          {canonicalBalanceUnavailableSummary.count > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-              <div className="font-bold">Ledger calculation unavailable</div>
-              <div>{canonicalBalanceUnavailableSummary.count} customer balance(s) are hidden because canonical replay failed. Stored snapshot fields are not shown as trusted balances.</div>
-            </div>
-          )}
-
-          {can('analytics') && filteredData.totalDues > 0 && (
-             <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 animate-in slide-in-from-top-2">
-                 <div className="flex items-center gap-2 text-red-700">
-                     <AlertCircle className="w-5 h-5" />
-                     <span className="text-xs font-bold uppercase tracking-wider">Overall Outstanding Dues</span>
-                 </div>
-                 <span className="text-lg font-bold text-red-800">{formatINRWhole(filteredData.totalDues)}</span>
-             </div>
-          )}
-
-          <div className="flex flex-col gap-2 sm:flex-row">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Search name, phone, or series..." className="h-9 rounded-lg border-slate-200 bg-slate-50 pl-9" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-            </div>
-            <div className="flex items-center rounded-lg border border-slate-200 bg-white px-2 shrink-0">
-               <Select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="h-full text-xs border-0 bg-transparent w-28 font-bold text-slate-700">
-                   <option value="all_time">All</option>
-                   <option value="has_due">Has Due</option>
-                   <option value="high_value">High Spend</option>
-                   <option value="has_store_credit">Store Credit</option>
-                   <option value="recent_30_days">Recent 30 Days</option>
-                   <option value="has_phone">Has Phone</option>
-                   <option value="missing_phone">Missing Phone</option>
-               </Select>
-               <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="h-full text-xs border-0 bg-transparent w-28 font-bold text-slate-700">
-                   <option value="name">Name</option>
-                   <option value="phone">Phone</option>
-                   <option value="visits">Visits</option>
-                   <option value="spend">Spend</option>
-                   <option value="due">Due</option>
-                   <option value="storeCredit">Credit</option>
-                   <option value="lastVisit">Recent</option>
-               </Select>
-               <Button variant="ghost" size="icon" className="h-7 w-7 text-slate-500" onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}>
-                   {sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />}
-               </Button>
-            </div>
-          </div>
+        </div>
       </div>
 
 
 
-      {can('analytics') && showCorrectLedgerView ? (
+      {false ? (
         <div className="space-y-4">
           <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-4 shadow-sm">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -2602,18 +2566,44 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                 <td className="px-3 py-2.5 align-top">{formatDateDisplay(customer.lastVisit)}</td>
                 <td className="px-3 py-2.5 align-top">
                   <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(customer); }}>View Details</Button>
-                    <Button size="sm" variant="outline" onClick={() => void handleShareCustomerLedger(customer)}>WhatsApp Ledger</Button>
-                    <Button size="sm" variant="outline" onClick={() => openCreateOrderForCustomer(customer)}>+ Create Order</Button>
-                    <Button size="sm" variant="outline" onClick={() => openCustomerEditor(customer)}>Edit</Button>
-                    {can('analytics') && <Button size="sm" variant="destructive" onClick={() => {
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-9 w-9 px-0"
+                      title="View Details"
+                      aria-label={`View details for ${customer.name}`}
+                      onClick={() => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(customer); }}
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-9 w-9 px-0"
+                      title="Create Order"
+                      aria-label={`Create order for ${customer.name}`}
+                      onClick={() => openCreateOrderForCustomer(customer)}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-9 w-9 px-0"
+                      title="Edit"
+                      aria-label={`Edit ${customer.name}`}
+                      onClick={() => openCustomerEditor(customer)}
+                    >
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    {can('analytics') && <Button size="sm" variant="destructive" className="h-9 w-9 px-0" title="Delete" aria-label={`Delete ${customer.name}`} onClick={() => {
                       if (window.confirm(`Delete ${customer.name}?`)) {
                         const nextCustomers = deleteCustomer(customer.id);
                         setCustomers(nextCustomers);
                         setSelectedCustomerIds(prev => prev.filter(id => id !== customer.id));
                         if (viewingCustomer?.id === customer.id) setViewingCustomer(null);
                       }
-                    }}>Delete</Button>}
+                    }}><Trash2 className="h-4 w-4" /></Button>}
                   </div>
                 </td>
               </tr>
@@ -2817,7 +2807,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <div className="flex flex-wrap items-center justify-start gap-1.5 lg:justify-end [&_button]:h-[34px] [&_button]:rounded-lg [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:font-semibold">
                               <Button size="sm" className={repairMode ? 'bg-amber-600 text-white shadow-none hover:bg-amber-700' : 'bg-emerald-700 text-white shadow-none hover:bg-emerald-800'} onClick={() => openRepairDraft(createCustomerRepairAddDraft())}>{repairMode ? <Plus className="mr-1.5 h-4 w-4" /> : <Coins className="mr-1.5 h-4 w-4" />}{repairMode ? 'Add Transaction' : 'Receive Payment'}</Button>
                               <Button size="sm" variant="outline" onClick={() => { setExportType('statement'); setIsExportModalOpen(true); }}><FileText className="mr-1.5 h-4 w-4" /> Statement</Button>
-                              <Button size="sm" variant="outline" className="border-emerald-200 text-emerald-700" onClick={() => { if (viewingCustomer) void handleShareCustomerLedger(viewingCustomer); }}>WhatsApp Ledger</Button>
                               {can('analytics') && <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px] font-medium text-slate-500 hover:bg-transparent hover:text-slate-700" onClick={() => { if (!viewingCustomer) return; setUpdatedViewPreview(previewCustomerRepairedAllocationView(viewingCustomer.id)); setUpdatedViewOpen(true); }}>Updated View</Button>}
                               {can('analytics') && customerLedgerDebugEnabled && (
                                   <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px] font-medium text-slate-500 hover:bg-transparent hover:text-amber-700" onClick={() => { if (!viewingCustomer) return; setPaymentAuditResult(auditCustomerPaymentAllocations(viewingCustomer.id)); setPaymentAuditOpen(true); }}>Audit</Button>
@@ -4069,18 +4058,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
               </Card>
           </div>
       )}
-
-      <UploadImportModal
-        open={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
-        title="Import Customers"
-        onDownloadTemplate={downloadCustomersTemplate}
-        onImportFile={async (file) => {
-          const result = await importCustomersFromFile(file);
-          refreshData();
-          return result;
-        }}
-      />
 
       <ExportModal 
         isOpen={isExportModalOpen} 

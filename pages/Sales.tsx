@@ -16,8 +16,8 @@ import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsApp
 import { appendWhatsAppLog } from '../services/whatsappLogs';
 import { ExportModal } from '../components/ExportModal';
 import { exportInvoiceToExcel } from '../services/excel';
-import { Button, Input, Card, CardContent, CardHeader, CardTitle, Badge, Label } from '../components/ui';
-import { ShoppingCart, Trash2, X, Plus, Minus, Search, AlertCircle, CheckCircle, Printer, Package, FileText, Keyboard, ChevronRight, ChevronUp, Percent, Settings2, UserPlus, UserSearch, UserMinus, MessageCircle } from 'lucide-react';
+import { Button, Input, Card, CardContent, CardHeader, CardTitle, Badge, Label, cn } from '../components/ui';
+import { ShoppingCart, Trash2, X, Plus, Minus, Search, AlertCircle, CheckCircle, Printer, Package, FileText, Keyboard, ChevronRight, ChevronUp, ChevronLeft, Percent, Settings2, UserPlus, UserSearch, UserMinus, MessageCircle, CalendarDays } from 'lucide-react';
 import { formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, roundMoneyWhole } from '../services/numberFormat';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { auth, db } from '../services/firebase';
@@ -173,6 +173,183 @@ const ProductGridItem: React.FC<{ product: Product, isReturnMode: boolean, cartQ
     );
 };
 
+const formatPickerDateValue = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const parsePickerDateValue = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year
+    || parsed.getMonth() !== month - 1
+    || parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
+};
+
+const formatPickerDisplayValue = (value: string) => {
+  const parsed = parsePickerDateValue(value);
+  return parsed ? parsed.toLocaleDateString() : 'mm/dd/yyyy';
+};
+
+const PosDatePicker: React.FC<{
+  value: string;
+  onChange: (value: string) => void;
+  max: string;
+  className?: string;
+}> = ({ value, onChange, max, className }) => {
+  const [open, setOpen] = React.useState(false);
+  const wrapperRef = React.useRef<HTMLDivElement | null>(null);
+  const maxDate = React.useMemo(() => parsePickerDateValue(max) || new Date(), [max]);
+  const selectedDate = React.useMemo(() => parsePickerDateValue(value), [value]);
+  const [visibleMonth, setVisibleMonth] = React.useState<Date>(() => {
+    const base = selectedDate || maxDate;
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+
+  React.useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!wrapperRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [open]);
+
+  React.useEffect(() => {
+    const base = selectedDate || maxDate;
+    setVisibleMonth(new Date(base.getFullYear(), base.getMonth(), 1));
+  }, [selectedDate, maxDate]);
+
+  const monthLabel = visibleMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const startDay = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1).getDay();
+  const daysInMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 0).getDate();
+  const prevMonthDays = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 0).getDate();
+  const cells: Array<{ key: string; date: Date; label: number; inMonth: boolean; disabled: boolean }> = [];
+
+  for (let index = 0; index < 42; index += 1) {
+    const dayOffset = index - startDay + 1;
+    const cellDate = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), dayOffset);
+    const inMonth = dayOffset >= 1 && dayOffset <= daysInMonth;
+    const label = inMonth
+      ? dayOffset
+      : dayOffset < 1
+        ? prevMonthDays + dayOffset
+        : dayOffset - daysInMonth;
+    cells.push({
+      key: cellDate.toISOString(),
+      date: cellDate,
+      label,
+      inMonth,
+      disabled: cellDate.getTime() > maxDate.getTime(),
+    });
+  }
+
+  const canGoNextMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1).getTime()
+    <= new Date(maxDate.getFullYear(), maxDate.getMonth(), 1).getTime();
+
+  return (
+    <div ref={wrapperRef} className={cn("relative", className)}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex h-8 min-w-[150px] items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-xs text-left ring-offset-background transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+      >
+        <span className={cn("truncate", value ? "text-foreground" : "text-muted-foreground")}>
+          {formatPickerDisplayValue(value)}
+        </span>
+        <CalendarDays className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-[calc(100%+8px)] z-[120] w-[280px] rounded-xl border bg-card p-3 shadow-xl">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setVisibleMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="text-sm font-semibold">{monthLabel}</div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setVisibleMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}
+              disabled={!canGoNextMonth}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="mb-2 grid grid-cols-7 gap-1 text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
+              <div key={day} className="py-1">{day}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {cells.map((cell) => {
+              const cellValue = formatPickerDateValue(cell.date);
+              const isSelected = value === cellValue;
+              const isToday = cellValue === formatPickerDateValue(new Date());
+              return (
+                <button
+                  key={cell.key}
+                  type="button"
+                  disabled={cell.disabled}
+                  onClick={() => {
+                    onChange(cellValue);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "flex h-9 items-center justify-center rounded-md text-sm transition-colors",
+                    !cell.inMonth && "text-muted-foreground/45",
+                    cell.disabled && "cursor-not-allowed text-muted-foreground/35",
+                    isSelected
+                      ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                      : "hover:bg-accent hover:text-accent-foreground",
+                    isToday && !isSelected && "border border-primary/30 text-primary"
+                  )}
+                >
+                  {cell.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-2 border-t pt-3">
+            <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => { onChange(''); setOpen(false); }}>
+              Clear
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => {
+                onChange(formatPickerDateValue(maxDate));
+                setOpen(false);
+              }}
+            >
+              Today
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function Sales() {
   type InvoiceCart = {
     id: string;
@@ -303,7 +480,7 @@ export default function Sales() {
   useEscapeLayer(bulkModal.isOpen, () => setBulkModal({ isOpen: false, product: null }), { priority: 80 });
   useEscapeLayer(isReturnPopupOpen, () => setIsReturnPopupOpen(false), { priority: 90 });
   useEscapeLayer(isTaxModalOpen, () => setIsTaxModalOpen(false), { priority: 100 });
-  useEscapeLayer(isCustomerModalOpen, () => { setIsCustomerModalOpen(false); setSelectedTransactionDate(''); }, { priority: 100 });
+  useEscapeLayer(isCustomerModalOpen, () => { setIsCustomerModalOpen(false); }, { priority: 100 });
   const [returnSubmitError, setReturnSubmitError] = useState<string | null>(null);
   const [mixedReturnChoice, setMixedReturnChoice] = useState<'refund_paid_method' | 'store_credit'>('refund_paid_method');
   const [productPage, setProductPage] = useState(1);
@@ -831,7 +1008,6 @@ export default function Sales() {
       if (cart.length === 0) return;
       if (!validateOpenShiftForPos()) return;
       setCheckoutError(null);
-      setSelectedTransactionDate('');
       setUseStoreCreditApplied(false);
       setStoreOverpaymentAsCredit(false);
       const defaultCheckout = buildCheckoutMoney({
@@ -1738,6 +1914,22 @@ export default function Sales() {
             <div className="flex items-center gap-2">
               <Button size="sm" variant={!isReturnMode ? 'default' : 'outline'} onClick={() => { setIsReturnMode(false); setActiveCartItems(() => []); }}>Sales</Button>
               <Button size="sm" variant={isReturnMode ? 'default' : 'outline'} className={isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''} onClick={() => { setIsReturnMode(true); setActiveCartItems(() => []); }}>Return</Button>
+              {!isReturnMode && (
+                <div className="flex items-center gap-2 rounded-md border bg-background px-2 py-1">
+                  <Label className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                    Date
+                  </Label>
+                  <PosDatePicker
+                    value={selectedTransactionDate}
+                    max={new Date().toISOString().split('T')[0]}
+                    onChange={(e) => {
+                      setSelectedTransactionDate(e);
+                      setPrefilledTransactionDateTimeIso(null);
+                      setCheckoutError(null);
+                    }}
+                  />
+                </div>
+              )}
               {isReturnMode && (
                 <>
                   <select className="h-8 rounded-md border border-input bg-background pl-2 pr-7 text-xs" value={returnDateFilter} onChange={e => setReturnDateFilter(e.target.value as 'all' | '30d' | '90d')}>
@@ -1902,11 +2094,12 @@ export default function Sales() {
       )}
 
       <div className={`min-h-0 flex flex-col bg-card border rounded-xl overflow-hidden ${isReturnMode ? '' : 'xl:col-span-1'}`}>
-        <div className="px-3 py-1.5 flex items-center justify-between">
-          <div>
+        <div className="px-3 py-1.5 flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
             <h2 className="sr-only">{isReturnMode ? 'Return Guidance' : 'Cart'}</h2>
             <p className="sr-only">{isReturnMode ? 'Select bill → Make Return → review popup' : `${cart.length} items`}</p>
             {!isReturnMode && (
+              <>
               <div className="flex items-center gap-1 overflow-auto">
                 {invoiceCarts.map((c) => (
                   <Button key={c.id} size="sm" variant={c.id === activeCartId ? 'default' : 'outline'} onClick={() => { setActiveCartId(c.id); }} className="gap-1">
@@ -1958,6 +2151,7 @@ export default function Sales() {
                   setActiveCartId(nextCarts[0].id);
                 }}>Close</Button>}
               </div>
+              </>
             )}
           </div>
           {!isReturnMode && cart.length > 0 && (
@@ -2384,13 +2578,11 @@ export default function Sales() {
               <div className="flex items-center gap-2">
                 <div className="flex items-center gap-2">
                   <Label className="text-xs text-muted-foreground">Transaction Date</Label>
-                  <Input
-                    type="date"
+                  <PosDatePicker
                     value={selectedTransactionDate}
                     max={new Date().toISOString().split('T')[0]}
-                    className="h-9 w-[170px]"
                     onChange={(e) => {
-                      setSelectedTransactionDate(e.target.value);
+                      setSelectedTransactionDate(e);
                       setPrefilledTransactionDateTimeIso(null);
                       setCheckoutError(null);
                     }}
@@ -2406,7 +2598,7 @@ export default function Sales() {
                     </div>
                   </div>
                 )}
-                <Button variant="outline" size="sm" onClick={() => { setIsCustomerModalOpen(false); setSelectedTransactionDate(''); }}><X className="w-4 h-4 mr-1" />Close</Button>
+                <Button variant="outline" size="sm" onClick={() => { setIsCustomerModalOpen(false); }}><X className="w-4 h-4 mr-1" />Close</Button>
               </div>
             </CardHeader>
             <CardContent className="p-5 h-[calc(88vh-66px)] grid grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)] gap-4">

@@ -1,21 +1,16 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry } from '../types';
+import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry, Expense, CashAdjustment } from '../types';
 import { NO_COLOR, NO_VARIANT } from '../services/productVariants';
 import { auth } from '../services/firebase';
-import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadTransactionsPage, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
-import { generateReceiptPDF, generateReceiptPDFDataUrl } from '../services/pdf';
-import { shareTransactionInvoiceViaWhatsApp } from '../services/whatsappShare';
+import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
+import { generateReceiptPDF } from '../services/pdf';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { appendWhatsAppLog } from '../services/whatsappLogs';
 import { Card, CardContent, CardHeader, CardTitle, Badge, Select, Input, Button, LightweightLoader } from '../components/ui';
 import { TrendingDown, TrendingUp, Calendar, X, Eye, ArrowUpRight, ArrowDownLeft, User, Package, Clock, Download, CreditCard, IndianRupee, Percent, FileText, Edit, Trash2, Search, ChevronDown, Users } from 'lucide-react';
-import { ExportModal } from '../components/ExportModal';
-import { exportTransactionsToExcel, exportInvoiceToExcel } from '../services/excel';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadTransactionsData, downloadTransactionsTemplate, importHistoricalTransactionsFromFile } from '../services/importExcel';
 import { DISPLAY_FALLBACK, formatCurrency, formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, joinDisplayParts, sanitizeDisplayText } from '../services/numberFormat';
@@ -48,6 +43,7 @@ function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: bo
 
 export default function Transactions() {
   const { requestAdminOverride } = useRoleSession();
+  const COLORED_ROWS_STORAGE_KEY = 'stockflow.transactions.colored_rows';
   const getTransactionReference = (tx: Transaction) => tx.type === 'sale'
     ? (tx.invoiceNo || tx.id.slice(-6))
     : tx.type === 'return'
@@ -55,31 +51,50 @@ export default function Transactions() {
       : (tx.receiptNo || tx.id.slice(-6));
   const isUpfrontVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('upfront-');
   const isSupplierPaymentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('supplier-payment-');
+  const isExpenseVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('expense-');
+  const isCashAdjustmentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-');
+  const isCashWithdrawalVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-') && String((tx as any)?.notes || '').toLowerCase().includes('cash withdrawal');
+  const isCashAdditionVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-') && String((tx as any)?.notes || '').toLowerCase().includes('cash addition');
   const isCustomOrderPaymentRow = (tx?: Transaction | null) => !!tx && isUpfrontVirtualTransaction(tx) && String(tx.notes || '').toLowerCase().includes('order payment');
   const isCustomOrderReceivableRow = (tx?: Transaction | null) => !!tx && isUpfrontVirtualTransaction(tx) && !isCustomOrderPaymentRow(tx);
+  const canExportInvoiceForTransaction = (tx?: Transaction | null) => !!tx && !isExpenseVirtualTransaction(tx) && !isCashAdjustmentVirtualTransaction(tx) && !isSupplierPaymentVirtualTransaction(tx);
+  const getTransactionReceiptTitle = (tx: Transaction) => {
+    if (isExpenseVirtualTransaction(tx)) return 'Expense Entry';
+    if (isCashWithdrawalVirtualTransaction(tx)) return 'Cash Withdrawal Entry';
+    if (isCashAdditionVirtualTransaction(tx)) return 'Cash Addition Entry';
+    if (isSupplierPaymentVirtualTransaction(tx)) return 'Supplier Payment Entry';
+    if (isCustomOrderPaymentRow(tx)) return 'Custom Order Payment Receipt';
+    if (isCustomOrderReceivableRow(tx)) return 'Custom Order Receipt';
+    if (tx.type === 'sale') return 'Sale Receipt';
+    if (tx.type === 'payment') return 'Payment Receipt';
+    return 'Return Receipt';
+  };
 
 
-  const TRANSACTIONS_ROWS_PER_PAGE = 25;
   const DELETED_ROWS_PER_PAGE = 25;
-  const TRANSACTIONS_WINDOW_BATCH_SIZE = 200;
   const DELETED_WINDOW_BATCH_SIZE = 100;
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>([]);
   const [deletedTransactions, setDeletedTransactions] = useState<DeletedTransactionRecord[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
   const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>([]);
-  const [filterType, setFilterType] = useState('today');
+  const [filterType, setFilterType] = useState('7days');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [viewMode, setViewMode] = useState<'default' | 'list' | 'list-details' | 'medium'>('list-details');
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [useColoredTransactionRows, setUseColoredTransactionRows] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(COLORED_ROWS_STORAGE_KEY) === 'true';
+  });
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [exportType, setExportType] = useState<'summary' | 'invoice'>('summary');
   const [txToExport, setTxToExport] = useState<Transaction | null>(null);
+  const [isInvoiceOptionsOpen, setIsInvoiceOptionsOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
   const [batchEditTransactionIds, setBatchEditTransactionIds] = useState<string[]>([]);
@@ -109,33 +124,21 @@ export default function Transactions() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showBin, setShowBin] = useState(false);
   const [selectedDeletedTx, setSelectedDeletedTx] = useState<DeletedTransactionRecord | null>(null);
-  const [isExcelFilterModalOpen, setIsExcelFilterModalOpen] = useState(false);
-  const [excelFilterFrom, setExcelFilterFrom] = useState('');
-  const [excelFilterTo, setExcelFilterTo] = useState('');
-  const [excelFilterSearch, setExcelFilterSearch] = useState('');
-  const [excelFilterPayment, setExcelFilterPayment] = useState<'all' | 'cash' | 'credit' | 'online'>('all');
-  const [excelFilterType, setExcelFilterType] = useState<'all' | 'sale' | 'return'>('all');
-  const [excelAmountMoreThan, setExcelAmountMoreThan] = useState('');
-  const [excelAmountLessThan, setExcelAmountLessThan] = useState('');
   const [deleteTargetTx, setDeleteTargetTx] = useState<Transaction | null>(null);
   const editingCustomerPickerRef = useRef<HTMLDivElement | null>(null);
   useEscapeLayer(Boolean(deleteTargetTx), () => setDeleteTargetTx(null), { priority: 120 });
   useEscapeLayer(Boolean(selectedDeletedTx), () => setSelectedDeletedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(editingTx), () => setEditingTx(null), { priority: 110 });
+  useEscapeLayer(isInvoiceOptionsOpen, () => { setIsInvoiceOptionsOpen(false); setTxToExport(null); }, { priority: 110 });
   useEscapeLayer(isEditingCustomerPickerOpen, () => setIsEditingCustomerPickerOpen(false), { priority: 115 });
   useEscapeLayer(isProductPickerOpen && editingTx?.type === 'sale', () => setIsProductPickerOpen(false), { priority: 115 });
-  useEscapeLayer(isExcelFilterModalOpen, () => setIsExcelFilterModalOpen(false), { priority: 105 });
   const [deleteReason, setDeleteReason] = useState<'customer_cancelled' | 'created_by_mistake' | 'other'>('customer_cancelled');
   const [deleteReasonOther, setDeleteReasonOther] = useState('');
-  const [transactionPage, setTransactionPage] = useState(1);
   const [deletedPage, setDeletedPage] = useState(1);
-  const [transactionsWindowCursor, setTransactionsWindowCursor] = useState<TransactionPageCursor>(null);
   const [waSendingStage, setWaSendingStage] = useState<string | null>(null);
   const [deletedWindowCursor, setDeletedWindowCursor] = useState<TransactionPageCursor>(null);
-  const [hasMoreTransactionsWindow, setHasMoreTransactionsWindow] = useState(false);
   const [hasMoreDeletedWindow, setHasMoreDeletedWindow] = useState(false);
-  const [isTransactionWindowed, setIsTransactionWindowed] = useState(true);
   const [isDeletedWindowed, setIsDeletedWindowed] = useState(true);
   const virtualSupplierPaymentTransactions = useMemo<Transaction[]>(() => (supplierPayments || [])
     .filter((payment) => !payment.deletedAt)
@@ -161,6 +164,40 @@ export default function Transactions() {
         sourceTransactionDate: selectedDate || undefined,
       } as Transaction;
     }), [supplierPayments]);
+  const virtualExpenseTransactions = useMemo<Transaction[]>(() => (expenses || []).map((expense) => {
+    const effectiveDate = expense.effectiveAt || expense.createdAt || new Date().toISOString();
+    return {
+      id: `expense-${expense.id}`,
+      type: 'expense' as any,
+      date: effectiveDate,
+      total: Math.max(0, Number(expense.amount || 0)),
+      items: [],
+      customerId: '',
+      customerName: expense.category || 'Expense',
+      paymentMethod: 'Cash',
+      receiptNo: expense.id.slice(-6),
+      notes: `Expense - ${expense.title}${expense.note ? ` | Note: ${expense.note}` : ''}`,
+      sourceTransactionDate: effectiveDate,
+    } as Transaction;
+  }), [expenses]);
+  const virtualCashAdjustmentTransactions = useMemo<Transaction[]>(() => (cashAdjustments || []).map((entry) => {
+    const effectiveDate = entry.effectiveAt || entry.createdAt || new Date().toISOString();
+    const isWithdrawal = entry.type === 'cash_withdrawal';
+    const baseLabel = isWithdrawal ? 'Cash Withdrawal' : 'Cash Addition';
+    return {
+      id: `cash-adjustment-${entry.id}`,
+      type: (isWithdrawal ? 'cash_withdrawal' : 'cash_addition') as any,
+      date: effectiveDate,
+      total: Math.max(0, Number(entry.amount || 0)),
+      items: [],
+      customerId: '',
+      customerName: isWithdrawal ? (entry.paidTo || 'Cash Drawer') : 'Cash Drawer',
+      paymentMethod: entry.method || 'Cash',
+      receiptNo: entry.reference || entry.id.slice(-6),
+      notes: `${baseLabel}${entry.title ? ` - ${entry.title}` : ''}${entry.note ? ` | Note: ${entry.note}` : ''}${entry.paidTo ? ` | Paid To: ${entry.paidTo}` : ''}${entry.reference ? ` | Ref: ${entry.reference}` : ''}`,
+      sourceTransactionDate: effectiveDate,
+    } as Transaction;
+  }), [cashAdjustments]);
   const virtualUpfrontOrderTransactions = useMemo<Transaction[]>(() => upfrontOrders.flatMap((order) => {
     const customerName = customers.find(c => c.id === order.customerId)?.name || 'Customer';
     const baseItem: CartItem = {
@@ -234,8 +271,14 @@ export default function Transactions() {
     return [...groupedInitial, ...additionalRows];
   }), [upfrontOrders, customers]);
   const renderedTransactions = useMemo(
-    () => [...transactions, ...virtualUpfrontOrderTransactions, ...virtualSupplierPaymentTransactions],
-    [transactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
+    () => [
+      ...transactions,
+      ...virtualExpenseTransactions,
+      ...virtualCashAdjustmentTransactions,
+      ...virtualUpfrontOrderTransactions,
+      ...virtualSupplierPaymentTransactions,
+    ],
+    [transactions, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
   );
 
   const formatRoleLabel = (role?: string) => {
@@ -259,21 +302,19 @@ export default function Transactions() {
   useEffect(() => {
     const refreshData = () => {
       try {
-        const txWindow = loadTransactionsPage({ limit: TRANSACTIONS_WINDOW_BATCH_SIZE });
         const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
         const data = loadData();
-        setTransactions(txWindow.rows);
+        setTransactions(data.transactions || []);
+        setExpenses((data as any).expenses || []);
+        setCashAdjustments((data as any).cashAdjustments || []);
         setDeletedTransactions(deletedWindow.rows);
         setCustomers(data.customers);
         setProducts(data.products || []);
         setPurchaseOrders(data.purchaseOrders || []);
         setUpfrontOrders(data.upfrontOrders || []);
         setSupplierPayments((data as any).supplierPayments || []);
-        setTransactionsWindowCursor(txWindow.nextCursor);
         setDeletedWindowCursor(deletedWindow.nextCursor);
-        setHasMoreTransactionsWindow(txWindow.hasMore);
         setHasMoreDeletedWindow(deletedWindow.hasMore);
-        setIsTransactionWindowed(txWindow.hasMore);
         setIsDeletedWindowed(deletedWindow.hasMore);
         setLoadError(null);
       } catch (error) {
@@ -293,6 +334,11 @@ export default function Transactions() {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(COLORED_ROWS_STORAGE_KEY, useColoredTransactionRows ? 'true' : 'false');
+  }, [COLORED_ROWS_STORAGE_KEY, useColoredTransactionRows]);
+
   const refreshDeletedTransactionsBin = async () => {
     try {
       await refreshDeletedTransactionsFromCloud();
@@ -308,22 +354,6 @@ export default function Transactions() {
   };
 
 
-  const loadOlderTransactionsWindow = () => {
-    if (!transactionsWindowCursor || !hasMoreTransactionsWindow) return;
-    const next = loadTransactionsPage({ limit: TRANSACTIONS_WINDOW_BATCH_SIZE, cursor: transactionsWindowCursor });
-    setTransactions((prev) => {
-      const existing = new Set(prev.map((tx) => tx.id));
-      const merged = [...prev];
-      next.rows.forEach((row) => {
-        if (!existing.has(row.id)) merged.push(row);
-      });
-      return merged;
-    });
-    setTransactionsWindowCursor(next.nextCursor);
-    setHasMoreTransactionsWindow(next.hasMore);
-    if (!next.hasMore) setIsTransactionWindowed(false);
-  };
-
   const loadOlderDeletedWindow = () => {
     if (!deletedWindowCursor || !hasMoreDeletedWindow) return;
     const next = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE, cursor: deletedWindowCursor });
@@ -338,14 +368,6 @@ export default function Transactions() {
     setDeletedWindowCursor(next.nextCursor);
     setHasMoreDeletedWindow(next.hasMore);
     if (!next.hasMore) setIsDeletedWindowed(false);
-  };
-
-  const loadAllTransactionsForExport = () => {
-    const data = loadData();
-    setTransactions(data.transactions);
-    setTransactionsWindowCursor(null);
-    setHasMoreTransactionsWindow(false);
-    setIsTransactionWindowed(false);
   };
 
   const dateFilteredTransactions = useMemo(() => {
@@ -387,6 +409,11 @@ export default function Transactions() {
                   const days30 = new Date(now);
                   days30.setDate(days30.getDate() - 30);
                   return txDate >= days30;
+              case 'thismonth': {
+                  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                  monthStart.setHours(0, 0, 0, 0);
+                  return txDate >= monthStart;
+              }
               case '6months':
                   const months6 = new Date(now);
                   months6.setMonth(months6.getMonth() - 6);
@@ -395,6 +422,8 @@ export default function Transactions() {
                   const year1 = new Date(now);
                   year1.setFullYear(year1.getFullYear() - 1);
                   return txDate >= year1;
+              case 'all':
+                  return true;
               case 'custom':
                   if (!customStart) return true;
                   const start = new Date(customStart);
@@ -507,6 +536,11 @@ export default function Transactions() {
         days30.setDate(days30.getDate() - 30);
         return parsed >= days30;
       }
+      case 'thismonth': {
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        monthStart.setHours(0, 0, 0, 0);
+        return parsed >= monthStart;
+      }
       case '6months': {
         const months6 = new Date(now);
         months6.setMonth(months6.getMonth() - 6);
@@ -517,6 +551,8 @@ export default function Transactions() {
         year1.setFullYear(year1.getFullYear() - 1);
         return parsed >= year1;
       }
+      case 'all':
+        return true;
       case 'custom': {
         if (!customStart) return true;
         const start = new Date(customStart);
@@ -576,6 +612,8 @@ export default function Transactions() {
   }, [supplierPayments, searchTerm, filterType, customStart, customEnd]);
 
   const getDisplayPaymentMethod = (tx: Transaction) => {
+    if (isExpenseVirtualTransaction(tx)) return 'Cash';
+    if (isCashAdjustmentVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
     if (tx.id.startsWith('upfront-')) return 'Advance';
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     if (txType !== 'sale' && txType !== 'historical_reference') return tx.paymentMethod || 'Cash';
@@ -585,61 +623,27 @@ export default function Transactions() {
     if (settlement.onlinePaid > 0) return 'Online';
     return 'Cash';
   };
-  const buildExcelExportFilteredTransactions = () => {
-    const search = excelFilterSearch.trim().toLowerCase();
-    const fromTime = excelFilterFrom ? new Date(`${excelFilterFrom}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
-    const toTime = excelFilterTo ? new Date(`${excelFilterTo}T23:59:59.999`).getTime() : Number.POSITIVE_INFINITY;
-    const moreThan = Number(excelAmountMoreThan);
-    const lessThan = Number(excelAmountLessThan);
-    const hasMoreThan = Number.isFinite(moreThan);
-    const hasLessThan = Number.isFinite(lessThan);
-
-    return filteredTransactions.filter((tx) => {
-      const txTime = new Date(tx.date).getTime();
-      if (!Number.isFinite(txTime) || txTime < fromTime || txTime > toTime) return false;
-
-      if (excelFilterType !== 'all' && tx.type !== excelFilterType) return false;
-
-      if (search) {
-        const billNumber = `bill-${getTransactionReference(tx)}`;
-        const phone = tx.customerId ? (customerPhoneById.get(tx.customerId) || '') : '';
-        const haystack = `${tx.customerName || ''} ${phone} ${tx.id} ${billNumber}`.toLowerCase();
-        if (!haystack.includes(search)) return false;
-      }
-
-      const amountAbs = Math.abs(Number(tx.total || 0));
-      if (hasMoreThan && !(amountAbs > moreThan)) return false;
-      if (hasLessThan && !(amountAbs < lessThan)) return false;
-
-      if (excelFilterPayment === 'all') return true;
-      const settlement = tx.type === 'sale' ? getSaleSettlementBreakdown(tx) : { cashPaid: 0, onlinePaid: 0, creditDue: 0 };
-      if (excelFilterPayment === 'cash') {
-        return settlement.cashPaid > 0 || (tx.type === 'payment' && tx.paymentMethod === 'Cash') || (tx.type === 'return' && tx.paymentMethod === 'Cash');
-      }
-      if (excelFilterPayment === 'online') {
-        return settlement.onlinePaid > 0 || (tx.type === 'payment' && tx.paymentMethod === 'Online') || (tx.type === 'return' && tx.paymentMethod === 'Online');
-      }
-      if (tx.type === 'sale') return settlement.creditDue > 0;
-      return tx.paymentMethod === 'Credit';
-    });
-  };
   const selectedTransactions = useMemo(
-    () => transactions.filter(tx => selectedTransactionIds.includes(tx.id)),
-    [transactions, selectedTransactionIds]
-  );
-  const transactionTotalPages = useMemo(
-    () => Math.max(1, Math.ceil(filteredTransactions.length / TRANSACTIONS_ROWS_PER_PAGE)),
-    [filteredTransactions.length]
+    () => renderedTransactions.filter(tx => selectedTransactionIds.includes(tx.id)),
+    [renderedTransactions, selectedTransactionIds]
   );
   const paginatedTransactions = useMemo(() => {
-    const start = (transactionPage - 1) * TRANSACTIONS_ROWS_PER_PAGE;
-    return filteredTransactions.slice(start, start + TRANSACTIONS_ROWS_PER_PAGE);
-  }, [filteredTransactions, transactionPage]);
+    return filteredTransactions;
+  }, [filteredTransactions]);
   const getTransactionTypeUi = (tx: Transaction) => {
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     const isSale = txType === 'sale' || txType === 'historical_reference';
     const isReturn = tx.type === 'return';
     const isPayment = tx.type === 'payment';
+    if (isExpenseVirtualTransaction(tx)) {
+      return { typeLabel: 'EXPENSE', typeTone: 'expense', isSale, isReturn, isPayment } as const;
+    }
+    if (isCashWithdrawalVirtualTransaction(tx)) {
+      return { typeLabel: 'CASH WITHDRAWAL', typeTone: 'cash out', isSale, isReturn, isPayment } as const;
+    }
+    if (isCashAdditionVirtualTransaction(tx)) {
+      return { typeLabel: 'CASH ADDITION', typeTone: 'cash', isSale, isReturn, isPayment } as const;
+    }
     if (tx.id.startsWith('upfront-')) {
       return {
         typeLabel: String(tx.notes || '').toLowerCase().includes('order payment')
@@ -670,24 +674,60 @@ export default function Transactions() {
       isPayment,
     } as const;
   };
+  const isCreditTransaction = (tx: Transaction) => {
+    const normalizedType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+    if (normalizedType !== 'sale' && normalizedType !== 'historical_reference') return false;
+    return getSaleSettlementBreakdown(tx).creditDue > 0;
+  };
+  const getTransactionRowSurfaceClass = (tx: Transaction) => {
+    const normalizedType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+    const notes = String(tx.notes || '').toLowerCase();
+
+    if (isExpenseVirtualTransaction(tx)) return 'bg-red-100/80 hover:bg-red-50/60';
+    if (isCashWithdrawalVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
+    if (isCashAdditionVirtualTransaction(tx)) return 'bg-teal-100/80 hover:bg-teal-50/60';
+    if (tx.id.startsWith('supplier-payment-')) return 'bg-amber-100/80 hover:bg-amber-50/60';
+    if (tx.id.startsWith('upfront-')) {
+      if (notes.includes('order payment')) return 'bg-sky-100/80 hover:bg-sky-50/60';
+      if (notes.includes('legacy paid order')) return 'bg-cyan-100/80 hover:bg-cyan-50/60';
+      return 'bg-indigo-100/80 hover:bg-indigo-50/60';
+    }
+    if (isCreditTransaction(tx)) return 'bg-amber-100/85 hover:bg-amber-50/65';
+    if (normalizedType === 'sale' || normalizedType === 'historical_reference') return 'bg-emerald-100/80 hover:bg-emerald-50/60';
+    if (normalizedType === 'return') return 'bg-violet-100/80 hover:bg-violet-50/60';
+    if (normalizedType === 'expense') return 'bg-red-100/80 hover:bg-red-50/60';
+    if (normalizedType === 'cash_withdrawal') return 'bg-rose-100/80 hover:bg-rose-50/60';
+    if (normalizedType === 'cash_addition') return 'bg-teal-100/80 hover:bg-teal-50/60';
+    if (normalizedType === 'customer_credit') return 'bg-orange-100/80 hover:bg-orange-50/60';
+    if (normalizedType === 'customer_cash_out') return 'bg-rose-100/80 hover:bg-rose-50/60';
+    if (normalizedType === 'payment') return 'bg-blue-100/80 hover:bg-blue-50/60';
+    return 'bg-slate-100/75 hover:bg-slate-50/55';
+  };
   const paginatedTransactionRows = useMemo(() => paginatedTransactions.map((tx) => {
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     const txTypeUi = getTransactionTypeUi(tx);
     const isSale = txTypeUi.isSale;
     const isReturn = txTypeUi.isReturn;
     const isPayment = txTypeUi.isPayment;
+    const isCreditSale = isCreditTransaction(tx);
     const itemCount = normalizeTransactionItems(tx.items).reduce((acc, item) => acc + item.quantity, 0);
-    const rowToneClass = isSale
+    const rowToneClass = isCreditSale
+      ? 'text-amber-900'
+      : isSale
       ? 'text-emerald-800'
       : isReturn
         ? 'text-rose-800'
         : 'text-blue-800';
-    const rowMutedToneClass = isSale
+    const rowMutedToneClass = isCreditSale
+      ? 'text-amber-800'
+      : isSale
       ? 'text-emerald-700'
       : isReturn
         ? 'text-rose-700'
         : 'text-blue-700';
-    const rowSubtleToneClass = isSale
+    const rowSubtleToneClass = isCreditSale
+      ? 'text-amber-700'
+      : isSale
       ? 'text-emerald-600'
       : isReturn
         ? 'text-rose-600'
@@ -701,10 +741,11 @@ export default function Transactions() {
       typeLabel: txTypeUi.typeLabel,
       typeTone: txTypeUi.typeTone,
       typeVariant: 'outline',
-      amountClass: isSale ? 'text-green-700' : isReturn ? 'text-red-700' : 'text-blue-700',
+      amountClass: isCreditSale ? 'text-amber-800' : isSale ? 'text-green-700' : isReturn ? 'text-red-700' : 'text-blue-700',
       rowToneClass,
       rowMutedToneClass,
       rowSubtleToneClass,
+      rowSurfaceClass: getTransactionRowSurfaceClass(tx),
     };
   }), [paginatedTransactions]);
   const deletedTotalPages = useMemo(
@@ -720,16 +761,8 @@ export default function Transactions() {
   const remainingBatchTransactions = isBatchEditing ? Math.max(0, batchEditTransactionIds.length - batchEditTransactionIndex - 1) : 0;
 
   useEffect(() => {
-    setTransactionPage(1);
-  }, [filterType, customStart, customEnd, searchTerm]);
-
-  useEffect(() => {
     setDeletedPage(1);
   }, [showBin]);
-
-  useEffect(() => {
-    setTransactionPage((prev) => Math.min(prev, transactionTotalPages));
-  }, [transactionTotalPages]);
 
   useEffect(() => {
     setDeletedPage((prev) => Math.min(prev, deletedTotalPages));
@@ -1292,12 +1325,10 @@ export default function Transactions() {
     return {
       loadedTransactions: transactions.length,
       filteredTransactions: filteredTransactions.length,
-      windowedMode: isTransactionWindowed,
-      hasMoreWindow: hasMoreTransactionsWindow,
       typeCounts,
       searchTerm,
     };
-  }, [transactions, filteredTransactions.length, isTransactionWindowed, hasMoreTransactionsWindow, searchTerm]);
+  }, [transactions, filteredTransactions.length, searchTerm]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1374,6 +1405,21 @@ export default function Transactions() {
           const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
           const isSupplierPayment = isSupplierPaymentVirtualTransaction(tx);
 
+          if (isExpenseVirtualTransaction(tx)) {
+              totalCashOut += amount;
+              return;
+          }
+
+          if (isCashWithdrawalVirtualTransaction(tx)) {
+              if (paymentMethod === 'cash') totalCashOut += amount;
+              return;
+          }
+
+          if (isCashAdditionVirtualTransaction(tx)) {
+              if (paymentMethod === 'cash') totalCashIn += amount;
+              return;
+          }
+
           if (txType === 'sale' || txType === 'historical_reference') {
               const settlement = getSaleSettlementBreakdown(tx);
               const cashPaid = Math.max(0, Number(settlement.cashPaid || 0));
@@ -1444,6 +1490,12 @@ export default function Transactions() {
   }, [filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments]);
 
   const getSaleSettlementText = (tx: Transaction) => {
+    if (isExpenseVirtualTransaction(tx)) {
+      return String(tx.notes || '').replace(/^Expense - /i, '');
+    }
+    if (isCashAdjustmentVirtualTransaction(tx)) {
+      return String(tx.notes || '');
+    }
     if (tx.id.startsWith('upfront-')) {
       const note = String(tx.notes || '');
       const totalMatch = note.match(/Total: ([0-9,]+)/i);
@@ -1458,25 +1510,6 @@ export default function Transactions() {
     const settlement = getSaleSettlementBreakdown(tx);
     const used = Math.max(0, Number(tx.storeCreditUsed || 0));
     return `Cash ${formatINRPrecise(settlement.cashPaid)} | Online ${formatINRPrecise(settlement.onlinePaid)} | Due ${formatINRPrecise(settlement.creditDue)}${used > 0 ? ` | SC ${formatINRPrecise(used)}` : ''}`;
-  };
-
-
-  const handleShareInvoiceWhatsApp = async (tx: Transaction) => {
-    if (!tx.customerPhone) return setWaSendingStage('Failed: Customer phone number is missing.');
-    try {
-      setWaSendingStage('Preparing PDF...');
-      const pdfDataUrl = generateReceiptPDFDataUrl(tx, customers);
-      const pdfBlob = await (await fetch(pdfDataUrl)).blob();
-      setWaSendingStage('Sending WhatsApp message...');
-      const result = await shareTransactionInvoiceViaWhatsApp(tx, pdfBlob);
-      const uid = auth?.currentUser?.uid || '';
-      await appendWhatsAppLog(uid, { type: 'invoice', customerId: tx.customerId || '', customerName: tx.customerName || '', customerPhone: tx.customerPhone || '', invoiceId: tx.id, invoiceNumber: tx.invoiceNo || tx.id, pdfUrl: '', status: result.ok ? 'sent' : 'failed', error: result.ok ? null : result.reason, sentAt: result.ok ? new Date().toISOString() : null, createdBy: uid, meta: { transactionId: tx.id } });
-      setWaSendingStage(result.ok ? 'Sent successfully' : `Failed: ${result.message}`);
-    } catch (error) {
-      setWaSendingStage(`Failed: ${getFriendlyErrorMessage(error, 'transactions.prepare_invoice')}`);
-    } finally {
-      setTimeout(() => setWaSendingStage(null), 1200);
-    }
   };
 
   const handleShareInvoiceOfficialWhatsApp = async (tx: Transaction) => {
@@ -1521,112 +1554,28 @@ export default function Transactions() {
     }
   };
 
-  const handleDownloadPDF = () => {
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    
-    // Header
-    doc.setFillColor(30, 41, 59); // Dark blue/slate
-    doc.rect(0, 0, pageWidth, 40, 'F');
-    doc.setFontSize(22);
-    doc.setTextColor(255, 255, 255);
-    doc.text("Transaction Report", 14, 20);
-    
-    doc.setFontSize(10);
-    doc.setTextColor(200, 200, 200);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 30);
-    doc.text(`Filter: ${filterType.toUpperCase()}`, pageWidth - 14, 30, { align: 'right' });
-
-    // Executive Summary Box
-    doc.setFillColor(241, 245, 249);
-    doc.roundedRect(14, 45, pageWidth - 28, 25, 2, 2, 'F');
-    
-    doc.setFontSize(9);
-    doc.setTextColor(100);
-    doc.text("Total Revenue", 20, 54);
-    doc.setFontSize(12);
-    doc.setTextColor(22, 163, 74); // Green
-    doc.setFont("helvetica", "bold");
-    doc.text(`${formatMoneyWhole(stats.totalRevenue)}`, 20, 62);
-
-    doc.setFontSize(9);
-    doc.setTextColor(100);
-    doc.setFont("helvetica", "normal");
-    doc.text("Returns", 65, 54);
-    doc.setFontSize(12);
-    doc.setTextColor(220, 38, 38); // Red
-    doc.setFont("helvetica", "bold");
-    doc.text(`${formatMoneyWhole(stats.totalReturns)}`, 65, 62);
-
-    doc.setFontSize(9);
-    doc.setTextColor(100);
-    doc.setFont("helvetica", "normal");
-    doc.text("Discounts", 110, 54);
-    doc.setFontSize(12);
-    doc.setTextColor(16, 185, 129); // Emerald
-    doc.setFont("helvetica", "bold");
-    doc.text(`${formatMoneyWhole(stats.totalDiscount)}`, 110, 62);
-
-    doc.setFontSize(9);
-    doc.setTextColor(100);
-    doc.setFont("helvetica", "normal");
-    doc.text("Net Profit", 155, 54);
-    doc.setFontSize(12);
-    doc.setTextColor(30, 41, 59); // Dark
-    doc.setFont("helvetica", "bold");
-    doc.text(`${formatMoneyWhole(stats.grossProfit)}`, 155, 62);
-
-    // Table
-    const tableBody = filteredTransactions.map(tx => [
-        new Date(tx.date).toLocaleDateString(),
-        getTransactionReference(tx),
-        tx.type.toUpperCase(),
-        tx.customerName || 'Walk-in',
-        getDisplayPaymentMethod(tx),
-        `${formatMoneyPrecise(Math.abs(tx.total))}`
-    ]);
-
-    autoTable(doc, {
-        startY: 75,
-        head: [['Date', 'ID', 'Type', 'Customer', 'Method', 'Amount']],
-        body: tableBody,
-        theme: 'striped',
-        styles: { fontSize: 10, cellPadding: 3 },
-        headStyles: { fillColor: [51, 65, 85], textColor: 255, fontStyle: 'bold' },
-        columnStyles: { 
-            5: { halign: 'right', fontStyle: 'bold' } 
-        },
-        didParseCell: function(data) {
-            if (data.section === 'body' && data.column.index === 2) {
-                if (data.cell.raw === 'SALE') data.cell.styles.textColor = [22, 163, 74];
-                else data.cell.styles.textColor = [220, 38, 38];
-            }
-        }
-    });
-
-    doc.save(`transactions_${filterType}_report.pdf`);
+  const openInvoiceOptions = (tx: Transaction) => {
+    setTxToExport(tx);
+    setIsInvoiceOptionsOpen(true);
   };
-
-  const handleExport = (format: 'pdf' | 'excel') => {
-      if (exportType === 'summary') {
-          if (format === 'pdf') {
-              handleDownloadPDF();
-          } else {
-              setIsExportModalOpen(false);
-              setIsExcelFilterModalOpen(true);
-          }
-      } else if (exportType === 'invoice' && txToExport) {
-          if (format === 'pdf') {
-              generateReceiptPDF(txToExport, customers);
-          } else {
-              exportInvoiceToExcel(txToExport);
-          }
-      }
+  const closeInvoiceOptions = () => {
+    setIsInvoiceOptionsOpen(false);
+    setTxToExport(null);
   };
-  const handleRunExcelExport = () => {
-    exportTransactionsToExcel(buildExcelExportFilteredTransactions());
-    setIsExcelFilterModalOpen(false);
-    setIsExportModalOpen(false);
+  const handleInvoiceOption = async (mode: 'a4' | 'thermal' | 'whatsapp') => {
+    if (!txToExport) return;
+    if (mode === 'a4') {
+      generateReceiptPDF(txToExport, customers, undefined, { invoiceFormatOverride: 'standard' });
+      closeInvoiceOptions();
+      return;
+    }
+    if (mode === 'thermal') {
+      generateReceiptPDF(txToExport, customers, undefined, { invoiceFormatOverride: 'thermal' });
+      closeInvoiceOptions();
+      return;
+    }
+    closeInvoiceOptions();
+    await handleShareInvoiceOfficialWhatsApp(txToExport);
   };
 
   return (
@@ -1643,22 +1592,17 @@ export default function Transactions() {
       {loadError && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
       )}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-            <h1 className="text-3xl font-bold tracking-tight">Transactions</h1>
-            <p className="text-muted-foreground">Financial overview and history.</p>
-        </div>
-        
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-2 bg-muted/30 p-2 rounded-lg border w-full md:w-auto">
+      <div className="flex flex-wrap items-center gap-2 bg-muted/30 p-2 rounded-lg border w-full">
             <Select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="w-[140px] h-9 text-sm">
                 <option value="today">Today</option>
                 <option value="yesterday">Yesterday</option>
                 <option value="7days">Last 7 Days</option>
                 <option value="15days">Last 15 Days</option>
                 <option value="30days">Last 30 Days</option>
+                <option value="thismonth">This Month</option>
                 <option value="6months">Last 6 Months</option>
                 <option value="1year">Last 1 Year</option>
+                <option value="all">All Time</option>
                 <option value="custom">Custom Range</option>
             </Select>
             
@@ -1687,13 +1631,6 @@ export default function Transactions() {
               className="h-9 w-[280px] text-sm"
             />
 
-            <Badge variant="outline" className="h-9 px-3 bg-background flex items-center gap-2 ml-auto md:ml-0">
-                <Calendar className="w-3.5 h-3.5" />
-                {filteredTransactions.length} records
-            </Badge>
-            {!showBin && hasMoreTransactionsWindow && (
-              <Button variant="outline" onClick={loadOlderTransactionsWindow} className="h-9 text-sm">Load Older Transactions</Button>
-            )}
             {showBin && (
               <Button variant="outline" onClick={() => void refreshDeletedTransactionsBin()} className="h-9 text-sm">Refresh Bin</Button>
             )}
@@ -1704,13 +1641,6 @@ export default function Transactions() {
               <Trash2 className="w-4 h-4 mr-1" />
               {showBin ? 'Back to Active' : `Bin (${deletedTransactions.length})`}
             </Button>
-
-            <Button onClick={() => { setExportType('summary'); setIsExportModalOpen(true); }} variant="outline" size="icon" title="Download Report">
-                <Download className="w-4 h-4" />
-            </Button>
-            {!showBin && isTransactionWindowed && (
-              <Button variant="outline" onClick={loadAllTransactionsForExport} className="h-9 text-sm">Load All for Export</Button>
-            )}
 
             <Button variant="outline" onClick={() => downloadTransactionsData()} className="h-9 text-sm">Download Data</Button>
             {selectedTransactionIds.length > 0 && (
@@ -1730,13 +1660,18 @@ export default function Transactions() {
                 <option value="list">Show as List</option>
                 <option value="list-details">List with Details</option>
             </Select>
-        </div>
+            {!showBin && (
+              <label className="flex h-9 items-center gap-2 rounded-lg border bg-background px-3 text-sm text-foreground cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={useColoredTransactionRows}
+                  onChange={(e) => setUseColoredTransactionRows(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                <span>Colored Rows</span>
+              </label>
+            )}
       </div>
-      {!showBin && isTransactionWindowed && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          Showing a recent transactions window for performance. Load older pages or use <span className="font-semibold">Load All for Export</span> for full-history exports.
-        </div>
-      )}
       {showBin && isDeletedWindowed && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
           Bin is currently showing a recent window. Use <span className="font-semibold">Load Older Bin Rows</span> to extend history.
@@ -1949,9 +1884,9 @@ export default function Transactions() {
                             </tr>
                         </thead>
                         <tbody className="divide-y">
-                            {paginatedTransactionRows.map(({ tx, isSale, isReturn, isPayment, itemCount, typeLabel, typeTone, typeVariant, amountClass, rowToneClass, rowMutedToneClass, rowSubtleToneClass }) => {
+                            {paginatedTransactionRows.map(({ tx, isSale, isReturn, isPayment, itemCount, typeLabel, typeTone, typeVariant, amountClass, rowToneClass, rowMutedToneClass, rowSubtleToneClass, rowSurfaceClass }) => {
                                 return (
-                                    <tr key={tx.id} className="hover:bg-muted/30 transition-colors group">
+                                    <tr key={tx.id} className={`${useColoredTransactionRows ? rowSurfaceClass : 'hover:bg-muted/30'} transition-colors group`}>
                                         <td className="px-4 py-3">
                                             <input
                                               type="checkbox"
@@ -2011,9 +1946,9 @@ export default function Transactions() {
                                                 <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedTx(tx)}><Eye className="w-3.5 h-3.5" /></Button>
                                                 {can('transactionEdit') && !tx.id.startsWith('upfront-') && !isSupplierPaymentVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void openTransactionEditor(tx)}><Edit className="w-3.5 h-3.5" /></Button>}
                                                 {can('transactionDelete') && !tx.id.startsWith('upfront-') && !isSupplierPaymentVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7 text-red-600" onClick={() => void openDeleteModal(tx)}><X className="w-3.5 h-3.5" /></Button>}
-                                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setTxToExport(tx); setExportType('invoice'); setIsExportModalOpen(true); }}><FileText className="w-3.5 h-3.5" /></Button>
-                                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleShareInvoiceWhatsApp(tx)}><Download className="w-3.5 h-3.5" /></Button>
-                                                <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => void handleShareInvoiceOfficialWhatsApp(tx)}>Send via Official WhatsApp</Button>
+                                                {canExportInvoiceForTransaction(tx) && (
+                                                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openInvoiceOptions(tx)}><FileText className="w-3.5 h-3.5" /></Button>
+                                                )}
                                             </div>
                                         </td>
                                     </tr>
@@ -2022,13 +1957,6 @@ export default function Transactions() {
                         </tbody>
                     </table>
                 </div>
-                {filteredTransactions.length > TRANSACTIONS_ROWS_PER_PAGE && (
-                  <div className="flex items-center justify-between border-t bg-card px-4 py-2">
-                    <Button size="sm" variant="outline" onClick={() => setTransactionPage((prev) => Math.max(1, prev - 1))} disabled={transactionPage <= 1}>Previous</Button>
-                    <div className="text-xs text-muted-foreground">Page {transactionPage} of {transactionTotalPages}</div>
-                    <Button size="sm" variant="outline" onClick={() => setTransactionPage((prev) => Math.min(transactionTotalPages, prev + 1))} disabled={transactionPage >= transactionTotalPages}>Next</Button>
-                  </div>
-                )}
             </Card>
         ) : (
             <div className={`grid grid-cols-1 gap-4 ${
@@ -2079,7 +2007,7 @@ export default function Transactions() {
                                                 variant="ghost" 
                                                 size="icon" 
                                                 className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                onClick={(e) => { e.stopPropagation(); setTxToExport(tx); setExportType('invoice'); setIsExportModalOpen(true); }}
+                                                onClick={(e) => { e.stopPropagation(); openInvoiceOptions(tx); }}
                                             >
                                                 <Download className="w-3 h-3" />
                                             </Button>
@@ -2120,7 +2048,7 @@ export default function Transactions() {
                                                 variant="ghost" 
                                                 size="icon" 
                                                 className="h-6 w-6 text-muted-foreground hover:text-primary"
-                                                onClick={(e) => { e.stopPropagation(); setTxToExport(tx); setExportType('invoice'); setIsExportModalOpen(true); }}
+                                                onClick={(e) => { e.stopPropagation(); openInvoiceOptions(tx); }}
                                                 title="Download Receipt"
                                             >
                                                 <FileText className="w-3.5 h-3.5" />
@@ -2162,13 +2090,6 @@ export default function Transactions() {
                         </Card>
                     );
                 })}
-                {filteredTransactions.length > TRANSACTIONS_ROWS_PER_PAGE && (
-                  <div className="col-span-full flex items-center justify-between rounded-lg border bg-card px-4 py-2">
-                    <Button size="sm" variant="outline" onClick={() => setTransactionPage((prev) => Math.max(1, prev - 1))} disabled={transactionPage <= 1}>Previous</Button>
-                    <div className="text-xs text-muted-foreground">Page {transactionPage} of {transactionTotalPages}</div>
-                    <Button size="sm" variant="outline" onClick={() => setTransactionPage((prev) => Math.min(transactionTotalPages, prev + 1))} disabled={transactionPage >= transactionTotalPages}>Next</Button>
-                  </div>
-                )}
             </div>
         )}
       </div>
@@ -2180,27 +2101,21 @@ export default function Transactions() {
                   <CardHeader className="border-b pb-3 shrink-0 bg-muted/5">
                       <div className="flex justify-between items-center">
                           <CardTitle className="text-lg flex items-center gap-2">
-                              {isCustomOrderPaymentRow(selectedTx)
-                                ? 'Custom Order Payment Receipt'
-                                : isCustomOrderReceivableRow(selectedTx)
-                                  ? 'Custom Order Receipt'
-                                  : selectedTx.type === 'sale'
-                                    ? 'Sale Receipt'
-                                    : selectedTx.type === 'payment'
-                                      ? 'Payment Receipt'
-                                      : 'Return Receipt'}
+                              {getTransactionReceiptTitle(selectedTx)}
                               <span className="text-xs font-normal text-muted-foreground font-mono">#{getTransactionReference(selectedTx)}</span>
                           </CardTitle>
                           <div className="flex items-center gap-1">
-                              <Button 
-                                  variant="outline" 
-                                  size="sm" 
-                                  className="h-8 gap-1.5 text-xs"
-                                  onClick={() => { setTxToExport(selectedTx); setExportType('invoice'); setIsExportModalOpen(true); }}
-                              >
-                                  <Download className="w-3.5 h-3.5" />
-                                  {isUpfrontVirtualTransaction(selectedTx) ? 'Receipt' : 'Invoice'}
-                              </Button>
+                              {canExportInvoiceForTransaction(selectedTx) && (
+                                <Button 
+                                    variant="outline" 
+                                    size="sm" 
+                                    className="h-8 gap-1.5 text-xs"
+                                    onClick={() => openInvoiceOptions(selectedTx)}
+                                >
+                                    <Download className="w-3.5 h-3.5" />
+                                    {isUpfrontVirtualTransaction(selectedTx) ? 'Receipt' : 'Invoice'}
+                                </Button>
+                              )}
                               <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive" onClick={() => setSelectedTx(null)}><X className="w-4 h-4" /></Button>
                           </div>
                       </div>
@@ -2929,83 +2844,35 @@ export default function Transactions() {
         </div>
       )}
 
-      {isExcelFilterModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <Card className="w-full max-w-2xl">
-            <CardHeader>
-              <CardTitle>Filter Transaction Excel Export</CardTitle>
+      {isInvoiceOptionsOpen && txToExport && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <Card className="w-full max-w-md shadow-2xl">
+            <CardHeader className="border-b pb-4 flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-lg">Export Invoice</CardTitle>
+                <p className="text-xs text-muted-foreground mt-1">Choose how you want to generate or send invoice #{getTransactionReference(txToExport)}.</p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={closeInvoiceOptions} className="h-8 w-8">
+                <X className="w-4 h-4" />
+              </Button>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">From Date</label>
-                  <Input type="date" value={excelFilterFrom} onChange={e => setExcelFilterFrom(e.target.value)} />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">To Date</label>
-                  <Input type="date" value={excelFilterTo} onChange={e => setExcelFilterTo(e.target.value)} />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Search customer / bill</label>
-                <Input
-                  value={excelFilterSearch}
-                  onChange={e => setExcelFilterSearch(e.target.value)}
-                  placeholder="Customer name, phone, bill no., or transaction no."
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Payment / Settlement</label>
-                  <Select value={excelFilterPayment} onChange={(e) => setExcelFilterPayment(e.target.value as 'all' | 'cash' | 'credit' | 'online')}>
-                    <option value="all">All</option>
-                    <option value="cash">Cash only</option>
-                    <option value="credit">Credit only</option>
-                    <option value="online">Online only</option>
-                  </Select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Transaction Type</label>
-                  <Select value={excelFilterType} onChange={(e) => setExcelFilterType(e.target.value as 'all' | 'sale' | 'return')}>
-                    <option value="all">All (incl. payments)</option>
-                    <option value="sale">Sales only</option>
-                    <option value="return">Return only</option>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Amount more than (abs total)</label>
-                  <Input type="number" min="0" value={excelAmountMoreThan} onChange={e => setExcelAmountMoreThan(e.target.value)} placeholder="e.g. 500" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Amount less than (abs total)</label>
-                  <Input type="number" min="0" value={excelAmountLessThan} onChange={e => setExcelAmountLessThan(e.target.value)} placeholder="e.g. 5000" />
-                </div>
-              </div>
-
-              <div className="rounded-lg border bg-muted/20 p-3 text-sm">
-                Matching transactions are calculated when you download.
-              </div>
-
-              <div className="flex gap-2 justify-end">
-                <Button variant="outline" onClick={() => setIsExcelFilterModalOpen(false)}>Cancel</Button>
-                <Button onClick={handleRunExcelExport}>Download Excel</Button>
-              </div>
+            <CardContent className="p-5 space-y-3">
+              <Button className="w-full justify-start h-11" variant="outline" onClick={() => void handleInvoiceOption('a4')}>
+                <FileText className="mr-2 h-4 w-4" />
+                Download A4 Size Standard Invoice
+              </Button>
+              <Button className="w-full justify-start h-11" variant="outline" onClick={() => void handleInvoiceOption('thermal')}>
+                <Download className="mr-2 h-4 w-4" />
+                Print Thermal Invoice
+              </Button>
+              <Button className="w-full justify-start h-11" variant="outline" onClick={() => void handleInvoiceOption('whatsapp')}>
+                <Download className="mr-2 h-4 w-4" />
+                Send Invoice via WhatsApp
+              </Button>
             </CardContent>
           </Card>
         </div>
       )}
-
-      <ExportModal 
-        isOpen={isExportModalOpen} 
-        onClose={() => setIsExportModalOpen(false)} 
-        onExport={handleExport}
-        title={exportType === 'summary' ? "Export Transaction Report" : "Export Invoice"}
-      />
       <ConfirmDialog
         open={isBatchDeleteConfirmOpen}
         title="Delete selected transactions?"

@@ -6392,7 +6392,7 @@ export const createManualCashbookEntry = async (
   };
   const data = loadData();
   const next = [entry, ...(data.manualCashbookEntries || [])];
-  await saveData({ ...data, manualCashbookEntries: next }, { throwOnError: true, reason: 'createManualCashbookEntry', auditOperation: 'CREATE' });
+  await safeFinancePersistState({ manualCashbookEntries: next }, { reason: 'createManualCashbookEntry' });
   return entry;
 };
 

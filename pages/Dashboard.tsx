@@ -12,9 +12,6 @@ import { analyzeSupplierPurchaseLedger, repairSupplierPurchaseLedgerDryRun, Supp
 import { generateLedgerStatementPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay, buildSupplierStatementRowsFromCanonicalLedger } from '../services/ledgerStatements';
 import { CanonicalCustomerBalanceResult, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
-import { shareCustomerLedgerViaWhatsApp } from '../services/whatsappShare';
-import { appendWhatsAppLog } from '../services/whatsappLogs';
-import { auth } from '../services/firebase';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { Search } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
@@ -67,18 +64,6 @@ const getPurchaseOrderProductSummary = (order: PurchaseOrder, maxItems = 2): str
   const shown = names.slice(0, maxItems).join(', ');
   return names.length > maxItems ? `${shown} +${names.length - maxItems} more` : shown;
 };
-
-const getWhatsAppNumber = (entity: { phone?: string } & Record<string, any>) => String(entity?.whatsapp || entity?.whatsappNumber || entity?.mobile || entity?.phone || '').trim();
-
-const buildWhatsAppLogMeta = (recipientType: 'customer' | 'purchase_party', recipientId: string, recipientName: string, phone: string, extra: Record<string, unknown> = {}) => ({
-  recipientType,
-  recipientId,
-  recipientName,
-  phoneNumber: phone,
-  ledgerType: recipientType === 'customer' ? 'customer_ledger' : 'purchase_party_statement',
-  timestamp: new Date().toISOString(),
-  ...extra,
-});
 
 const toDateTimeLocalValue = (date: Date) => {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -187,8 +172,6 @@ export default function Dashboard() {
   const [supplierLedgerDryRun, setSupplierLedgerDryRun] = useState<SupplierLedgerDryRunPlan | null>(null);
   const [isGeneratingCustomerPdf, setIsGeneratingCustomerPdf] = useState(false);
   const [isGeneratingPartyPdf, setIsGeneratingPartyPdf] = useState(false);
-  const [sendingLedgerKey, setSendingLedgerKey] = useState<string | null>(null);
-  const [whatsAppLedgerNotice, setWhatsAppLedgerNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [statementPdfError, setStatementPdfError] = useState<string | null>(null);
   const [customerDashboardTab, setCustomerDashboardTab] = useState<'receivable' | 'storeCredit' | 'withoutDue'>('receivable');
   const [supplierDashboardTab, setSupplierDashboardTab] = useState<'payable' | 'credit' | 'withoutDue'>('payable');
@@ -965,82 +948,6 @@ export default function Dashboard() {
     return blob instanceof Blob ? blob : null;
   };
 
-  const recordWhatsAppLedgerLog = async (status: 'pending' | 'sent' | 'failed', meta: Record<string, unknown>, error?: string | null) => {
-    const uid = String(auth?.currentUser?.uid || '').trim();
-    if (!uid) return;
-    try {
-      await appendWhatsAppLog(uid, {
-        type: 'ledger',
-        status,
-        ledgerId: String(meta.ledgerId || meta.recipientId || ''),
-        customerId: meta.recipientType === 'customer' ? String(meta.recipientId || '') : undefined,
-        customerName: String(meta.recipientName || ''),
-        customerPhone: String(meta.phoneNumber || ''),
-        error: error || null,
-        sentAt: status === 'sent' ? new Date().toISOString() : null,
-        meta,
-      });
-    } catch (logError) {
-      console.warn('[WHATSAPP LEDGER LOG FAILED]', logError);
-    }
-  };
-
-  const sendCustomerLedgerWhatsApp = async (customer: Customer) => {
-    const phone = getWhatsAppNumber(customer as any);
-    if (!phone) {
-      setWhatsAppLedgerNotice({ type: 'error', text: 'No WhatsApp number found for this customer.' });
-      return;
-    }
-    const key = `customer-${customer.id}`;
-    if (sendingLedgerKey) return;
-    const meta = buildWhatsAppLogMeta('customer', customer.id, customer.name, phone, { ledgerId: `customer-ledger-${customer.id}` });
-    try {
-      setSendingLedgerKey(key);
-      setWhatsAppLedgerNotice(null);
-      await recordWhatsAppLedgerLog('pending', meta);
-      const pdfBlob = await generateCustomerStatementPdfBlob({ ...customer, phone });
-      if (!pdfBlob) throw new Error('Ledger PDF could not be prepared. Please try again.');
-      const result = await shareCustomerLedgerViaWhatsApp({ ...customer, phone }, pdfBlob);
-      if (!result.ok) throw new Error(result.message);
-      await recordWhatsAppLedgerLog('sent', meta);
-      setWhatsAppLedgerNotice({ type: 'success', text: 'Ledger sent on WhatsApp.' });
-    } catch (error) {
-      const message = getFriendlyErrorMessage(error, 'dashboard.whatsapp_customer_ledger');
-      await recordWhatsAppLedgerLog('failed', meta, message);
-      setWhatsAppLedgerNotice({ type: 'error', text: message });
-    } finally {
-      setSendingLedgerKey(null);
-    }
-  };
-
-  const sendPartyLedgerWhatsApp = async (party: PurchaseParty) => {
-    const phone = getWhatsAppNumber(party as any);
-    if (!phone) {
-      setWhatsAppLedgerNotice({ type: 'error', text: 'No WhatsApp number found for this party/customer.' });
-      return;
-    }
-    const key = `party-${party.id}`;
-    if (sendingLedgerKey) return;
-    const meta = buildWhatsAppLogMeta('purchase_party', party.id, party.name, phone, { ledgerId: `purchase-party-ledger-${party.id}` });
-    try {
-      setSendingLedgerKey(key);
-      setWhatsAppLedgerNotice(null);
-      await recordWhatsAppLedgerLog('pending', meta);
-      const pdfBlob = await generatePartyStatementPdfBlob(party);
-      if (!pdfBlob) throw new Error('Ledger PDF could not be prepared. Please try again.');
-      const result = await shareCustomerLedgerViaWhatsApp({ id: party.id, name: party.name, phone, totalSpend: 0, totalDue: 0, lastVisit: '', visitCount: 0 }, pdfBlob);
-      if (!result.ok) throw new Error(result.message);
-      await recordWhatsAppLedgerLog('sent', meta);
-      setWhatsAppLedgerNotice({ type: 'success', text: 'Ledger sent on WhatsApp.' });
-    } catch (error) {
-      const message = getFriendlyErrorMessage(error, 'dashboard.whatsapp_party_ledger');
-      await recordWhatsAppLedgerLog('failed', meta, message);
-      setWhatsAppLedgerNotice({ type: 'error', text: message });
-    } finally {
-      setSendingLedgerKey(null);
-    }
-  };
-
   const downloadCustomerStatementPdf = async () => {
     if (!selectedCustomer) return;
     try {
@@ -1248,11 +1155,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {whatsAppLedgerNotice && (
-        <div className={`shrink-0 rounded-lg border px-3 py-2 text-sm ${whatsAppLedgerNotice.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
-          {whatsAppLedgerNotice.text}
-        </div>
-      )}
 
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
         <Card className="flex flex-col">
@@ -1285,9 +1187,6 @@ export default function Dashboard() {
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementCustomerId(c.id)}>View Statement</Button>
-                    <Button size="sm" variant="outline" disabled={!getWhatsAppNumber(c as any) || Boolean(sendingLedgerKey)} title={!getWhatsAppNumber(c as any) ? 'No WhatsApp number found.' : 'Send this customer ledger on WhatsApp'} onClick={() => void sendCustomerLedgerWhatsApp(c)}>
-                      {!getWhatsAppNumber(c as any) ? 'No WhatsApp number' : sendingLedgerKey === `customer-${c.id}` ? 'Sending...' : 'Send Ledger WhatsApp'}
-                    </Button>
                     {customerDashboardTab === 'receivable' && <Button size="sm" onClick={() => openReceiveModal(c)}>Receive</Button>}
                   </div>
                 </div>
@@ -1330,9 +1229,6 @@ export default function Dashboard() {
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementPartyId(p.id)}>View Statement</Button>
-                    <Button size="sm" variant="outline" disabled={!getWhatsAppNumber(p as any) || Boolean(sendingLedgerKey)} title={!getWhatsAppNumber(p as any) ? 'No WhatsApp number found.' : 'Send this supplier statement on WhatsApp'} onClick={() => void sendPartyLedgerWhatsApp(p)}>
-                      {!getWhatsAppNumber(p as any) ? 'No WhatsApp number' : sendingLedgerKey === `party-${p.id}` ? 'Sending...' : 'Send Ledger WhatsApp'}
-                    </Button>
                     {supplierDashboardTab === 'payable' && <Button size="sm" variant="outline" onClick={() => openPayModal(p)}>{Math.max(0, Number(p.payable || 0)) > 0 ? 'Pay' : 'View'}</Button>}
                   </div>
                   {supplierDashboardTab === 'payable' && Math.max(0, Number(p.partyCredit || 0)) > 0 && <div className="mt-1 text-xs text-emerald-700">Credit Available {formatINRPrecise(p.partyCredit || 0)}</div>}
@@ -1446,9 +1342,6 @@ export default function Dashboard() {
               <Button type="button" variant="outline" size="sm" disabled={isGeneratingCustomerPdf} onClick={() => void downloadCustomerStatementPdf()}>
                 {isGeneratingCustomerPdf ? 'Generating PDF...' : 'Download Statement PDF'}
               </Button>
-              <Button type="button" variant="outline" size="sm" className="ml-2" disabled={!getWhatsAppNumber(selectedCustomer as any) || Boolean(sendingLedgerKey)} title={!getWhatsAppNumber(selectedCustomer as any) ? 'No WhatsApp number found.' : 'Send this customer ledger on WhatsApp'} onClick={() => void sendCustomerLedgerWhatsApp(selectedCustomer)}>
-                {!getWhatsAppNumber(selectedCustomer as any) ? 'No WhatsApp number' : sendingLedgerKey === `customer-${selectedCustomer.id}` ? 'Sending...' : 'Send Ledger WhatsApp'}
-              </Button>
             </div>
             {statementPdfError && <p className="text-xs text-red-600">{statementPdfError}</p>}
             <p className="text-xs text-muted-foreground">Latest transactions shown first. Balance means balance after that transaction.</p>
@@ -1531,9 +1424,6 @@ export default function Dashboard() {
             <div className="flex justify-end">
               <Button type="button" variant="outline" size="sm" disabled={isGeneratingPartyPdf} onClick={() => void downloadPartyStatementPdf()}>
                 {isGeneratingPartyPdf ? 'Generating PDF...' : 'Download Statement PDF'}
-              </Button>
-              <Button type="button" variant="outline" size="sm" className="ml-2" disabled={!getWhatsAppNumber(selectedParty as any) || Boolean(sendingLedgerKey)} title={!getWhatsAppNumber(selectedParty as any) ? 'No WhatsApp number found.' : 'Send this supplier statement on WhatsApp'} onClick={() => void sendPartyLedgerWhatsApp(selectedParty)}>
-                {!getWhatsAppNumber(selectedParty as any) ? 'No WhatsApp number' : sendingLedgerKey === `party-${selectedParty.id}` ? 'Sending...' : 'Send Ledger WhatsApp'}
               </Button>
               {isPurchaseLedgerDebugEnabled && (
                 <Button type="button" variant="outline" size="sm" className="ml-2" onClick={handleAnalyzeSupplierLedger}>
