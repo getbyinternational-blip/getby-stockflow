@@ -152,6 +152,8 @@ export interface TelegramPostCollection {
   queuedProductIds: string[];
   frequencyValue?: number;
   frequencyUnit?: TelegramCollectionFrequencyUnit;
+  batchSize?: number;
+  autoStartTime?: string;
   repeatMode?: TelegramCollectionRepeatMode;
   maxFailuresBeforePause?: number;
   createdAt: string;
@@ -203,6 +205,8 @@ export interface TelegramLiveCollection {
   nextPostAt?: string;
   frequencyValue: number;
   frequencyUnit: TelegramCollectionFrequencyUnit | string;
+  batchSize?: number;
+  autoStartTime?: string;
   repeatMode?: TelegramCollectionRepeatMode | string;
   maxFailuresBeforePause?: number;
 }
@@ -250,6 +254,7 @@ export interface StoreProfile {
   autoSendInvoiceAfterCreation?: boolean;
   repairCenterEnabled?: boolean;
   adminPin?: string;
+  telegramChannels?: string[];
   telegramChannelId?: string;
   telegramTemplate?: string;
   telegramNotes?: string;
@@ -359,6 +364,7 @@ export interface CashSession {
   openingBalance: number;
   closingBalance?: number;
   reservedCashOnHand?: number;
+  reservedCashSavedAt?: string;
   carryForwardBalance?: number;
   systemCashTotal?: number;
   sessionExpenseTotal?: number;

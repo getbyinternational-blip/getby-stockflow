@@ -2978,8 +2978,13 @@ const buildHydratedTelegramProfile = (
 
   return sanitizeStoreProfileForPersistence({
     ...baseProfile,
-    telegramChannelId: String(telegramData.telegramChannelId || baseProfile.telegramChannelId || '').trim(),
-    telegramTemplate: String(telegramData.telegramTemplate || baseProfile.telegramTemplate || '').trim(),
+  telegramChannelId: String(telegramData.telegramChannelId || baseProfile.telegramChannelId || '').trim(),
+  telegramChannels: Array.from(new Set(
+    (Array.isArray(telegramData.telegramChannels) ? telegramData.telegramChannels : Array.isArray(baseProfile.telegramChannels) ? baseProfile.telegramChannels : [])
+      .map((channelId) => String(channelId || '').trim())
+      .filter(Boolean)
+  )),
+  telegramTemplate: String(telegramData.telegramTemplate || baseProfile.telegramTemplate || '').trim(),
     telegramNotes: String(telegramData.telegramNotes || baseProfile.telegramNotes || '').trim(),
     telegramCollections: Array.isArray(telegramData.telegramCollections)
       ? (telegramData.telegramCollections as any[])
@@ -4674,6 +4679,15 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
     lastPostedProductName: String(collection?.lastPostedProductName || '').trim() || undefined,
     totalPostsSent: Number.isFinite(Number(collection?.totalPostsSent)) ? Math.max(0, Number(collection?.totalPostsSent)) : 0,
   })).filter((collection) => collection.id && collection.name) : [],
+  telegramChannels: Array.from(new Set(
+    [
+      ...(Array.isArray(profile.telegramChannels) ? profile.telegramChannels : []),
+      ...(Array.isArray(profile.telegramCollections) ? profile.telegramCollections.map((collection) => String(collection?.channelId || '').trim()) : []),
+      String(profile.telegramChannelId || '').trim(),
+    ]
+      .map((channelId) => String(channelId || '').trim())
+      .filter(Boolean)
+  )),
   telegramPostActivity: Array.isArray(profile.telegramPostActivity) ? profile.telegramPostActivity.map((entry) => ({
     ...entry,
     id: String(entry?.id || '').trim(),
@@ -4741,13 +4755,14 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
   return safeProfile;
 };
 
-export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramPostActivity' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
+export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramPostActivity' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
   const nextProfile = sanitizeStoreProfileForPersistence({
     ...memoryState.profile,
     ...profilePatch,
   } as StoreProfile);
   const telegramPayload = sanitizeData({
     telegramChannelId: nextProfile.telegramChannelId || '',
+    telegramChannels: Array.isArray(nextProfile.telegramChannels) ? nextProfile.telegramChannels : [],
     telegramTemplate: nextProfile.telegramTemplate || '',
     telegramNotes: nextProfile.telegramNotes || '',
     telegramCollections: Array.isArray(nextProfile.telegramCollections) ? nextProfile.telegramCollections : [],

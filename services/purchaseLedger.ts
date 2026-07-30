@@ -1,4 +1,5 @@
 import { PartyCreditLedgerEntry, PurchaseOrder, SupplierPaymentLedgerEntry } from '../types';
+import { normalizePurchasePartyNameForMatch } from './purchasePartyIdentity';
 
 export type PurchaseLedgerWarningCode =
   | 'credit_applied_exceeds_available'
@@ -95,21 +96,30 @@ const blankRow = (input: Pick<PurchasePartyLedgerRow, 'id' | 'date' | 'type' | '
 export const buildPurchasePartyLedger = ({
   partyId,
   relatedPartyIds,
+  partyNames,
   purchaseOrders,
   supplierPayments,
   partyCreditLedger,
 }: {
   partyId: string;
   relatedPartyIds?: string[];
+  partyNames?: string[];
   purchaseOrders: PurchaseOrder[];
   supplierPayments: SupplierPaymentLedgerEntry[];
   partyCreditLedger: PartyCreditLedgerEntry[];
 }) => {
   const relatedIds = new Set((relatedPartyIds && relatedPartyIds.length ? relatedPartyIds : [partyId]).map((value) => String(value || '').trim()).filter(Boolean));
-  const matchesParty = (value?: string) => relatedIds.has(String(value || '').trim());
+  const normalizedNames = new Set((partyNames || []).map((value) => normalizePurchasePartyNameForMatch(value)).filter(Boolean));
+  const matchesPartyId = (value?: string) => relatedIds.has(String(value || '').trim());
+  const matchesPartyName = (value?: string) => normalizedNames.has(normalizePurchasePartyNameForMatch(value));
+  const matchesRecord = (partyIdValue?: string, partyNameValue?: string) => {
+    const normalizedPartyId = String(partyIdValue || '').trim();
+    if (normalizedPartyId) return matchesPartyId(normalizedPartyId);
+    return matchesPartyName(partyNameValue);
+  };
 
-  const orders = (purchaseOrders || []).filter((o) => matchesParty(o.partyId) && o.status !== 'cancelled');
-  const directPayments = (supplierPayments || []).filter((p) => matchesParty(p.partyId) && !p.deletedAt);
+  const orders = (purchaseOrders || []).filter((o) => matchesRecord(o.partyId, o.partyName) && o.status !== 'cancelled');
+  const directPayments = (supplierPayments || []).filter((p) => matchesRecord(p.partyId, p.partyName) && !p.deletedAt);
   const paymentIds = new Set(directPayments.map((p) => p.id));
   const warnings: PurchaseLedgerWarning[] = [];
   const rows: PurchasePartyLedgerRow[] = [];
@@ -123,7 +133,7 @@ export const buildPurchasePartyLedger = ({
   }, 0);
 
   const usageHistoryTotal = (partyCreditLedger || [])
-    .filter((entry) => matchesParty(entry.partyId))
+    .filter((entry) => matchesRecord(entry.partyId, entry.partyName))
     .reduce((sum, entry) => sum + positiveMoney((entry.usageHistory || []).reduce((acc, usage) => acc + positiveMoney(usage.amount), 0)), 0);
 
   if (Math.abs(roundMoney(orderCreditAppliedTotal - usageHistoryTotal)) > 0.01) {
@@ -216,7 +226,7 @@ export const buildPurchasePartyLedger = ({
   });
 
   (partyCreditLedger || []).forEach((entry) => {
-    if (!matchesParty(entry.partyId)) return;
+    if (!matchesRecord(entry.partyId, entry.partyName)) return;
     const entryId = String(entry.id || '');
     const sourcePaymentId = String(entry.sourcePaymentId || '');
     const sourceVoucherNo = String(entry.sourceVoucherNo || '');

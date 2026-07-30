@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Clock3, FolderPlus, Image as ImageIcon, Pause, Play, Plus, Save, Search, Send, Square, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Clock3, FolderPlus, Image as ImageIcon, Pause, Play, Plus, Save, Search, Send, Square, Trash2, X } from 'lucide-react';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select } from '../components/ui';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { formatCurrency } from '../services/numberFormat';
@@ -40,6 +40,8 @@ const DEFAULT_FREQUENCY_UNIT: TelegramCollectionFrequencyUnit = 'minutes';
 const DEFAULT_REPEAT_MODE: TelegramCollectionRepeatMode = 'loop';
 const TELEGRAM_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_TELEGRAM_LOGS || 'false').toLowerCase() === 'true';
 const DEFAULT_MAX_FAILURES_BEFORE_PAUSE = 3;
+const DEFAULT_BATCH_SIZE = 2;
+const MIN_TELEGRAM_SECONDS_INTERVAL = 3;
 const TELEGRAM_CHANNEL_REQUIRED_MESSAGE = 'Telegram Channel ID is required. Save a channel ID for this collection first.';
 
 const safeText = (value: unknown, fallback = '') => {
@@ -90,6 +92,8 @@ const normalizeCollections = (profile?: StoreProfile | null): TelegramPostCollec
         queuedProductIds: Array.isArray(collection.queuedProductIds) ? collection.queuedProductIds.filter(Boolean) : [],
         frequencyValue: toNonNegativeNumber(collection.frequencyValue, DEFAULT_FREQUENCY_VALUE) || DEFAULT_FREQUENCY_VALUE,
         frequencyUnit: (safeText(collection.frequencyUnit, DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit),
+        batchSize: toNonNegativeNumber((collection as any).batchSize, DEFAULT_BATCH_SIZE) || DEFAULT_BATCH_SIZE,
+        autoStartTime: safeText((collection as any).autoStartTime),
         repeatMode: (safeText(collection.repeatMode, DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode),
         maxFailuresBeforePause: toNonNegativeNumber(collection.maxFailuresBeforePause, DEFAULT_MAX_FAILURES_BEFORE_PAUSE) || DEFAULT_MAX_FAILURES_BEFORE_PAUSE,
         createdAt: safeText(collection.createdAt, new Date().toISOString()),
@@ -124,6 +128,7 @@ export default function TelegramPosts() {
   const [queueSearchTerm, setQueueSearchTerm] = useState('');
   const [queuedProductIds, setQueuedProductIds] = useState<string[]>([]);
   const [telegramChannelId, setTelegramChannelId] = useState('');
+  const [telegramChannels, setTelegramChannels] = useState<string[]>([]);
   const [telegramTemplate, setTelegramTemplate] = useState(DEFAULT_TEMPLATE);
   const [telegramNotes, setTelegramNotes] = useState('');
   const [telegramCollections, setTelegramCollections] = useState<TelegramPostCollection[]>([]);
@@ -134,9 +139,10 @@ export default function TelegramPosts() {
   const [collectionCategory, setCollectionCategory] = useState('all');
   const [frequencyValue, setFrequencyValue] = useState(String(DEFAULT_FREQUENCY_VALUE));
   const [frequencyUnit, setFrequencyUnit] = useState<TelegramCollectionFrequencyUnit>(DEFAULT_FREQUENCY_UNIT);
+  const [batchSize, setBatchSize] = useState(String(DEFAULT_BATCH_SIZE));
+  const [autoStartTime, setAutoStartTime] = useState('');
   const [repeatMode, setRepeatMode] = useState<TelegramCollectionRepeatMode>(DEFAULT_REPEAT_MODE);
   const [maxFailuresBeforePause, setMaxFailuresBeforePause] = useState(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
-  const [liveSyncCollection, setLiveSyncCollection] = useState(true);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isSavingCollection, setIsSavingCollection] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -146,8 +152,10 @@ export default function TelegramPosts() {
   const [selectedCollectionActivity, setSelectedCollectionActivity] = useState<TelegramCollectionActivityItem[]>([]);
   const [isActivityLoading, setIsActivityLoading] = useState(false);
   const [collectionActionId, setCollectionActionId] = useState('');
+  const [selectedChannelId, setSelectedChannelId] = useState('');
+  const [newChannelId, setNewChannelId] = useState('');
+  const [isCollectionModalOpen, setIsCollectionModalOpen] = useState(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
-  const hasHydratedCollectionRef = useRef(false);
 
   const refreshFromStore = () => {
     const data = loadData();
@@ -159,6 +167,18 @@ export default function TelegramPosts() {
     setTelegramCollections(collections);
     setTelegramActivity(activity);
     setTelegramChannelId(safeText(safeProfile?.telegramChannelId));
+    const normalizedChannels = Array.from(new Set(
+      [
+        ...(Array.isArray(safeProfile?.telegramChannels) ? safeProfile!.telegramChannels! : []),
+        ...collections.map((collection) => safeText(collection.channelId)),
+        safeText(safeProfile?.telegramChannelId),
+      ].map((channelId) => safeText(channelId)).filter(Boolean)
+    ));
+    setTelegramChannels(normalizedChannels);
+    setSelectedChannelId((current) => {
+      if (current && normalizedChannels.includes(current)) return current;
+      return normalizedChannels[0] || '';
+    });
     setTelegramTemplate(safeText(safeProfile?.telegramTemplate, DEFAULT_TEMPLATE));
     setTelegramNotes(safeText(safeProfile?.telegramNotes));
     const storedActiveCollectionId = safeText(safeProfile?.telegramActiveCollectionId);
@@ -169,6 +189,8 @@ export default function TelegramPosts() {
     setCollectionCategory(selectedCollection?.category || 'all');
     setFrequencyValue(String(selectedCollection?.frequencyValue || DEFAULT_FREQUENCY_VALUE));
     setFrequencyUnit((selectedCollection?.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit);
+    setBatchSize(String((selectedCollection as any)?.batchSize || DEFAULT_BATCH_SIZE));
+    setAutoStartTime((selectedCollection as any)?.autoStartTime || '');
     setRepeatMode((selectedCollection?.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode);
     setMaxFailuresBeforePause(String(selectedCollection?.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     if (selectedCollection) {
@@ -182,6 +204,8 @@ export default function TelegramPosts() {
     } else {
       setFrequencyValue(String(DEFAULT_FREQUENCY_VALUE));
       setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
+      setBatchSize(String(DEFAULT_BATCH_SIZE));
+      setAutoStartTime('');
       setRepeatMode(DEFAULT_REPEAT_MODE);
       setMaxFailuresBeforePause(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     }
@@ -263,13 +287,9 @@ export default function TelegramPosts() {
     });
   }, [queueSearchTerm, queuedProducts]);
 
-  const outOfStockProducts = useMemo(() => filteredProducts.filter((product) => toNonNegativeNumber(product.stock) <= 0), [filteredProducts]);
-
   const targetProducts = useMemo(() => {
-    if (postMode === 'selected') return queuedProducts;
-    if (postMode === 'out_of_stock') return outOfStockProducts;
-    return filteredProducts;
-  }, [filteredProducts, outOfStockProducts, postMode, queuedProducts]);
+    return queuedProducts;
+  }, [queuedProducts]);
   const collectionProducts = queuedProducts;
 
   const previewProduct = targetProducts[0] || queuedProducts[0] || filteredProducts[0] || null;
@@ -294,6 +314,60 @@ export default function TelegramPosts() {
   });
   const hiddenForeignRunningCollectionsCount = Math.max(0, runningCollections.length - visibleRunningCollections.length);
   const livePostedCount = visibleRunningCollections.reduce((sum, entry) => sum + toNonNegativeNumber(entry.sentCount), 0);
+  const savedChannels = useMemo(() => (
+    Array.from(new Set(
+      [...telegramChannels, ...telegramCollections.map((collection) => safeText(collection.channelId)), safeText(telegramChannelId)]
+        .map((channelId) => safeText(channelId))
+        .filter(Boolean)
+    ))
+  ), [telegramChannels, telegramCollections, telegramChannelId]);
+  const selectedChannelCollections = useMemo(() => (
+    telegramCollections
+      .filter((collection) => safeText(collection.channelId) === safeText(selectedChannelId))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  ), [selectedChannelId, telegramCollections]);
+  const activeChannelSavedCollections = useMemo(() => (
+    telegramCollections
+      .filter((collection) => safeText(collection.channelId) === safeText(selectedChannelId))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  ), [selectedChannelId, telegramCollections]);
+  const activeChannelRunningCollections = useMemo(() => (
+    visibleRunningCollections
+      .filter((collection) => safeText(collection.channelId) === safeText(selectedChannelId))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  ), [selectedChannelId, visibleRunningCollections]);
+  const runningCollectionsByChannel = useMemo(() => {
+    const groups = new Map<string, TelegramLiveCollection[]>();
+    visibleRunningCollections.forEach((collection) => {
+      const channelId = safeText(collection.channelId, 'Unassigned channel');
+      const current = groups.get(channelId) || [];
+      current.push(collection);
+      groups.set(channelId, current);
+    });
+    return Array.from(groups.entries())
+      .map(([channelId, collections]) => ({
+        channelId,
+        collections: collections.sort((left, right) => left.name.localeCompare(right.name)),
+      }))
+      .sort((left, right) => left.channelId.localeCompare(right.channelId));
+  }, [visibleRunningCollections]);
+  const runningCollectionIds = useMemo(() => (
+    new Set(
+      visibleRunningCollections
+        .map((collection) => safeText(collection.collectionId || collection.id))
+        .filter(Boolean)
+    )
+  ), [visibleRunningCollections]);
+
+  useEffect(() => {
+    if (!savedChannels.length) {
+      if (selectedChannelId) setSelectedChannelId('');
+      return;
+    }
+    if (!savedChannels.includes(selectedChannelId)) {
+      setSelectedChannelId(savedChannels[0]);
+    }
+  }, [savedChannels, selectedChannelId]);
 
   const buildCaption = (product: Product | null) => {
     if (!product) return '';
@@ -326,13 +400,17 @@ export default function TelegramPosts() {
   const resolveFrequencyValue = () => {
     const parsed = Number(frequencyValue);
     if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_FREQUENCY_VALUE;
-    return Math.max(1, Math.floor(parsed));
+    return Math.max(frequencyUnit === 'seconds' ? MIN_TELEGRAM_SECONDS_INTERVAL : 1, Math.floor(parsed));
   };
 
   const resolveMaxFailuresBeforePause = () => {
     const parsed = Number(maxFailuresBeforePause);
     if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_FAILURES_BEFORE_PAUSE;
     return Math.max(1, Math.floor(parsed));
+  };
+  const resolveBatchSize = () => {
+    const parsed = Number(batchSize);
+    return [2, 4, 6, 8].includes(parsed) ? parsed : DEFAULT_BATCH_SIZE;
   };
 
   const getResolvedTelegramChannelId = () => safeText(telegramChannelId).trim();
@@ -347,6 +425,7 @@ export default function TelegramPosts() {
 
   const persistTelegramProfile = async (nextValues: {
     telegramChannelId?: string;
+    telegramChannels?: string[];
     telegramTemplate?: string;
     telegramNotes?: string;
     telegramCollections?: TelegramPostCollection[];
@@ -357,6 +436,7 @@ export default function TelegramPosts() {
     const nextProfile: StoreProfile = {
       ...profile,
       telegramChannelId: nextValues.telegramChannelId ?? telegramChannelId.trim(),
+      telegramChannels: nextValues.telegramChannels ?? telegramChannels,
       telegramTemplate: nextValues.telegramTemplate ?? (telegramTemplate.trim() || DEFAULT_TEMPLATE),
       telegramNotes: nextValues.telegramNotes ?? telegramNotes.trim(),
       telegramCollections: nextValues.telegramCollections ?? telegramCollections,
@@ -365,6 +445,7 @@ export default function TelegramPosts() {
     };
     const saved = await updateTelegramProfileState({
       telegramChannelId: nextProfile.telegramChannelId,
+      telegramChannels: nextProfile.telegramChannels,
       telegramTemplate: nextProfile.telegramTemplate,
       telegramNotes: nextProfile.telegramNotes,
       telegramCollections: nextProfile.telegramCollections,
@@ -372,9 +453,33 @@ export default function TelegramPosts() {
       telegramActiveCollectionId: nextProfile.telegramActiveCollectionId,
     });
     setProfile(saved);
+    setTelegramChannels(Array.isArray(saved.telegramChannels) ? saved.telegramChannels.map((channelId) => safeText(channelId)).filter(Boolean) : []);
     setTelegramCollections(normalizeCollections(saved));
     setTelegramActivity(normalizeActivity(saved));
     return saved;
+  };
+
+  const addTelegramChannel = async () => {
+    const channelId = safeText(newChannelId);
+    if (!channelId) {
+      setNotice({ type: 'error', message: 'Channel ID is required.' });
+      return;
+    }
+    const nextChannels = Array.from(new Set([...savedChannels, channelId]));
+    try {
+      const saved = await persistTelegramProfile({
+        telegramChannels: nextChannels,
+        telegramChannelId: safeText(telegramChannelId) || channelId,
+      }, { suppressNotice: true });
+      if (saved) {
+        setTelegramChannelId((current) => current || channelId);
+        setSelectedChannelId(channelId);
+        setNewChannelId('');
+        setNotice({ type: 'success', message: 'Channel added.' });
+      }
+    } catch (error) {
+      setNotice({ type: 'error', message: getFriendlyErrorMessage(error, 'telegram.channel_add') });
+    }
   };
 
   const addProductToQueue = (productId: string) => {
@@ -398,6 +503,8 @@ export default function TelegramPosts() {
     if (!collection) {
       setFrequencyValue(String(DEFAULT_FREQUENCY_VALUE));
       setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
+      setBatchSize(String(DEFAULT_BATCH_SIZE));
+      setAutoStartTime('');
       setRepeatMode(DEFAULT_REPEAT_MODE);
       setMaxFailuresBeforePause(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
       return;
@@ -405,11 +512,13 @@ export default function TelegramPosts() {
     setTelegramChannelId(collection.channelId);
     setTelegramTemplate(collection.template || DEFAULT_TEMPLATE);
     setTelegramNotes(collection.notes);
-    setPostMode(collection.postMode);
+    setPostMode('selected');
     setQueuedProductIds(collection.queuedProductIds || []);
     setCategoryFilter(collection.category || 'all');
     setFrequencyValue(String(collection.frequencyValue || DEFAULT_FREQUENCY_VALUE));
     setFrequencyUnit((collection.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit);
+    setBatchSize(String((collection as any).batchSize || DEFAULT_BATCH_SIZE));
+    setAutoStartTime((collection as any).autoStartTime || '');
     setRepeatMode((collection.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode);
     setMaxFailuresBeforePause(String(collection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     void persistTelegramProfile({ telegramActiveCollectionId: collection.id }, { suppressNotice: true });
@@ -422,6 +531,7 @@ export default function TelegramPosts() {
       const channelId = requireTelegramChannelId();
       const saved = await persistTelegramProfile({
         telegramChannelId: channelId,
+        telegramChannels: Array.from(new Set([...savedChannels, channelId])),
         telegramTemplate: telegramTemplate.trim() || DEFAULT_TEMPLATE,
         telegramNotes: telegramNotes.trim(),
       });
@@ -460,6 +570,8 @@ export default function TelegramPosts() {
         queuedProductIds,
         frequencyValue: resolveFrequencyValue(),
         frequencyUnit,
+        batchSize: resolveBatchSize(),
+        autoStartTime: autoStartTime.trim(),
         repeatMode,
         maxFailuresBeforePause: resolveMaxFailuresBeforePause(),
         createdAt: activeCollection?.createdAt || now,
@@ -472,6 +584,8 @@ export default function TelegramPosts() {
         ? telegramCollections.map((collection) => collection.id === activeCollection.id ? nextCollection : collection)
         : [nextCollection, ...telegramCollections].sort((left, right) => left.name.localeCompare(right.name));
       const saved = await persistTelegramProfile({
+        telegramChannelId: channelId,
+        telegramChannels: Array.from(new Set([...savedChannels, channelId])),
         telegramCollections: nextCollections,
         telegramActiveCollectionId: nextCollection.id,
       });
@@ -489,20 +603,23 @@ export default function TelegramPosts() {
     }
   };
 
-  const deleteCollection = async () => {
-    if (!activeCollection) return;
+  const deleteCollectionById = async (collectionId: string) => {
+    const targetCollection = telegramCollections.find((collection) => collection.id === collectionId);
+    if (!targetCollection) return;
     setIsSavingCollection(true);
     setNotice(null);
     try {
-      const nextCollections = telegramCollections.filter((collection) => collection.id !== activeCollection.id);
+      const nextCollections = telegramCollections.filter((collection) => collection.id !== targetCollection.id);
       await persistTelegramProfile({
         telegramCollections: nextCollections,
         telegramActiveCollectionId: '',
       });
-      setActiveCollectionId('');
-      setCollectionName('');
-      setCollectionChannelId(safeText(profile?.telegramChannelId));
-      setCollectionCategory(categoryFilter);
+      if (activeCollection?.id === targetCollection.id) {
+        setActiveCollectionId('');
+        setCollectionName('');
+        setCollectionChannelId(safeText(selectedChannelId || profile?.telegramChannelId));
+        setCollectionCategory(categoryFilter);
+      }
       setNotice({ type: 'success', message: 'Collection removed.' });
     } catch (error) {
       setNotice({ type: 'error', message: getFriendlyErrorMessage(error, 'telegram.collection_delete') });
@@ -510,97 +627,40 @@ export default function TelegramPosts() {
       setIsSavingCollection(false);
     }
   };
+  const deleteCollection = async () => {
+    if (!activeCollection) return;
+    await deleteCollectionById(activeCollection.id);
+  };
 
-  const createFreshCollectionDraft = () => {
+  const createFreshCollectionDraft = (preferredChannelId?: string) => {
     setActiveCollectionId('');
     setCollectionName('');
-    setCollectionChannelId(telegramChannelId.trim());
+    const nextChannelId = safeText(preferredChannelId || selectedChannelId || telegramChannelId).trim();
+    setCollectionChannelId(nextChannelId);
+    setTelegramChannelId(nextChannelId);
     setCollectionCategory(categoryFilter);
     setFrequencyValue(String(DEFAULT_FREQUENCY_VALUE));
     setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
+    setBatchSize(String(DEFAULT_BATCH_SIZE));
+    setAutoStartTime('');
     setRepeatMode(DEFAULT_REPEAT_MODE);
     setMaxFailuresBeforePause(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
   };
 
-  useEffect(() => {
-    if (!activeCollectionId || !liveSyncCollection) {
-      hasHydratedCollectionRef.current = true;
-      return;
+  const openCollectionModal = (channelId?: string, collectionId?: string) => {
+    const resolvedChannelId = safeText(channelId || selectedChannelId || telegramChannelId);
+    if (collectionId) {
+      loadCollection(collectionId);
+    } else {
+      createFreshCollectionDraft(resolvedChannelId);
     }
-    if (!hasHydratedCollectionRef.current) {
-      hasHydratedCollectionRef.current = true;
-      return;
+    if (resolvedChannelId) {
+      setSelectedChannelId(resolvedChannelId);
+      setCollectionChannelId(resolvedChannelId);
+      setTelegramChannelId(resolvedChannelId);
     }
-    const target = telegramCollections.find((collection) => collection.id === activeCollectionId);
-    if (!target) return;
-    const nextCategory = collectionCategory || categoryFilter || 'all';
-    const nextCollection: TelegramPostCollection = {
-      ...target,
-      name: collectionName.trim() || target.name,
-      category: nextCategory,
-      channelId: collectionChannelId.trim() || telegramChannelId.trim(),
-      template: telegramTemplate.trim() || DEFAULT_TEMPLATE,
-      notes: telegramNotes.trim(),
-      postMode,
-      queuedProductIds,
-      frequencyValue: resolveFrequencyValue(),
-      frequencyUnit,
-      repeatMode,
-      maxFailuresBeforePause: resolveMaxFailuresBeforePause(),
-      updatedAt: new Date().toISOString(),
-    };
-    const changed = JSON.stringify({
-      name: target.name,
-      category: target.category,
-      channelId: target.channelId,
-      template: target.template,
-      notes: target.notes,
-      postMode: target.postMode,
-      queuedProductIds: target.queuedProductIds,
-      frequencyValue: target.frequencyValue,
-      frequencyUnit: target.frequencyUnit,
-      repeatMode: target.repeatMode,
-      maxFailuresBeforePause: target.maxFailuresBeforePause,
-    }) !== JSON.stringify({
-      name: nextCollection.name,
-      category: nextCollection.category,
-      channelId: nextCollection.channelId,
-      template: nextCollection.template,
-      notes: nextCollection.notes,
-      postMode: nextCollection.postMode,
-      queuedProductIds: nextCollection.queuedProductIds,
-      frequencyValue: nextCollection.frequencyValue,
-      frequencyUnit: nextCollection.frequencyUnit,
-      repeatMode: nextCollection.repeatMode,
-      maxFailuresBeforePause: nextCollection.maxFailuresBeforePause,
-    });
-    if (!changed) return;
-    const timer = window.setTimeout(() => {
-      const nextCollections = telegramCollections.map((collection) => collection.id === nextCollection.id ? nextCollection : collection);
-      void persistTelegramProfile({ telegramCollections: nextCollections }, { suppressNotice: true }).catch(() => {
-        // keep the live editor responsive; explicit save still surfaces errors
-      });
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [
-    activeCollectionId,
-    categoryFilter,
-    collectionCategory,
-    collectionName,
-    liveSyncCollection,
-    postMode,
-    queuedProductIds,
-    telegramActivity,
-    telegramCollections,
-    telegramNotes,
-    telegramTemplate,
-    telegramChannelId,
-    collectionChannelId,
-    frequencyUnit,
-    frequencyValue,
-    maxFailuresBeforePause,
-    repeatMode,
-  ]);
+    setIsCollectionModalOpen(true);
+  };
 
   const ensureCollectionSaved = async () => {
     const trimmedName = collectionName.trim();
@@ -616,10 +676,12 @@ export default function TelegramPosts() {
       channelId,
       template: telegramTemplate.trim() || DEFAULT_TEMPLATE,
       notes: telegramNotes.trim(),
-      postMode,
+      postMode: 'selected',
       queuedProductIds,
       frequencyValue: resolveFrequencyValue(),
       frequencyUnit,
+      batchSize: resolveBatchSize(),
+      autoStartTime: autoStartTime.trim(),
       repeatMode,
       maxFailuresBeforePause: resolveMaxFailuresBeforePause(),
       createdAt: activeCollection?.createdAt || now,
@@ -632,6 +694,8 @@ export default function TelegramPosts() {
       ? telegramCollections.map((collection) => collection.id === activeCollection.id ? nextCollection : collection)
       : [nextCollection, ...telegramCollections].sort((left, right) => left.name.localeCompare(right.name));
     const saved = await persistTelegramProfile({
+      telegramChannelId: channelId,
+      telegramChannels: Array.from(new Set([...savedChannels, channelId])),
       telegramCollections: nextCollections,
       telegramActiveCollectionId: nextCollection.id,
     });
@@ -721,9 +785,11 @@ export default function TelegramPosts() {
         category: savedCollection.category,
         frequencyValue: savedCollection.frequencyValue || DEFAULT_FREQUENCY_VALUE,
         frequencyUnit: (savedCollection.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit,
+        batchSize: (savedCollection as any).batchSize || DEFAULT_BATCH_SIZE,
+        autoStartTime: (savedCollection as any).autoStartTime || undefined,
         repeatMode: (savedCollection.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode,
         maxFailuresBeforePause: savedCollection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE,
-        postMode: savedCollection.postMode,
+        postMode: 'selected',
         products: schedulerProducts,
       });
       await refreshRunningCollections({ silent: true });
@@ -823,6 +889,673 @@ export default function TelegramPosts() {
     : notice?.type === 'success'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
       : 'border-slate-200 bg-slate-50 text-slate-700';
+
+  return (
+    <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
+      {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${noticeClassName}`}>{notice.message}</div>}
+
+      <Card className="shadow-sm">
+        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle className="text-base tracking-wide uppercase text-slate-700">Telegram Channels</CardTitle>
+            <p className="text-sm text-muted-foreground">Use channel tabs first, then add, edit, or delete collections for the selected channel.</p>
+          </div>
+          <div className="flex w-full max-w-xl items-center gap-2">
+            <Input value={newChannelId} onChange={(event) => setNewChannelId(event.target.value)} placeholder="@stockflow_offers" />
+            <Button type="button" onClick={() => void addTelegramChannel()}>
+              <Plus className="mr-2 h-4 w-4" /> Add Channel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {savedChannels.length === 0 ? (
+            <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+              No Telegram channels added yet. Add a channel ID to start creating collections.
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {savedChannels.map((channelId) => (
+                  <button
+                    key={channelId}
+                    type="button"
+                    onClick={() => setSelectedChannelId(channelId)}
+                    className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
+                      selectedChannelId === channelId
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {channelId}
+                  </button>
+                ))}
+              </div>
+              <div className="rounded-2xl border bg-slate-50 p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="text-lg font-bold text-slate-950">{selectedChannelId}</div>
+                    <div className="mt-1 text-sm text-slate-600">
+                      {activeChannelSavedCollections.length} saved collection{activeChannelSavedCollections.length === 1 ? '' : 's'} • {activeChannelRunningCollections.length} running
+                    </div>
+                  </div>
+                  <Button type="button" size="sm" onClick={() => openCollectionModal(selectedChannelId)}>
+                    <FolderPlus className="mr-2 h-4 w-4" /> Add Collection
+                  </Button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {activeChannelSavedCollections.length > 0 ? activeChannelSavedCollections.map((collection) => {
+                    const isRunning = runningCollectionIds.has(collection.id);
+                    return (
+                      <div key={collection.id} className="rounded-2xl border bg-white p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="font-semibold text-slate-950">{collection.name}</div>
+                              <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${isRunning ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                                {isRunning ? 'Running' : 'Saved'}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-sm text-slate-600">
+                              {collection.category === 'all' ? 'All categories' : collection.category} • {collection.queuedProductIds.length} queued products
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button type="button" size="sm" variant="outline" onClick={() => openCollectionModal(selectedChannelId, collection.id)}>
+                              Edit
+                            </Button>
+                            <Button type="button" size="sm" variant="outline" className="text-rose-600" onClick={() => void deleteCollectionById(collection.id)} disabled={isSavingCollection}>
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }) : (
+                    <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                      No collections saved for this channel yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="shadow-sm">
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <CardTitle className="text-base tracking-wide uppercase text-slate-700">Running Collections</CardTitle>
+            <p className="text-sm text-muted-foreground">Live collection activity for the currently selected Telegram channel.</p>
+          </div>
+          <div className="flex items-center gap-3 text-sm text-slate-600">
+            <span>{savedChannels.length} channels</span>
+            <span>{visibleRunningCollections.length} live collections</span>
+            <span>{livePostedCount} posts sent</span>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {hiddenForeignRunningCollectionsCount > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Hidden {hiddenForeignRunningCollectionsCount} live collection{hiddenForeignRunningCollectionsCount === 1 ? '' : 's'} that do not belong to this store profile.
+            </div>
+          )}
+          {savedChannels.length > 0 && selectedChannelId ? (
+            <div className="rounded-2xl border bg-white p-5">
+              <div className="flex flex-col gap-3">
+                <div>
+                  <div className="text-lg font-bold text-slate-950">{selectedChannelId}</div>
+                  <div className="mt-1 text-sm text-slate-600">{activeChannelSavedCollections.length} saved collection{activeChannelSavedCollections.length === 1 ? '' : 's'} • {activeChannelRunningCollections.length} currently running</div>
+                </div>
+              </div>
+              <div className="mt-4 space-y-4">
+                {activeChannelRunningCollections.length > 0 ? activeChannelRunningCollections.map((collection) => {
+                  const backendCollectionId = safeText(collection.collectionId || collection.id);
+                  const normalizedStatus = safeText(collection.status).toLowerCase();
+                  const isRunning = normalizedStatus === 'running';
+                  const isPaused = normalizedStatus === 'paused';
+                  return (
+                    <div key={collection.id} className="rounded-2xl border bg-slate-50 p-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="space-y-2">
+                          <div className="text-lg font-bold text-slate-950">{collection.name}</div>
+                          <div className="text-sm text-slate-600">{collection.category === 'all' ? 'All categories' : collection.category} • {collection.frequencyValue} {collection.frequencyUnit}</div>
+                          <div className="inline-flex rounded-full border bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                            {collection.status}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {isRunning && (
+                            <Button type="button" variant="outline" size="sm" onClick={() => void handleCollectionAction('pause', collection, () => pauseTelegramCollection(backendCollectionId), 'Collection paused')} disabled={collectionActionId === backendCollectionId}>
+                              <Pause className="mr-2 h-4 w-4" /> Pause
+                            </Button>
+                          )}
+                          {isPaused && (
+                            <Button type="button" variant="outline" size="sm" onClick={() => void handleCollectionAction('resume', collection, () => resumeTelegramCollection(backendCollectionId), 'Collection resumed')} disabled={collectionActionId === backendCollectionId}>
+                              <Play className="mr-2 h-4 w-4" /> Resume
+                            </Button>
+                          )}
+                          <Button type="button" variant="outline" size="sm" onClick={() => void handleCollectionAction('stop', collection, () => stopTelegramCollection(backendCollectionId), 'Collection stopped')} disabled={collectionActionId === backendCollectionId}>
+                            <Square className="mr-2 h-4 w-4" /> Stop
+                          </Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => openCollectionModal(selectedChannelId, backendCollectionId)}>
+                            Edit Setup
+                          </Button>
+                          <Button type="button" size="sm" onClick={() => void loadActivityForCollection(backendCollectionId)} disabled={isActivityLoading && selectedActivityCollectionId === backendCollectionId}>
+                            View Activity
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+                        <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Products</div><div className="mt-1 font-bold text-slate-900">{collection.productsCount}</div></div>
+                        <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Cursor</div><div className="mt-1 font-bold text-slate-900">{collection.currentCursor}</div></div>
+                        <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Sent</div><div className="mt-1 font-bold text-slate-900">{collection.sentCount}</div></div>
+                        <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Failed</div><div className="mt-1 font-bold text-slate-900">{collection.failedCount}</div></div>
+                        <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Repeat</div><div className="mt-1 font-bold text-slate-900">{collection.repeatMode || 'loop'}</div></div>
+                      </div>
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <div className="rounded-xl border bg-white p-3 text-sm">
+                          <div className="text-xs uppercase tracking-wide text-slate-500">Last Posted Product</div>
+                          <div className="mt-1 font-semibold text-slate-900">{collection.lastPostedProduct || 'Not yet'}</div>
+                          <div className="mt-1 text-xs text-slate-500">{formatDateTime(collection.lastPostedAt)}</div>
+                        </div>
+                        <div className="rounded-xl border bg-white p-3 text-sm">
+                          <div className="text-xs uppercase tracking-wide text-slate-500">Next Post Time</div>
+                          <div className="mt-1 font-semibold text-slate-900">{formatDateTime(collection.nextPostAt)}</div>
+                          <div className="mt-1 text-xs text-slate-500">Max failures before pause: {collection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE}</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    No collections are running on this channel right now.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+              Add a channel first to start organizing Telegram collections.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="hidden">
+        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <CardTitle className="text-base tracking-wide uppercase text-slate-700">Telegram Channels</CardTitle>
+            <p className="text-sm text-muted-foreground">Add channels first. Each channel can hold multiple collections, and collection setup opens only inside the popup.</p>
+          </div>
+          <div className="flex w-full max-w-xl items-center gap-2">
+            <Input value={newChannelId} onChange={(event) => setNewChannelId(event.target.value)} placeholder="@stockflow_offers" />
+            <Button type="button" onClick={() => void addTelegramChannel()}>
+              <Plus className="mr-2 h-4 w-4" /> Add Channel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {savedChannels.map((channelId) => {
+            const collectionsForChannel = telegramCollections.filter((collection) => safeText(collection.channelId) === safeText(channelId));
+            const runningForChannel = visibleRunningCollections.filter((collection) => safeText(collection.channelId) === safeText(channelId));
+            return (
+              <div key={channelId} className={`rounded-2xl border p-4 transition ${selectedChannelId === channelId ? 'border-slate-900 bg-slate-50' : 'bg-white'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-bold text-slate-950">{channelId}</div>
+                    <div className="mt-1 text-sm text-slate-600">{collectionsForChannel.length} saved collection{collectionsForChannel.length === 1 ? '' : 's'} • {runningForChannel.length} running</div>
+                  </div>
+                  <button type="button" className="rounded-full border px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100" onClick={() => setSelectedChannelId(channelId)}>
+                    Select
+                  </button>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button type="button" size="sm" onClick={() => openCollectionModal(channelId)}>
+                    <FolderPlus className="mr-2 h-4 w-4" /> New Collection
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openCollectionModal(channelId, collectionsForChannel[0]?.id)}
+                    disabled={collectionsForChannel.length === 0}
+                  >
+                    Manage Collections
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+          {savedChannels.length === 0 && (
+            <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground md:col-span-2 xl:col-span-3">
+              No Telegram channels added yet. Add a channel ID to start creating collections.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="hidden">
+        <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <CardTitle className="text-base tracking-wide uppercase text-slate-700">Running Collections By Channel</CardTitle>
+            <p className="text-sm text-muted-foreground">The page outside the popup now focuses only on live running collections grouped channel-wise.</p>
+          </div>
+          <div className="flex items-center gap-3 text-sm text-slate-600">
+            <span>{savedChannels.length} channels</span>
+            <span>{visibleRunningCollections.length} live collections</span>
+            <span>{livePostedCount} posts sent</span>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {hiddenForeignRunningCollectionsCount > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Hidden {hiddenForeignRunningCollectionsCount} live collection{hiddenForeignRunningCollectionsCount === 1 ? '' : 's'} that do not belong to this store profile.
+            </div>
+          )}
+          {savedChannels.map((channelId) => {
+            const channelRunningCollections = visibleRunningCollections.filter((collection) => safeText(collection.channelId) === safeText(channelId));
+            const channelSavedCollections = telegramCollections.filter((collection) => safeText(collection.channelId) === safeText(channelId));
+            return (
+              <div key={channelId} className="rounded-2xl border bg-white p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="text-lg font-bold text-slate-950">{channelId}</div>
+                    <div className="mt-1 text-sm text-slate-600">{channelSavedCollections.length} saved collection{channelSavedCollections.length === 1 ? '' : 's'} • {channelRunningCollections.length} currently running</div>
+                  </div>
+                  <Button type="button" size="sm" onClick={() => openCollectionModal(channelId)}>
+                    <FolderPlus className="mr-2 h-4 w-4" /> Create Collection
+                  </Button>
+                </div>
+                <div className="mt-4 space-y-4">
+                  {channelRunningCollections.length > 0 ? channelRunningCollections.map((collection) => {
+                    const backendCollectionId = safeText(collection.collectionId || collection.id);
+                    const normalizedStatus = safeText(collection.status).toLowerCase();
+                    const isRunning = normalizedStatus === 'running';
+                    const isPaused = normalizedStatus === 'paused';
+                    return (
+                      <div key={collection.id} className="rounded-2xl border bg-slate-50 p-4">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="space-y-2">
+                            <div className="text-lg font-bold text-slate-950">{collection.name}</div>
+                            <div className="text-sm text-slate-600">{collection.category === 'all' ? 'All categories' : collection.category} • {collection.frequencyValue} {collection.frequencyUnit}</div>
+                            <div className="inline-flex rounded-full border bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                              {collection.status}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {isRunning && (
+                              <Button type="button" variant="outline" size="sm" onClick={() => void handleCollectionAction('pause', collection, () => pauseTelegramCollection(backendCollectionId), 'Collection paused')} disabled={collectionActionId === backendCollectionId}>
+                                <Pause className="mr-2 h-4 w-4" /> Pause
+                              </Button>
+                            )}
+                            {isPaused && (
+                              <Button type="button" variant="outline" size="sm" onClick={() => void handleCollectionAction('resume', collection, () => resumeTelegramCollection(backendCollectionId), 'Collection resumed')} disabled={collectionActionId === backendCollectionId}>
+                                <Play className="mr-2 h-4 w-4" /> Resume
+                              </Button>
+                            )}
+                            <Button type="button" variant="outline" size="sm" onClick={() => void handleCollectionAction('stop', collection, () => stopTelegramCollection(backendCollectionId), 'Collection stopped')} disabled={collectionActionId === backendCollectionId}>
+                              <Square className="mr-2 h-4 w-4" /> Stop
+                            </Button>
+                            <Button type="button" size="sm" variant="outline" onClick={() => openCollectionModal(channelId, backendCollectionId)}>
+                              Edit Setup
+                            </Button>
+                            <Button type="button" size="sm" onClick={() => void loadActivityForCollection(backendCollectionId)} disabled={isActivityLoading && selectedActivityCollectionId === backendCollectionId}>
+                              View Activity
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
+                          <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Products</div><div className="mt-1 font-bold text-slate-900">{collection.productsCount}</div></div>
+                          <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Cursor</div><div className="mt-1 font-bold text-slate-900">{collection.currentCursor}</div></div>
+                          <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Sent</div><div className="mt-1 font-bold text-slate-900">{collection.sentCount}</div></div>
+                          <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Failed</div><div className="mt-1 font-bold text-slate-900">{collection.failedCount}</div></div>
+                          <div className="rounded-xl border bg-white p-3 text-sm"><div className="text-xs uppercase tracking-wide text-slate-500">Repeat</div><div className="mt-1 font-bold text-slate-900">{collection.repeatMode || 'loop'}</div></div>
+                        </div>
+                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                          <div className="rounded-xl border bg-white p-3 text-sm">
+                            <div className="text-xs uppercase tracking-wide text-slate-500">Last Posted Product</div>
+                            <div className="mt-1 font-semibold text-slate-900">{collection.lastPostedProduct || 'Not yet'}</div>
+                            <div className="mt-1 text-xs text-slate-500">{formatDateTime(collection.lastPostedAt)}</div>
+                          </div>
+                          <div className="rounded-xl border bg-white p-3 text-sm">
+                            <div className="text-xs uppercase tracking-wide text-slate-500">Next Post Time</div>
+                            <div className="mt-1 font-semibold text-slate-900">{formatDateTime(collection.nextPostAt)}</div>
+                            <div className="mt-1 text-xs text-slate-500">Max failures before pause: {collection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }) : (
+                    <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                      No collections are running on this channel right now.
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {savedChannels.length === 0 && (
+            <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+              Add a channel first to start organizing Telegram collections.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {isCollectionModalOpen && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
+          <div className="max-h-[92vh] w-full max-w-[1500px] overflow-hidden rounded-3xl border bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b px-6 py-4">
+              <div>
+                <div className="text-lg font-bold text-slate-950">{activeCollection ? 'Edit Telegram Collection' : 'Create Telegram Collection'}</div>
+                <div className="text-sm text-slate-600">All collection creation stays inside this popup. The main page remains channel and running-collection focused.</div>
+              </div>
+              <button type="button" className="rounded-full border p-2 text-slate-600 transition hover:bg-slate-100" onClick={() => setIsCollectionModalOpen(false)}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="grid xl:grid-cols-[minmax(0,1.2fr)_380px]">
+              <div className="max-h-[calc(92vh-76px)] overflow-y-auto p-6">
+                <div className="space-y-6">
+                  <Card className="shadow-none">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Collection Setup</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-1">
+                        <div className="space-y-2">
+                          <Label>Collection Name</Label>
+                          <Input value={collectionName} onChange={(event) => setCollectionName(event.target.value)} placeholder="e.g. Weekend Home Offers" />
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                        <div className="space-y-2">
+                          <Label>Frequency Value</Label>
+                          <Input
+                            type="number"
+                            min={frequencyUnit === 'seconds' ? String(MIN_TELEGRAM_SECONDS_INTERVAL) : '1'}
+                            value={frequencyValue}
+                            onChange={(event) => setFrequencyValue(event.target.value)}
+                            placeholder={frequencyUnit === 'seconds' ? String(MIN_TELEGRAM_SECONDS_INTERVAL) : '1'}
+                          />
+                          {frequencyUnit === 'seconds' && (
+                            <p className="text-xs text-muted-foreground">Minimum {MIN_TELEGRAM_SECONDS_INTERVAL} seconds.</p>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Frequency Unit</Label>
+                          <Select value={frequencyUnit} onChange={(event) => setFrequencyUnit(event.target.value as TelegramCollectionFrequencyUnit)}>
+                            <option value="seconds">Seconds</option>
+                            <option value="minutes">Minutes</option>
+                            <option value="hours">Hours</option>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Batch Size</Label>
+                          <Select value={batchSize} onChange={(event) => setBatchSize(event.target.value)}>
+                            <option value="2">2 products</option>
+                            <option value="4">4 products</option>
+                            <option value="6">6 products</option>
+                            <option value="8">8 products</option>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Repeat Mode</Label>
+                          <Select value={repeatMode} onChange={(event) => setRepeatMode(event.target.value as TelegramCollectionRepeatMode)}>
+                            <option value="once">Once</option>
+                            <option value="loop">Loop</option>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Auto Start Time</Label>
+                          <Input type="time" value={autoStartTime} onChange={(event) => setAutoStartTime(event.target.value)} />
+                          <p className="text-xs text-muted-foreground">Optional daily start time for this collection.</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Max Failures Before Pause</Label>
+                          <Input type="number" min="1" value={maxFailuresBeforePause} onChange={(event) => setMaxFailuresBeforePause(event.target.value)} placeholder="3" />
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="shadow-none">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Content</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Text Template</Label>
+                        <textarea value={telegramTemplate} onChange={(event) => setTelegramTemplate(event.target.value)} rows={7} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
+                        <p className="text-xs text-muted-foreground">{'Use {product_name}, {price}, {category}, {stock}, {barcode}'}</p>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Notes</Label>
+                        <Input value={telegramNotes} onChange={(event) => setTelegramNotes(event.target.value)} placeholder="Optional footer or campaign notes" />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="shadow-none">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Products</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_180px]">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
+                          <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, barcode, category..." className="pl-9" />
+                        </div>
+                        <Select value={categoryFilter} onChange={(event) => {
+                          const nextCategory = event.target.value;
+                          setCategoryFilter(nextCategory);
+                          setCollectionCategory(nextCategory);
+                        }}>
+                          {filterCategories.map((category) => <option key={category} value={category}>{category === 'all' ? 'All Categories' : category}</option>)}
+                        </Select>
+                        <Select value={sortOption} onChange={(event) => setSortOption(event.target.value as typeof sortOption)}>
+                          <option value="name-asc">Name (A-Z)</option>
+                          <option value="stock-desc">Stock High-Low</option>
+                          <option value="stock-asc">Stock Low-High</option>
+                          <option value="price-desc">Price High-Low</option>
+                          <option value="price-asc">Price Low-High</option>
+                        </Select>
+                      </div>
+                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+                        <div className="rounded-2xl border bg-white">
+                          <div className="flex items-center justify-between border-b px-4 py-3">
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">Available Products</div>
+                              <div className="text-xs text-muted-foreground">Browse inventory and add products into this collection queue.</div>
+                            </div>
+                            <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{filteredProducts.length} found</div>
+                          </div>
+                          <div className="max-h-[520px] overflow-auto">
+                            {filteredProducts.map((product) => {
+                              const inQueue = queuedProductIds.includes(product.id);
+                              return (
+                                <div key={product.id} className="grid grid-cols-[64px_minmax(0,1fr)_88px] items-center gap-3 border-b px-4 py-3">
+                                  <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl border bg-slate-50">
+                                    {getProductImageUrl(product)
+                                      ? <img src={getProductImageUrl(product)} alt={getProductName(product)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                                      : <ImageIcon className="h-5 w-5 text-slate-300" />}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="truncate font-semibold text-slate-900">{getProductName(product)}</div>
+                                    <div className="truncate text-xs text-muted-foreground">{getProductBarcode(product)} • {getProductCategory(product)}</div>
+                                    <div className="mt-1 flex items-center gap-3 text-xs text-slate-600">
+                                      <span>Stock {toNonNegativeNumber(product.stock)}</span>
+                                      <span>{formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice))}</span>
+                                    </div>
+                                  </div>
+                                  <Button type="button" variant={inQueue ? 'secondary' : 'outline'} size="sm" onClick={() => addProductToQueue(product.id)} disabled={inQueue}>
+                                    <Plus className="mr-1 h-4 w-4" /> {inQueue ? 'Added' : 'Add'}
+                                  </Button>
+                                </div>
+                              );
+                            })}
+                            {filteredProducts.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">No products match the current filters.</div>}
+                          </div>
+                        </div>
+                        <div className="space-y-4">
+                          <div className="rounded-2xl border bg-slate-50 p-4 text-sm">
+                            <div>Filtered products: <span className="font-semibold">{filteredProducts.length}</span></div>
+                            <div>Selected queue: <span className="font-semibold">{queuedProducts.length}</span></div>
+                            <div>Will send now: <span className="font-semibold">{targetProducts.length}</span></div>
+                          </div>
+                          <div className="rounded-2xl border bg-white">
+                            <div className="flex items-center justify-between border-b px-4 py-3">
+                              <div>
+                                <div className="text-sm font-semibold text-slate-900">Selected Product Queue</div>
+                                <div className="text-xs text-muted-foreground">Only queued products from this list will be sent.</div>
+                              </div>
+                              <Button type="button" variant="outline" size="sm" onClick={clearQueue} disabled={queuedProducts.length === 0}>
+                                Clear
+                              </Button>
+                            </div>
+                            <div className="p-4">
+                              <div className="relative mb-3">
+                                <Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
+                                <Input value={queueSearchTerm} onChange={(event) => setQueueSearchTerm(event.target.value)} placeholder="Search queued products" className="pl-9" />
+                              </div>
+                              <div className="max-h-[380px] space-y-3 overflow-auto">
+                                {queueFilteredProducts.map((product) => (
+                                  <div key={product.id} className="flex items-center gap-3 rounded-xl border p-3">
+                                    <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl border bg-slate-50">
+                                      {getProductImageUrl(product)
+                                        ? <img src={getProductImageUrl(product)} alt={getProductName(product)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                                        : <ImageIcon className="h-5 w-5 text-slate-300" />}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="truncate font-semibold text-slate-900">{getProductName(product)}</div>
+                                      <div className="truncate text-xs text-muted-foreground">{getProductBarcode(product)} • {getProductCategory(product)}</div>
+                                    </div>
+                                    <Button type="button" variant="outline" size="sm" onClick={() => removeProductFromQueue(product.id)}>
+                                      <Trash2 className="mr-1 h-4 w-4" /> Remove
+                                    </Button>
+                                  </div>
+                                ))}
+                                {queueFilteredProducts.length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No products in the selected queue yet.</div>}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
+              <div className="max-h-[calc(92vh-76px)] overflow-y-auto border-l bg-slate-50/70 p-6">
+                <div className="space-y-6">
+                  <Card className="shadow-none">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Preview</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {previewProduct ? (
+                        <>
+                          <div className="overflow-hidden rounded-2xl border bg-white">
+                            {getProductImageUrl(previewProduct)
+                              ? <img src={getProductImageUrl(previewProduct)} alt={getProductName(previewProduct)} className="h-64 w-full object-cover" loading="lazy" decoding="async" />
+                              : <div className="flex h-64 items-center justify-center bg-slate-50"><ImageIcon className="h-10 w-10 text-slate-300" /></div>}
+                          </div>
+                          <div className="text-2xl font-bold text-slate-950">{getProductName(previewProduct)}</div>
+                          <div className="whitespace-pre-wrap rounded-2xl bg-white p-4 text-sm text-slate-700">{buildCaption(previewProduct)}</div>
+                        </>
+                      ) : (
+                        <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">Add products to the queue or widen the filters to generate a preview.</div>
+                      )}
+                      <div className="space-y-2">
+                        <Button type="button" className="h-11 w-full" onClick={() => void saveCollection()} disabled={isSavingCollection}>
+                          <Save className="mr-2 h-4 w-4" />
+                          {isSavingCollection ? 'Saving...' : activeCollection ? 'Update Collection' : 'Save Collection'}
+                        </Button>
+                        <Button type="button" className="h-11 w-full" onClick={() => void startCollectionRun()} disabled={isStartingCollection || targetProducts.length === 0}>
+                          <Play className="mr-2 h-4 w-4" />
+                          {isStartingCollection ? 'Starting Collection...' : 'Start Collection'}
+                        </Button>
+                        <Button type="button" variant="outline" className="h-11 w-full" onClick={() => void sendPosts()} disabled={isSending || targetProducts.length === 0}>
+                          <Send className="mr-2 h-4 w-4" />
+                          {isSending ? 'Sending Test Post...' : 'Send One Test Post'}
+                        </Button>
+                        {activeCollection && (
+                          <Button type="button" variant="outline" className="h-11 w-full" onClick={() => void deleteCollection()} disabled={isSavingCollection}>
+                            <Trash2 className="mr-2 h-4 w-4" /> Delete Collection
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="shadow-none">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Activity</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl border bg-white p-3">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Posts sent</div>
+                          <div className="mt-1 text-xl font-bold text-slate-950">{Math.max(totalPostedCount, livePostedCount)}</div>
+                        </div>
+                        <div className="rounded-xl border bg-white p-3">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last posted product</div>
+                          <div className="mt-1 text-sm font-bold text-slate-950">{lastPostedEntry?.lastPostedProductName || 'Not yet'}</div>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border bg-white p-3 text-sm">
+                        <div className="flex items-center gap-2 font-semibold text-slate-900">
+                          <Clock3 className="h-4 w-4" />
+                          Last activity
+                        </div>
+                        <div className="mt-2 text-slate-700">
+                          {lastPostedEntry ? (
+                            <>
+                              <div>{lastPostedEntry.collectionName || 'Quick post'} • {lastPostedEntry.successCount}/{lastPostedEntry.productCount} sent</div>
+                              <div className="text-xs text-muted-foreground">{lastPostedEntry.lastPostedProductName || 'Product not captured'} • {lastPostedEntry.category === 'all' ? 'All categories' : lastPostedEntry.category}</div>
+                            </>
+                          ) : (
+                            <div className="text-muted-foreground">No posts have been sent yet.</div>
+                          )}
+                        </div>
+                      </div>
+                      {selectedCollectionActivity.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="text-sm font-semibold text-slate-900">Recent Activity</div>
+                          {selectedCollectionActivity.slice(0, 6).map((entry) => (
+                            <div key={entry.id} className="rounded-xl border bg-white p-3 text-sm">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="font-semibold text-slate-900">{entry.productName || entry.collectionName || 'Telegram item'}</div>
+                                  <div className="text-xs text-slate-500">{entry.status || 'unknown'}</div>
+                                </div>
+                                <div className="text-right text-xs text-slate-500">{formatDateTime(entry.postedAt || entry.createdAt || entry.updatedAt)}</div>
+                              </div>
+                              {entry.error && <div className="mt-2 text-xs text-red-600">{entry.error}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="space-y-3">
+                        <div className="text-sm font-semibold text-slate-900">Failed Products</div>
+                        {failedProducts.slice(0, 6).map((entry) => (
+                          <div key={entry.id} className="rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">
+                            <div className="font-semibold">{entry.productName || 'Unknown product'}</div>
+                            <div className="mt-1 text-xs">{entry.error}</div>
+                          </div>
+                        ))}
+                        {failedProducts.length === 0 && <div className="rounded-xl border border-dashed p-4 text-center text-sm text-muted-foreground">No failed products in the selected activity feed.</div>}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
@@ -986,9 +1719,6 @@ export default function TelegramPosts() {
               <CardTitle className="text-base tracking-wide uppercase text-slate-700">1. Post Type</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-3 md:grid-cols-3">
-              <Button type="button" variant={postMode === 'selected' ? 'default' : 'outline'} className="h-11" onClick={() => setPostMode('selected')}>Selected Products</Button>
-              <Button type="button" variant={postMode === 'filtered' ? 'default' : 'outline'} className="h-11" onClick={() => setPostMode('filtered')}>Filtered Products</Button>
-              <Button type="button" variant={postMode === 'out_of_stock' ? 'default' : 'outline'} className="h-11" onClick={() => setPostMode('out_of_stock')}>Out of Stock</Button>
             </CardContent>
           </Card>
 
@@ -1036,16 +1766,10 @@ export default function TelegramPosts() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+              <div className="grid gap-3 md:grid-cols-1">
                 <div className="space-y-2">
                   <Label>Choose Collection</Label>
                   <Input value={activeCollection?.name || 'No saved collection selected'} readOnly className="bg-slate-50" />
-                </div>
-                <div className="space-y-2">
-                  <Label>Collection Category</Label>
-                  <Select value={collectionCategory} onChange={(event) => setCollectionCategory(event.target.value)}>
-                    {filterCategories.map((category) => <option key={category} value={category}>{category === 'all' ? 'All Categories' : category}</option>)}
-                  </Select>
                 </div>
               </div>
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_220px]">
@@ -1062,10 +1786,6 @@ export default function TelegramPosts() {
                   />
                   <p className="text-xs text-muted-foreground">Update and save this if the selected collection should post to a different Telegram channel.</p>
                 </div>
-                <label className="flex items-center gap-2 self-end rounded-lg border bg-slate-50 px-3 py-3 text-sm">
-                  <input type="checkbox" checked={liveSyncCollection} onChange={(event) => setLiveSyncCollection(event.target.checked)} />
-                  Live update active collection
-                </label>
               </div>
               <div className="grid gap-3 md:grid-cols-4">
                 <div className="space-y-2">
@@ -1143,7 +1863,11 @@ export default function TelegramPosts() {
                   <Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
                   <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, barcode, category..." className="pl-9" />
                 </div>
-                <Select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+                <Select value={categoryFilter} onChange={(event) => {
+                  const nextCategory = event.target.value;
+                  setCategoryFilter(nextCategory);
+                  setCollectionCategory(nextCategory);
+                }}>
                   {filterCategories.map((category) => <option key={category} value={category}>{category === 'all' ? 'All Categories' : category}</option>)}
                 </Select>
                 <Select value={sortOption} onChange={(event) => setSortOption(event.target.value as typeof sortOption)}>
@@ -1196,7 +1920,6 @@ export default function TelegramPosts() {
                   <div className="rounded-2xl border bg-slate-50 p-4 text-sm">
                     <div>Filtered products: <span className="font-semibold">{filteredProducts.length}</span></div>
                     <div>Selected queue: <span className="font-semibold">{queuedProducts.length}</span></div>
-                    <div>Out of stock: <span className="font-semibold">{outOfStockProducts.length}</span></div>
                     <div>Will send now: <span className="font-semibold">{targetProducts.length}</span></div>
                   </div>
 
@@ -1204,7 +1927,7 @@ export default function TelegramPosts() {
                     <div className="flex items-center justify-between border-b px-4 py-3">
                       <div>
                         <div className="text-sm font-semibold text-slate-900">Selected Product Queue</div>
-                        <div className="text-xs text-muted-foreground">Used when Post Type is set to Selected Products.</div>
+                        <div className="text-xs text-muted-foreground">Only queued products from this list will be sent.</div>
                       </div>
                       <Button type="button" variant="outline" size="sm" onClick={clearQueue} disabled={queuedProducts.length === 0}>
                         Clear

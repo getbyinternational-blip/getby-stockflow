@@ -94,6 +94,8 @@ const normalizeLiveCollection = (entry: any): TelegramLiveCollection => ({
   nextPostAt: safeText(entry?.nextPostAt || entry?.nextRunAt) || undefined,
   frequencyValue: toNonNegativeNumber(entry?.frequencyValue ?? entry?.frequency?.value, 1),
   frequencyUnit: safeText(entry?.frequencyUnit || entry?.frequency?.unit, 'minutes') as TelegramCollectionFrequencyUnit | string,
+  batchSize: toNonNegativeNumber(entry?.batchSize, 2),
+  autoStartTime: safeText(entry?.autoStartTime) || undefined,
   repeatMode: safeText(entry?.repeatMode, 'loop') as TelegramCollectionRepeatMode | string,
   maxFailuresBeforePause: toNonNegativeNumber(entry?.maxFailuresBeforePause, 3),
 });
@@ -155,6 +157,8 @@ export type TelegramCollectionSchedulerPayload = {
   };
   frequencyValue: number;
   frequencyUnit: TelegramCollectionFrequencyUnit;
+  batchSize?: number;
+  autoStartTime?: string;
   repeatMode: TelegramCollectionRepeatMode;
   maxFailuresBeforePause: number;
   postMode?: string;
@@ -182,6 +186,8 @@ export const startTelegramCollection = async (payload: TelegramCollectionSchedul
     notes: payload.notes,
     frequencyValue: payload.frequencyValue,
     frequencyUnit: payload.frequencyUnit,
+    batchSize: payload.batchSize,
+    autoStartTime: payload.autoStartTime,
     repeatMode: payload.repeatMode,
     maxFailuresBeforePause: payload.maxFailuresBeforePause,
     products: payload.products.map((product) => ({
@@ -210,6 +216,8 @@ export const startTelegramCollection = async (payload: TelegramCollectionSchedul
     } : null,
     frequencyValue: normalizedPayload.frequencyValue,
     frequencyUnit: normalizedPayload.frequencyUnit,
+    batchSize: normalizedPayload.batchSize,
+    autoStartTime: normalizedPayload.autoStartTime,
     repeatMode: normalizedPayload.repeatMode,
     maxFailuresBeforePause: normalizedPayload.maxFailuresBeforePause,
   });

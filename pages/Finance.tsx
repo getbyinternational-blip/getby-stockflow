@@ -894,6 +894,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [openingBalanceEditValue, setOpeningBalanceEditValue] = useState('');
   const [closingBalance, setClosingBalance] = useState('');
   const [closingReserveAmount, setClosingReserveAmount] = useState('');
+  const [activeReserveAmount, setActiveReserveAmount] = useState('');
   const [cashHistoryRange, setCashHistoryRange] = useState<'today' | '7d' | '30d' | 'all'>('today');
   const [closingCounts, setClosingCounts] = useState<Record<number, number>>(() => buildEmptyCounts());
   const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] = useState(false);
@@ -1304,6 +1305,61 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     return { cashAtSale, customerCashCollections, customOrderCashCollections, cashCollections, cashRefunds, deleteCompensationRefunds, supplierCashPayments, expenseCashOutflow, cashWithdrawals, netCashMovementAfterExpenses };
   }, [dailyCashTotals]);
   const expectedClosingForOpenSession = openSession ? (openSession.openingBalance + dailyCashTotals.systemCashTotal) : 0;
+  const currentShiftTotalCash = useMemo(
+    () => roundMoney(Math.max(0, expectedClosingForOpenSession)),
+    [expectedClosingForOpenSession],
+  );
+  const activeReserveBase = useMemo(
+    () => (openSession ? getSessionReservedCash(openSession) : 0),
+    [openSession],
+  );
+  const activeReserveOutflowSinceSave = useMemo(() => {
+    if (!openSession || activeReserveBase <= 0) return 0;
+    const savedAt = openSession.reservedCashSavedAt || openSession.startTime;
+    const savedAtMs = new Date(savedAt).getTime();
+    if (!Number.isFinite(savedAtMs)) return 0;
+    const reserveWindowTotals = getSessionCashTotals(
+      data.transactions,
+      expenses,
+      cashAdjustments,
+      data.deleteCompensations || [],
+      data.deletedTransactions || [],
+      data.purchaseOrders || [],
+      data.manualCashbookEntries || [],
+      savedAt,
+      undefined,
+      openSession.id,
+      upfrontOrders,
+      data.supplierPayments || [],
+    );
+    return roundMoney(
+      (reserveWindowTotals.cashRefunds || 0)
+      + (reserveWindowTotals.deleteCompensationRefunds || 0)
+      + (reserveWindowTotals.supplierCashPayments || 0)
+      + (reserveWindowTotals.expenses ?? reserveWindowTotals.expenseTotal ?? 0)
+      + (reserveWindowTotals.cashWithdrawals || 0),
+    );
+  }, [
+    openSession,
+    activeReserveBase,
+    data.transactions,
+    data.deleteCompensations,
+    data.deletedTransactions,
+    data.purchaseOrders,
+    data.manualCashbookEntries,
+    data.supplierPayments,
+    expenses,
+    cashAdjustments,
+    upfrontOrders,
+  ]);
+  const activeCashInHand = useMemo(
+    () => roundMoney(Math.max(0, Math.min(currentShiftTotalCash, activeReserveBase - activeReserveOutflowSinceSave))),
+    [currentShiftTotalCash, activeReserveBase, activeReserveOutflowSinceSave],
+  );
+  const currentOperationalCash = useMemo(
+    () => roundMoney(Math.max(0, currentShiftTotalCash - activeCashInHand)),
+    [currentShiftTotalCash, activeCashInHand],
+  );
   const submittedClosingValue = useMemo(() => {
     if (!openSession) return 0;
     const raw = closingBalance.trim() ? Number(closingBalance) : closingCountTotal;
@@ -1363,6 +1419,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     if (!openSession) return;
     setClosingBalance((prev) => prev.trim() ? prev : expectedClosingForOpenSession.toFixed(2));
   }, [openSession?.id, expectedClosingForOpenSession]);
+  useEffect(() => {
+    if (!openSession) {
+      setActiveReserveAmount('');
+      return;
+    }
+    setActiveReserveAmount(activeReserveBase > 0 ? activeReserveBase.toFixed(2) : '');
+  }, [openSession?.id, openSession?.reservedCashOnHand, activeReserveBase]);
   const buildLayerFinanceBreakdown = (rows: CashbookRow[]) => {
     const grossSales = roundMoney(rows.reduce((sum, row) => sum + row.grossSales, 0));
     const salesReturns = roundMoney(rows.reduce((sum, row) => sum + row.salesReturn, 0));
@@ -2413,6 +2476,24 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       return Math.max(0, roundMoney(prevClosingValue + closingReserveValue - nextReserveValue)).toFixed(2);
     });
     setClosingReserveAmount(sanitizedValue);
+  };
+  const saveActiveReserveAmount = async () => {
+    if (!openSession) return setErrors('No open cash session found.');
+    const nextReserveRaw = activeReserveAmount.trim() ? Number(activeReserveAmount) : 0;
+    const nextReserve = Number.isFinite(nextReserveRaw) && nextReserveRaw >= 0 ? roundMoney(nextReserveRaw) : Number.NaN;
+    if (!Number.isFinite(nextReserve) || nextReserve < 0) return setErrors('Please enter a valid cash in hand amount.');
+    if (nextReserve > currentShiftTotalCash) return setErrors('Cash in hand cannot be more than current total shift cash.');
+    const fresh = loadData();
+    const freshSessions = Array.isArray(fresh.cashSessions) ? fresh.cashSessions : [];
+    const updatedSessions = freshSessions.map((session) => {
+      if (session.id !== openSession.id || session.status !== 'open') return session;
+      return {
+        ...session,
+        reservedCashOnHand: nextReserve,
+        reservedCashSavedAt: new Date().toISOString(),
+      };
+    });
+    await persistState({ cashSessions: updatedSessions });
   };
 
   const handleManagerUnlock = () => {
@@ -3816,6 +3897,34 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <StatCard label="Bank Out Movement" value={formatINRSummary(financeMovementSummary.bankOutMovement)} tone={financeMovementSummary.bankOutMovement > 0 ? 'bad' : 'neutral'} />
                     <StatCard label="Closing Balance" value={formatINRSummary(openSession ? submittedClosingValue : 0)} tone={openSession ? 'good' : 'neutral'} />
                   </div>
+                  {openSession && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <StatCard label="Current Shift Cash" value={formatINRSummary(currentShiftTotalCash)} tone="good" />
+                        <StatCard label="Cash In Hand" value={formatINRSummary(activeCashInHand)} tone={activeCashInHand > 0 ? 'good' : 'neutral'} />
+                        <StatCard label="Operational Cash" value={formatINRSummary(currentOperationalCash)} tone={currentOperationalCash > 0 ? 'good' : 'neutral'} />
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                        <div>
+                          <Label>Save Cash In Hand</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={activeReserveAmount}
+                            onChange={(e) => setActiveReserveAmount(e.target.value.replace(/[^\d.]/g, ''))}
+                            placeholder="0.00"
+                          />
+                          <p className="mt-1 text-xs text-slate-500">
+                            Saved cash in hand is held separately, and later cash-out activity consumes this bucket first.
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button type="button" variant="outline" onClick={() => setActiveReserveAmount(activeReserveBase > 0 ? activeReserveBase.toFixed(2) : '')}>Reset</Button>
+                          <Button type="button" onClick={() => void saveActiveReserveAmount()}>Save Cash In Hand</Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {!openSession ? (
                     <div className="space-y-2">
                       <Label>Enter opening amount</Label>

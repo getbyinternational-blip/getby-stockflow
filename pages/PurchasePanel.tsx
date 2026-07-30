@@ -21,7 +21,7 @@ import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { auth } from '../services/firebase';
-import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, classifyPurchasePartyReference, type PurchasePartyReferenceStatus } from '../services/purchasePartyIdentity';
+import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, classifyPurchasePartyReference, normalizePurchasePartyNameForMatch, type PurchasePartyReferenceStatus } from '../services/purchasePartyIdentity';
 
 type PurchaseTab = 'orders' | 'parties';
 type WizardStep = 'source' | 'product' | 'variants' | 'pricing' | 'review' | 'newProduct';
@@ -669,6 +669,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [newPartyLocation, setNewPartyLocation] = useState('');
   const [newPartyContactPerson, setNewPartyContactPerson] = useState('');
   const [newPartyNotes, setNewPartyNotes] = useState('');
+  const [partyManagementTab, setPartyManagementTab] = useState<'list' | 'create'>('list');
   const [partyDuplicateWarning, setPartyDuplicateWarning] = useState<PurchaseParty | null>(null);
   const [showDuplicatePartyChecker, setShowDuplicatePartyChecker] = useState(false);
   const [supplierMergeApplyStatus, setSupplierMergeApplyStatus] = useState<SupplierMergeApplyStatus | null>(null);
@@ -911,27 +912,91 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const hasMeaningfulVariantChoices = sourceMode === 'inventory' ? selectableInventoryVariants.length > 0 : true;
   const canGoVariantsNext = sourceMode === 'new' ? true : (!hasMeaningfulVariantChoices || selectedVariantKeys.length > 0);
   const canGoReviewNext = !!partyId && activeLines.length > 0 && activeLines.every(l => toNum(l.quantity) > 0 && toNum(l.unitCost) > 0);
+  const dataSnapshot = useMemo(() => loadData(), [orders, parties]);
+  const supplierPayments = useMemo(() => dataSnapshot.supplierPayments || [], [dataSnapshot]);
+  const partyCreditLedger = useMemo(() => dataSnapshot.partyCreditLedger || [], [dataSnapshot]);
+  const duplicatePartyCheckReport = useMemo(() => buildPurchasePartyDuplicateCheckReport(
+    parties,
+    {
+      purchaseOrders: orders,
+      supplierPayments,
+      partyCreditLedger,
+    },
+  ), [parties, orders, supplierPayments, partyCreditLedger]);
   const canonicalPartyView = useMemo(() => buildPurchasePartyCanonicalView(
     parties,
     {
       purchaseOrders: orders,
-      supplierPayments: loadData().supplierPayments || [],
-      partyCreditLedger: loadData().partyCreditLedger || [],
+      supplierPayments,
+      partyCreditLedger,
     },
-  ), [parties, orders]);
-  const visibleParties = useMemo(() => canonicalPartyView.visibleParties, [canonicalPartyView]);
+  ), [parties, orders, supplierPayments, partyCreditLedger]);
+  const orphanRelatedPartyIds = useMemo(() => {
+    const map = new Map<string, string[]>();
+    duplicatePartyCheckReport.orphanGroups.forEach((group) => {
+      if (group.possibleCanonical?.canonicalPartyId) {
+        map.set(
+          group.possibleCanonical.canonicalPartyId,
+          [...new Set([...(map.get(group.possibleCanonical.canonicalPartyId) || []), group.partyId])],
+        );
+      }
+    });
+    return map;
+  }, [duplicatePartyCheckReport]);
+  const orphanStandaloneParties = useMemo<PurchaseParty[]>(() => duplicatePartyCheckReport.orphanGroups
+    .filter((group) => !group.possibleCanonical?.canonicalPartyId)
+    .map((group) => ({
+      id: `orphan:${group.partyId}`,
+      name: group.snapshotName || group.partyId,
+      phone: group.snapshotPhone || undefined,
+      gst: group.snapshotGst || undefined,
+      notes: 'Recovered from historical purchase activity without a live supplier master.',
+      createdAt: group.earliestOrderAt || group.earliestPaymentAt || group.earliestCreditAt || new Date(0).toISOString(),
+      updatedAt: group.latestOrderAt || group.latestPaymentAt || group.latestCreditAt || new Date().toISOString(),
+    })), [duplicatePartyCheckReport]);
+  const visibleParties = useMemo(() => [...canonicalPartyView.visibleParties, ...orphanStandaloneParties]
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')) || new Date(a.createdAt || '').getTime() - new Date(b.createdAt || '').getTime()), [canonicalPartyView, orphanStandaloneParties]);
   const visiblePartyById = useMemo(() => new Map(visibleParties.map((party) => [party.id, party])), [visibleParties]);
-  const getRelatedPartyIds = (partyId: string): string[] => canonicalPartyView.canonicalIdToRelatedIds.get(partyId) || [partyId];
+  const visiblePartyNameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    visibleParties.forEach((party) => {
+      const normalizedName = normalizePurchasePartyNameForMatch(party.name);
+      if (!normalizedName) return;
+      counts.set(normalizedName, (counts.get(normalizedName) || 0) + 1);
+    });
+    return counts;
+  }, [visibleParties]);
+  const getRelatedPartyIds = (partyId: string): string[] => {
+    if (partyId.startsWith('orphan:')) return [partyId.slice('orphan:'.length)];
+    return [
+      ...(canonicalPartyView.canonicalIdToRelatedIds.get(partyId) || [partyId]),
+      ...(orphanRelatedPartyIds.get(partyId) || []),
+    ];
+  };
   const getRelatedPartyIdSet = (partyId: string): Set<string> => new Set<string>(getRelatedPartyIds(partyId));
+  const partyRecordMatches = (
+    party: PurchaseParty,
+    relatedIds: Set<string>,
+    record: { partyId?: string; partyName?: string },
+  ) => {
+    const normalizedPartyId = String(record.partyId || '').trim();
+    if (normalizedPartyId) return relatedIds.has(normalizedPartyId);
+    const normalizedRecordName = normalizePurchasePartyNameForMatch(record.partyName);
+    const normalizedPartyName = normalizePurchasePartyNameForMatch(party.name);
+    return Boolean(normalizedRecordName)
+      && normalizedRecordName === normalizedPartyName
+      && (visiblePartyNameCounts.get(normalizedPartyName) || 0) === 1;
+  };
+  const isHistoricalOnlyParty = (party: PurchaseParty) => party.id.startsWith('orphan:');
   const selectedPartyCreditAvailable = useMemo(() => {
     if (!partyId) return 0;
     const selectedParty = visiblePartyById.get(partyId);
     if (!selectedParty) return 0;
     const relatedIds = getRelatedPartyIdSet(selectedParty.id);
     return (loadData().partyCreditLedger || [])
-      .filter((entry) => partyMatchesCredit(relatedIds, { partyId: entry.partyId, partyName: entry.partyName }))
+      .filter((entry) => partyRecordMatches(selectedParty, relatedIds, { partyId: entry.partyId, partyName: entry.partyName }))
       .reduce((sum, entry) => sum + Math.max(0, Number(entry.remainingAmount || 0)), 0);
-  }, [partyId, visiblePartyById, canonicalPartyView, orders.length]);
+  }, [partyId, visiblePartyById, canonicalPartyView, orders.length, visiblePartyNameCounts]);
   const gstRateForPreview = gstPercent === '' ? 0 : Math.max(0, Number(gstPercent) || 0);
   const grossTotalPreview = useMemo(() => draftTotals.totalAmount + ((draftTotals.totalAmount * gstRateForPreview) / 100), [draftTotals.totalAmount, gstRateForPreview]);
   const initialPaidPreview = Math.max(0, Number(initialPaidAmount) || 0);
@@ -1576,7 +1641,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     visibleParties.forEach((party) => {
       const relatedIds = new Set(getRelatedPartyIds(party.id));
       const summary = (orders || []).reduce((acc, order) => {
-        if (!relatedIds.has(String(order.partyId || '').trim())) return acc;
+        if (!partyRecordMatches(party, relatedIds, { partyId: order.partyId, partyName: order.partyName })) return acc;
         const totalPurchase = acc.totalPurchase + Math.max(0, Number(order.totalAmount) || 0);
         const orderPaid = Math.max(0, Number(order.totalPaid) || 0);
         const totalPaid = acc.totalPaid + orderPaid;
@@ -1586,7 +1651,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       map.set(party.id, summary);
     });
     return map;
-  }, [orders, visibleParties, canonicalPartyView]);
+  }, [orders, visibleParties, canonicalPartyView, visiblePartyNameCounts]);
   const diagnosticProducts = products ?? [];
   const diagnosticParties = parties ?? [];
   const diagnosticOrders = orders ?? [];
@@ -1783,25 +1848,20 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setPurchaseRowsPage((prev) => Math.min(prev, purchaseDiagnosticTotalPages));
   }, [purchaseDiagnosticTotalPages]);
 
-  const dataSnapshot = useMemo(() => loadData(), [orders, parties]);
-  const supplierPayments = useMemo(() => dataSnapshot.supplierPayments || [], [dataSnapshot]);
-  const partyCreditLedger = useMemo(() => dataSnapshot.partyCreditLedger || [], [dataSnapshot]);
   const partyLedgers = useMemo(() => {
     const map = new Map<string, ReturnType<typeof buildPurchasePartyLedger>>();
     visibleParties.forEach((party) => {
-      map.set(party.id, buildPurchasePartyLedger({ partyId: party.id, relatedPartyIds: getRelatedPartyIds(party.id), purchaseOrders: orders, supplierPayments, partyCreditLedger }));
+      map.set(party.id, buildPurchasePartyLedger({
+        partyId: party.id,
+        relatedPartyIds: getRelatedPartyIds(party.id),
+        partyNames: [party.name],
+        purchaseOrders: orders,
+        supplierPayments,
+        partyCreditLedger,
+      }));
     });
     return map;
   }, [visibleParties, orders, supplierPayments, partyCreditLedger, canonicalPartyView]);
-
-  const duplicatePartyCheckReport = useMemo(() => buildPurchasePartyDuplicateCheckReport(
-    parties,
-    {
-      purchaseOrders: orders,
-      supplierPayments,
-      partyCreditLedger,
-    },
-  ), [parties, orders, supplierPayments, partyCreditLedger]);
 
   const duplicatePartyReport = useMemo(() => buildDuplicatePurchasePartyReport({ parties, orders, supplierPayments, partyCreditLedger }), [parties, orders, supplierPayments, partyCreditLedger]);
 
@@ -3124,7 +3184,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       <div>
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">Purchase Parties</h1>
+            <p className="text-sm text-muted-foreground">Manage supplier profiles, payments, payable balances, and historical purchase ledgers in one merged view.</p>
+            <div className="hidden flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold tracking-tight">Purchase Parties</h1>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${duplicatePartyCheckReport.duplicateGroupsFound > 0 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
                 Duplicates: {duplicatePartyCheckReport.duplicateGroupsFound}
@@ -3135,7 +3197,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             </div>
             <p className="text-sm text-muted-foreground">Manage purchase parties, payable, credit, and party payment ledger. Purchases are now created from Inventory â†’ Add Purchase.</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="hidden flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={() => setShowDuplicatePartyChecker(true)}>
               Check Party Integrity
             </Button>
@@ -3147,12 +3209,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       </div>
 
       <div className="flex gap-2 border-b pb-2">
-        <Button size="sm" variant="default" disabled>Purchase Parties</Button>
+        <Button size="sm" variant={partyManagementTab === 'list' ? 'default' : 'outline'} onClick={() => setPartyManagementTab('list')}>Supplier List</Button>
+        <Button size="sm" variant={partyManagementTab === 'create' ? 'default' : 'outline'} onClick={() => setPartyManagementTab('create')}>{editingPartyId ? 'Update Party' : 'Create Party'}</Button>
       </div>
 
       {true ? (
         <>
-        <Card className="border-amber-200 bg-amber-50/40">
+        <Card className="hidden border-amber-200 bg-amber-50/40">
           <CardHeader className="flex flex-row items-start justify-between gap-3">
             <div>
               <CardTitle>Duplicate Supplier Analyzer</CardTitle>
@@ -3236,7 +3299,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             )}
           </CardContent>
         </Card>
-        <Card className="border-blue-200 bg-blue-50/40">
+        <Card className="hidden border-blue-200 bg-blue-50/40">
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <CardTitle>Manual Mayurbhai Confirmed Merge Simulation</CardTitle>
@@ -3305,7 +3368,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             </div>
           </CardContent>
         </Card>
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
+          {partyManagementTab === 'create' && (
           <Card>
             <CardHeader><CardTitle>Create Party</CardTitle></CardHeader>
             <CardContent className="space-y-3">
@@ -3325,35 +3389,30 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <Button onClick={saveParty}><Plus className="w-4 h-4 mr-1" /> {editingPartyId ? "Update Party" : "Save Party"}</Button>
             </CardContent>
           </Card>
+          )}
+          {partyManagementTab === 'list' && (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <CardTitle>Saved Parties</CardTitle>
-              <div className="flex items-center gap-2">
-                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${duplicatePartyCheckReport.duplicateGroupsFound > 0 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                  Duplicates: {duplicatePartyCheckReport.duplicateGroupsFound}
-                </span>
-                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${duplicatePartyCheckReport.integrityIssueCount > 0 ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                  Party Issues: {duplicatePartyCheckReport.integrityIssueCount}
-                </span>
-                <Button size="sm" variant="outline" onClick={() => setShowDuplicatePartyChecker(true)}>
-                  Check Party Integrity
-                </Button>
-              </div>
+              <CardTitle>Supplier List</CardTitle>
+              <div className="text-xs text-muted-foreground">{visibleParties.length} visible supplier parties</div>
             </CardHeader>
             <CardContent className="space-y-2">
               {visibleParties.map(p => (
                 <div key={p.id} className="rounded-xl border p-3">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="font-medium">{getProductName(p)}</div>
+                    <div className="font-medium">
+                      {p.name}
+                      {isHistoricalOnlyParty(p) && <span className="ml-2 text-[11px] font-normal text-amber-700">Historical only</span>}
+                    </div>
                     <div className="flex gap-1">
                       {repairMode && <Button type="button" variant="outline" size="sm" onClick={() => openCreateOrderForParty(p)} className="h-8 px-2 text-xs">Add Purchase</Button>}
-                      <Button type="button" variant="outline" size="sm" onClick={() => openPartyPaymentModal(p)} className="h-8 px-2 text-xs">{repairMode ? 'Add Supplier Payment' : 'Give Payment'}</Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => startEditingParty(p, true)} className="h-8 px-2 text-xs"><Pencil className="mr-1 h-3.5 w-3.5" />Edit</Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => void deletePartySafely(p)} className="h-8 px-2 text-xs text-red-600"><Trash2 className="mr-1 h-3.5 w-3.5" />Delete</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => openPartyPaymentModal(p)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p)}>{repairMode ? 'Add Supplier Payment' : 'Give Payment'}</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => startEditingParty(p, true)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p)}><Pencil className="mr-1 h-3.5 w-3.5" />Edit</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => void deletePartySafely(p)} className="h-8 px-2 text-xs text-red-600" disabled={isHistoricalOnlyParty(p)}><Trash2 className="mr-1 h-3.5 w-3.5" />Delete</Button>
                     </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">{p.phone || 'â€”'} Â· GST: {p.gst || 'â€”'} Â· {p.location || 'â€”'}</div>
-                  <div className="text-xs text-muted-foreground">Contact: {p.contactPerson || 'â€”'}</div>
+                  <div className="text-xs text-muted-foreground">{p.phone || EMPTY_DASH} · GST: {p.gst || EMPTY_DASH} · {p.location || EMPTY_DASH}</div>
+                  <div className="text-xs text-muted-foreground">Contact: {p.contactPerson || EMPTY_DASH}</div>
                   <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
                     <SummaryCard label="Total Purchase" value={formatCurrency(partyFinancials.get(p.id)?.totalPurchase || 0)} />
                     <SummaryCard label="Total Payments" value={formatCurrency(partyLedgers.get(p.id)?.summary.actualPayments || 0)} />
@@ -3377,6 +3436,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               {deletePartyError && <div className="text-xs text-red-600">{deletePartyError}</div>}
             </CardContent>
           </Card>
+          )}
         </div>
 
         {expandedPartyId && (
@@ -3454,7 +3514,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             </CardContent>
           </Card>
         )}
-        <Card>
+        <Card className="hidden">
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
               <CardTitle>Purchase Orders</CardTitle>
