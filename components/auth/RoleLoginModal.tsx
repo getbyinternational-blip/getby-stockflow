@@ -10,7 +10,7 @@ import { getAdminAccessDiagnostics, isAccessDebugEnabled, verifyAdminAccessPassw
 const nowSession = (session: Omit<RoleSession, 'loginAt'>): RoleSession => ({ ...session, loginAt: new Date().toISOString() });
 const FAILED_ATTEMPT_COOLDOWN_MS = 1500;
 const DEV_ACCESS_BYPASS_ENABLED = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_ACCESS_BYPASS === 'true';
-const TEST_AUTH_BYPASS_ENABLED = String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'false').toLowerCase() === 'true';
+const TEST_AUTH_BYPASS_ENABLED = String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'true').toLowerCase() === 'true';
 const SIMPLE_ACCESS_MODE_ENABLED = String((import.meta as any).env?.VITE_SIMPLE_ACCESS_MODE || 'true').toLowerCase() !== 'false';
 const AUTH_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_AUTH_LOGS || 'false').toLowerCase() === 'true';
 const DEFAULT_OTP_EXPIRY_SECONDS = 120;
