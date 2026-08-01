@@ -1332,7 +1332,7 @@ export default function Sales() {
     }
     try {
       setWaSendingStage('Preparing PDF...');
-      const canonicalPdfDataUrl = generateReceiptPDFDataUrl(tx, customers, transactionCashDetails || undefined);
+      const canonicalPdfDataUrl = await generateReceiptPDFDataUrl(tx, customers, transactionCashDetails || undefined);
       const invoicePdfBlob = await (await fetch(canonicalPdfDataUrl)).blob();
       setWaSendingStage('Sending WhatsApp message...');
       const result = await shareTransactionInvoiceViaWhatsApp({ ...tx, customerPhone, customerName, invoiceNo }, invoicePdfBlob);
@@ -1402,10 +1402,10 @@ export default function Sales() {
     }
   };
 
-  const handleExport = (format: 'pdf' | 'excel') => {
+  const handleExport = async (format: 'pdf' | 'excel') => {
     if (!transactionComplete) return;
     if (format === 'pdf') {
-      generateReceiptPDF(transactionComplete, customers, transactionCashDetails || undefined);
+      await generateReceiptPDF(transactionComplete, customers, transactionCashDetails || undefined);
     } else {
       exportInvoiceToExcel(transactionComplete);
     }

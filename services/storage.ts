@@ -5504,9 +5504,41 @@ const sanitizeUpfrontOrderImageValue = (value: unknown): string | undefined => {
   return trimmed;
 };
 
+const getUpfrontOrderInitialAdvanceSplit = (order?: Partial<UpfrontOrder> | null) => {
+  const paymentHistory = Array.isArray(order?.paymentHistory) ? order.paymentHistory : [];
+  const initialAdvanceEntries = paymentHistory.filter((payment) => payment?.kind === 'initial_advance');
+  if (!initialAdvanceEntries.length) {
+    return {
+      paidNowCash: Math.max(0, Number(order?.paidNowCash || 0)),
+      paidNowOnline: Math.max(0, Number(order?.paidNowOnline || 0)),
+    };
+  }
+  return initialAdvanceEntries.reduce((totals, payment) => {
+    const amount = Math.max(0, Number(payment?.amount || 0));
+    const method = String(payment?.method || '').trim().toLowerCase();
+    if (method === 'cash') totals.paidNowCash += amount;
+    else if (method === 'online') totals.paidNowOnline += amount;
+    return totals;
+  }, { paidNowCash: 0, paidNowOnline: 0 });
+};
+
 const sanitizeUpfrontOrderForPersist = (order: UpfrontOrder): UpfrontOrder => {
   const sanitizedImage = sanitizeUpfrontOrderImageValue(order.productImage);
-  const next: UpfrontOrder = { ...order };
+  const { paidNowCash, paidNowOnline } = getUpfrontOrderInitialAdvanceSplit(order);
+  const totalCost = Math.max(0, Number(order.finalTotal ?? order.totalCost ?? (((order.orderTotalCustomer || 0) + (order.expenseAmount || 0)) || 0)));
+  const advancePaid = Math.max(0, Number(order.advancePaid || 0));
+  const remainingAmount = Math.max(0, Number(order.remainingAmount ?? (totalCost - advancePaid)));
+  const next: UpfrontOrder = {
+    ...order,
+    finalTotal: totalCost,
+    totalCost,
+    advancePaid,
+    remainingAmount,
+    paidNowCash,
+    paidNowOnline,
+    initialAdvancePaid: Math.max(0, Number(order.initialAdvancePaid ?? advancePaid)),
+    updatedAt: String(order.updatedAt || new Date().toISOString()),
+  };
   if (sanitizedImage) next.productImage = sanitizedImage;
   else delete next.productImage;
   return next;
@@ -5720,11 +5752,15 @@ export const updateUpfrontOrder = (order: UpfrontOrder): AppState => {
 
     const previous = data.upfrontOrders.find(o => o.id === order.id);
     const affectedCustomerIds = new Set([previous?.customerId, order.customerId].filter((id): id is string => Boolean(id)));
-    const newOrders = sanitizeUpfrontOrdersForPersist(data.upfrontOrders.map(o => o.id === order.id ? order : o), 'updateUpfrontOrder');
+    const normalizedOrder = sanitizeUpfrontOrderForPersist(recomputeUpfrontOrderPaymentState({
+      ...order,
+      paymentHistory: Array.isArray(order.paymentHistory) ? order.paymentHistory.map((payment) => ({ ...payment })) : [],
+    }));
+    const newOrders = sanitizeUpfrontOrdersForPersist(data.upfrontOrders.map(o => o.id === order.id ? normalizedOrder : o), 'updateUpfrontOrder');
     const newCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, newOrders, affectedCustomerIds);
     const newState = { ...data, customers: newCustomers, upfrontOrders: newOrders };
     void saveData(newState, { reason: 'updateUpfrontOrder', auditOperation: 'UPDATE' });
-    emitBehaviorStateChange({ type: 'order_status_updated', entityId: order.id, from: previous?.status, to: order.status, metadata: { customerId: order.customerId } });
+    emitBehaviorStateChange({ type: 'order_status_updated', entityId: normalizedOrder.id, from: previous?.status, to: normalizedOrder.status, metadata: { customerId: normalizedOrder.customerId } });
     return newState;
 };
 

@@ -294,6 +294,24 @@ const getUpfrontOrderFinancialDate = (order?: UpfrontOrder | null) => order?.eff
 const getUpfrontPaymentFinancialDate = (payment?: UpfrontOrderPaymentEntry | null, order?: UpfrontOrder | null) => payment?.effectiveAt || payment?.paidAt || getUpfrontOrderFinancialDate(order);
 const ADVANCE_ORDER_DUE_REPAIR_PREFIX = 'advance_order_remaining_due_repair:';
 
+const getUpfrontOrderInitialAdvanceSplit = (order?: Partial<UpfrontOrder> | null) => {
+  const paymentHistory = Array.isArray(order?.paymentHistory) ? order.paymentHistory : [];
+  const initialAdvanceEntries = paymentHistory.filter((payment) => payment?.kind === 'initial_advance');
+  if (!initialAdvanceEntries.length) {
+    return {
+      paidNowCash: Math.max(0, Number(order?.paidNowCash || 0)),
+      paidNowOnline: Math.max(0, Number(order?.paidNowOnline || 0)),
+    };
+  }
+  return initialAdvanceEntries.reduce((totals, payment) => {
+    const amount = Math.max(0, Number(payment?.amount || 0));
+    const method = String(payment?.method || '').trim().toLowerCase();
+    if (method === 'cash') totals.paidNowCash += amount;
+    else if (method === 'online') totals.paidNowOnline += amount;
+    return totals;
+  }, { paidNowCash: 0, paidNowOnline: 0 });
+};
+
 const getRepairKindLabel = (type: RepairTransactionType) => {
   switch (type) {
     case 'sale': return 'Sale';
@@ -1819,16 +1837,21 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           setUpfrontRepairConfirmOpen(true);
           return;
         }
-        if (editingUpfrontOrder) {
-            updateUpfrontOrder(order);
-        } else {
-            addUpfrontOrder(order);
+        const nextState = editingUpfrontOrder
+          ? updateUpfrontOrder(order)
+          : addUpfrontOrder(order);
+        setCustomers(nextState.customers);
+        setTransactions(nextState.transactions);
+        setUpfrontOrders(nextState.upfrontOrders || []);
+        setProducts(nextState.products || []);
+        if (viewingCustomer) {
+          setViewingCustomer(nextState.customers.find((customer) => customer.id === viewingCustomer.id) || null);
         }
       } catch (error) {
         setUpfrontOrderError(error instanceof Error ? error.message : 'Could not save custom order.');
         return;
       }
-      
+
       refreshData();
       if (!saveAndNext) setIsUpfrontOrderModalOpen(false);
       setEditingUpfrontOrder(null);
@@ -1969,6 +1992,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   };
 
   const openUpfrontOrderEditor = (order: UpfrontOrder) => {
+    const { paidNowCash, paidNowOnline } = getUpfrontOrderInitialAdvanceSplit(order);
     setEditingUpfrontOrder(order);
     setOrderCustomer(customers.find((customer) => customer.id === order.customerId) || viewingCustomer || null);
     setSelectedOrderProduct(products.find((product) => product.id === order.productId) || {
@@ -1990,8 +2014,8 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       pricePerPiece: String(order.pricePerPiece || order.cartonPriceAdmin || ''),
       pricePerPieceCustomer: String(order.customerPricePerPiece || order.cartonPriceCustomer || ''),
       expenseAmount: String(order.expenseAmount || 0),
-      paidNowCash: String(order.paidNowCash || 0),
-      paidNowOnline: String(order.paidNowOnline || 0),
+      paidNowCash: String(paidNowCash || 0),
+      paidNowOnline: String(paidNowOnline || 0),
       reminderDate: order.reminderDate || '',
       notes: order.notes || '',
       selectedVariant: order.selectedVariant || '',
@@ -2109,7 +2133,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       autoTable(doc, { startY: 50, head: [['Name', 'Phone', 'Total Spend', 'Current Due', 'Store Credit', 'Net Receivable']], body: tableBody, theme: 'striped', columnStyles: { 5: { halign: 'right', fontStyle: 'bold', textColor: [220, 38, 38] } } });
       doc.save(`Customer_Dues_Report.pdf`);
   };
-  const handleExport = (format: 'pdf' | 'excel') => {
+  const handleExport = async (format: 'pdf' | 'excel') => {
       if (exportType === 'statement' && viewingCustomer) {
           if (format === 'pdf') {
               void generateStatementPDF();
@@ -2127,7 +2151,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           }
       } else if (exportType === 'invoice' && txToExport) {
           if (format === 'pdf') {
-              generateReceiptPDF(txToExport, customers);
+              await generateReceiptPDF(txToExport, customers);
           } else {
               exportInvoiceToExcel(txToExport);
           }
@@ -3921,7 +3945,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <div className="space-y-2">
                             {filteredPopupCustomerOrders.length === 0 && <div className="text-sm text-muted-foreground border rounded p-3">No custom orders found for this customer.</div>}
                             {filteredPopupCustomerOrders.map((order) => {
-                              const total = getUpfrontOrderCustomerTotal(order); const paid = getUpfrontOrderPaid(order); const rem = getUpfrontOrderRemaining(order); const status = getUpfrontOrderStatus(order);
+                              const total = getUpfrontOrderCustomerTotal(order); const paid = getUpfrontOrderPaid(order); const rem = getUpfrontOrderRemaining(order); const status = getUpfrontOrderStatus(order); const initialAdvanceSplit = getUpfrontOrderInitialAdvanceSplit(order);
                               const isOverdue = rem > 0 && order.reminderDate && new Date(order.reminderDate).getTime() < Date.now();
                               return <div key={order.id} className="rounded border p-3 text-xs space-y-1">
                                 <div className="flex justify-between"><b>{order.productName || '—'}</b><span>{new Date(order.date || order.createdAt || '').toLocaleDateString()}</span></div>
@@ -3929,7 +3953,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                 <div>Pieces/Cartons/Total: {order.piecesPerCarton ?? '—'} / {order.numberOfCartons ?? '—'} / {order.totalPieces ?? order.quantity ?? '—'}</div>
                                 <div>/Piece: {order.pricePerPiece ?? order.cartonPriceAdmin ?? '—'} • Cust /Piece: {order.customerPricePerPiece ?? order.cartonPriceCustomer ?? '—'}</div>
                                 <div>Order Total: {formatMoneyWhole(order.orderTotal ?? 0)} • Expense: {formatMoneyWhole(order.expenseAmount ?? 0)} • Final: {formatMoneyWhole(total)}</div>
-                                <div>Paid Cash: {formatMoneyWhole(order.paidNowCash ?? 0)} • Paid Online: {formatMoneyWhole(order.paidNowOnline ?? 0)} • Advance Paid: {formatMoneyWhole(paid)} • Remaining: {formatMoneyWhole(rem)}</div>
+                                <div>Paid Cash: {formatMoneyWhole(initialAdvanceSplit.paidNowCash)} • Paid Online: {formatMoneyWhole(initialAdvanceSplit.paidNowOnline)} • Advance Paid: {formatMoneyWhole(paid)} • Remaining: {formatMoneyWhole(rem)}</div>
                                 <div className={`font-bold ${status === 'Paid in Full' ? 'text-emerald-700' : 'text-amber-700'}`}>Status: {isOverdue ? 'Overdue' : status}{order.reminderDate ? ` • Reminder: ${new Date(order.reminderDate).toLocaleDateString()}` : ''}</div>
                                 {order.notes ? <div>Notes: {order.notes}</div> : <div>Notes: —</div>}
                                 <div className="flex gap-2 flex-wrap">

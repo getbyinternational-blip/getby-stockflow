@@ -336,6 +336,16 @@ export default function TelegramPosts() {
       .filter((collection) => safeText(collection.channelId) === safeText(selectedChannelId))
       .sort((left, right) => left.name.localeCompare(right.name))
   ), [selectedChannelId, visibleRunningCollections]);
+  const runningCollectionsBySavedId = useMemo(() => {
+    const next = new Map<string, TelegramLiveCollection>();
+    visibleRunningCollections.forEach((collection) => {
+      const backendCollectionId = safeText(collection.collectionId || collection.id);
+      if (backendCollectionId) {
+        next.set(backendCollectionId, collection);
+      }
+    });
+    return next;
+  }, [visibleRunningCollections]);
   const runningCollectionsByChannel = useMemo(() => {
     const groups = new Map<string, TelegramLiveCollection[]>();
     visibleRunningCollections.forEach((collection) => {
@@ -351,14 +361,6 @@ export default function TelegramPosts() {
       }))
       .sort((left, right) => left.channelId.localeCompare(right.channelId));
   }, [visibleRunningCollections]);
-  const runningCollectionIds = useMemo(() => (
-    new Set(
-      visibleRunningCollections
-        .map((collection) => safeText(collection.collectionId || collection.id))
-        .filter(Boolean)
-    )
-  ), [visibleRunningCollections]);
-
   useEffect(() => {
     if (!savedChannels.length) {
       if (selectedChannelId) setSelectedChannelId('');
@@ -758,6 +760,57 @@ export default function TelegramPosts() {
     }
   };
 
+  const getSavedCollectionProducts = (collection: TelegramPostCollection) => {
+    const queueSet = new Set(collection.queuedProductIds || []);
+    return (collection.queuedProductIds || [])
+      .map((id) => products.find((product) => product.id === id))
+      .filter((product): product is Product => Boolean(product && queueSet.has(product.id)));
+  };
+
+  const startSavedCollectionRun = async (collection: TelegramPostCollection) => {
+    const collectionProductsToSend = getSavedCollectionProducts(collection);
+    if (!collectionProductsToSend.length) {
+      setNotice({ type: 'error', message: 'Add at least one product before starting a collection.' });
+      return;
+    }
+    const missingImageProduct = collectionProductsToSend.find((product) => !getProductImageUrl(product));
+    if (missingImageProduct) {
+      setNotice({ type: 'error', message: 'Product missing image.' });
+      return;
+    }
+
+    setIsStartingCollection(true);
+    setActiveCollectionId(collection.id);
+    setNotice({ type: 'info', message: `Starting ${collection.name}...` });
+    try {
+      requireTelegramChannelId();
+      const schedulerProducts = buildSchedulerProducts(collectionProductsToSend);
+      await startTelegramCollection({
+        id: collection.id,
+        collectionId: collection.id,
+        name: collection.name,
+        channelId: collection.channelId,
+        template: collection.template,
+        notes: collection.notes,
+        category: collection.category,
+        frequencyValue: collection.frequencyValue || DEFAULT_FREQUENCY_VALUE,
+        frequencyUnit: (collection.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit,
+        batchSize: (collection as any).batchSize || DEFAULT_BATCH_SIZE,
+        autoStartTime: (collection as any).autoStartTime || undefined,
+        repeatMode: (collection.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode,
+        maxFailuresBeforePause: collection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE,
+        postMode: 'selected',
+        products: schedulerProducts,
+      });
+      await refreshRunningCollections({ silent: true });
+      setNotice({ type: 'success', message: 'Collection started' });
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'Backend not reachable' });
+    } finally {
+      setIsStartingCollection(false);
+    }
+  };
+
   const startCollectionRun = async () => {
     if (!collectionProducts.length) {
       setNotice({ type: 'error', message: 'Add at least one product before starting a collection.' });
@@ -898,7 +951,6 @@ export default function TelegramPosts() {
         <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <CardTitle className="text-base tracking-wide uppercase text-slate-700">Telegram Channels</CardTitle>
-            <p className="text-sm text-muted-foreground">Use channel tabs first, then add, edit, or delete collections for the selected channel.</p>
           </div>
           <div className="flex w-full max-w-xl items-center gap-2">
             <Input value={newChannelId} onChange={(event) => setNewChannelId(event.target.value)} placeholder="@stockflow_offers" />
@@ -907,6 +959,32 @@ export default function TelegramPosts() {
             </Button>
           </div>
         </CardHeader>
+      </Card>
+
+      {savedChannels.length > 0 && (
+        <Card className="shadow-sm">
+          <CardContent className="pt-6">
+            <div className="flex flex-wrap gap-2">
+              {savedChannels.map((channelId) => (
+                <button
+                  key={channelId}
+                  type="button"
+                  onClick={() => setSelectedChannelId(channelId)}
+                  className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
+                    selectedChannelId === channelId
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {channelId}
+                </button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className="shadow-sm">
         <CardContent className="space-y-5">
           {savedChannels.length === 0 ? (
             <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
@@ -914,24 +992,8 @@ export default function TelegramPosts() {
             </div>
           ) : (
             <>
-              <div className="flex flex-wrap gap-2">
-                {savedChannels.map((channelId) => (
-                  <button
-                    key={channelId}
-                    type="button"
-                    onClick={() => setSelectedChannelId(channelId)}
-                    className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${
-                      selectedChannelId === channelId
-                        ? 'border-slate-900 bg-slate-900 text-white'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    {channelId}
-                  </button>
-                ))}
-              </div>
-              <div className="rounded-2xl border bg-slate-50 p-5">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <div className="text-lg font-bold text-slate-950">{selectedChannelId}</div>
                     <div className="mt-1 text-sm text-slate-600">
@@ -942,27 +1004,60 @@ export default function TelegramPosts() {
                     <FolderPlus className="mr-2 h-4 w-4" /> Add Collection
                   </Button>
                 </div>
-                <div className="mt-4 space-y-3">
+                <div className="space-y-2">
                   {activeChannelSavedCollections.length > 0 ? activeChannelSavedCollections.map((collection) => {
-                    const isRunning = runningCollectionIds.has(collection.id);
+                    const liveCollection = runningCollectionsBySavedId.get(collection.id);
+                    const normalizedStatus = safeText(liveCollection?.status).toLowerCase();
+                    const isRunning = normalizedStatus === 'running';
+                    const isPaused = normalizedStatus === 'paused';
+                    const actionCollectionId = safeText(liveCollection?.collectionId || liveCollection?.id || collection.id);
                     return (
-                      <div key={collection.id} className="rounded-2xl border bg-white p-4">
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                          <div>
+                      <div key={collection.id} className="rounded-xl border bg-white px-4 py-3">
+                        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                          <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <div className="font-semibold text-slate-950">{collection.name}</div>
-                              <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${isRunning ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
-                                {isRunning ? 'Running' : 'Saved'}
+                              <div className="truncate font-semibold text-slate-950">{collection.name}</div>
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${isRunning ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : isPaused ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                                {isRunning ? 'Running' : isPaused ? 'Paused' : 'Saved'}
                               </span>
                             </div>
-                            <div className="mt-1 text-sm text-slate-600">
-                              {collection.category === 'all' ? 'All categories' : collection.category} • {collection.queuedProductIds.length} queued products
+                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-slate-600">
+                              <span>{collection.category === 'all' ? 'All categories' : collection.category}</span>
+                              <span>{collection.queuedProductIds.length} queued</span>
+                              <span>{collection.frequencyValue || DEFAULT_FREQUENCY_VALUE} {collection.frequencyUnit || DEFAULT_FREQUENCY_UNIT}</span>
+                              <span>Batch {(collection as any).batchSize || DEFAULT_BATCH_SIZE}</span>
+                              {liveCollection ? <span>Sent {liveCollection.sentCount}</span> : null}
                             </div>
                           </div>
                           <div className="flex flex-wrap gap-2">
+                            {!isRunning && !isPaused && (
+                              <Button type="button" size="sm" onClick={() => void startSavedCollectionRun(collection)} disabled={isStartingCollection}>
+                                <Play className="mr-2 h-4 w-4" /> Start
+                              </Button>
+                            )}
+                            {isRunning && liveCollection && (
+                              <Button type="button" size="sm" variant="outline" onClick={() => void handleCollectionAction('pause', liveCollection, () => pauseTelegramCollection(actionCollectionId), 'Collection paused')} disabled={collectionActionId === actionCollectionId}>
+                                <Pause className="mr-2 h-4 w-4" /> Pause
+                              </Button>
+                            )}
+                            {isPaused && liveCollection && (
+                              <Button type="button" size="sm" variant="outline" onClick={() => void handleCollectionAction('resume', liveCollection, () => resumeTelegramCollection(actionCollectionId), 'Collection resumed')} disabled={collectionActionId === actionCollectionId}>
+                                <Play className="mr-2 h-4 w-4" /> Start
+                              </Button>
+                            )}
+                            {(isRunning || isPaused) && liveCollection && (
+                              <Button type="button" size="sm" variant="outline" onClick={() => void handleCollectionAction('stop', liveCollection, () => stopTelegramCollection(actionCollectionId), 'Collection stopped')} disabled={collectionActionId === actionCollectionId}>
+                                <Square className="mr-2 h-4 w-4" /> Stop
+                              </Button>
+                            )}
                             <Button type="button" size="sm" variant="outline" onClick={() => openCollectionModal(selectedChannelId, collection.id)}>
                               Edit
                             </Button>
+                            {liveCollection && (
+                              <Button type="button" size="sm" variant="outline" onClick={() => void loadActivityForCollection(actionCollectionId)} disabled={isActivityLoading && selectedActivityCollectionId === actionCollectionId}>
+                                View Activity
+                              </Button>
+                            )}
                             <Button type="button" size="sm" variant="outline" className="text-rose-600" onClick={() => void deleteCollectionById(collection.id)} disabled={isSavingCollection}>
                               Delete
                             </Button>

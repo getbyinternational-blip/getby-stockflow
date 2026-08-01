@@ -2,22 +2,82 @@ import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
+import crypto from 'crypto';
 
 const VERSION_TEMPLATE_PATH = path.resolve(__dirname, 'public/version.json');
 const VERSION_OUTPUT_PATH = path.resolve(__dirname, 'dist/version.json');
+const CLOUDINARY_DEV_SIGN_PATHS = [
+  '/api/cloudinary-sign-upload',
+  '/.netlify/functions/cloudinary-sign-upload',
+  '/netlify/functions/cloudinary-sign-upload',
+];
+
+const cloudinaryDevSignaturePlugin = (resolvedEnv: Record<string, string>) => ({
+  name: 'cloudinary-dev-signature-endpoint',
+  configureServer(server: any) {
+    server.middlewares.use((req: any, res: any, next: () => void) => {
+      const requestUrl = String(req.url || '').split('?')[0];
+      if (!CLOUDINARY_DEV_SIGN_PATHS.includes(requestUrl)) {
+        next();
+        return;
+      }
+
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+        return;
+      }
+
+      const cloudName = resolvedEnv.CLOUDINARY_CLOUD_NAME || process.env.CLOUDINARY_CLOUD_NAME;
+      const apiKey = resolvedEnv.CLOUDINARY_API_KEY || process.env.CLOUDINARY_API_KEY;
+      const apiSecret = resolvedEnv.CLOUDINARY_API_SECRET || process.env.CLOUDINARY_API_SECRET;
+      const uploadFolder = (resolvedEnv.CLOUDINARY_UPLOAD_FOLDER || process.env.CLOUDINARY_UPLOAD_FOLDER || 'stockflow/products').trim();
+      const uploadPreset = (resolvedEnv.CLOUDINARY_UPLOAD_PRESET || process.env.CLOUDINARY_UPLOAD_PRESET || '').trim();
+
+      if (!cloudName || !apiKey || !apiSecret) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Cloudinary environment variables are not configured.' }));
+        return;
+      }
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const stringToSign = uploadPreset
+        ? `folder=${uploadFolder}&timestamp=${timestamp}&upload_preset=${uploadPreset}`
+        : `folder=${uploadFolder}&timestamp=${timestamp}`;
+      const signature = crypto
+        .createHash('sha1')
+        .update(`${stringToSign}${apiSecret}`)
+        .digest('hex');
+
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        timestamp,
+        signature,
+        apiKey,
+        cloudName,
+        uploadFolder,
+        uploadPreset,
+      }));
+    });
+  },
+});
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const buildId = process.env.VERCEL_GIT_COMMIT_SHA || Date.now().toString();
     const deployedAt = new Date().toISOString();
     const versionTargetUrl = process.env.VERSION_TARGET_URL || '';
+    const preferredPort = Number.parseInt(process.env.PORT || '3000', 10);
     return {
       server: {
-        port: 3000,
+        port: Number.isFinite(preferredPort) ? preferredPort : 3000,
         strictPort: false,
-        host: '0.0.0.0',
+        host: '127.0.0.1',
       },
-      plugins: [react()],
+      plugins: [react(), cloudinaryDevSignaturePlugin(env)],
       define: {
         APP_BUILD_ID: JSON.stringify(buildId),
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),

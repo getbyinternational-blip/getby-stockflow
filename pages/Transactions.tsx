@@ -1565,12 +1565,12 @@ export default function Transactions() {
   const handleInvoiceOption = async (mode: 'a4' | 'thermal' | 'whatsapp') => {
     if (!txToExport) return;
     if (mode === 'a4') {
-      generateReceiptPDF(txToExport, customers, undefined, { invoiceFormatOverride: 'standard' });
+      await generateReceiptPDF(txToExport, customers, undefined, { invoiceFormatOverride: 'standard' });
       closeInvoiceOptions();
       return;
     }
     if (mode === 'thermal') {
-      generateReceiptPDF(txToExport, customers, undefined, { invoiceFormatOverride: 'thermal' });
+      await generateReceiptPDF(txToExport, customers, undefined, { invoiceFormatOverride: 'thermal' });
       closeInvoiceOptions();
       return;
     }

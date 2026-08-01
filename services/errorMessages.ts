@@ -36,6 +36,14 @@ export const getFriendlyErrorMessage = (error: unknown, context = 'general') => 
     return 'This action could not be saved because old store data needs cleanup. Please contact support.';
   }
 
+  if (message.includes('cloudinary signature endpoint failed with 404')) {
+    return 'Image upload endpoint is not available in this environment. Restart the app after the dev server update, or deploy the serverless function.';
+  }
+
+  if (message.includes('cloudinary environment variables are not configured')) {
+    return 'Cloudinary upload is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.';
+  }
+
   if (!rawMessage || rawMessage === 'undefined' || rawMessage === 'null') {
     return 'Something went wrong. Please try again.';
   }

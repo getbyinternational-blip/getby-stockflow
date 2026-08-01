@@ -1,4 +1,3 @@
-
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Transaction, Customer, Product, StoreProfile } from '../types';
@@ -22,6 +21,26 @@ export type ReceiptPrintResult = {
 type ThermalPaperWidth = '58mm' | '80mm';
 type ThermalStyle = 'classic' | 'grocery' | 'boxed' | 'minimal';
 type ThermalDensity = 'compact' | 'balanced' | 'comfortable';
+
+// Shared visual language for every customer-facing PDF. Keeping the palette and
+// spacing here prevents invoices, statements, and catalogues from drifting apart.
+const PDF_THEME = {
+  ink: [15, 23, 42] as [number, number, number],
+  body: [51, 65, 85] as [number, number, number],
+  muted: [100, 116, 139] as [number, number, number],
+  brand: [30, 64, 175] as [number, number, number],
+  brandSoft: [239, 246, 255] as [number, number, number],
+  surface: [248, 250, 252] as [number, number, number],
+  border: [226, 232, 240] as [number, number, number],
+  danger: [185, 28, 28] as [number, number, number],
+  success: [21, 128, 61] as [number, number, number],
+};
+
+const setPdfColor = (doc: jsPDF, color: [number, number, number], target: 'text' | 'draw' | 'fill' = 'text') => {
+  if (target === 'draw') doc.setDrawColor(...color);
+  else if (target === 'fill') doc.setFillColor(...color);
+  else doc.setTextColor(...color);
+};
 
 const escapeHtml = (value: unknown) => String(value || '')
   .replace(/&/g, '&amp;')
@@ -88,6 +107,572 @@ const getTaxBreakupMode = (taxLabel?: string): 'igst' | 'cgst_sgst' | 'none' => 
   if (normalized.includes('IGST')) return 'igst';
   if (normalized.includes('CGST') || normalized.includes('SGST') || normalized.includes('GST')) return 'cgst_sgst';
   return 'cgst_sgst';
+};
+
+const sanitizeHeaderText = (value?: string) => {
+  const raw = String(value || '');
+  return raw
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/\uFFFD/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const getFirstMeaningfulValue = (sources: Array<Record<string, unknown> | null | undefined>, keys: string[]) => {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of keys) {
+      const value = (source as any)?.[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    }
+  }
+  return '';
+};
+
+const buildAddressLines = (
+  sources: Array<Record<string, unknown> | null | undefined>,
+  fallbackState?: string,
+) => {
+  const explicitLines = [
+    getFirstMeaningfulValue(sources, ['addressLine1', 'address1', 'line1', 'billingAddressLine1']),
+    getFirstMeaningfulValue(sources, ['addressLine2', 'address2', 'line2', 'billingAddressLine2']),
+  ].filter(Boolean);
+
+  const locationParts = [
+    getFirstMeaningfulValue(sources, ['city', 'town', 'district']),
+    getFirstMeaningfulValue(sources, ['state', 'province']),
+    getFirstMeaningfulValue(sources, ['postalCode', 'pincode', 'pinCode', 'zip', 'zipCode']),
+  ].filter(Boolean);
+
+  const lines = [...explicitLines];
+  if (locationParts.length) lines.push(locationParts.join(', '));
+  else if (fallbackState) lines.push(fallbackState);
+  return lines
+    .map((value) => sanitizeText(value))
+    .filter(Boolean)
+    .slice(0, 3);
+};
+
+const formatAmountWords = (value: number) => {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const twoDigits = (num: number): string => {
+    if (num < 10) return ones[num];
+    if (num < 20) return teens[num - 10];
+    return `${tens[Math.floor(num / 10)]}${num % 10 ? ` ${ones[num % 10]}` : ''}`.trim();
+  };
+  const threeDigits = (num: number): string => {
+    const hundred = Math.floor(num / 100);
+    const rest = num % 100;
+    return `${hundred ? `${ones[hundred]} Hundred` : ''}${hundred && rest ? ' ' : ''}${rest ? twoDigits(rest) : ''}`.trim();
+  };
+  const integerToWords = (num: number) => {
+    if (num === 0) return 'Zero';
+    const crore = Math.floor(num / 10000000);
+    const lakh = Math.floor((num % 10000000) / 100000);
+    const thousand = Math.floor((num % 100000) / 1000);
+    const hundred = num % 1000;
+    return [
+      crore ? `${threeDigits(crore)} Crore` : '',
+      lakh ? `${threeDigits(lakh)} Lakh` : '',
+      thousand ? `${threeDigits(thousand)} Thousand` : '',
+      hundred ? threeDigits(hundred) : '',
+    ].filter(Boolean).join(' ');
+  };
+
+  const rounded = roundCurrency(value);
+  const absolute = Math.abs(rounded);
+  const rupees = Math.floor(absolute);
+  const paise = Math.round((absolute - rupees) * 100);
+  const rupeeWords = `${integerToWords(rupees)} Rupees`;
+  const paiseWords = paise > 0 ? ` and ${integerToWords(paise)} Paise` : '';
+  return `${rounded < 0 ? 'Minus ' : ''}${rupeeWords}${paiseWords} Only`;
+};
+
+type GstMode = 'CGST_SGST' | 'IGST' | 'NONE';
+
+type InvoiceItemData = {
+  name: string;
+  descriptionLines?: string[];
+  hsn?: string;
+  quantity: number;
+  unit?: string;
+  rate: number;
+  discount: number;
+  taxableAmount: number;
+  cgstRate?: number;
+  cgstAmount?: number;
+  sgstRate?: number;
+  sgstAmount?: number;
+  igstRate?: number;
+  igstAmount?: number;
+  total: number;
+};
+
+type InvoicePdfData = {
+  company: {
+    name: string;
+    logo?: string;
+    addressLines: string[];
+    mobile?: string;
+    email?: string;
+    gstin?: string;
+    pan?: string;
+    state?: string;
+  };
+  customer: {
+    name: string;
+    addressLines?: string[];
+    mobile?: string;
+    gstName?: string;
+    gstNumber?: string;
+    pan?: string;
+  };
+  invoiceNumber: string;
+  invoiceDate: string | Date;
+  placeOfSupply: string;
+  items: InvoiceItemData[];
+  gstMode: GstMode;
+  totalQuantity: number;
+  quantitySummary?: string;
+  basicAmount: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+  roundOff?: number;
+  netPayable: number;
+  netPayableWords: string;
+  taxAmountWords?: string;
+  bank?: {
+    accountFor?: string;
+    bankName?: string;
+    accountNumber?: string;
+    ifsc?: string;
+    branch?: string;
+    upiId?: string;
+  };
+  terms?: string[];
+  receiverSignatureImage?: string;
+  authorizedSignatureImage?: string;
+  qrCodeImage?: string;
+  footerText?: string;
+};
+
+type InvoicePdfOptions = {
+  output?: 'save' | 'blob' | 'datauristring';
+  fileName?: string;
+  currencySymbol?: string;
+  showQrCode?: boolean;
+  showReceiverSignature?: boolean;
+  showAuthorizedSignature?: boolean;
+  showFooterText?: boolean;
+  missingRequiredDisplayValue?: '-' | '';
+};
+
+type NormalizedImage = {
+  dataUrl: string;
+  format: 'PNG' | 'JPEG';
+};
+
+type TaxSummaryRow = {
+  hsn: string;
+  taxableAmount: number;
+  cgstRate: number;
+  cgstAmount: number;
+  sgstRate: number;
+  sgstAmount: number;
+  igstRate: number;
+  igstAmount: number;
+  taxAmount: number;
+};
+
+type RenderableItem = InvoiceItemData & {
+  nameLines: string[];
+  descriptionWrappedLines: string[];
+  rowHeight: number;
+};
+
+type TableColumns = Array<{
+  key: string;
+  label: string;
+  startX: number;
+  endX: number;
+  align: 'left' | 'center' | 'right';
+}>;
+
+const PAGE_W = 210;
+const PAGE_H = 297;
+
+const STANDARD_INVOICE_LAYOUT = {
+  frame: { x: 5.3, y: 5.3, w: 199.4, h: 285.8, right: 204.7, bottom: 291.1 },
+  header: {
+    bottom: 26.9,
+    logo: { x: 7.4, y: 7.4, maxWidth: 29.2, maxHeight: 15.8 },
+    companyName: { withLogoX: 38.1, withoutLogoX: 8.0, y: 13.2, maxWidthWithLogo: 112, maxWidthWithoutLogo: 144 },
+    address: { withLogoX: 38.1, withoutLogoX: 8.0, y: 17.4, maxWidthWithLogo: 112, maxWidthWithoutLogo: 144, lineHeight: 3.3 },
+    taxBlock: { x: 154.8, right: 202.8, gstY: 15.9, panY: 21.0 },
+  },
+  billTo: {
+    top: 26.9,
+    bottom: 56.8,
+    dividerX: 154.8,
+    labelX: 8.0,
+    labelY: 33.8,
+    contentX: 30.6,
+    contentMaxWidth: 119.5,
+    nameY: 35.6,
+    contentTop: 39.8,
+    contentBottom: 54.9,
+  },
+  invoiceMeta: {
+    titleBottom: 34.8,
+    x: 154.8,
+    right: 204.7,
+    valueRight: 201.9,
+    rows: {
+      number: 39.8,
+      date: 45.1,
+      placeOfSupply: 50.6,
+    },
+  },
+  itemTable: {
+    top: 56.8,
+    headerBottom: 62.3,
+    finalBottom: 175.4,
+    continuationBottom: 291.1,
+    columns: {
+      item: [5.3, 45.2],
+      hsn: [45.2, 61.9],
+      qty: [61.9, 82.5],
+      rate: [82.5, 103.4],
+      discount: [103.4, 124.3],
+      amount: [124.3, 149.1],
+      taxA: [149.1, 165.6],
+      taxB: [165.6, 182.3],
+      total: [182.3, 204.7],
+    },
+    serialX: 7.0,
+    itemTextX: 14.7,
+  },
+  quantityStrip: {
+    top: 175.4,
+    bottom: 182.6,
+    labelRight: 61.0,
+    valueX: 63.0,
+    baselineY: 180.4,
+  },
+  summary: {
+    top: 182.6,
+    bottom: 248.3,
+    dividerX: 137.2,
+    bands: {
+      wordsBottom: 194.8,
+      taxBottom: 218.8,
+      taxWordsBottom: 225.4,
+      bankBottom: 239.2,
+    },
+    words: { x: 7.8, top: 186.0, maxWidth: 126 },
+    taxTable: { x: 7.8, right: 136.2, top: 196.2 },
+    totals: { labelRight: 166.5, valueRight: 201.8, topY: 190.0, rowGap: 6.1 },
+  },
+  footer: {
+    top: 248.3,
+    bottom: 291.1,
+    termsRight: 100.8,
+    receiverRight: 137.2,
+    authorizedRight: 180.0,
+    receiverLineY: 285.7,
+    authorizedLineY: 285.7,
+    captionY: 289.9,
+  },
+} as const;
+
+const STANDARD_INVOICE_TYPE = {
+  companyName: 12.8,
+  companyMeta: 8.8,
+  billToLabel: 9.1,
+  customerName: 10.7,
+  customerMeta: 8.8,
+  invoiceTitle: 13.0,
+  invoiceMeta: 8.9,
+  tableHeader: 8.8,
+  tableBody: 8.3,
+  tableTax: 7.4,
+  quantityLabel: 8.9,
+  quantityValue: 8.8,
+  summaryLabel: 8.2,
+  summaryBody: 8.7,
+  totals: 9.1,
+  netPayable: 12.4,
+  footerLabel: 8.2,
+  footerBody: 8.3,
+  pageNote: 6.2,
+} as const;
+
+const STANDARD_INVOICE_COLORS = {
+  text: [12, 12, 12] as const,
+  border: [35, 35, 35] as const,
+  white: [255, 255, 255] as const,
+};
+
+const roundCurrency = (value: number) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+
+const sanitizeText = (value: unknown, fallback = '') => {
+  const text = String(value ?? '')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text || fallback;
+};
+
+const sanitizeLines = (values: unknown[] | undefined, fallback?: string) => {
+  const lines = Array.isArray(values)
+    ? values.map((value) => sanitizeText(value)).filter(Boolean)
+    : [];
+  if (!lines.length && fallback) return [fallback];
+  return lines;
+};
+
+const formatMoneyIndian = (value: number): string => {
+  const rounded = roundCurrency(value);
+  const sign = rounded < 0 ? '-' : '';
+  const absolute = Math.abs(rounded);
+  const [wholePart, decimalPart] = absolute.toFixed(2).split('.');
+  const lastThree = wholePart.slice(-3);
+  const rest = wholePart.slice(0, -3);
+  const grouped = rest ? `${rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',')},${lastThree}` : lastThree;
+  return `${sign}${grouped}.${decimalPart}`;
+};
+
+const formatInvoiceQuantity = (value: number, unit?: string): string => {
+  const rounded = Math.abs(value % 1) < 0.000001 ? value.toFixed(0) : value.toFixed(3);
+  return unit ? `${rounded} ${sanitizeText(unit)}` : rounded;
+};
+
+const formatInvoiceDate = (value: string | Date): string => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+
+const fitText = (
+  doc: jsPDF,
+  text: string,
+  maxWidth: number,
+  preferredFontSize: number,
+  minimumFontSize: number,
+): number => {
+  let size = preferredFontSize;
+  while (size > minimumFontSize) {
+    doc.setFontSize(size);
+    if (doc.getTextWidth(text) <= maxWidth) return size;
+    size -= 0.2;
+  }
+  return minimumFontSize;
+};
+
+const wrapAndClipText = (
+  doc: jsPDF,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+) => {
+  const sanitized = sanitizeText(text);
+  const wrapped = (doc.splitTextToSize(sanitized, maxWidth) as string[]).slice(0, maxLines);
+  if (!wrapped.length) return ['-'];
+  if (wrapped.length < maxLines) return wrapped;
+  const lastIndex = wrapped.length - 1;
+  const original = wrapped[lastIndex];
+  let clipped = original;
+  while (clipped.length > 1 && doc.getTextWidth(`${clipped}...`) > maxWidth) clipped = clipped.slice(0, -1).trimEnd();
+  wrapped[lastIndex] = clipped === original ? original : `${clipped}...`;
+  return wrapped;
+};
+
+const setStandardInvoiceBaseState = (doc: jsPDF) => {
+  doc.setTextColor(...STANDARD_INVOICE_COLORS.text);
+  doc.setDrawColor(...STANDARD_INVOICE_COLORS.border);
+  doc.setFillColor(...STANDARD_INVOICE_COLORS.white);
+  doc.setLineWidth(0.20);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+};
+
+const drawHLine = (doc: jsPDF, y: number, x1: number, x2: number, width: number) => {
+  doc.setLineWidth(width);
+  doc.line(x1, y, x2, y);
+};
+
+const drawVLine = (doc: jsPDF, x: number, y1: number, y2: number, width: number) => {
+  doc.setLineWidth(width);
+  doc.line(x, y1, x, y2);
+};
+
+const drawBox = (doc: jsPDF, x: number, y: number, width: number, height: number, lineWidth: number) => {
+  doc.setLineWidth(lineWidth);
+  doc.rect(x, y, width, height);
+};
+
+const drawLabelValueRow = (
+  doc: jsPDF,
+  label: string,
+  value: string,
+  xLabel: number,
+  xValueRight: number,
+  y: number,
+  labelStyle: 'normal' | 'bold' = 'normal',
+  valueStyle: 'normal' | 'bold' = 'normal',
+  fontSize = 7.5,
+) => {
+  doc.setFont('helvetica', labelStyle);
+  doc.setFontSize(fontSize);
+  doc.text(label, xLabel, y);
+  doc.setFont('helvetica', valueStyle);
+  doc.text(value, xValueRight, y, { align: 'right' });
+};
+
+const buildExactInvoiceData = (
+  transaction: Transaction,
+  customers: Customer[],
+  profile: Partial<StoreProfile> | null | undefined,
+): InvoicePdfData => {
+  const taxBreakupMode = getTaxBreakupMode(transaction.taxLabel);
+  const gstMode: GstMode = taxBreakupMode === 'igst' ? 'IGST' : taxBreakupMode === 'none' ? 'NONE' : 'CGST_SGST';
+  const parsedTaxRate = Number(transaction.taxRate);
+  const fallbackTaxRateMatch = String(transaction.taxLabel || '').match(/(\d+(?:\.\d+)?)\s*%/);
+  const taxRateValue = Number.isFinite(parsedTaxRate)
+    ? Math.max(0, parsedTaxRate)
+    : (fallbackTaxRateMatch ? Math.max(0, Number(fallbackTaxRateMatch[1])) : 0);
+  const subtotalAmount = Math.max(0, Number(transaction.subtotal || transaction.total || 0));
+  const discountAmount = Math.max(0, Number(transaction.discount || 0));
+  const taxAmount = Math.max(0, Number(transaction.tax || 0));
+  const taxableAmount = Math.max(0, Number((transaction as any).taxableAmount ?? (subtotalAmount - discountAmount)));
+  const customer = customers.find((entry) => entry.id === transaction.customerId);
+  const transactionRecord = transaction as unknown as Record<string, unknown>;
+  const customerRecord = customer as unknown as Record<string, unknown> | undefined;
+  const profileRecord = profile as unknown as Record<string, unknown> | undefined;
+  const payableAmount = roundCurrency(Number(transaction.total) || 0);
+  const roundOff = roundCurrency(payableAmount - roundCurrency(taxableAmount + taxAmount));
+  const normalizedItems = normalizeTransactionItems(transaction.items);
+  const totalQuantity = normalizedItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity) || 0), 0);
+  const groupedByUnit = new Map<string, number>();
+  normalizedItems.forEach((item) => {
+    const unit = String((item as any).unit || 'Qty').trim() || 'Qty';
+    groupedByUnit.set(unit, (groupedByUnit.get(unit) || 0) + Math.max(0, Number(item.quantity) || 0));
+  });
+  const quantitySummary = Array.from(groupedByUnit.entries())
+    .map(([unit, quantity]) => `${Number.isInteger(quantity) ? quantity : quantity.toFixed(3)}(${unit})`)
+    .join(', ');
+  const documentNo = transaction.type === 'return'
+    ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-4)}`)
+    : (transaction.invoiceNo || `IN-${transaction.id.slice(-4)}`);
+  const itemsTotalBeforeTax = normalizedItems.reduce((sum, item) => (
+    sum + Math.max(0, (Number(item.sellPrice) || 0) * (Number(item.quantity) || 0) - (Number(item.discountAmount) || 0))
+  ), 0);
+  const items: InvoiceItemData[] = normalizedItems.map((item) => {
+    const lineTaxableAmount = Math.max(0, (Number(item.sellPrice) || 0) * (Number(item.quantity) || 0) - (Number(item.discountAmount) || 0));
+    const proportionalTax = itemsTotalBeforeTax > 0 ? (taxAmount * lineTaxableAmount) / itemsTotalBeforeTax : 0;
+    const cgstRate = gstMode === 'CGST_SGST' && taxRateValue > 0 ? taxRateValue / 2 : 0;
+    const sgstRate = gstMode === 'CGST_SGST' && taxRateValue > 0 ? taxRateValue / 2 : 0;
+    const igstRate = gstMode === 'IGST' ? taxRateValue : 0;
+    const cgstAmount = gstMode === 'CGST_SGST' ? proportionalTax / 2 : 0;
+    const sgstAmount = gstMode === 'CGST_SGST' ? proportionalTax / 2 : 0;
+    const igstAmount = gstMode === 'IGST' ? proportionalTax : 0;
+    return {
+      name: formatInvoiceItemName(item),
+      hsn: item.hsn || '-',
+      quantity: Number(item.quantity) || 0,
+      unit: String((item as any).unit || 'Pcs'),
+      rate: Number(item.sellPrice) || 0,
+      discount: Number(item.discountAmount) || 0,
+      taxableAmount: lineTaxableAmount,
+      cgstRate,
+      cgstAmount,
+      sgstRate,
+      sgstAmount,
+      igstRate,
+      igstAmount,
+      total: lineTaxableAmount + proportionalTax,
+    };
+  });
+
+  const companyPan = getFirstMeaningfulValue([profileRecord], ['pan', 'panNumber', 'businessPan', 'taxPan']);
+  const customerPan = getFirstMeaningfulValue([transactionRecord, customerRecord], ['pan', 'panNumber', 'customerPan', 'gstPan']);
+  const companyAddressLines = buildAddressLines([profileRecord], String(profile?.state || '').trim());
+  const customerAddressLines = buildAddressLines(
+    [transactionRecord, customerRecord],
+    getFirstMeaningfulValue([transactionRecord, customerRecord], ['state']),
+  );
+  const placeOfSupply = getFirstMeaningfulValue(
+    [transactionRecord, customerRecord, profileRecord],
+    ['placeOfSupply', 'place_of_supply', 'state', 'billingState'],
+  ) || '-';
+  const qrCodeImage = getFirstMeaningfulValue(
+    [transactionRecord, profileRecord],
+    ['qrCodeImage', 'paymentQrImage', 'paymentQr', 'upiQrImage', 'qrImage'],
+  );
+  const receiverSignatureImage = getFirstMeaningfulValue(
+    [transactionRecord, customerRecord],
+    ['receiverSignatureImage', 'receivedSignatureImage'],
+  );
+  const termsSource = getFirstMeaningfulValue([profileRecord], ['invoiceTerms', 'termsAndConditions', 'terms']);
+  const terms = termsSource
+    ? termsSource.split(/\r?\n+/).map((line) => sanitizeText(line)).filter(Boolean)
+    : [
+        'Goods once sold will not be accepted for return.',
+        'Interest may apply on delayed payments where applicable.',
+      ];
+
+  return {
+    company: {
+      name: String(profile?.storeName || 'StockFlow Store').trim() || 'StockFlow Store',
+      logo: profile?.logoImage || '',
+      addressLines: companyAddressLines.length ? companyAddressLines : ['-'],
+      mobile: profile?.phone || '',
+      email: profile?.email || '',
+      gstin: profile?.gstin || '',
+      pan: companyPan,
+      state: profile?.state || '',
+    },
+    customer: {
+      name: String(transaction.customerName || customer?.name || 'Walk-in Customer').trim() || 'Walk-in Customer',
+      addressLines: customerAddressLines,
+      mobile: transaction.customerPhone || customer?.phone || '',
+      gstName: transaction.gstName || customer?.gstName || '',
+      gstNumber: transaction.gstNumber || customer?.gstNumber || '',
+      pan: customerPan,
+    },
+    invoiceNumber: documentNo,
+    invoiceDate: transaction.date,
+    placeOfSupply,
+    items,
+    gstMode,
+    totalQuantity,
+    quantitySummary,
+    basicAmount: taxableAmount,
+    cgstAmount: gstMode === 'CGST_SGST' ? taxAmount / 2 : 0,
+    sgstAmount: gstMode === 'CGST_SGST' ? taxAmount / 2 : 0,
+    igstAmount: gstMode === 'IGST' ? taxAmount : 0,
+    roundOff,
+    netPayable: payableAmount,
+    netPayableWords: formatAmountWords(payableAmount),
+    taxAmountWords: taxAmount > 0 ? formatAmountWords(taxAmount) : 'Zero Rupees Only',
+    bank: {
+      accountFor: profile?.bankHolder || profile?.storeName || '',
+      bankName: profile?.bankName || '',
+      accountNumber: profile?.bankAccount || '',
+      ifsc: profile?.bankIfsc || '',
+      branch: getFirstMeaningfulValue([profileRecord], ['bankBranch', 'branch']),
+      upiId: getFirstMeaningfulValue([profileRecord], ['upiId', 'upi', 'bankUpi']),
+    },
+    terms,
+    receiverSignatureImage,
+    authorizedSignatureImage: profile?.signatureImage || '',
+    qrCodeImage,
+    footerText: '',
+  };
 };
 
 const printHtmlViaBrowserWindow = (html: string): Promise<void> => new Promise((resolve, reject) => {
@@ -216,6 +801,1128 @@ const getPdfImageSource = async (image: string | undefined): Promise<string | nu
     } catch {
         return null;
     }
+};
+
+const detectImageFormat = (dataUrl: string): 'PNG' | 'JPEG' => (
+  dataUrl.toLowerCase().startsWith('data:image/jpeg') || dataUrl.toLowerCase().startsWith('data:image/jpg')
+    ? 'JPEG'
+    : 'PNG'
+);
+
+const normalizeInvoiceImageSource = async (source?: string): Promise<NormalizedImage | null> => {
+  const dataUrl = await getPdfImageSource(source);
+  if (!dataUrl) return null;
+  return { dataUrl, format: detectImageFormat(dataUrl) };
+};
+
+const drawContainedImage = async (
+  doc: jsPDF,
+  source: string | undefined,
+  box: { x: number; y: number; maxWidth: number; maxHeight: number },
+  horizontalAlign: 'left' | 'center' | 'right' = 'center',
+  verticalAlign: 'top' | 'center' | 'bottom' = 'center',
+) => {
+  const normalized = await normalizeInvoiceImageSource(source);
+  if (!normalized) return null;
+  try {
+    const properties = doc.getImageProperties(normalized.dataUrl);
+    const sourceW = Number(properties.width) || 1;
+    const sourceH = Number(properties.height) || 1;
+    const ratio = sourceW / sourceH;
+    let drawW = box.maxWidth;
+    let drawH = drawW / ratio;
+    if (drawH > box.maxHeight) {
+      drawH = box.maxHeight;
+      drawW = drawH * ratio;
+    }
+    const x = horizontalAlign === 'left'
+      ? box.x
+      : horizontalAlign === 'right'
+        ? box.x + box.maxWidth - drawW
+        : box.x + ((box.maxWidth - drawW) / 2);
+    const y = verticalAlign === 'top'
+      ? box.y
+      : verticalAlign === 'bottom'
+        ? box.y + box.maxHeight - drawH
+        : box.y + ((box.maxHeight - drawH) / 2);
+    doc.addImage(normalized.dataUrl, normalized.format, x, y, drawW, drawH, undefined, normalized.format === 'PNG' ? 'FAST' : 'MEDIUM');
+    return { x, y, width: drawW, height: drawH };
+  } catch {
+    return null;
+  }
+};
+
+const calculateTaxSummaryByHsn = (invoice: InvoicePdfData): TaxSummaryRow[] => {
+  const rows = new Map<string, TaxSummaryRow>();
+  invoice.items.forEach((item) => {
+    const hsn = sanitizeText(item.hsn, '-');
+    const current = rows.get(hsn) || {
+      hsn,
+      taxableAmount: 0,
+      cgstRate: 0,
+      cgstAmount: 0,
+      sgstRate: 0,
+      sgstAmount: 0,
+      igstRate: 0,
+      igstAmount: 0,
+      taxAmount: 0,
+    };
+    current.taxableAmount = roundCurrency(current.taxableAmount + roundCurrency(item.taxableAmount));
+    current.cgstRate = Math.max(current.cgstRate, Number(item.cgstRate || 0));
+    current.cgstAmount = roundCurrency(current.cgstAmount + roundCurrency(item.cgstAmount || 0));
+    current.sgstRate = Math.max(current.sgstRate, Number(item.sgstRate || 0));
+    current.sgstAmount = roundCurrency(current.sgstAmount + roundCurrency(item.sgstAmount || 0));
+    current.igstRate = Math.max(current.igstRate, Number(item.igstRate || 0));
+    current.igstAmount = roundCurrency(current.igstAmount + roundCurrency(item.igstAmount || 0));
+    current.taxAmount = roundCurrency(current.taxAmount + roundCurrency(
+      Number(item.cgstAmount || 0) + Number(item.sgstAmount || 0) + Number(item.igstAmount || 0),
+    ));
+    rows.set(hsn, current);
+  });
+  return Array.from(rows.values());
+};
+
+const buildTableColumns = (gstMode: GstMode): TableColumns => {
+  const { columns } = STANDARD_INVOICE_LAYOUT.itemTable;
+  if (gstMode === 'IGST') {
+    return [
+      { key: 'item', label: 'Item', startX: columns.item[0], endX: columns.item[1], align: 'center' },
+      { key: 'hsn', label: 'HSN', startX: columns.hsn[0], endX: columns.hsn[1], align: 'left' },
+      { key: 'qty', label: 'Qty', startX: columns.qty[0], endX: columns.qty[1], align: 'center' },
+      { key: 'rate', label: 'Rate', startX: columns.rate[0], endX: columns.rate[1], align: 'center' },
+      { key: 'discount', label: 'Discount', startX: columns.discount[0], endX: columns.discount[1], align: 'center' },
+      { key: 'amount', label: 'Amount', startX: columns.amount[0], endX: columns.amount[1], align: 'center' },
+      { key: 'igst', label: 'IGST', startX: columns.taxA[0], endX: columns.taxB[1], align: 'center' },
+      { key: 'total', label: 'Total', startX: columns.total[0], endX: columns.total[1], align: 'center' },
+    ];
+  }
+  if (gstMode === 'NONE') {
+    return [
+      { key: 'item', label: 'Item', startX: columns.item[0], endX: columns.item[1], align: 'center' },
+      { key: 'hsn', label: 'HSN', startX: columns.hsn[0], endX: columns.hsn[1], align: 'left' },
+      { key: 'qty', label: 'Qty', startX: columns.qty[0], endX: columns.qty[1], align: 'center' },
+      { key: 'rate', label: 'Rate', startX: columns.rate[0], endX: columns.rate[1], align: 'center' },
+      { key: 'discount', label: 'Discount', startX: columns.discount[0], endX: columns.discount[1], align: 'center' },
+      { key: 'amount', label: 'Amount', startX: columns.amount[0], endX: columns.taxB[1], align: 'center' },
+      { key: 'total', label: 'Total', startX: columns.total[0], endX: columns.total[1], align: 'center' },
+    ];
+  }
+  return [
+    { key: 'item', label: 'Item', startX: columns.item[0], endX: columns.item[1], align: 'center' },
+    { key: 'hsn', label: 'HSN', startX: columns.hsn[0], endX: columns.hsn[1], align: 'left' },
+    { key: 'qty', label: 'Qty', startX: columns.qty[0], endX: columns.qty[1], align: 'center' },
+    { key: 'rate', label: 'Rate', startX: columns.rate[0], endX: columns.rate[1], align: 'center' },
+    { key: 'discount', label: 'Discount', startX: columns.discount[0], endX: columns.discount[1], align: 'center' },
+    { key: 'amount', label: 'Amount', startX: columns.amount[0], endX: columns.amount[1], align: 'center' },
+    { key: 'cgst', label: 'CGST', startX: columns.taxA[0], endX: columns.taxA[1], align: 'center' },
+    { key: 'sgst', label: 'SGST', startX: columns.taxB[0], endX: columns.taxB[1], align: 'center' },
+    { key: 'total', label: 'Total', startX: columns.total[0], endX: columns.total[1], align: 'center' },
+  ];
+};
+
+const prepareRenderableItems = (doc: jsPDF, items: InvoiceItemData[]) => {
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.tableBody);
+  return items.map<RenderableItem>((item) => {
+    const nameLines = wrapAndClipText(doc, sanitizeText(item.name, '-'), 29, 3);
+    const descriptionWrappedLines = (sanitizeLines(item.descriptionLines).flatMap((line) => wrapAndClipText(doc, line, 29, 2))).slice(0, 2);
+    const contentLines = nameLines.length + descriptionWrappedLines.length;
+    const rowHeight = Math.max(11.8, roundCurrency(4.8 + (contentLines * 3.35)));
+    return { ...item, nameLines, descriptionWrappedLines, rowHeight };
+  });
+};
+
+const paginateRenderableItems = (items: RenderableItem[]) => {
+  const singlePageCapacity = STANDARD_INVOICE_LAYOUT.itemTable.finalBottom - STANDARD_INVOICE_LAYOUT.itemTable.headerBottom;
+  const continuationCapacity = STANDARD_INVOICE_LAYOUT.itemTable.continuationBottom - STANDARD_INVOICE_LAYOUT.itemTable.headerBottom;
+  const totalHeight = items.reduce((sum, item) => sum + item.rowHeight, 0);
+  if (totalHeight <= singlePageCapacity) return [items];
+
+  const reversedPages: RenderableItem[][] = [];
+  let cursor = items.length;
+  let capacity = singlePageCapacity;
+
+  while (cursor > 0) {
+    let used = 0;
+    const pageItems: RenderableItem[] = [];
+    while (cursor > 0) {
+      const nextItem = items[cursor - 1];
+      if (pageItems.length > 0 && used + nextItem.rowHeight > capacity) break;
+      pageItems.unshift(nextItem);
+      used += nextItem.rowHeight;
+      cursor -= 1;
+      if (used >= capacity) break;
+    }
+    reversedPages.push(pageItems);
+    capacity = continuationCapacity;
+  }
+
+  return reversedPages.reverse();
+};
+
+const aggregateQuantitySummary = (items: InvoiceItemData[]) => {
+  const unitMap = new Map<string, number>();
+  items.forEach((item) => {
+    const unit = sanitizeText(item.unit, 'Qty');
+    unitMap.set(unit, roundCurrency((unitMap.get(unit) || 0) + Number(item.quantity || 0)));
+  });
+  return Array.from(unitMap.entries())
+    .map(([unit, quantity]) => `${formatInvoiceQuantity(quantity).replace(/\s+/g, '')}(${unit})`)
+    .join(', ');
+};
+
+const numberToIndianWords = (value: number) => {
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
+  const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const twoDigits = (num: number): string => {
+    if (num < 10) return ones[num];
+    if (num < 20) return teens[num - 10];
+    return `${tens[Math.floor(num / 10)]}${num % 10 ? ` ${ones[num % 10]}` : ''}`.trim();
+  };
+  const threeDigits = (num: number): string => {
+    const hundred = Math.floor(num / 100);
+    const rest = num % 100;
+    return `${hundred ? `${ones[hundred]} Hundred` : ''}${hundred && rest ? ' ' : ''}${rest ? twoDigits(rest) : ''}`.trim();
+  };
+  const absolute = Math.floor(Math.abs(value));
+  if (absolute === 0) return 'Zero Rupees Only';
+  const crore = Math.floor(absolute / 10000000);
+  const lakh = Math.floor((absolute % 10000000) / 100000);
+  const thousand = Math.floor((absolute % 100000) / 1000);
+  const hundred = absolute % 1000;
+  const parts = [
+    crore ? `${threeDigits(crore)} Crore` : '',
+    lakh ? `${threeDigits(lakh)} Lakh` : '',
+    thousand ? `${threeDigits(thousand)} Thousand` : '',
+    hundred ? threeDigits(hundred) : '',
+  ].filter(Boolean);
+  return `${parts.join(' ')} Rupees Only`;
+};
+
+const renderFrameAndCommonSections = async (
+  doc: jsPDF,
+  invoice: InvoicePdfData,
+  options: Required<InvoicePdfOptions>,
+  pageNumber: number,
+  totalPages: number,
+  isFinalPage: boolean,
+) => {
+  const layout = STANDARD_INVOICE_LAYOUT;
+  setStandardInvoiceBaseState(doc);
+  drawBox(doc, layout.frame.x, layout.frame.y, layout.frame.w, layout.frame.h, 0.35);
+  drawHLine(doc, layout.header.bottom, layout.frame.x, layout.frame.right, 0.30);
+  drawHLine(doc, layout.billTo.bottom, layout.frame.x, layout.frame.right, 0.30);
+  drawVLine(doc, layout.billTo.dividerX, layout.billTo.top, layout.billTo.bottom, 0.30);
+  drawHLine(doc, layout.invoiceMeta.titleBottom, layout.invoiceMeta.x, layout.invoiceMeta.right, 0.30);
+
+  const logoPlacement = await drawContainedImage(doc, invoice.company.logo, layout.header.logo, 'left', 'center');
+  const companyNameX = logoPlacement ? layout.header.companyName.withLogoX : layout.header.companyName.withoutLogoX;
+  const companyNameMaxWidth = logoPlacement ? layout.header.companyName.maxWidthWithLogo : layout.header.companyName.maxWidthWithoutLogo;
+  const companyAddressX = logoPlacement ? layout.header.address.withLogoX : layout.header.address.withoutLogoX;
+  const companyAddressMaxWidth = logoPlacement ? layout.header.address.maxWidthWithLogo : layout.header.address.maxWidthWithoutLogo;
+
+  doc.setFont('helvetica', 'bold');
+  const companyName = sanitizeText(invoice.company.name, options.missingRequiredDisplayValue);
+  const companyFontSize = fitText(doc, companyName, companyNameMaxWidth, 14.2, STANDARD_INVOICE_TYPE.companyName);
+  doc.setFontSize(companyFontSize);
+  const companyLines = doc.getTextWidth(companyName) <= companyNameMaxWidth
+    ? [companyName]
+    : wrapAndClipText(doc, companyName, companyNameMaxWidth, 2);
+  doc.text(companyLines, companyNameX, layout.header.companyName.y, { lineHeightFactor: 1.0 });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.companyMeta);
+  const companyAddress = [
+    ...sanitizeLines(invoice.company.addressLines),
+    sanitizeText(invoice.company.mobile) ? `Phone: ${sanitizeText(invoice.company.mobile)}` : '',
+    sanitizeText(invoice.company.email) ? `Email: ${sanitizeText(invoice.company.email)}` : '',
+  ].filter(Boolean);
+  const addressLines = companyAddress
+    .flatMap((line) => wrapAndClipText(doc, line, companyAddressMaxWidth, 1))
+    .slice(0, 2);
+  if (addressLines.length) {
+    doc.text(addressLines, companyAddressX, layout.header.address.y, { lineHeightFactor: 1.06 });
+  }
+
+  drawLabelValueRow(doc, 'GSTIN:', sanitizeText(invoice.company.gstin, options.missingRequiredDisplayValue), 154.8, layout.header.taxBlock.right, layout.header.taxBlock.gstY, 'normal', 'normal', STANDARD_INVOICE_TYPE.companyMeta);
+  drawLabelValueRow(doc, 'PAN:', sanitizeText(invoice.company.pan, options.missingRequiredDisplayValue), 154.8, layout.header.taxBlock.right, layout.header.taxBlock.panY, 'normal', 'normal', STANDARD_INVOICE_TYPE.companyMeta);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.billToLabel);
+  doc.text('Bill To:', layout.billTo.labelX, layout.billTo.labelY);
+  doc.setFontSize(STANDARD_INVOICE_TYPE.customerName);
+  doc.text(sanitizeText(invoice.customer.name, options.missingRequiredDisplayValue), layout.billTo.contentX, layout.billTo.nameY);
+
+  doc.setFont('helvetica', 'normal');
+  let customerCursorY = layout.billTo.contentTop;
+  const customerAddressLines = sanitizeLines(invoice.customer.addressLines)
+    .flatMap((line) => wrapAndClipText(doc, line, layout.billTo.contentMaxWidth, 1))
+    .slice(0, 2);
+  doc.setFontSize(STANDARD_INVOICE_TYPE.customerMeta);
+  if (customerAddressLines.length) {
+    doc.text(customerAddressLines, layout.billTo.contentX, customerCursorY, { lineHeightFactor: 1.04 });
+    customerCursorY += customerAddressLines.length * 3.7 + 1.0;
+  }
+
+  const customerRows = [
+    sanitizeText(invoice.customer.mobile) ? `Mo: ${sanitizeText(invoice.customer.mobile)}` : '',
+    sanitizeText(invoice.customer.gstName) ? `GST Name: ${sanitizeText(invoice.customer.gstName)}` : '',
+  ].filter(Boolean);
+  const gstLine = sanitizeText(invoice.customer.gstNumber) ? `GSTIN: ${sanitizeText(invoice.customer.gstNumber)}` : '';
+  const panLine = sanitizeText(invoice.customer.pan) ? `PAN: ${sanitizeText(invoice.customer.pan)}` : '';
+  const combinedTaxIdentity = [gstLine, panLine].filter(Boolean).join('    ');
+  if (combinedTaxIdentity) {
+    doc.setFontSize(STANDARD_INVOICE_TYPE.customerMeta);
+    if (doc.getTextWidth(combinedTaxIdentity) <= layout.billTo.contentMaxWidth) {
+      customerRows.push(combinedTaxIdentity);
+    } else {
+      if (gstLine) customerRows.push(gstLine);
+      if (panLine) customerRows.push(panLine);
+    }
+  }
+  customerRows.forEach((row) => {
+    if (customerCursorY > layout.billTo.contentBottom) return;
+    const rowLines = wrapAndClipText(doc, row, layout.billTo.contentMaxWidth, 1);
+    doc.text(rowLines, layout.billTo.contentX, customerCursorY);
+    customerCursorY += 4.0;
+  });
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.invoiceTitle);
+  doc.text(/^CN[-\d]/i.test(sanitizeText(invoice.invoiceNumber)) ? 'Credit Note' : 'Invoice', (layout.invoiceMeta.x + layout.invoiceMeta.right) / 2, 32.7, { align: 'center' });
+  drawLabelValueRow(doc, 'Number', sanitizeText(invoice.invoiceNumber, options.missingRequiredDisplayValue), 156.8, layout.invoiceMeta.valueRight, layout.invoiceMeta.rows.number, 'normal', 'bold', STANDARD_INVOICE_TYPE.invoiceMeta);
+  drawLabelValueRow(doc, 'Date', formatInvoiceDate(invoice.invoiceDate), 156.8, layout.invoiceMeta.valueRight, layout.invoiceMeta.rows.date, 'normal', 'normal', STANDARD_INVOICE_TYPE.invoiceMeta);
+  drawLabelValueRow(doc, 'Place', sanitizeText(invoice.placeOfSupply, options.missingRequiredDisplayValue), 156.8, layout.invoiceMeta.valueRight, layout.invoiceMeta.rows.placeOfSupply, 'normal', 'normal', STANDARD_INVOICE_TYPE.invoiceMeta);
+
+  if (totalPages > 1) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(STANDARD_INVOICE_TYPE.pageNote);
+    doc.text(`Page ${pageNumber} of ${totalPages}`, layout.frame.right - 1.5, 295.0, { align: 'right' });
+  }
+
+  if (isFinalPage && options.showFooterText && sanitizeText(invoice.footerText)) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(4.8);
+    doc.text(sanitizeText(invoice.footerText), 6.1, 295.1);
+  }
+};
+
+const drawItemTableSkeleton = (doc: jsPDF, gstMode: GstMode, bottomY: number) => {
+  const columns = buildTableColumns(gstMode);
+  const layout = STANDARD_INVOICE_LAYOUT;
+  drawHLine(doc, layout.itemTable.top, layout.frame.x, layout.frame.right, 0.30);
+  drawHLine(doc, layout.itemTable.headerBottom, layout.frame.x, layout.frame.right, 0.30);
+  drawHLine(doc, bottomY, layout.frame.x, layout.frame.right, 0.30);
+  columns.slice(1).forEach((column) => drawVLine(doc, column.startX, layout.itemTable.top, bottomY, 0.18));
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.tableHeader);
+  columns.forEach((column) => {
+    const centerX = (column.startX + column.endX) / 2;
+    if (column.key === 'hsn') doc.text(column.label, column.startX + 1, layout.itemTable.top + 3.8);
+    else doc.text(column.label, centerX, layout.itemTable.top + 3.8, { align: 'center' });
+  });
+};
+
+const renderItemRows = (
+  doc: jsPDF,
+  items: RenderableItem[],
+  startIndex: number,
+  gstMode: GstMode,
+  bottomY: number,
+) => {
+  const layout = STANDARD_INVOICE_LAYOUT;
+  let currentY: number = layout.itemTable.headerBottom;
+  items.forEach((item, localIndex) => {
+    const rowTopY = currentY;
+    const rowBottomY = rowTopY + item.rowHeight;
+    const textTopY = rowTopY + 4.7;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(STANDARD_INVOICE_TYPE.tableBody);
+    doc.text(String(startIndex + localIndex + 1), layout.itemTable.serialX, textTopY);
+    doc.text(item.nameLines, layout.itemTable.itemTextX, textTopY, { lineHeightFactor: 1.04 });
+    if (item.descriptionWrappedLines.length) {
+      doc.setFontSize(7.2);
+      doc.text(item.descriptionWrappedLines, layout.itemTable.itemTextX, textTopY + (item.nameLines.length * 3.45), { lineHeightFactor: 1.02 });
+    }
+
+    const qty = formatInvoiceQuantity(Number(item.quantity || 0), sanitizeText(item.unit));
+    const rate = formatMoneyIndian(item.rate);
+    const discount = formatMoneyIndian(item.discount);
+    const taxable = formatMoneyIndian(item.taxableAmount);
+    const total = formatMoneyIndian(item.total);
+    const rightText = (x: number, text: string) => doc.text(text, x, textTopY, { align: 'right' });
+
+    doc.setFontSize(STANDARD_INVOICE_TYPE.tableBody);
+    doc.text(sanitizeText(item.hsn, '-'), layout.itemTable.columns.hsn[0] + 1.2, textTopY);
+    rightText(layout.itemTable.columns.qty[1] - 1.6, qty);
+    rightText(layout.itemTable.columns.rate[1] - 1.6, rate);
+    rightText(layout.itemTable.columns.discount[1] - 1.6, discount);
+
+    const amountRight = gstMode === 'NONE' ? layout.itemTable.columns.taxB[1] - 1.6 : layout.itemTable.columns.amount[1] - 1.6;
+    rightText(amountRight, taxable);
+
+    if (gstMode === 'CGST_SGST') {
+      doc.setFontSize(STANDARD_INVOICE_TYPE.tableTax);
+      doc.text(`${formatMoneyIndian(item.cgstAmount || 0)}\n(${sanitizeText(item.cgstRate, '0')}%)`, (layout.itemTable.columns.taxA[0] + layout.itemTable.columns.taxA[1]) / 2, textTopY, { align: 'center', baseline: 'alphabetic' });
+      doc.text(`${formatMoneyIndian(item.sgstAmount || 0)}\n(${sanitizeText(item.sgstRate, '0')}%)`, (layout.itemTable.columns.taxB[0] + layout.itemTable.columns.taxB[1]) / 2, textTopY, { align: 'center', baseline: 'alphabetic' });
+    } else if (gstMode === 'IGST') {
+      doc.setFontSize(STANDARD_INVOICE_TYPE.tableTax);
+      doc.text(`${formatMoneyIndian(item.igstAmount || 0)}\n(${sanitizeText(item.igstRate, '0')}%)`, (layout.itemTable.columns.taxA[0] + layout.itemTable.columns.taxB[1]) / 2, textTopY, { align: 'center', baseline: 'alphabetic' });
+    }
+
+    doc.setFontSize(STANDARD_INVOICE_TYPE.tableBody);
+    rightText(layout.itemTable.columns.total[1] - 1.6, total);
+    drawHLine(doc, Math.min(rowBottomY, bottomY), layout.frame.x, layout.frame.right, 0.12);
+    currentY = rowBottomY;
+  });
+};
+
+const renderQuantityStrip = (doc: jsPDF, invoice: InvoicePdfData) => {
+  const layout = STANDARD_INVOICE_LAYOUT;
+  drawHLine(doc, layout.quantityStrip.top, layout.frame.x, layout.frame.right, 0.30);
+  drawHLine(doc, layout.quantityStrip.bottom, layout.frame.x, layout.frame.right, 0.30);
+  drawVLine(doc, layout.itemTable.columns.qty[0], layout.quantityStrip.top, layout.quantityStrip.bottom, 0.18);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.quantityLabel);
+  doc.text('Total qty', layout.quantityStrip.labelRight, layout.quantityStrip.baselineY, { align: 'right' });
+  const summary = sanitizeText(invoice.quantitySummary) || aggregateQuantitySummary(invoice.items);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.quantityValue);
+  doc.text(summary, layout.quantityStrip.valueX, layout.quantityStrip.baselineY);
+};
+
+const renderTaxTable = (doc: jsPDF, invoice: InvoicePdfData) => {
+  const layout = STANDARD_INVOICE_LAYOUT;
+  const rows = calculateTaxSummaryByHsn(invoice);
+  const totalTax = roundCurrency(Number(invoice.cgstAmount || 0) + Number(invoice.sgstAmount || 0) + Number(invoice.igstAmount || 0));
+  const head = invoice.gstMode === 'CGST_SGST'
+    ? [['HSN/SAC', 'Taxable Amount', 'CGST', 'SGST', 'Tax Amount']]
+    : invoice.gstMode === 'IGST'
+      ? [['HSN/SAC', 'Taxable Amount', 'IGST', 'Tax Amount']]
+      : [['HSN/SAC', 'Taxable Amount', 'Tax Amount']];
+  const body = rows.map((row) => (
+    invoice.gstMode === 'CGST_SGST'
+      ? [
+          row.hsn,
+          formatMoneyIndian(row.taxableAmount),
+          `${formatMoneyIndian(row.cgstAmount)} (${sanitizeText(row.cgstRate, '0')}%)`,
+          `${formatMoneyIndian(row.sgstAmount)} (${sanitizeText(row.sgstRate, '0')}%)`,
+          formatMoneyIndian(row.taxAmount),
+        ]
+      : invoice.gstMode === 'IGST'
+        ? [
+            row.hsn,
+            formatMoneyIndian(row.taxableAmount),
+            `${formatMoneyIndian(row.igstAmount)} (${sanitizeText(row.igstRate, '0')}%)`,
+            formatMoneyIndian(row.taxAmount),
+          ]
+        : [
+            row.hsn,
+            formatMoneyIndian(row.taxableAmount),
+            formatMoneyIndian(row.taxAmount),
+          ]
+  ));
+  body.push(
+    invoice.gstMode === 'CGST_SGST'
+      ? ['Total', formatMoneyIndian(invoice.basicAmount), formatMoneyIndian(invoice.cgstAmount || 0), formatMoneyIndian(invoice.sgstAmount || 0), formatMoneyIndian(totalTax)]
+      : invoice.gstMode === 'IGST'
+        ? ['Total', formatMoneyIndian(invoice.basicAmount), formatMoneyIndian(invoice.igstAmount || 0), formatMoneyIndian(totalTax)]
+        : ['Total', formatMoneyIndian(invoice.basicAmount), formatMoneyIndian(totalTax)],
+  );
+  autoTable(doc, {
+    startY: layout.summary.taxTable.top,
+    margin: { left: layout.summary.taxTable.x, right: PAGE_W - layout.summary.taxTable.right },
+    tableWidth: layout.summary.taxTable.right - layout.summary.taxTable.x,
+    head,
+    body,
+    theme: 'grid',
+    styles: {
+      font: 'helvetica',
+      fontSize: 7.2,
+      cellPadding: { top: 0.65, right: 0.7, bottom: 0.65, left: 0.7 },
+      lineColor: STANDARD_INVOICE_COLORS.border as unknown as [number, number, number],
+      lineWidth: 0.12,
+      textColor: STANDARD_INVOICE_COLORS.text as unknown as [number, number, number],
+      valign: 'middle',
+    },
+    headStyles: {
+      fontStyle: 'normal',
+      fillColor: STANDARD_INVOICE_COLORS.white as unknown as [number, number, number],
+      textColor: STANDARD_INVOICE_COLORS.text as unknown as [number, number, number],
+    },
+    bodyStyles: { fontStyle: 'normal' },
+    columnStyles: invoice.gstMode === 'CGST_SGST'
+      ? { 0: { cellWidth: 22 }, 1: { cellWidth: 29, halign: 'right' }, 2: { cellWidth: 26.5, halign: 'right' }, 3: { cellWidth: 26.5, halign: 'right' }, 4: { halign: 'right' } }
+      : invoice.gstMode === 'IGST'
+        ? { 0: { cellWidth: 24 }, 1: { cellWidth: 35, halign: 'right' }, 2: { cellWidth: 35, halign: 'right' }, 3: { halign: 'right' } }
+        : { 0: { cellWidth: 28 }, 1: { cellWidth: 50, halign: 'right' }, 2: { halign: 'right' } },
+  });
+  return ((doc as any).lastAutoTable?.finalY as number | undefined) || layout.summary.taxTable.top + 18;
+};
+
+const renderSummarySection = (doc: jsPDF, invoice: InvoicePdfData, options: Required<InvoicePdfOptions>) => {
+  const layout = STANDARD_INVOICE_LAYOUT;
+  drawVLine(doc, layout.summary.dividerX, layout.summary.top, layout.summary.bottom, 0.30);
+  drawHLine(doc, layout.summary.bands.wordsBottom, layout.frame.x, layout.summary.dividerX, 0.18);
+  drawHLine(doc, layout.summary.bands.taxBottom, layout.frame.x, layout.summary.dividerX, 0.18);
+  drawHLine(doc, layout.summary.bands.taxWordsBottom, layout.frame.x, layout.summary.dividerX, 0.18);
+  drawHLine(doc, layout.summary.bands.bankBottom, layout.frame.x, layout.summary.dividerX, 0.18);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.summaryLabel);
+  doc.text('Net Payable in Words', layout.summary.words.x, layout.summary.words.top);
+  doc.setFontSize(STANDARD_INVOICE_TYPE.summaryBody);
+  const wordsLines = wrapAndClipText(doc, sanitizeText(invoice.netPayableWords, numberToIndianWords(invoice.netPayable)), layout.summary.words.maxWidth, 3);
+  doc.text(wordsLines, layout.summary.words.x, layout.summary.words.top + 4.5, { lineHeightFactor: 1.08 });
+
+  const taxTableFinalY = renderTaxTable(doc, invoice);
+  const taxWordsY = Math.max(taxTableFinalY + 3.3, 221.0);
+  const bankTitleY = Math.max(taxWordsY + 7.2, 228.0);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.summaryLabel);
+  const taxWords = sanitizeText(invoice.taxAmountWords || (roundCurrency((invoice.cgstAmount || 0) + (invoice.sgstAmount || 0) + (invoice.igstAmount || 0)) > 0
+    ? numberToIndianWords((invoice.cgstAmount || 0) + (invoice.sgstAmount || 0) + (invoice.igstAmount || 0))
+    : '-'));
+  doc.text(wrapAndClipText(doc, `Tax amount in words: ${taxWords}`, 126, 2), 7.8, taxWordsY, { lineHeightFactor: 1.02 });
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.summaryLabel);
+  doc.text('Bank detail', 7.8, bankTitleY);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.summaryBody);
+  const bankRows = [
+    ['FOR:', sanitizeText(invoice.bank?.accountFor)],
+    ['BANK NAME:', sanitizeText(invoice.bank?.bankName)],
+    ['A/C- NO:', sanitizeText(invoice.bank?.accountNumber)],
+    ['IFSC:', sanitizeText(invoice.bank?.ifsc)],
+    ['BRANCH:', sanitizeText(invoice.bank?.branch)],
+    ['UPI:', sanitizeText(invoice.bank?.upiId)],
+  ].filter(([, value]) => Boolean(value));
+  let bankY = bankTitleY + 3.4;
+  bankRows.forEach(([label, value]) => {
+    if (bankY > layout.summary.bands.bankBottom - 0.8) return;
+    const lines = wrapAndClipText(doc, `${label} ${value}`, 126, 2);
+    doc.text(lines, 7.8, bankY, { lineHeightFactor: 1.02 });
+    bankY += Math.max(3.2, lines.length * 2.8);
+  });
+
+  const currency = options.currencySymbol;
+  const totals = [
+    ['Basic Amount', `${currency} ${formatMoneyIndian(invoice.basicAmount)}`],
+    ...(invoice.gstMode === 'CGST_SGST' ? [
+      ['CGST', `${currency} ${formatMoneyIndian(invoice.cgstAmount || 0)}`],
+      ['SGST', `${currency} ${formatMoneyIndian(invoice.sgstAmount || 0)}`],
+    ] as Array<[string, string]> : []),
+    ...(invoice.gstMode === 'IGST' ? [['IGST', `${currency} ${formatMoneyIndian(invoice.igstAmount || 0)}`] as [string, string]] : []),
+    ...(roundCurrency(invoice.roundOff || 0) !== 0 ? [['Round Off', `${currency} ${formatMoneyIndian(invoice.roundOff || 0)}`] as [string, string]] : []),
+  ];
+  let totalsY = layout.summary.totals.topY;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.totals);
+  totals.forEach(([label, value]) => {
+    doc.text(label, layout.summary.totals.labelRight, totalsY, { align: 'right' });
+    doc.text(value, layout.summary.totals.valueRight, totalsY, { align: 'right' });
+    totalsY += layout.summary.totals.rowGap;
+  });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.totals);
+  doc.text('Net payable', layout.summary.totals.labelRight, totalsY + 0.9, { align: 'right' });
+  doc.setFont('helvetica', 'bold');
+  const finalAmount = `${currency} ${formatMoneyIndian(invoice.netPayable)}`;
+  const payableFont = fitText(doc, finalAmount, 34, 13.0, STANDARD_INVOICE_TYPE.netPayable);
+  doc.setFontSize(payableFont);
+  doc.text(finalAmount, layout.summary.totals.valueRight, totalsY + 1.2, { align: 'right' });
+};
+
+const renderFooterSection = async (doc: jsPDF, invoice: InvoicePdfData, options: Required<InvoicePdfOptions>) => {
+  const layout = STANDARD_INVOICE_LAYOUT;
+  drawVLine(doc, layout.footer.termsRight, layout.footer.top, layout.footer.bottom, 0.30);
+  drawVLine(doc, layout.footer.receiverRight, layout.footer.top, layout.footer.bottom, 0.30);
+  drawVLine(doc, layout.footer.authorizedRight, layout.footer.top, layout.footer.bottom, 0.30);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.footerLabel);
+  doc.text('Terms and Conditions', 7.8, 254.0);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.footerBody);
+  let currentY = 258.0;
+  (invoice.terms || []).map((term) => sanitizeText(term)).filter(Boolean).forEach((term, index) => {
+    const lines = wrapAndClipText(doc, `(${index + 1}) ${term}`, 90, 3);
+    doc.text(lines, 7.8, currentY, { lineHeightFactor: 1.02 });
+    currentY += Math.max(3.3, lines.length * 3.2);
+  });
+
+  if (options.showReceiverSignature) {
+    await drawContainedImage(doc, invoice.receiverSignatureImage, { x: 106.0, y: 263.0, maxWidth: 24, maxHeight: 14 }, 'center', 'center');
+  }
+  drawHLine(doc, layout.footer.receiverLineY, 102.0, 135.8, 0.18);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(STANDARD_INVOICE_TYPE.footerBody);
+  doc.text("Receiver's Signature", (layout.footer.termsRight + layout.footer.receiverRight) / 2, layout.footer.captionY, { align: 'center' });
+
+  if (options.showAuthorizedSignature) {
+    await drawContainedImage(doc, invoice.authorizedSignatureImage, { x: 143, y: 262, maxWidth: 31, maxHeight: 18 }, 'center', 'center');
+  }
+  drawHLine(doc, layout.footer.authorizedLineY, 138.6, 178.6, 0.18);
+  doc.text('Authorised Signature', (layout.footer.receiverRight + layout.footer.authorizedRight) / 2, layout.footer.captionY, { align: 'center' });
+
+  if (options.showQrCode) {
+    await drawContainedImage(doc, invoice.qrCodeImage, { x: 183.1, y: 260.5, maxWidth: 18.5, maxHeight: 18.5 }, 'center', 'center');
+  }
+};
+
+const EXACT_INVOICE_SVG = {
+  width: 595,
+  height: 842,
+  finalRowCapacity: 8,
+  continuationRowCapacity: 18,
+  rowTop: 206.49,
+  rowStep: 32.81,
+  itemSecondLineOffset: 12.8,
+  taxSecondLineOffset: 10.6,
+} as const;
+
+const getSvgCanvasContext = () => {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas 2D context unavailable for invoice rendering.');
+  return context;
+};
+
+const measureSvgTextWidth = (
+  text: string,
+  fontSize: number,
+  fontWeight: number | string = 400,
+  fontFamily = 'Arial, sans-serif',
+) => {
+  const context = getSvgCanvasContext();
+  context.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  return context.measureText(text).width;
+};
+
+const wrapSvgText = (
+  text: string,
+  maxWidth: number,
+  fontSize: number,
+  fontWeight: number | string = 400,
+  fontFamily = 'Arial, sans-serif',
+  maxLines = 2,
+) => {
+  const sanitized = sanitizeText(text);
+  if (!sanitized) return ['-'];
+  const words = sanitized.split(/\s+/);
+  const lines: string[] = [];
+  let current = '';
+
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (!current || measureSvgTextWidth(next, fontSize, fontWeight, fontFamily) <= maxWidth) {
+      current = next;
+      return;
+    }
+    lines.push(current);
+    current = word;
+  });
+
+  if (current) lines.push(current);
+  if (lines.length <= maxLines) return lines;
+
+  const clipped = lines.slice(0, maxLines);
+  let last = clipped[maxLines - 1];
+  while (last.length > 1 && measureSvgTextWidth(`${last}...`, fontSize, fontWeight, fontFamily) > maxWidth) {
+    last = last.slice(0, -1).trimEnd();
+  }
+  clipped[maxLines - 1] = `${last}...`;
+  return clipped;
+};
+
+const fitSvgFontSize = (
+  text: string,
+  maxWidth: number,
+  preferred: number,
+  minimum: number,
+  fontWeight: number | string = 400,
+  fontFamily = 'Arial, sans-serif',
+) => {
+  let size = preferred;
+  while (size > minimum) {
+    if (measureSvgTextWidth(text, size, fontWeight, fontFamily) <= maxWidth) return size;
+    size -= 0.2;
+  }
+  return minimum;
+};
+
+const svgEscape = (value: unknown) => escapeHtml(String(value ?? ''));
+
+const buildSvgText = ({
+  x,
+  y,
+  text,
+  fontSize,
+  fontWeight = 400,
+  fontFamily = 'Roboto, Arial, sans-serif',
+  anchor = 'start',
+}: {
+  x: number;
+  y: number;
+  text: string;
+  fontSize: number;
+  fontWeight?: number | string;
+  fontFamily?: string;
+  anchor?: 'start' | 'middle' | 'end';
+}) => (
+  `<text x="${x.toFixed(3)}" y="${y.toFixed(3)}" font-family="${fontFamily}" font-size="${fontSize.toFixed(3)}" font-weight="${fontWeight}" fill="#000" text-anchor="${anchor}">${svgEscape(text)}</text>`
+);
+
+const buildSvgTextLines = ({
+  x,
+  y,
+  lines,
+  lineGap,
+  fontSize,
+  fontWeight = 400,
+  fontFamily = 'Roboto, Arial, sans-serif',
+  anchor = 'start',
+}: {
+  x: number;
+  y: number;
+  lines: string[];
+  lineGap: number;
+  fontSize: number;
+  fontWeight?: number | string;
+  fontFamily?: string;
+  anchor?: 'start' | 'middle' | 'end';
+}) => lines.map((line, index) => buildSvgText({
+  x,
+  y: y + (index * lineGap),
+  text: line,
+  fontSize,
+  fontWeight,
+  fontFamily,
+  anchor,
+})).join('');
+
+const buildSvgImageTag = ({
+  x,
+  y,
+  width,
+  height,
+  href,
+  preserveAspectRatio = 'xMidYMid meet',
+}: {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  href: string;
+  preserveAspectRatio?: string;
+}) => {
+  const escapedHref = svgEscape(href);
+  return `<image x="${x.toFixed(3)}" y="${y.toFixed(3)}" width="${width.toFixed(3)}" height="${height.toFixed(3)}" href="${escapedHref}" xlink:href="${escapedHref}" preserveAspectRatio="${preserveAspectRatio}" />`;
+};
+
+const buildInvoiceCurrencyText = (currencySymbol: string, value: number) => {
+  const symbol = sanitizeText(currencySymbol, 'Rs.');
+  const amount = formatMoneyIndian(value);
+  return symbol === '₹' ? `${symbol}${amount}` : `${symbol} ${amount}`;
+};
+
+const getBusinessInitials = (name: string) => {
+  const parts = sanitizeText(name)
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3);
+  if (!parts.length) return 'SF';
+  const initials = parts.map((part) => part[0]?.toUpperCase() || '').join('');
+  return initials || 'SF';
+};
+
+const paginateExactSvgInvoiceItems = (items: InvoiceItemData[]) => {
+  const totalPages = items.length > EXACT_INVOICE_SVG.finalRowCapacity
+    ? 1 + Math.ceil((items.length - EXACT_INVOICE_SVG.finalRowCapacity) / EXACT_INVOICE_SVG.continuationRowCapacity)
+    : 1;
+  const pages: Array<{ items: InvoiceItemData[]; startIndex: number; isFinalPage: boolean }> = [];
+  let cursor = 0;
+  for (let pageIndex = 0; pageIndex < totalPages; pageIndex += 1) {
+    const isFinalPage = pageIndex === totalPages - 1;
+    const capacity = isFinalPage ? EXACT_INVOICE_SVG.finalRowCapacity : EXACT_INVOICE_SVG.continuationRowCapacity;
+    const pageItems = items.slice(cursor, cursor + capacity);
+    pages.push({ items: pageItems, startIndex: cursor, isFinalPage });
+    cursor += pageItems.length;
+  }
+  return pages;
+};
+
+const buildExactInvoiceSvgPage = ({
+  invoice,
+  pageItems,
+  startIndex,
+  isFinalPage,
+  options,
+  logoDataUrl,
+  authorizedSignatureDataUrl,
+  qrCodeDataUrl,
+}: {
+  invoice: InvoicePdfData;
+  pageItems: InvoiceItemData[];
+  startIndex: number;
+  isFinalPage: boolean;
+  options: Required<InvoicePdfOptions>;
+  logoDataUrl: string | null;
+  authorizedSignatureDataUrl: string | null;
+  qrCodeDataUrl: string | null;
+}) => {
+  const isDualTax = invoice.gstMode === 'CGST_SGST';
+  const isIgst = invoice.gstMode === 'IGST';
+  const amountRightX = 423.81;
+  const taxSplitX = 470.67;
+  const totalColumnStartX = 517.52;
+  const singleTaxCenterX = (amountRightX + totalColumnStartX) / 2;
+  const cgstCenterX = (amountRightX + taxSplitX) / 2;
+  const sgstCenterX = (taxSplitX + totalColumnStartX) / 2;
+  const companyName = sanitizeText(invoice.company.name, options.missingRequiredDisplayValue);
+  const companyNameSize = fitSvgFontSize(companyName, 300, 20, 15, 700);
+  const companyAddressLines = wrapSvgText(
+    sanitizeLines(invoice.company.addressLines, options.missingRequiredDisplayValue).join(', '),
+    320,
+    10,
+    400,
+    'Roboto, Arial, sans-serif',
+    2,
+  );
+  const customerName = sanitizeText(invoice.customer.name, options.missingRequiredDisplayValue);
+  const customerNameSize = fitSvgFontSize(customerName, 320, 12, 10.2, 700);
+  const customerAddressSource = sanitizeLines(invoice.customer.addressLines);
+  if (!customerAddressSource.length && sanitizeText(invoice.customer.gstName)) customerAddressSource.push(`GST Name: ${sanitizeText(invoice.customer.gstName)}`);
+  const customerAddressLines = wrapSvgText(customerAddressSource.join(', '), 330, 10, 400, 'Roboto, Arial, sans-serif', 2);
+  const customerTaxLine = sanitizeText(invoice.customer.gstNumber) ? `GSTIN: ${sanitizeText(invoice.customer.gstNumber)}` : '';
+  const customerPanLine = sanitizeText(invoice.customer.pan) ? `PAN: ${sanitizeText(invoice.customer.pan)}` : '';
+  const quantitySummary = sanitizeText(invoice.quantitySummary) || aggregateQuantitySummary(invoice.items);
+  const taxRows = calculateTaxSummaryByHsn(invoice);
+  const visibleTaxRows = taxRows.length <= 2
+    ? taxRows
+    : [
+        taxRows[0],
+        taxRows.slice(1).reduce<TaxSummaryRow>((acc, row) => ({
+          hsn: 'Others',
+          taxableAmount: roundCurrency(acc.taxableAmount + row.taxableAmount),
+          cgstRate: Math.max(acc.cgstRate, row.cgstRate),
+          cgstAmount: roundCurrency(acc.cgstAmount + row.cgstAmount),
+          sgstRate: Math.max(acc.sgstRate, row.sgstRate),
+          sgstAmount: roundCurrency(acc.sgstAmount + row.sgstAmount),
+          igstRate: Math.max(acc.igstRate, row.igstRate),
+          igstAmount: roundCurrency(acc.igstAmount + row.igstAmount),
+          taxAmount: roundCurrency(acc.taxAmount + row.taxAmount),
+        }), {
+          hsn: 'Others',
+          taxableAmount: 0,
+          cgstRate: 0,
+          cgstAmount: 0,
+          sgstRate: 0,
+          sgstAmount: 0,
+          igstRate: 0,
+          igstAmount: 0,
+          taxAmount: 0,
+        }),
+      ];
+  const bankLines = [
+    sanitizeText(invoice.bank?.accountFor) ? `FOR: ${sanitizeText(invoice.bank?.accountFor)}` : '',
+    sanitizeText(invoice.bank?.bankName) ? `BANK NAME :${sanitizeText(invoice.bank?.bankName)}` : '',
+    sanitizeText(invoice.bank?.accountNumber) ? `A/C- NO: ${sanitizeText(invoice.bank?.accountNumber)}` : '',
+    sanitizeText(invoice.bank?.ifsc) ? `IFSC: ${sanitizeText(invoice.bank?.ifsc)}` : '',
+  ].filter(Boolean).slice(0, 4);
+  const termLines = (invoice.terms || []).map((term, index) => `(${index + 1}) ${sanitizeText(term)}`).slice(0, 3);
+  const businessInitials = getBusinessInitials(companyName);
+  const initialsFontSize = fitSvgFontSize(businessInitials, 50, 28, 18, 700);
+  const staticLines = `
+<line x1="78.600" y1="838.850" x2="133.750" y2="838.850" stroke="#000" stroke-width="0.750" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="83.600" x2="580.000" y2="83.600" stroke="#000" stroke-width="1.200" shape-rendering="geometricPrecision" />
+<line x1="438.250" y1="84.200" x2="438.250" y2="187.480" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="439.000" y1="108.320" x2="577.800" y2="108.320" stroke="#000" stroke-width="1.200" shape-rendering="geometricPrecision" />
+<line x1="438.750" y1="84.200" x2="438.750" y2="187.480" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="206.490" x2="580.000" y2="206.490" stroke="#000" stroke-width="1.000" shape-rendering="geometricPrecision" />
+<line x1="127.460" y1="187.980" x2="127.460" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="175.470" y1="187.980" x2="175.470" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="234.820" y1="187.980" x2="234.820" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="294.170" y1="187.980" x2="294.170" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="353.520" y1="187.980" x2="353.520" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="423.810" y1="187.980" x2="423.810" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+${isDualTax ? '<line x1="470.670" y1="187.980" x2="470.670" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />' : ''}
+<line x1="517.520" y1="187.980" x2="517.520" y2="206.490" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="187.980" x2="580.000" y2="187.980" stroke="#000" stroke-width="1.000" shape-rendering="geometricPrecision" />
+<rect x="15.000" y="15.000" width="565.000" height="812.000" fill="none" stroke="#000" stroke-width="1.000" shape-rendering="geometricPrecision" />
+`;
+  const finalPageLines = `
+<line x1="15.000" y1="497.720" x2="580.000" y2="497.720" stroke="#000" stroke-width="1.200" shape-rendering="geometricPrecision" />
+<line x1="127.460" y1="206.490" x2="127.460" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="175.470" y1="206.490" x2="175.470" y2="519.330" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="234.820" y1="206.490" x2="234.820" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="294.170" y1="206.490" x2="294.170" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="353.520" y1="206.490" x2="353.520" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="423.810" y1="206.490" x2="423.810" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+${isDualTax ? '<line x1="470.670" y1="206.490" x2="470.670" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />' : ''}
+<line x1="517.520" y1="206.490" x2="517.520" y2="497.720" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="22.000" y1="570.520" x2="385.650" y2="570.520" stroke="#000" stroke-width="1.000" shape-rendering="geometricPrecision" />
+<line x1="22.000" y1="556.010" x2="385.650" y2="556.010" stroke="#000" stroke-width="1.000" shape-rendering="geometricPrecision" />
+<line x1="22.250" y1="556.010" x2="22.250" y2="570.520" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="385.400" y1="556.010" x2="385.400" y2="570.520" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="22.250" y1="598.300" x2="385.400" y2="598.300" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="22.250" y1="612.660" x2="385.400" y2="612.660" stroke="#000" stroke-width="1.200" shape-rendering="geometricPrecision" />
+<line x1="22.250" y1="570.520" x2="22.250" y2="612.660" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="385.400" y1="570.520" x2="385.400" y2="612.660" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="633.140" x2="387.650" y2="633.140" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="387.650" y1="633.140" x2="387.650" y2="632.640" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="387.650" y1="632.640" x2="15.000" y2="632.640" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="632.640" x2="15.000" y2="633.140" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="288.450" y1="812.280" x2="385.650" y2="812.280" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="385.650" y1="812.280" x2="385.650" y2="811.780" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="385.650" y1="811.780" x2="288.450" y2="811.780" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="288.450" y1="811.780" x2="288.450" y2="812.280" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="392.150" y1="812.280" x2="506.090" y2="812.280" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="506.090" y1="812.280" x2="506.090" y2="811.780" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="506.090" y1="811.780" x2="392.150" y2="811.780" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="392.150" y1="811.780" x2="392.150" y2="812.280" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="704.240" x2="580.000" y2="704.240" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="286.200" y1="704.240" x2="286.200" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="387.900" y1="520.730" x2="387.900" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="510.340" y1="704.240" x2="510.340" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="520.730" x2="580.000" y2="520.730" stroke="#000" stroke-width="1.200" shape-rendering="geometricPrecision" />
+<line x1="15.000" y1="826.750" x2="580.000" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+`;
+  const continuationLines = `
+<line x1="15.000" y1="826.750" x2="580.000" y2="826.750" stroke="#000" stroke-width="1.000" shape-rendering="geometricPrecision" />
+<line x1="127.460" y1="206.490" x2="127.460" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="175.470" y1="206.490" x2="175.470" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="234.820" y1="206.490" x2="234.820" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="294.170" y1="206.490" x2="294.170" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="353.520" y1="206.490" x2="353.520" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+<line x1="423.810" y1="206.490" x2="423.810" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+${isDualTax ? '<line x1="470.670" y1="206.490" x2="470.670" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />' : ''}
+<line x1="517.520" y1="206.490" x2="517.520" y2="826.750" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+`;
+
+  const itemRowTexts = pageItems.map((item, index) => {
+    const y = EXACT_INVOICE_SVG.rowTop + (index * EXACT_INVOICE_SVG.rowStep);
+    const itemBaseY = y + 13.1;
+    const nameLines = wrapSvgText(sanitizeText(item.name, '-'), 82, 9, 400, 'Roboto, Arial, sans-serif', 2);
+    const qtyText = formatInvoiceQuantity(item.quantity, sanitizeText(item.unit));
+    const amountText = formatMoneyIndian(item.taxableAmount);
+    const totalText = formatMoneyIndian(item.total);
+    return `
+${buildSvgText({ x: 20, y: itemBaseY, text: String(startIndex + index + 1), fontSize: 9 })}
+${buildSvgTextLines({ x: 40.43, y: itemBaseY, lines: nameLines, lineGap: EXACT_INVOICE_SVG.itemSecondLineOffset, fontSize: 9 })}
+${buildSvgText({ x: 129.71, y: itemBaseY, text: sanitizeText(item.hsn, '-'), fontSize: 9 })}
+${buildSvgText({ x: 229.57, y: itemBaseY, text: qtyText, fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 288.92, y: itemBaseY, text: formatMoneyIndian(item.rate), fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 348.27, y: itemBaseY, text: formatMoneyIndian(item.discount), fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 418.62, y: itemBaseY, text: amountText, fontSize: 9, anchor: 'end' })}
+${isDualTax ? `
+${buildSvgTextLines({ x: cgstCenterX, y: itemBaseY, lines: [formatMoneyIndian(item.cgstAmount || 0), `(${sanitizeText(item.cgstRate, '0')}%)`], lineGap: EXACT_INVOICE_SVG.taxSecondLineOffset, fontSize: 9, anchor: 'middle' })}
+${buildSvgTextLines({ x: sgstCenterX, y: itemBaseY, lines: [formatMoneyIndian(item.sgstAmount || 0), `(${sanitizeText(item.sgstRate, '0')}%)`], lineGap: EXACT_INVOICE_SVG.taxSecondLineOffset, fontSize: 9, anchor: 'middle' })}
+` : isIgst ? `
+${buildSvgTextLines({ x: singleTaxCenterX, y: itemBaseY, lines: [formatMoneyIndian(item.igstAmount || 0), `(${sanitizeText(item.igstRate, '0')}%)`], lineGap: EXACT_INVOICE_SVG.taxSecondLineOffset, fontSize: 9, anchor: 'middle' })}
+` : `
+${buildSvgText({ x: 465.36, y: itemBaseY, text: '0.00', fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 512.23, y: itemBaseY, text: '0.00', fontSize: 9, anchor: 'end' })}
+`}
+${buildSvgText({ x: 575, y: itemBaseY, text: totalText, fontSize: 9, anchor: 'end' })}
+${index < pageItems.length - 1 ? `<line x1="15.000" y1="${(y + EXACT_INVOICE_SVG.rowStep).toFixed(3)}" x2="580.000" y2="${(y + EXACT_INVOICE_SVG.rowStep).toFixed(3)}" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />` : ''}
+`;
+  }).join('');
+
+  const taxTableTexts = isFinalPage ? visibleTaxRows.map((row, index) => {
+    const y = index === 0 ? 581.62 : 595.13;
+    if (invoice.gstMode === 'CGST_SGST') {
+      return `
+${buildSvgText({ x: 24.5, y, text: sanitizeText(row.hsn, '-'), fontSize: 9 })}
+${buildSvgText({ x: 138.46, y, text: formatMoneyIndian(row.taxableAmount), fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 216.49, y, text: `${formatMoneyIndian(row.cgstAmount)} (${sanitizeText(row.cgstRate, '0')}%)`, fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 309.08, y, text: `${formatMoneyIndian(row.sgstAmount)} (${sanitizeText(row.sgstRate, '0')}%)`, fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 383.15, y, text: formatMoneyIndian(row.taxAmount), fontSize: 9, anchor: 'end' })}
+`;
+    }
+    if (invoice.gstMode === 'IGST') {
+      return `
+${buildSvgText({ x: 24.5, y, text: sanitizeText(row.hsn, '-'), fontSize: 9 })}
+${buildSvgText({ x: 138.46, y, text: formatMoneyIndian(row.taxableAmount), fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 309.08, y, text: `${formatMoneyIndian(row.igstAmount)} (${sanitizeText(row.igstRate, '0')}%)`, fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 383.15, y, text: formatMoneyIndian(row.taxAmount), fontSize: 9, anchor: 'end' })}
+`;
+    }
+    return `
+${buildSvgText({ x: 24.5, y, text: sanitizeText(row.hsn, '-'), fontSize: 9 })}
+${buildSvgText({ x: 138.46, y, text: formatMoneyIndian(row.taxableAmount), fontSize: 9, anchor: 'end' })}
+${buildSvgText({ x: 383.15, y, text: formatMoneyIndian(row.taxAmount), fontSize: 9, anchor: 'end' })}
+`;
+  }).join('') : '';
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 595 842" width="595" height="842">
+  <rect width="595" height="842" fill="#fff" />
+  ${staticLines}
+  ${isFinalPage ? finalPageLines : continuationLines}
+  ${logoDataUrl
+    ? buildSvgImageTag({ x: 17, y: 17, width: 64, height: 64, href: logoDataUrl, preserveAspectRatio: 'xMidYMid meet' })
+    : `
+  <rect x="17" y="17" width="64" height="64" fill="#fff" stroke="#000" stroke-width="0.500" shape-rendering="geometricPrecision" />
+  ${buildSvgText({ x: 49, y: 57, text: businessInitials, fontSize: initialsFontSize, fontWeight: 700, anchor: 'middle' })}
+  `}
+  ${buildSvgText({ x: 111.17, y: 40.55, text: companyName, fontSize: companyNameSize, fontWeight: 700 })}
+  ${buildSvgTextLines({ x: 111.17, y: 55.8, lines: companyAddressLines, lineGap: 14.22, fontSize: 10 })}
+  ${buildSvgText({ x: 442.75, y: 55.8, text: 'GSTIN:', fontSize: 10 })}
+  ${buildSvgText({ x: 576, y: 55.8, text: sanitizeText(invoice.company.gstin, options.missingRequiredDisplayValue), fontSize: 10, anchor: 'end' })}
+  ${buildSvgText({ x: 442.75, y: 74.82, text: 'PAN:', fontSize: 10 })}
+  ${buildSvgText({ x: 576, y: 74.82, text: sanitizeText(invoice.company.pan, options.missingRequiredDisplayValue), fontSize: 10, anchor: 'end' })}
+  ${buildSvgText({ x: 24, y: 102.8, text: 'Bill To:', fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 88.1, y: 106.33, text: customerName, fontSize: customerNameSize, fontWeight: 700 })}
+  ${buildSvgTextLines({ x: 88.1, y: 125.99, lines: customerAddressLines, lineGap: 14.22, fontSize: 10 })}
+  ${sanitizeText(invoice.customer.mobile) ? buildSvgText({ x: 88.1, y: 161.23, text: `Mo: ${sanitizeText(invoice.customer.mobile)}`, fontSize: 10 }) : ''}
+  ${customerTaxLine ? buildSvgText({ x: 88.1, y: 176.24, text: customerTaxLine, fontSize: 10 }) : ''}
+  ${customerPanLine ? buildSvgText({ x: 223.6, y: 176.24, text: customerPanLine, fontSize: 10 }) : ''}
+  ${buildSvgText({ x: 507.56, y: 101.51, text: /^CN[-\\d]/i.test(sanitizeText(invoice.invoiceNumber)) ? 'Credit Note' : 'Invoice', fontSize: 13, fontWeight: 700, anchor: 'middle' })}
+  ${buildSvgText({ x: 444, y: 122.69, text: 'Number:', fontSize: 10 })}
+  ${buildSvgText({ x: 572.8, y: 122.69, text: sanitizeText(invoice.invoiceNumber, options.missingRequiredDisplayValue), fontSize: 10, fontWeight: 700, anchor: 'end' })}
+  ${buildSvgText({ x: 444, y: 141.71, text: 'Date:', fontSize: 10 })}
+  ${buildSvgText({ x: 572.8, y: 141.71, text: formatInvoiceDate(invoice.invoiceDate).replace(/\s+/g, ' '), fontSize: 10, anchor: 'end' })}
+  ${buildSvgText({ x: 444, y: 160.72, text: 'Place of Supply:', fontSize: 10 })}
+  ${buildSvgText({ x: 572.8, y: 160.72, text: sanitizeText(invoice.placeOfSupply, options.missingRequiredDisplayValue), fontSize: 10, anchor: 'end' })}
+  ${buildSvgText({ x: 40.43, y: 201.08, text: 'Item', fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 129.71, y: 201.08, text: 'HSN', fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 215.55, y: 201.08, text: 'Qty', fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 270.24, y: 201.08, text: 'Rate', fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 312.32, y: 201.08, text: 'Discount', fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 386.65, y: 201.08, text: 'Amount', fontSize: 9, fontWeight: 700 })}
+  ${isDualTax ? `${buildSvgText({ x: cgstCenterX, y: 201.08, text: 'CGST', fontSize: 9, fontWeight: 700, anchor: 'middle' })}${buildSvgText({ x: sgstCenterX, y: 201.08, text: 'SGST', fontSize: 9, fontWeight: 700, anchor: 'middle' })}` : isIgst ? buildSvgText({ x: singleTaxCenterX, y: 201.08, text: 'IGST', fontSize: 9, fontWeight: 700, anchor: 'middle' }) : `${buildSvgText({ x: cgstCenterX, y: 201.08, text: 'Tax', fontSize: 9, fontWeight: 700, anchor: 'middle' })}${buildSvgText({ x: sgstCenterX, y: 201.08, text: 'Tax', fontSize: 9, fontWeight: 700, anchor: 'middle' })}`}
+  ${buildSvgText({ x: 554.42, y: 201.08, text: 'Total', fontSize: 9, fontWeight: 700 })}
+  ${itemRowTexts}
+  ${isFinalPage ? `
+  ${buildSvgText({ x: 133.63, y: 513.09, text: `Total qty ${quantitySummary}`, fontSize: 10, fontWeight: 700 })}
+  ${buildSvgText({ x: 22, y: 535.75, text: 'Net Payable in Words', fontSize: 8, fontWeight: 700 })}
+  ${buildSvgTextLines({ x: 22, y: 548.3, lines: wrapSvgText(sanitizeText(invoice.netPayableWords, numberToIndianWords(invoice.netPayable)), 350, 9, 700, 'Roboto, Arial, sans-serif', 2), lineGap: 12.5, fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 24.5, y: 567.11, text: 'HSN/SAC', fontSize: 9 })}
+  ${buildSvgText({ x: 72.31, y: 567.11, text: 'Taxable Amount', fontSize: 9 })}
+  ${buildSvgText({ x: 166.69, y: 567.11, text: invoice.gstMode === 'IGST' ? 'IGST' : 'CGST', fontSize: 9 })}
+  ${buildSvgText({ x: 259.39, y: 567.11, text: invoice.gstMode === 'IGST' ? '' : 'SGST', fontSize: 9 })}
+  ${buildSvgText({ x: 334.06, y: 567.11, text: 'Tax Amount', fontSize: 9 })}
+  ${taxTableTexts}
+  ${buildSvgText({ x: 48.78, y: 609.14, text: 'Total', fontSize: 9 })}
+  ${buildSvgText({ x: 138.46, y: 609.14, text: formatMoneyIndian(invoice.basicAmount), fontSize: 9, anchor: 'end' })}
+  ${invoice.gstMode === 'CGST_SGST' ? buildSvgText({ x: 189.39, y: 609.14, text: formatMoneyIndian(invoice.cgstAmount || 0), fontSize: 9, anchor: 'end' }) : ''}
+  ${invoice.gstMode === 'CGST_SGST' ? buildSvgText({ x: 282.0, y: 609.14, text: formatMoneyIndian(invoice.sgstAmount || 0), fontSize: 9, anchor: 'end' }) : ''}
+  ${invoice.gstMode === 'IGST' ? buildSvgText({ x: 309.08, y: 609.14, text: formatMoneyIndian(invoice.igstAmount || 0), fontSize: 9, anchor: 'end' }) : ''}
+  ${buildSvgText({ x: 383.15, y: 609.14, text: formatMoneyIndian(roundCurrency((invoice.cgstAmount || 0) + (invoice.sgstAmount || 0) + (invoice.igstAmount || 0))), fontSize: 9, anchor: 'end' })}
+  ${buildSvgTextLines({ x: 22.25, y: 623.86, lines: wrapSvgText(`Tax amount in words: ${sanitizeText(invoice.taxAmountWords || 'Zero Rupees Only')}`, 355, 9, 700, 'Roboto, Arial, sans-serif', 2), lineGap: 12.8, fontSize: 9, fontWeight: 700 })}
+  ${buildSvgText({ x: 22, y: 648.19, text: 'Bank detail', fontSize: 8, fontWeight: 700 })}
+  ${buildSvgTextLines({ x: 22, y: 660.75, lines: bankLines.length ? bankLines : ['-'], lineGap: 12.8, fontSize: 9 })}
+  ${buildSvgText({ x: 405.31, y: 545.1, text: 'Basic Amount', fontSize: 10 })}
+  ${buildSvgText({ x: 572, y: 545.33, text: buildInvoiceCurrencyText(options.currencySymbol, invoice.basicAmount), fontSize: 10, anchor: 'end', fontFamily: "'Noto Sans', Arial, sans-serif" })}
+  ${invoice.gstMode === 'CGST_SGST' ? `${buildSvgText({ x: 443.18, y: 567.61, text: 'CGST', fontSize: 10 })}${buildSvgText({ x: 572, y: 567.83, text: buildInvoiceCurrencyText(options.currencySymbol, invoice.cgstAmount || 0), fontSize: 10, anchor: 'end', fontFamily: "'Noto Sans', Arial, sans-serif" })}` : ''}
+  ${invoice.gstMode === 'CGST_SGST' ? `${buildSvgText({ x: 443.28, y: 590.11, text: 'SGST', fontSize: 10 })}${buildSvgText({ x: 572, y: 590.34, text: buildInvoiceCurrencyText(options.currencySymbol, invoice.sgstAmount || 0), fontSize: 10, anchor: 'end', fontFamily: "'Noto Sans', Arial, sans-serif" })}` : ''}
+  ${invoice.gstMode === 'IGST' ? `${buildSvgText({ x: 443.18, y: 567.61, text: 'IGST', fontSize: 10 })}${buildSvgText({ x: 572, y: 567.83, text: buildInvoiceCurrencyText(options.currencySymbol, invoice.igstAmount || 0), fontSize: 10, anchor: 'end', fontFamily: "'Noto Sans', Arial, sans-serif" })}` : ''}
+  ${roundCurrency(invoice.roundOff || 0) !== 0 ? `${buildSvgText({ x: 429, y: 601.36, text: 'Round Off', fontSize: 10 })}${buildSvgText({ x: 572, y: 601.59, text: buildInvoiceCurrencyText(options.currencySymbol, invoice.roundOff || 0), fontSize: 10, anchor: 'end', fontFamily: "'Noto Sans', Arial, sans-serif" })}` : ''}
+  ${buildSvgText({ x: 414.91, y: 612.62, text: 'Net payable', fontSize: 10 })}
+  ${buildSvgText({ x: 572, y: 616.44, text: buildInvoiceCurrencyText(options.currencySymbol, invoice.netPayable), fontSize: 13, fontWeight: 700, anchor: 'end', fontFamily: "'Noto Sans', Arial, sans-serif" })}
+  ${buildSvgText({ x: 22, y: 719.91, text: 'Terms and Conditions', fontSize: 8, fontWeight: 700 })}
+  ${buildSvgTextLines({ x: 22, y: 735.46, lines: termLines.length ? termLines : ['(1) Goods once sold will not be accepted return'], lineGap: 12.8, fontSize: 9 })}
+  ${authorizedSignatureDataUrl && options.showAuthorizedSignature ? buildSvgImageTag({ x: 401.12, y: 712.49, width: 96, height: 96, href: authorizedSignatureDataUrl, preserveAspectRatio: 'none' }) : ''}
+  ${qrCodeDataUrl && options.showQrCode ? buildSvgImageTag({ x: 520.59, y: 738.49, width: 50, height: 50, href: qrCodeDataUrl, preserveAspectRatio: 'none' }) : ''}
+  ${buildSvgText({ x: 295.84, y: 823.58, text: "Receiver's Signature", fontSize: 9 })}
+  ${buildSvgText({ x: 406.38, y: 823.58, text: 'Authorised Signature', fontSize: 9 })}
+  ` : ''}
+</svg>`;
+};
+
+const renderSvgMarkupToPngDataUrl = async (markup: string) => {
+  const encodedDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(markup)}`;
+  const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const nextImage = new Image();
+    nextImage.onload = () => resolve(nextImage);
+    nextImage.onerror = () => reject(new Error('Invoice SVG could not be rendered.'));
+    nextImage.src = src;
+  });
+
+  let image: HTMLImageElement;
+  try {
+    image = await loadImage(encodedDataUrl);
+  } catch {
+    const blob = new Blob([markup], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    try {
+      image = await loadImage(url);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = EXACT_INVOICE_SVG.width * 2;
+    canvas.height = EXACT_INVOICE_SVG.height * 2;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas 2D context unavailable for invoice export.');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/png');
+  } catch {
+    throw new Error('Invoice SVG could not be rendered.');
+  }
+};
+
+const generateStandardReceiptPdf = async (
+  invoice: InvoicePdfData,
+  options?: InvoicePdfOptions,
+): Promise<Blob | string | void> => {
+  const resolvedOptions: Required<InvoicePdfOptions> = {
+    output: options?.output || 'save',
+    fileName: sanitizeText(options?.fileName, `invoice_${sanitizeText(invoice.invoiceNumber, 'document')}.pdf`),
+    currencySymbol: sanitizeText(options?.currencySymbol, 'Rs.'),
+    showQrCode: options?.showQrCode !== false,
+    showReceiverSignature: options?.showReceiverSignature !== false,
+    showAuthorizedSignature: options?.showAuthorizedSignature !== false,
+    showFooterText: options?.showFooterText !== false,
+    missingRequiredDisplayValue: options?.missingRequiredDisplayValue ?? '-',
+  };
+
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+    compress: true,
+  });
+
+  const pages = paginateExactSvgInvoiceItems(invoice.items || []);
+  const logoDataUrl = await getPdfImageSource(invoice.company.logo);
+  const authorizedSignatureDataUrl = resolvedOptions.showAuthorizedSignature
+    ? await getPdfImageSource(invoice.authorizedSignatureImage)
+    : null;
+  const qrCodeDataUrl = resolvedOptions.showQrCode
+    ? await getPdfImageSource(invoice.qrCodeImage)
+    : null;
+
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+    if (pageIndex > 0) doc.addPage('a4', 'portrait');
+    const page = pages[pageIndex];
+    const svgMarkup = buildExactInvoiceSvgPage({
+      invoice,
+      pageItems: page.items,
+      startIndex: page.startIndex,
+      isFinalPage: page.isFinalPage,
+      options: resolvedOptions,
+      logoDataUrl,
+      authorizedSignatureDataUrl,
+      qrCodeDataUrl,
+    });
+    const pageImage = await renderSvgMarkupToPngDataUrl(svgMarkup);
+    doc.addImage(pageImage, 'PNG', 0, 0, PAGE_W, PAGE_H, undefined, 'FAST');
+  }
+
+  if (resolvedOptions.output === 'blob') return doc.output('blob');
+  if (resolvedOptions.output === 'datauristring') return doc.output('datauristring');
+  doc.save(resolvedOptions.fileName);
 };
 
 type AccountStatementRow = {
@@ -354,10 +2061,11 @@ export const generateAccountStatementPDF = async ({
       row.credit ? formatINR(row.credit) : '-',
       formatINR(row.balance),
     ]) : [['', '', 'No ledger entries available for selected period.', '', '-', '-', formatINR(closingBalance)]],
-    theme: 'grid',
+    theme: 'plain',
     margin: { left: margin, right: margin, bottom: 30 },
-    headStyles: { fillColor: [236, 242, 250], textColor: [30, 41, 59], fontStyle: 'bold', halign: 'center' },
-    styles: { fontSize: 8.6, cellPadding: { top: 2.2, right: 2, bottom: 2.2, left: 2 }, overflow: 'linebreak', textColor: [51, 65, 85], lineColor: [226, 232, 240], lineWidth: 0.1 },
+    headStyles: { fillColor: PDF_THEME.brand, textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center', minCellHeight: 8 },
+    alternateRowStyles: { fillColor: PDF_THEME.surface },
+    styles: { fontSize: 8.4, cellPadding: { top: 2.5, right: 2, bottom: 2.5, left: 2 }, overflow: 'linebreak', textColor: PDF_THEME.body, lineColor: PDF_THEME.border, lineWidth: { bottom: 0.12 } },
     columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 1: { cellWidth: 19 }, 2: { cellWidth: 64 }, 3: { cellWidth: 21 }, 4: { halign: 'right', cellWidth: 22 }, 5: { halign: 'right', cellWidth: 22 }, 6: { halign: 'right', cellWidth: 22 } },
     didParseCell: (data) => {
       if (data.section === 'body' && data.column.index === 4 && data.cell.raw !== '-') data.cell.styles.textColor = [185, 28, 28];
@@ -525,10 +2233,11 @@ export const generateLedgerStatementPDF = async ({
     startY: tableStartY,
     head,
     body,
-    theme: 'grid',
+    theme: 'plain',
     margin: { left: margin, right: margin, bottom: 18 },
-    headStyles: { fillColor: [236, 242, 250], textColor: [30, 41, 59], fontStyle: 'bold', halign: 'center', fontSize: 6.5 },
-    styles: { fontSize: 6.2, cellPadding: { top: 1.3, right: 1, bottom: 1.3, left: 1 }, overflow: 'linebreak', textColor: [51, 65, 85], lineColor: [226, 232, 240], lineWidth: 0.1, minCellHeight: 4 },
+    headStyles: { fillColor: PDF_THEME.brand, textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center', fontSize: 6.7, minCellHeight: 7 },
+    alternateRowStyles: { fillColor: PDF_THEME.surface },
+    styles: { fontSize: 6.4, cellPadding: { top: 1.8, right: 1.2, bottom: 1.8, left: 1.2 }, overflow: 'linebreak', textColor: PDF_THEME.body, lineColor: PDF_THEME.border, lineWidth: { bottom: 0.1 }, minCellHeight: 5 },
     columnStyles,
     didDrawPage: () => {
       doc.setFont('helvetica', 'normal');
@@ -1189,402 +2898,38 @@ const buildThermalInvoiceHtml = (
 </html>`;
 };
 
-export const generateReceiptPDF = (
+export const generateReceiptPDF = async (
   transaction: Transaction,
   customers: Customer[],
   paymentDetails?: ReceiptPaymentDetails,
   options?: { returnDataUrl?: boolean; invoiceFormatOverride?: 'standard' | 'thermal' }
 ) => {
-    const { profile: rawProfile } = loadData();
-    const profile = resolveInvoicePrintProfile(rawProfile);
-    const invoiceFormat = options?.invoiceFormatOverride || getInvoiceFormat(profile);
-    const sanitizeHeaderText = (value?: string) => {
-      const raw = String(value || '');
-      const cleaned = raw
-        .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
-        .replace(/\uFFFD/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      return cleaned;
-    };
-    
-    if (invoiceFormat === 'thermal') {
-        if (options?.returnDataUrl) throw new Error('Thermal invoice data URL preview is not supported yet.');
-        void printThermalInvoice(transaction, customers, paymentDetails);
-        return;
-    }
+  const { profile: rawProfile } = loadData();
+  const profile = resolveInvoicePrintProfile(rawProfile);
+  const invoiceFormat = options?.invoiceFormatOverride || getInvoiceFormat(profile);
 
-    const doc = new jsPDF({ format: 'a4', unit: 'mm' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 8;
-    const contentWidth = pageWidth - (margin * 2);
+  if (invoiceFormat === 'thermal') {
+    if (options?.returnDataUrl) throw new Error('Thermal invoice data URL preview is not supported yet.');
+    return printThermalInvoice(transaction, customers, paymentDetails);
+  }
 
-    // Utility: Number to words (Simple version)
-    const numberToWords = (num: number) => {
-        const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
-        const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-        const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
-        
-        const convert = (n: number): string => {
-            if (n < 10) return ones[n];
-            if (n < 20) return teens[n - 10];
-            if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 !== 0 ? ' ' + ones[n % 10] : '');
-            if (n < 1000) return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 !== 0 ? ' and ' + convert(n % 100) : '');
-            if (n < 1000000) return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 !== 0 ? ' ' + convert(n % 1000) : '');
-            return n.toString();
-        };
-
-        const absNum = Math.floor(Math.abs(num));
-        return convert(absNum) + " Rupees only";
-    };
-    const subtotalAmount = Math.max(0, Number(transaction.subtotal || transaction.total || 0));
-    const discountAmount = Math.max(0, Number(transaction.discount || 0));
-    const taxAmount = Math.max(0, Number(transaction.tax || 0));
-    const parsedTaxRate = Number(transaction.taxRate);
-    const fallbackTaxRateMatch = String(transaction.taxLabel || '').match(/(\d+(?:\.\d+)?)\s*%/);
-    const taxRateValue = Number.isFinite(parsedTaxRate)
-      ? Math.max(0, parsedTaxRate)
-      : (fallbackTaxRateMatch ? Math.max(0, Number(fallbackTaxRateMatch[1])) : 0);
-    const taxableAmount = Math.max(
-      0,
-      Number((transaction as any).taxableAmount ?? (subtotalAmount - discountAmount))
-    );
-    const formatTaxRateLabel = (value: number) => Number.isInteger(value) ? `${value}%` : `${value.toFixed(2)}%`;
-    const taxBreakupMode = getTaxBreakupMode(transaction.taxLabel);
-    const cgstRate = taxBreakupMode === 'cgst_sgst' && taxRateValue > 0 ? taxRateValue / 2 : 0;
-    const sgstRate = taxBreakupMode === 'cgst_sgst' && taxRateValue > 0 ? taxRateValue / 2 : 0;
-    const cgstAmount = taxBreakupMode === 'cgst_sgst' && taxAmount > 0 ? taxAmount / 2 : 0;
-    const sgstAmount = taxBreakupMode === 'cgst_sgst' && taxAmount > 0 ? taxAmount / 2 : 0;
-    const igstRate = taxBreakupMode === 'igst' ? taxRateValue : 0;
-    const igstAmount = taxBreakupMode === 'igst' ? taxAmount : 0;
-    const roundOff = roundMoneyWhole(transaction.total) - transaction.total;
-    const gstRateLabel = taxRateValue > 0
-      ? (String(transaction.taxLabel || '').trim() || `GST @ ${formatTaxRateLabel(taxRateValue)}`)
-      : (String(transaction.taxLabel || '').trim() || 'Tax');
-    const customer = customers.find(c => c.id === transaction.customerId);
-    const customerPhone = transaction.customerPhone || customer?.phone || '-';
-    const customerGstName = String(transaction.gstName || customer?.gstName || '').trim();
-    const customerGstNumber = String(transaction.gstNumber || customer?.gstNumber || '').trim();
-    const shouldShowCustomerGst = Boolean(customerGstName || customerGstNumber);
-    const cleanAddress1 = sanitizeHeaderText(profile.addressLine1);
-    const cleanAddress2 = sanitizeHeaderText(profile.addressLine2);
-    const cleanPhone = sanitizeHeaderText(profile.phone);
-    const cleanEmail = sanitizeHeaderText(profile.email);
-    const cleanGstin = sanitizeHeaderText(profile.gstin);
-    const cleanState = sanitizeHeaderText(profile.state);
-    const normalizedItems = normalizeTransactionItems(transaction.items);
-    const totalQty = normalizedItems.reduce((sum, item) => sum + Math.max(0, Number(item.quantity) || 0), 0);
-    const invoiceDate = new Date(transaction.date);
-    const documentNo = transaction.type === 'return'
-      ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-4)}`)
-      : (transaction.invoiceNo || `IN-${transaction.id.slice(-4)}`);
-    const documentTitle = transaction.type === 'return' ? 'Credit Note' : 'Invoice';
-    const leftColWidth = 140;
-    const rightColWidth = contentWidth - leftColWidth;
-    const boxHeaderFill: [number, number, number] = [245, 245, 245];
-    const lineItems = normalizedItems.map((item, idx) => {
-      const lineAmount = Math.max(0, (Number(item.sellPrice) || 0) * (Number(item.quantity) || 0) - (Number(item.discountAmount) || 0));
-      const proportionalTax = taxableAmount > 0 ? (taxAmount * lineAmount) / taxableAmount : 0;
-      return {
-        idx,
-        item,
-        lineAmount,
-        proportionalTax,
-        totalWithTax: lineAmount + proportionalTax,
-      };
-    });
-    const hsnSummaryMap = new Map<string, { hsn: string; taxable: number; tax: number }>();
-    lineItems.forEach(({ item, lineAmount, proportionalTax }) => {
-      const hsn = String(item.hsn || '-').trim() || '-';
-      const current = hsnSummaryMap.get(hsn) || { hsn, taxable: 0, tax: 0 };
-      current.taxable += lineAmount;
-      current.tax += proportionalTax;
-      hsnSummaryMap.set(hsn, current);
-    });
-    const hsnSummaryRows = Array.from(hsnSummaryMap.values()).map((row) => {
-      if (taxBreakupMode === 'igst') {
-        return [
-          row.hsn,
-          formatMoneyPrecise(row.taxable),
-          `${formatMoneyPrecise(row.tax)}\n(${formatTaxRateLabel(igstRate)})`,
-          formatMoneyPrecise(row.tax),
-        ];
-      }
-      const cgstValue = row.tax / 2;
-      const sgstValue = row.tax / 2;
-      return [
-        row.hsn,
-        formatMoneyPrecise(row.taxable),
-        `${formatMoneyPrecise(cgstValue)}\n(${formatTaxRateLabel(cgstRate)})`,
-        `${formatMoneyPrecise(sgstValue)}\n(${formatTaxRateLabel(sgstRate)})`,
-        formatMoneyPrecise(row.tax),
-      ];
-    });
-    const isCashSale = transaction.type === 'sale' && transaction.paymentMethod === 'Cash';
-    const hasCashDetails = isCashSale && (typeof paymentDetails?.cashReceived === 'number' || typeof transaction.cashReceived === 'number');
-    const receivedAmount = hasCashDetails ? (paymentDetails?.cashReceived ?? transaction.cashReceived ?? roundMoneyWhole(transaction.total)) : roundMoneyWhole(transaction.total);
-    const changeAmount = hasCashDetails
-      ? Math.max(0, paymentDetails?.changeReturned ?? transaction.changeReturned ?? (receivedAmount - transaction.total))
-      : 0;
-    const balanceAmount = hasCashDetails ? changeAmount : Math.max(0, transaction.total - receivedAmount);
-    const drawLabelValue = (label: string, value: string, x: number, y: number, width: number) => {
-      doc.setFontSize(8);
-      doc.setFont('helvetica', 'normal');
-      doc.text(`${label}`, x, y);
-      doc.setFont('helvetica', 'bold');
-      doc.text(value, x + width, y, { align: 'right' });
-    };
-
-    doc.setLineWidth(0.25);
-    doc.setDrawColor(0, 0, 0);
-    doc.rect(margin, margin, contentWidth, pageHeight - (margin * 2));
-
-    const logoData = profile.logoImage && profile.logoImage.startsWith('data:image') ? profile.logoImage : '';
-    if (logoData) {
-      try {
-        const props = (doc as any).getImageProperties(logoData);
-        const ratio = props?.width && props?.height ? props.width / props.height : 1;
-        let drawW = 22;
-        let drawH = drawW / ratio;
-        if (drawH > 16) {
-          drawH = 16;
-          drawW = drawH * ratio;
-        }
-        doc.addImage(logoData, props?.fileType || 'PNG', margin + 2, margin + 2, drawW, drawH, undefined, 'FAST');
-      } catch {}
-    }
-
-    const headerTextX = logoData ? margin + 28 : margin + 4;
-    const headerRightX = pageWidth - margin - 4;
-    const headerTopY = margin + 6;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(14);
-    doc.text(profile.storeName || 'StockFlow Store', headerTextX, headerTopY);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    const headerAddress = [cleanAddress1, cleanAddress2].filter(Boolean).join(', ');
-    const headerAddressLines = doc.splitTextToSize(headerAddress || '-', 106) as string[];
-    doc.text(headerAddressLines, headerTextX, headerTopY + 4.5);
-    const headerMetaY = headerTopY + 13;
-    doc.text(`Phone: ${cleanPhone || '-'}`, headerTextX, headerMetaY);
-    if (cleanEmail) doc.text(`Email: ${cleanEmail}`, headerTextX + 45, headerMetaY);
-    doc.text(`GSTIN: ${cleanGstin || '-'}`, headerRightX, headerTopY, { align: 'right' });
-    doc.text(`State: ${cleanState || '-'}`, headerRightX, headerTopY + 5, { align: 'right' });
-    const headerBottomY = margin + 22;
-    doc.line(margin, headerBottomY, pageWidth - margin, headerBottomY);
-
-    const billBoxY = headerBottomY;
-    const billBoxHeight = 28;
-    doc.rect(margin, billBoxY, leftColWidth, billBoxHeight);
-    doc.rect(margin + leftColWidth, billBoxY, rightColWidth, billBoxHeight);
-    doc.setFillColor(...boxHeaderFill);
-    doc.rect(margin + leftColWidth, billBoxY, rightColWidth, 7, 'F');
-    doc.line(margin + leftColWidth, billBoxY + 7, pageWidth - margin, billBoxY + 7);
-    doc.line(margin + leftColWidth + 18, billBoxY + 7, margin + leftColWidth + 18, billBoxY + billBoxHeight);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.text('Bill To:', margin + 3, billBoxY + 5);
-    doc.text(documentTitle, margin + leftColWidth + (rightColWidth / 2), billBoxY + 4.8, { align: 'center' });
-    doc.setFontSize(7.5);
-    doc.text('Number:', margin + leftColWidth + 2, billBoxY + 12);
-    doc.text('Date:', margin + leftColWidth + 2, billBoxY + 17);
-    doc.text('Time:', margin + leftColWidth + 2, billBoxY + 22);
-    doc.text('Place:', margin + leftColWidth + 2, billBoxY + 27);
-    doc.setFont('helvetica', 'bold');
-    doc.text(documentNo, pageWidth - margin - 2, billBoxY + 12, { align: 'right' });
-    doc.text(invoiceDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }), pageWidth - margin - 2, billBoxY + 17, { align: 'right' });
-    doc.text(invoiceDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), pageWidth - margin - 2, billBoxY + 22, { align: 'right' });
-    doc.text(cleanState || '-', pageWidth - margin - 2, billBoxY + 27, { align: 'right' });
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.text(transaction.customerName || 'Walk-in Customer', margin + 24, billBoxY + 5);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.4);
-    const billToLines = [
-      `Phone: ${customerPhone || '-'}`,
-      shouldShowCustomerGst && customerGstName ? `GST Name: ${customerGstName}` : '',
-      shouldShowCustomerGst && customerGstNumber ? `GSTIN: ${customerGstNumber}` : '',
-      taxRateValue > 0 ? gstRateLabel : '',
-    ].filter(Boolean);
-    const customerInfoLines = billToLines.flatMap((line) => doc.splitTextToSize(line, leftColWidth - 28) as string[]);
-    doc.text(customerInfoLines, margin + 24, billBoxY + 10);
-
-    const itemsTableStartY = billBoxY + billBoxHeight;
-    autoTable(doc, {
-      startY: itemsTableStartY,
-      head: [['#', 'Item', 'HSN', 'Qty', 'Rate', 'Discount', 'Amount']],
-      body: lineItems.map(({ idx, item, lineAmount }) => ([
-        idx + 1,
-        formatInvoiceItemName(item),
-        item.hsn || '-',
-        `${item.quantity}`,
-        formatMoneyPrecise(item.sellPrice),
-        formatMoneyPrecise(item.discountAmount || 0),
-        formatMoneyPrecise(lineAmount),
-      ])),
-      theme: 'grid',
-      margin: { left: margin, right: margin },
-      headStyles: { fillColor: [245, 245, 245], textColor: 0, lineColor: [0, 0, 0], lineWidth: 0.2, fontSize: 7.4, fontStyle: 'bold' },
-      styles: { fontSize: 7.2, cellPadding: 1.6, lineColor: [0, 0, 0], lineWidth: 0.15, textColor: 0, overflow: 'linebreak', valign: 'middle' },
-      columnStyles: {
-        0: { cellWidth: 8, halign: 'center' },
-        1: { cellWidth: 59 },
-        2: { cellWidth: 18, halign: 'center' },
-        3: { cellWidth: 20, halign: 'center' },
-        4: { cellWidth: 20, halign: 'right' },
-        5: { cellWidth: 21, halign: 'right' },
-        6: { cellWidth: 28, halign: 'right' },
-      },
-    });
-
-    let finalY = (doc as any).lastAutoTable.finalY;
-    doc.rect(margin, finalY, contentWidth, 8);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
-    doc.text(`Total qty`, margin + 60, finalY + 5.2);
-    doc.text(`${totalQty}`, margin + 85, finalY + 5.2);
-    doc.text(`Taxable Amount ${formatMoneyPrecise(taxableAmount)}`, margin + 100, finalY + 5.2);
-    finalY += 8;
-
-    const minimumSummarySpace = 92;
-    if (finalY > pageHeight - margin - minimumSummarySpace) {
-      doc.addPage();
-      doc.rect(margin, margin, contentWidth, pageHeight - (margin * 2));
-      finalY = margin + 6;
-    }
-
-    const summaryTopY = finalY;
-    const summaryLeftWidth = 126;
-    const summaryRightWidth = contentWidth - summaryLeftWidth;
-    doc.rect(margin, summaryTopY, summaryLeftWidth, 15);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.2);
-    doc.text('Net Payable in Words', margin + 2, summaryTopY + 4.5);
-    doc.setFontSize(7.8);
-    const amountWordsLines = doc.splitTextToSize(numberToWords(transaction.total), summaryLeftWidth - 4) as string[];
-    doc.text(amountWordsLines, margin + 2, summaryTopY + 10);
-
-    doc.rect(margin + summaryLeftWidth, summaryTopY, summaryRightWidth, 35);
-    drawLabelValue('Basic Amount', formatMoneyPrecise(taxableAmount), margin + summaryLeftWidth + 3, summaryTopY + 7, summaryRightWidth - 6);
-    if (taxBreakupMode === 'igst') {
-      drawLabelValue(`IGST ${formatTaxRateLabel(igstRate)}`, formatMoneyPrecise(igstAmount), margin + summaryLeftWidth + 3, summaryTopY + 13, summaryRightWidth - 6);
-      drawLabelValue('Round Off', `${roundOff >= 0 ? '+' : '-'} ${formatMoneyPrecise(Math.abs(roundOff))}`, margin + summaryLeftWidth + 3, summaryTopY + 19, summaryRightWidth - 6);
-      doc.line(margin + summaryLeftWidth + 2, summaryTopY + 22, pageWidth - margin - 2, summaryTopY + 22);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.text('Net Payable', margin + summaryLeftWidth + 3, summaryTopY + 29);
-      doc.text(formatMoneyPrecise(transaction.total), pageWidth - margin - 3, summaryTopY + 29, { align: 'right' });
-    } else {
-      drawLabelValue(`CGST ${formatTaxRateLabel(cgstRate)}`, formatMoneyPrecise(cgstAmount), margin + summaryLeftWidth + 3, summaryTopY + 13, summaryRightWidth - 6);
-      drawLabelValue(`SGST ${formatTaxRateLabel(sgstRate)}`, formatMoneyPrecise(sgstAmount), margin + summaryLeftWidth + 3, summaryTopY + 19, summaryRightWidth - 6);
-      drawLabelValue('Round Off', `${roundOff >= 0 ? '+' : '-'} ${formatMoneyPrecise(Math.abs(roundOff))}`, margin + summaryLeftWidth + 3, summaryTopY + 25, summaryRightWidth - 6);
-      doc.line(margin + summaryLeftWidth + 2, summaryTopY + 28, pageWidth - margin - 2, summaryTopY + 28);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.text('Net Payable', margin + summaryLeftWidth + 3, summaryTopY + 33);
-      doc.text(formatMoneyPrecise(transaction.total), pageWidth - margin - 3, summaryTopY + 33, { align: 'right' });
-    }
-
-    autoTable(doc, {
-      startY: summaryTopY + 15,
-      head: taxBreakupMode === 'igst'
-        ? [['HSN/SAC', 'Taxable Amount', `IGST ${formatTaxRateLabel(igstRate)}`, 'Tax Amount']]
-        : [['HSN/SAC', 'Taxable Amount', `CGST ${formatTaxRateLabel(cgstRate)}`, `SGST ${formatTaxRateLabel(sgstRate)}`, 'Tax Amount']],
-      body: taxBreakupMode === 'igst'
-        ? [
-            ...hsnSummaryRows,
-            ['Total', formatMoneyPrecise(taxableAmount), formatMoneyPrecise(igstAmount), formatMoneyPrecise(taxAmount)],
-          ]
-        : [
-            ...hsnSummaryRows,
-            ['Total', formatMoneyPrecise(taxableAmount), formatMoneyPrecise(cgstAmount), formatMoneyPrecise(sgstAmount), formatMoneyPrecise(taxAmount)],
-          ],
-      theme: 'grid',
-      margin: { left: margin, right: pageWidth - margin - summaryLeftWidth },
-      headStyles: { fillColor: [245, 245, 245], textColor: 0, lineColor: [0, 0, 0], lineWidth: 0.15, fontSize: 6.8, fontStyle: 'bold' },
-      styles: { fontSize: 6.8, cellPadding: 1.2, lineColor: [0, 0, 0], lineWidth: 0.12, textColor: 0, overflow: 'linebreak' },
-      columnStyles: taxBreakupMode === 'igst'
-        ? {
-            0: { cellWidth: 34 },
-            1: { cellWidth: 33, halign: 'right' },
-            2: { cellWidth: 32, halign: 'right' },
-            3: { cellWidth: 27, halign: 'right' },
-          }
-        : {
-            0: { cellWidth: 28 },
-            1: { cellWidth: 28, halign: 'right' },
-            2: { cellWidth: 24, halign: 'right' },
-            3: { cellWidth: 24, halign: 'right' },
-            4: { cellWidth: 22, halign: 'right' },
-          },
-    });
-
-    const hsnTableFinalY = (doc as any).lastAutoTable.finalY;
-    let footerTopY = Math.max(summaryTopY + 35, hsnTableFinalY);
-    const footerHeight = 44;
-    if (footerTopY > pageHeight - margin - footerHeight) {
-      doc.addPage();
-      doc.rect(margin, margin, contentWidth, pageHeight - (margin * 2));
-      footerTopY = margin + 8;
-    }
-
-    const footerLeftWidth = 96;
-    const footerCenterWidth = 38;
-    const footerRightWidth = contentWidth - footerLeftWidth - footerCenterWidth;
-    doc.rect(margin, footerTopY, footerLeftWidth, footerHeight);
-    doc.rect(margin + footerLeftWidth, footerTopY, footerCenterWidth, footerHeight);
-    doc.rect(margin + footerLeftWidth + footerCenterWidth, footerTopY, footerRightWidth, footerHeight);
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.2);
-    doc.text('Bank Details', margin + 2, footerTopY + 5);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.8);
-    const bankDetails = [
-      `Bank: ${profile.bankName || '-'}`,
-      `A/C: ${profile.bankAccount || '-'}`,
-      `IFSC: ${profile.bankIfsc || '-'}`,
-      `Holder: ${profile.bankHolder || '-'}`,
-    ];
-    doc.text(bankDetails, margin + 2, footerTopY + 10);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Terms and Conditions', margin + 2, footerTopY + 25);
-    doc.setFont('helvetica', 'normal');
-    const termsLines = [
-      'Goods once sold will not be accepted for return.',
-      'Interest may apply on delayed payments where applicable.',
-      `Received: ${formatMoneyPrecise(receivedAmount)} | ${hasCashDetails ? 'Change' : 'Balance'}: ${formatMoneyPrecise(balanceAmount)}`,
-    ];
-    const wrappedTerms = termsLines.flatMap((line) => doc.splitTextToSize(line, footerLeftWidth - 4) as string[]);
-    doc.text(wrappedTerms, margin + 2, footerTopY + 30);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.text('Receiver Signature', margin + footerLeftWidth + (footerCenterWidth / 2), footerTopY + footerHeight - 3, { align: 'center' });
-
-    if (profile.signatureImage) {
-      try {
-        doc.addImage(profile.signatureImage, 'PNG', margin + footerLeftWidth + footerCenterWidth + 6, footerTopY + 12, footerRightWidth - 12, 14, undefined, 'FAST');
-      } catch {}
-    }
-    doc.line(margin + footerLeftWidth + footerCenterWidth + 4, footerTopY + footerHeight - 6, pageWidth - margin - 4, footerTopY + footerHeight - 6);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.text('Authorised Signature', margin + footerLeftWidth + footerCenterWidth + (footerRightWidth / 2), footerTopY + footerHeight - 3, { align: 'center' });
-
-    if (options?.returnDataUrl) {
-      return doc.output('datauristring');
-    }
-    doc.save(`${transaction.type === 'return' ? 'credit_note' : 'invoice'}_${documentNo}.pdf`);
+  const exactInvoice = buildExactInvoiceData(transaction, customers, profile);
+  return generateStandardReceiptPdf(exactInvoice, {
+    output: options?.returnDataUrl ? 'datauristring' : 'save',
+    fileName: `${transaction.type === 'return' ? 'credit_note' : 'invoice'}_${exactInvoice.invoiceNumber}.pdf`,
+    showQrCode: Boolean(exactInvoice.qrCodeImage),
+    showReceiverSignature: false,
+    showAuthorizedSignature: Boolean(profile.signatureImage),
+    showFooterText: false,
+    currencySymbol: 'Rs.',
+  });
 };
-export const generateReceiptPDFDataUrl = (
+export const generateReceiptPDFDataUrl = async (
   transaction: Transaction,
   customers: Customer[],
   paymentDetails?: ReceiptPaymentDetails
-): string => {
-  const out = generateReceiptPDF(transaction, customers, paymentDetails, { returnDataUrl: true });
+): Promise<string> => {
+  const out = await generateReceiptPDF(transaction, customers, paymentDetails, { returnDataUrl: true });
   if (typeof out !== 'string') throw new Error('Unable to generate canonical invoice preview.');
   return out;
 };
@@ -1877,6 +3222,6 @@ export const printReceipt = async (
   if (getInvoiceFormat(profile) === 'thermal') {
     return printThermalInvoice(transaction, customers, paymentDetails);
   }
-  generateReceiptPDF(transaction, customers, paymentDetails);
+  await generateReceiptPDF(transaction, customers, paymentDetails);
   return { mode: 'download', usedFallback: false };
 };

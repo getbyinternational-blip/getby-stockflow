@@ -177,6 +177,7 @@ export const createTelegramProductPost = async (payload: TelegramProductPostPayl
 };
 
 export const startTelegramCollection = async (payload: TelegramCollectionSchedulerPayload) => {
+  const normalizedBatchSize = toNonNegativeNumber(payload.batchSize, 2) || 2;
   const normalizedPayload = {
     collectionId: payload.collectionId || payload.id,
     name: payload.name,
@@ -186,10 +187,28 @@ export const startTelegramCollection = async (payload: TelegramCollectionSchedul
     notes: payload.notes,
     frequencyValue: payload.frequencyValue,
     frequencyUnit: payload.frequencyUnit,
-    batchSize: payload.batchSize,
+    frequency: {
+      value: payload.frequencyValue,
+      unit: payload.frequencyUnit,
+    },
+    batchSize: normalizedBatchSize,
+    batch: {
+      size: normalizedBatchSize,
+    },
+    productsPerBatch: normalizedBatchSize,
+    batchCount: normalizedBatchSize,
+    itemsPerRun: normalizedBatchSize,
     autoStartTime: payload.autoStartTime,
     repeatMode: payload.repeatMode,
     maxFailuresBeforePause: payload.maxFailuresBeforePause,
+    schedulerOptions: {
+      frequencyValue: payload.frequencyValue,
+      frequencyUnit: payload.frequencyUnit,
+      batchSize: normalizedBatchSize,
+      autoStartTime: payload.autoStartTime,
+      repeatMode: payload.repeatMode,
+      maxFailuresBeforePause: payload.maxFailuresBeforePause,
+    },
     products: payload.products.map((product) => ({
       id: product.id,
       name: product.name,
@@ -217,6 +236,8 @@ export const startTelegramCollection = async (payload: TelegramCollectionSchedul
     frequencyValue: normalizedPayload.frequencyValue,
     frequencyUnit: normalizedPayload.frequencyUnit,
     batchSize: normalizedPayload.batchSize,
+    productsPerBatch: normalizedPayload.productsPerBatch,
+    itemsPerRun: normalizedPayload.itemsPerRun,
     autoStartTime: normalizedPayload.autoStartTime,
     repeatMode: normalizedPayload.repeatMode,
     maxFailuresBeforePause: normalizedPayload.maxFailuresBeforePause,
