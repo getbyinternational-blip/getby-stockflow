@@ -40,6 +40,18 @@ type GrossProfitRow = {
 };
 
 const fmt = (n: number) => formatCurrency(n);
+const getCashbookRowAmount = (row: Row) => Math.max(
+  row.cashIn,
+  row.cashOut,
+  row.bankIn,
+  row.bankOut,
+  row.receivableIncrease,
+  row.receivableDecrease,
+  row.payableIncrease,
+  row.payableDecrease,
+  row.storeCreditIncrease,
+  row.storeCreditDecrease,
+);
 const asArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
 const asPlainObject = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
@@ -495,22 +507,45 @@ export default function Cashbook() {
         cashIn: Math.max(0, toNum(u.cashbookDelta?.cashIn)), cashOut: Math.max(0, toNum(u.cashbookDelta?.cashOut)), bankIn: Math.max(0, toNum(u.cashbookDelta?.onlineIn)), bankOut: Math.max(0, toNum(u.cashbookDelta?.onlineOut)),
         receivableIncrease: Math.max(0, toNum(u.cashbookDelta?.currentDueEffect)), receivableDecrease: Math.max(0, -toNum(u.cashbookDelta?.currentDueEffect)), payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: Math.max(0, toNum(u.cashbookDelta?.currentStoreCreditEffect)), storeCreditDecrease: Math.max(0, -toNum(u.cashbookDelta?.currentStoreCreditEffect)) })),
     ];
-    const upfrontRows: Row[] = buildUpfrontOrderLedgerEffects(safeUpfrontOrders, safeCustomers).flatMap<Row>((effect): Row[] => {
-      if (effect.type === 'legacy_custom_order_info') return [];
-      if (effect.isReceivableOnlyRepair) return [];
+    const upfrontEffects = buildUpfrontOrderLedgerEffects(safeUpfrontOrders, safeCustomers).filter((effect) => effect.type !== 'legacy_custom_order_info' && !effect.isReceivableOnlyRepair);
+    const upfrontReceivableByOrderId = new Map(upfrontEffects.filter((effect) => effect.type === 'custom_order_receivable').map((effect) => [effect.orderId, effect]));
+    const initialAdvanceEffectsByOrderId = upfrontEffects
+      .filter((effect) => effect.type === 'custom_order_payment' && effect.description.toLowerCase().includes('custom order advance'))
+      .reduce((map, effect) => {
+        const existing = map.get(effect.orderId) || [];
+        existing.push(effect);
+        map.set(effect.orderId, existing);
+        return map;
+      }, new Map<string, typeof upfrontEffects>());
+    const upfrontRows: Row[] = upfrontEffects.flatMap<Row>((effect): Row[] => {
       if (effect.type === 'custom_order_receivable') {
+        const initialAdvances = initialAdvanceEffectsByOrderId.get(effect.orderId) || [];
+        const cashIn = initialAdvances.reduce((sum, entry) => sum + Math.max(0, entry.cashIn), 0);
+        const bankIn = initialAdvances.reduce((sum, entry) => sum + Math.max(0, entry.bankIn), 0);
+        const receivableDecrease = initialAdvances.reduce((sum, entry) => sum + Math.max(0, entry.receivableDecrease), 0);
+        const payment: PayType = cashIn > 0 && bankIn > 0 ? 'mixed' : cashIn > 0 ? 'cash' : bankIn > 0 ? 'online' : 'na';
         return [{
           id: effect.id,
           date: effect.date,
           type: 'custom_order_receivable',
-          description: `Custom Order Receivable - ${effect.productName} - ${effect.customerName}`,
+          description: `Custom Order - ${effect.productName} - ${effect.customerName}`,
           reference: effect.orderId,
           party: effect.customerName,
-          payment: 'na' as PayType,
-          cashIn: 0, cashOut: 0, bankIn: 0, bankOut: 0,
+          payment,
+          cashIn,
+          cashOut: 0,
+          bankIn,
+          bankOut: 0,
           receivableIncrease: Math.max(0, effect.receivableIncrease),
-          receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0,
+          receivableDecrease,
+          payableIncrease: 0,
+          payableDecrease: 0,
+          storeCreditIncrease: 0,
+          storeCreditDecrease: 0,
         }];
+      }
+      if (effect.description.toLowerCase().includes('custom order advance') && upfrontReceivableByOrderId.has(effect.orderId)) {
+        return [];
       }
       return [{
         id: effect.id,
@@ -1311,6 +1346,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
               <th className="px-3 py-3 text-left font-semibold">Type</th>
               <th className="px-3 py-3 text-left font-semibold">Description</th>
               <th className="px-3 py-3 text-left font-semibold">Payment</th>
+              <th className="px-3 py-3 text-right font-semibold">Amount</th>
               <th className="px-3 py-3 text-right font-semibold">Cash In</th>
               <th className="px-3 py-3 text-right font-semibold">Cash Out</th>
               <th className="px-3 py-3 text-right font-semibold">Bank In</th>
@@ -1338,6 +1374,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                 </td>
                 <td className="px-3 py-3 min-w-[320px] text-slate-800">{r.description}</td>
                 <td className="px-3 py-3 whitespace-nowrap uppercase text-xs font-semibold text-slate-500">{r.payment === 'na' ? '-' : r.payment}</td>
+                <td className="px-3 py-3 text-right font-semibold text-slate-900">{fmt(getCashbookRowAmount(r))}</td>
                 <td className="px-3 py-3 text-right font-medium text-emerald-700">{r.cashIn ? fmt(r.cashIn) : '-'}</td>
                 <td className="px-3 py-3 text-right font-medium text-rose-600">{r.cashOut ? fmt(r.cashOut) : '-'}</td>
                 <td className="px-3 py-3 text-right font-medium text-blue-700">{r.bankIn ? fmt(r.bankIn) : '-'}</td>
@@ -1356,7 +1393,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
             ))}
             {visibleRows.length === 0 && (
               <tr>
-                <td colSpan={full ? 14 : 8} className="px-3 py-10 text-center text-sm text-muted-foreground">No cashbook rows found for the selected filters.</td>
+                <td colSpan={full ? 15 : 9} className="px-3 py-10 text-center text-sm text-muted-foreground">No cashbook rows found for the selected filters.</td>
               </tr>
             )}
           </tbody>
