@@ -30,7 +30,11 @@ import {
 } from '../types';
 import { db, auth } from './firebase';
 import { doc, setDoc, onSnapshot, collection, addDoc, serverTimestamp, getDocs, getDoc, deleteDoc, deleteField, runTransaction as runFirestoreTransaction, query, where } from 'firebase/firestore';
-import { onAuthStateChanged } from 'firebase/auth';
+import {
+  getIdTokenResult,
+  onAuthStateChanged,
+  type User,
+} from 'firebase/auth';
 import { aggregateCartItemsByStockBucket, normalizeStockBucketColor, normalizeStockBucketVariant } from './stockBuckets';
 import { financeLog } from './financeLogger';
 import { roundMoneyWhole } from './numberFormat';
@@ -3099,42 +3103,95 @@ const resetCloudStateForUser = (uid: string | null, reason: string) => {
   });
 };
 
-// Listen for auth state changes to trigger sync
+const hasVerifiedEmailToken = async (user: User): Promise<boolean> => {
+  if (!user.emailVerified) return false;
+
+  const tokenResult = await getIdTokenResult(user, true);
+  return tokenResult.claims.email_verified === true;
+};
+
+const stopCloudSyncForUnverifiedUser = (
+  uid: string,
+  reason: string,
+): void => {
+  unsubscribeCloudListeners(activeSyncUid, reason);
+  resetCloudStateForUser(uid, reason);
+  emitCloudSyncStatus(CLOUD_SYNC_STATUSES.IDLE);
+  hasLoggedInitKpiSnapshot = false;
+  emitLocalStorageUpdate();
+};
+
+// Start cloud sync only after email verification.
 if (auth) {
-    onAuthStateChanged(auth, (user) => {
-        if (user) {
-            logStockFlowDataAudit('auth.user.resolved', { uid: user.uid, emailVerified: user.emailVerified });
-            if (activeSyncUid !== user.uid) {
-              unsubscribeCloudListeners(activeSyncUid, 'auth_user_changed');
-              resetCloudStateForUser(user.uid, 'auth_user_changed');
-            }
-            hasInitialSynced = true;
-            emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
-            void syncFromCloud();
-        } else {
-            unsubscribeCloudListeners(activeSyncUid, 'logout');
-            resetCloudStateForUser(null, 'logout');
-            logStockFlowDataAudit('auth.logout.reset', { uid: null, listenerUnsubscribed: true });
-            emitCloudSyncStatus(CLOUD_SYNC_STATUSES.IDLE);
-            hasLoggedInitKpiSnapshot = false;
-            emitLocalStorageUpdate();
-        }
+  onAuthStateChanged(auth, (user) => {
+    if (!user) {
+      unsubscribeCloudListeners(activeSyncUid, 'logout');
+      resetCloudStateForUser(null, 'logout');
+
+      logStockFlowDataAudit('auth.logout.reset', {
+        uid: null,
+        listenerUnsubscribed: true,
+      });
+
+      emitCloudSyncStatus(CLOUD_SYNC_STATUSES.IDLE);
+      hasLoggedInitKpiSnapshot = false;
+      emitLocalStorageUpdate();
+      return;
+    }
+
+    logStockFlowDataAudit('auth.user.resolved', {
+      uid: user.uid,
+      emailVerified: user.emailVerified,
     });
+
+    // Registration signs the newly created user in temporarily.
+    // Never start Firestore store listeners for that unverified session.
+    if (!user.emailVerified) {
+      stopCloudSyncForUnverifiedUser(
+        user.uid,
+        'auth_user_email_unverified',
+      );
+      return;
+    }
+
+    if (activeSyncUid !== user.uid) {
+      unsubscribeCloudListeners(activeSyncUid, 'auth_user_changed');
+      resetCloudStateForUser(user.uid, 'auth_user_changed');
+    }
+
+    hasInitialSynced = true;
+    emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
+    void syncFromCloud();
+  });
 }
 
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
-    if (auth?.currentUser) {
-      emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING, 'Reconnecting to live cloud data...');
-      void syncFromCloud();
-    }
+    const user = auth?.currentUser;
+
+    // Do not retry Firestore while registration verification is pending.
+    if (!user?.emailVerified) return;
+
+    emitCloudSyncStatus(
+      CLOUD_SYNC_STATUSES.LOADING,
+      'Reconnecting to live cloud data...',
+    );
+
+    void syncFromCloud();
   });
+
   window.addEventListener('offline', () => {
-    emitCloudSyncStatus(CLOUD_SYNC_STATUSES.OFFLINE, 'Internet connection required to load live business data.');
+    // Avoid showing cloud-data errors on registration and verification screens.
+    if (!auth?.currentUser?.emailVerified) return;
+
+    emitCloudSyncStatus(
+      CLOUD_SYNC_STATUSES.OFFLINE,
+      'Internet connection required to load live business data.',
+    );
   });
 }
 
-const syncFromCloud = async (): Promise<void> => {
+async function syncFromCloud(): Promise<void> {
     const requestedUid = auth?.currentUser?.uid || null;
     if (syncInitInFlight && syncInitPromise) {
       logStockFlowDataAudit('storage.sync.skip_in_flight', { uid: requestedUid, activeSyncUid, waitingForExistingSync: true });
@@ -3175,11 +3232,32 @@ const syncFromCloud = async (): Promise<void> => {
           memoryCustomersCountBeforeSync: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
           activeSyncUid,
         });
+        // An unverified registration session is expected, not an error.
         if (!user.emailVerified) {
-          throw new Error('Email verification required before cloud access.');
+          stopCloudSyncForUnverifiedUser(
+            user.uid,
+            'sync_user_email_unverified',
+          );
+          return;
         }
+
         if (!navigator.onLine) {
-          emitCloudSyncStatus(CLOUD_SYNC_STATUSES.OFFLINE, 'Internet connection required to load live business data.');
+          emitCloudSyncStatus(
+            CLOUD_SYNC_STATUSES.OFFLINE,
+            'Internet connection required to load live business data.',
+          );
+          return;
+        }
+
+        // Firestore rules inspect the ID-token claim. Refresh it before
+        // creating the store or attaching any Firestore listener.
+        const tokenHasVerifiedEmail = await hasVerifiedEmailToken(user);
+
+        if (!tokenHasVerifiedEmail) {
+          stopCloudSyncForUnverifiedUser(
+            user.uid,
+            'sync_token_email_unverified',
+          );
           return;
         }
 
@@ -3510,7 +3588,7 @@ const syncFromCloud = async (): Promise<void> => {
     })();
 
     await syncInitPromise;
-};
+}
 
 // Helper to recursively remove undefined values for Firestore compatibility
 const sanitizeData = (obj: any): any => {
@@ -4456,7 +4534,7 @@ export const safeFinancePersistState = async (patch: FinancePersistPatch, option
   }
 
   const nextState = { ...memoryState, ...payload } as AppState;
-  emitDataOpStatus({ phase: DATA_OP_PHASES.START, op: reason, entity: 'finance', message: 'Saving finance changes…' });
+  emitDataOpStatus({ phase: DATA_OP_PHASES.START, op: reason, entity: 'finance', message: 'Saving finance changes ' });
 
   if (!db) {
     memoryState = nextState;
@@ -4541,7 +4619,7 @@ export const saveData = async (data: AppState, options?: { throwOnError?: boolea
     return;
   }
 
-  emitDataOpStatus({ phase: DATA_OP_PHASES.START, op: options?.reason || 'saveData', entity: 'state', message: 'Saving changes…' });
+  emitDataOpStatus({ phase: DATA_OP_PHASES.START, op: options?.reason || 'saveData', entity: 'state', message: 'Saving changes ' });
   const previousState = memoryState;
   const suspicious = isSuspiciousDrop(previousState, data);
   if (suspicious.suspicious && !options?.allowDestructive) {
@@ -9319,7 +9397,7 @@ export const processTransaction = (transaction: Transaction): AppState => {
 
   if (db) {
     emitBehaviorStateChange({ type: 'payment_to_order_chain_started', entityId: effectiveTransaction.id, metadata: { transactionType: effectiveTransaction.type, paymentMethod: effectiveTransaction.paymentMethod } });
-    emitDataOpStatus({ phase: DATA_OP_PHASES.START, op: OPERATION_TYPES.PROCESS_TRANSACTION, entity: 'transaction', message: 'Saving transaction…', transactionId: effectiveTransaction.id });
+    emitDataOpStatus({ phase: DATA_OP_PHASES.START, op: OPERATION_TYPES.PROCESS_TRANSACTION, entity: 'transaction', message: 'Saving transaction ', transactionId: effectiveTransaction.id });
 
     void commitProcessTransactionAtomically({
       transaction: effectiveTransaction,
