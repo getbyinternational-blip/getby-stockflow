@@ -23,9 +23,6 @@ import { buildPurchasePartyLedger } from './services/purchaseLedger';
 import { formatDateDisplay } from './src/utils/dateFormat';
 const WhatsAppLogs = lazy(() => import('./pages/WhatsAppLogs'));
 
-const TEST_AUTH_BYPASS_ENABLED = String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'false').toLowerCase() === 'true';
-const TEST_AUTH_BYPASS_EMAIL = 'test-bypass@local.stockflow';
-
 const Admin = lazy(() => import('./pages/Admin'));
 const Sales = lazy(() => import('./pages/Sales'));
 const Reports = lazy(() => import('./pages/Reports'));
@@ -135,12 +132,6 @@ function AppContent() {
   const isFinanceRoute = location.pathname === '/finance';
 
   useEffect(() => {
-    if (TEST_AUTH_BYPASS_ENABLED) {
-      setCurrentEmail(TEST_AUTH_BYPASS_EMAIL);
-      setAuthStatus('authenticated');
-      return;
-    }
-
     if (!auth) {
       const cachedUser = getCurrentUser();
       setCurrentEmail(cachedUser);
@@ -148,6 +139,8 @@ function AppContent() {
       return;
     }
 
+    // Always preserve the real Firebase identity. The test-bypass flag is
+    // handled by the access-role/OTP UI; it must never replace auth.currentUser.
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) {
         clearAccessSession();
@@ -156,8 +149,7 @@ function AppContent() {
         return;
       }
 
-      const authedEmail = user.email || null;
-      setCurrentEmail(authedEmail);
+      setCurrentEmail(user.email || null);
       setAuthStatus(user.emailVerified ? 'authenticated' : 'unverified');
     });
 
@@ -238,18 +230,17 @@ function AppContent() {
     : null;
 
   const handleLoginSuccess = () => {
-      setAuthStatus('authenticated');
+    const user = auth?.currentUser;
+    setCurrentEmail(user?.email || null);
+    setAuthStatus(user?.emailVerified ? 'authenticated' : 'unverified');
   };
 
   const accessRoleLabel = roleSession?.role === 'operator' ? (roleSession.operatorName || 'Staff') : 'Admin';
 
   const handleFullLogout = () => {
-    if (TEST_AUTH_BYPASS_ENABLED) {
-      clearAccessSession();
-      setRoleSession(null);
-      return;
-    }
-    logout();
+    clearAccessSession();
+    setRoleSession(null);
+    void logout();
   };
 
   const handleAccessLogin = (session: { role: 'admin' | 'operator'; operatorId?: string; operatorName?: string; loginAt: string }) => {

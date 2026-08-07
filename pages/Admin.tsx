@@ -154,9 +154,10 @@ export default function Admin() {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [editingCategory, setEditingCategory] = useState<string | null>(null);
   const [editCategoryValue, setEditCategoryValue] = useState('');
-  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
-  const [deleteConfirmName, setDeleteConfirmName] = useState('');
-  
+const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+const [deleteConfirmName, setDeleteConfirmName] = useState('');
+const [isDeletingCategory, setIsDeletingCategory] = useState(false);
+const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isCatalogOptionsOpen, setIsCatalogOptionsOpen] = useState(false);
@@ -209,8 +210,13 @@ export default function Admin() {
   useEscapeLayer(Boolean(pendingPurchaseReverse), () => setPendingPurchaseReverse(null), { priority: 120 });
   useEscapeLayer(Boolean(pendingDeleteProductId), () => setPendingDeleteProductId(null), { priority: 120 });
   useEscapeLayer(isBatchDeleteConfirmOpen, () => setIsBatchDeleteConfirmOpen(false), { priority: 120 });
-  useEscapeLayer(Boolean(deletingCategory), () => setDeletingCategory(null), { priority: 120 });
-  useEscapeLayer(isPhotoModalOpen && !!selectedPhotoProduct, () => setIsPhotoModalOpen(false), { priority: 120 });
+useEscapeLayer(Boolean(deletingCategory), () => {
+  if (isDeletingCategory) return;
+
+  setDeletingCategory(null);
+  setDeleteConfirmName('');
+  setCategoryDeleteError(null);
+}, { priority: 120 });  useEscapeLayer(isPhotoModalOpen && !!selectedPhotoProduct, () => setIsPhotoModalOpen(false), { priority: 120 });
   useEscapeLayer(Boolean(purchaseTarget), () => setPurchaseTarget(null), { priority: 110 });
   useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 110 });
   useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 105 });
@@ -444,6 +450,21 @@ export default function Admin() {
   };
 
   const displayProductText = (value: any, fallback = 'not set yet') => safeText(value, fallback);
+  const isDeletedCategoryPlaceholder = (value: unknown): boolean => {
+  const normalized = safeText(value).trim();
+
+  return /^deleted(?:\s+category\s+|[_-])/i.test(normalized);
+};
+
+const displayProductCategory = (value: unknown): string => {
+  const normalized = safeText(value).trim();
+
+  if (!normalized || isDeletedCategoryPlaceholder(normalized)) {
+    return 'Uncategorized';
+  }
+
+  return normalized;
+};
   const getUpfrontOrderTotal = (order: UpfrontOrder): number => {
     const total = Number((order as any).finalTotal ?? order.totalCost ?? (((order as any).orderTotalCustomer || 0) + ((order as any).expenseAmount || 0)));
     return Number.isFinite(total) ? Math.max(0, total) : 0;
@@ -1071,7 +1092,7 @@ export default function Admin() {
       name: cleanOptionalText(formData.name) || 'not set yet',
       ...(cleanOptionalText(formData.barcode) ? { barcode: cleanOptionalText(formData.barcode)! } : {}),
       ...(cleanOptionalText(formData.description) ? { description: cleanOptionalText(formData.description)! } : {}),
-      category: cleanOptionalText(formData.category) || 'not set yet',
+      category: cleanOptionalText(formData.category) || '',
       locationZone: cleanOptionalText(formData.locationZone) || '',
       locationRow: cleanOptionalText(formData.locationRow) || '',
       locationRack: cleanOptionalText(formData.locationRack) || '',
@@ -1942,22 +1963,95 @@ export default function Admin() {
   };
 
   const handleDeleteCategory = (cat: string) => {
-      setDeletingCategory(cat);
-      setDeleteConfirmName('');
-  };
+  setCategoryDeleteError(null);
+  setDeletingCategory(cat);
+  setDeleteConfirmName('');
+};
 
-  const confirmDeleteCategory = () => {
-      if (!deletingCategory) return;
-      if (deleteConfirmName !== deletingCategory) {
-          setError("Category name mismatch. Please enter the exact category name to confirm.");
-          return;
+const confirmDeleteCategory = async () => {
+  if (!deletingCategory || isDeletingCategory) return;
+
+  const targetCategory = deletingCategory.trim();
+
+  if (deleteConfirmName.trim() !== targetCategory) {
+    setCategoryDeleteError(
+      'Category name mismatch. Please enter the exact category name to confirm.',
+    );
+    return;
+  }
+
+  const affectedProductCount = products.filter((product) => {
+    const productCategory = safeText(product.category).trim();
+
+    return (
+      productCategory === targetCategory ||
+      isDeletedCategoryPlaceholder(productCategory)
+    );
+  }).length;
+
+  setIsDeletingCategory(true);
+  setCategoryDeleteError(null);
+  setNotice(null);
+
+  try {
+    const newState = await deleteCategory(targetCategory);
+
+    setCategories(newState.categories);
+    setProducts(newState.products);
+
+    // Reset filters if they referred to the removed category.
+    if (
+      categoryFilter !== 'all' &&
+      !newState.categories.includes(categoryFilter)
+    ) {
+      setCategoryFilter('all');
+    }
+
+    if (
+      lowStockCategoryFilter !== 'all' &&
+      !newState.categories.includes(lowStockCategoryFilter)
+    ) {
+      setLowStockCategoryFilter('all');
+    }
+
+    // Protect an open product form from retaining the removed category.
+    setFormData((previous: any) => {
+      const currentCategory = safeText(previous.category).trim();
+
+      if (
+        currentCategory === targetCategory ||
+        isDeletedCategoryPlaceholder(currentCategory)
+      ) {
+        return {
+          ...previous,
+          category: '',
+        };
       }
-      const newState = deleteCategory(deletingCategory);
-      setCategories(newState.categories);
-      setProducts(newState.products);
-      setDeletingCategory(null);
-      setDeleteConfirmName('');
-  };
+
+      return previous;
+    });
+
+    setDeletingCategory(null);
+    setDeleteConfirmName('');
+
+    setNotice({
+      type: 'success',
+      message:
+        affectedProductCount > 0
+          ? `Category "${targetCategory}" was deleted. ${affectedProductCount} product${affectedProductCount === 1 ? '' : 's'} ${affectedProductCount === 1 ? 'is' : 'are'} now uncategorized.`
+          : `Category "${targetCategory}" was deleted.`,
+    });
+  } catch (error) {
+    setCategoryDeleteError(
+      getFriendlyErrorMessage(error, 'admin.delete_category'),
+    );
+
+    // Restore the UI from the actual storage state after a failed operation.
+    refreshData();
+  } finally {
+    setIsDeletingCategory(false);
+  }
+};
 
   const handleStartEditCategory = (cat: string) => {
       setEditingCategory(cat);
@@ -2238,9 +2332,40 @@ export default function Admin() {
       }
   };
 
-  const filterCategories = useMemo(() => {
-      return ['all', ...[...categories].sort()];
-  }, [categories]);
+const visibleCategories = useMemo(() => {
+  const cleanedCategories = categories
+    .map((category) => safeText(category).trim())
+    .filter((category) => {
+      return Boolean(category) && !isDeletedCategoryPlaceholder(category);
+    });
+
+  return Array.from(new Set(cleanedCategories))
+    .sort((a, b) => a.localeCompare(b));
+}, [categories]);
+
+const filterCategories = useMemo(() => {
+  return ['all', ...visibleCategories];
+}, [visibleCategories]);
+
+useEffect(() => {
+  if (
+    categoryFilter !== 'all' &&
+    !visibleCategories.includes(categoryFilter)
+  ) {
+    setCategoryFilter('all');
+  }
+
+  if (
+    lowStockCategoryFilter !== 'all' &&
+    !visibleCategories.includes(lowStockCategoryFilter)
+  ) {
+    setLowStockCategoryFilter('all');
+  }
+}, [
+  visibleCategories,
+  categoryFilter,
+  lowStockCategoryFilter,
+]);
 
   const getProductSearchTextForAdmin = (p: Product) => [p.name, p.barcode, p.category, (p as any).locationZone, (p as any).locationRow, (p as any).locationRack, (p as any).locationShelf, (p as any).hsn, (p as any).description].map((value) => safeText(value)).filter(Boolean).join(' ');
 
@@ -2623,7 +2748,7 @@ export default function Admin() {
             )}
           </CardContent>
         </Card>
-        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{getProductCategory(p) || 'ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">{formatCurrency(p.sellPrice)}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
+        {isLowStockModalOpen && <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"><Card className="w-full max-w-4xl max-h-[85vh] overflow-y-auto"><CardHeader className="flex flex-row items-center justify-between"><CardTitle>Low Stock Inventory</CardTitle><Button variant="ghost" onClick={() => setIsLowStockModalOpen(false)}>Close</Button></CardHeader><CardContent><div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">{lowStockProducts.map((p) => <div key={p.id} className="flex flex-col border rounded-xl bg-card overflow-hidden"><div className="aspect-square w-full bg-white flex items-center justify-center overflow-hidden border-b">{getProductImageUrl(p) ? <img src={getProductImageUrl(p)} alt={getProductName(p)} className="w-full h-full object-contain"  loading="lazy"  decoding="async" /> : <Package className="w-8 h-8 opacity-20" />}</div><div className="p-3 min-w-0"><h4 className="font-bold text-xs truncate" title={getProductName(p)}>{getProductName(p)}</h4><p className="text-[10px] text-muted-foreground truncate">{displayProductCategory(p.category) || 'Unknown Category'}</p><div className="flex items-center justify-between mt-2"><span className="text-xs font-bold">{formatCurrency(p.sellPrice)}</span><Badge variant={p.stock === 0 ? 'destructive' : 'secondary'} className="h-5 px-1.5 text-[10px]">Stock: {p.stock}</Badge></div></div></div>)}</div>{lowStockProducts.length === 0 && <p className="text-sm text-muted-foreground">No low stock items match your filters.</p>}</CardContent></Card></div>}
 
       </div>
     );
@@ -2855,8 +2980,9 @@ export default function Admin() {
                             <div className="h-10 w-10 rounded overflow-hidden border bg-muted/30 flex items-center justify-center">{product.image ? <img src={product.image} alt={displayProductText(product.name)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-3 h-3 text-muted-foreground" />}</div>
                             <div>
                               <div className="text-xs font-semibold">{displayProductText(product.name)}</div>
-                              <div className="text-[10px] text-muted-foreground">{displayProductText(product.category)}</div>
-                            </div>
+<div className="text-[10px] text-muted-foreground">
+  {displayProductCategory(product.category)}
+</div>                            </div>
                           </div>
                           <div className="max-h-56 overflow-y-auto space-y-1.5">
                             {product.stockByVariantColor.map((row, idx) => (
@@ -3019,8 +3145,11 @@ export default function Admin() {
                         }}
                       >
                         <option value="">Select Category</option>
-                        {[...categories].sort().map(c => <option key={c} value={c}>{c}</option>)}
-                      </Select>
+{visibleCategories.map((category) => (
+  <option key={category} value={category}>
+    {category}
+  </option>
+))}                      </Select>
                       {showAddCategoryInline && <div className="flex gap-2"><Input value={newInlineCategory} onChange={e => setNewInlineCategory(e.target.value)} placeholder="New category" /><Button type="button" variant="outline" onClick={() => { const c = newInlineCategory.trim(); if (!c) return; const next = addCategory(c); setCategories(next); setFormData({ ...formData, category: c }); setNewInlineCategory(''); setShowAddCategoryInline(false); }}>Save</Button></div>}
                     </div>
 
@@ -3724,9 +3853,8 @@ export default function Admin() {
                         <Button onClick={handleAddCategory}>Add</Button>
                     </div>
                     <div className="max-h-[300px] overflow-y-auto space-y-2 pr-1">
-                        {categories.length === 0 && <div className="text-sm text-muted-foreground text-center py-8 flex flex-col items-center"><Tags className="w-8 h-8 opacity-20 mb-2"/>No categories yet.</div>}
-                        {[...categories].sort().map(cat => (
-                            <div key={cat} className="flex justify-between items-center p-3 bg-card hover:bg-muted/50 transition-colors rounded-lg border shadow-sm group">
+                        {visibleCategories.length === 0 && <div className="text-sm text-muted-foreground text-center py-8 flex flex-col items-center"><Tags className="w-8 h-8 opacity-20 mb-2"/>No categories yet.</div>}
+{visibleCategories.map(cat => (                            <div key={cat} className="flex justify-between items-center p-3 bg-card hover:bg-muted/50 transition-colors rounded-lg border shadow-sm group">
                                 {editingCategory === cat ? (
                                     <div className="flex-1 flex gap-2">
                                         <Input 
@@ -3773,11 +3901,18 @@ export default function Admin() {
                         </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4 pt-4">
-                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                            <p className="text-sm text-amber-800 font-medium">
-                                All the products under this category will be named as "deleted category {deletingCategory}"
-                            </p>
-                        </div>
+<div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+  <p className="text-sm text-amber-800 font-medium">
+    This category will be removed completely. Products currently assigned
+    to it will remain in inventory as uncategorized products.
+  </p>
+</div>
+
+{categoryDeleteError && (
+  <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+    {categoryDeleteError}
+  </div>
+)}
                         <div className="space-y-2">
                             <Label className="text-sm">Type <strong>{deletingCategory}</strong> to confirm:</Label>
                             <Input 
@@ -3788,12 +3923,30 @@ export default function Admin() {
                             />
                         </div>
                         <div className="flex gap-2 pt-2">
-                            <Button variant="destructive" className="flex-1" onClick={confirmDeleteCategory} disabled={deleteConfirmName !== deletingCategory}>
-                                Confirm Delete
-                            </Button>
-                            <Button variant="outline" className="flex-1" onClick={() => setDeletingCategory(null)}>
-                                Cancel
-                            </Button>
+<Button
+  variant="destructive"
+  className="flex-1"
+  onClick={() => void confirmDeleteCategory()}
+  disabled={
+    isDeletingCategory ||
+    deleteConfirmName.trim() !== deletingCategory.trim()
+  }
+>
+  {isDeletingCategory ? 'Deleting...' : 'Confirm Delete'}
+</Button>
+
+<Button
+  variant="outline"
+  className="flex-1"
+  disabled={isDeletingCategory}
+  onClick={() => {
+    setDeletingCategory(null);
+    setDeleteConfirmName('');
+    setCategoryDeleteError(null);
+  }}
+>
+  Cancel
+</Button>
                         </div>
                     </CardContent>
                 </Card>
