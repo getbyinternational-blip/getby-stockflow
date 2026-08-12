@@ -97,6 +97,30 @@ const compactTypeLabel = (type: unknown, originalType?: string, referenceType?: 
   return (normalized || 'entry').toUpperCase();
 };
 
+const getBusinessTransactionToneClass = (
+  row: { sourceKind: 'transaction' | 'upfront_order'; type: string },
+  tx?: Transaction | null,
+): string => {
+  if (row.sourceKind === 'upfront_order') return 'bg-blue-50/35';
+  if (!tx) return 'bg-white';
+
+  const effectiveType = getEffectiveTransactionType(tx);
+  if (effectiveType === 'sale') {
+    const settlement = getHistoricalAwareSaleSettlement(tx);
+    const paidNow = Math.max(0, Number(settlement.cashPaid || 0)) + Math.max(0, Number(settlement.onlinePaid || 0));
+    const due = Math.max(0, Number(settlement.creditDue || 0));
+    if (due > 0 && paidNow > 0) return 'bg-blue-50/45';
+    if (due > 0) return 'bg-amber-50/45';
+    return 'bg-emerald-50/45';
+  }
+  if (effectiveType === 'payment') {
+    return String(tx.paymentMethod || '').toLowerCase().includes('cash') ? 'bg-emerald-50/35' : 'bg-blue-50/35';
+  }
+  if (effectiveType === 'customer_credit') return 'bg-amber-50/35';
+  if (effectiveType === 'customer_cash_out') return 'bg-rose-50/35';
+  return 'bg-white';
+};
+
 const getMovementDisplay = (row: {
   type: string;
   amountMovement: number;
@@ -1118,7 +1142,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const viewingCustomerBalance = viewingCustomerDisplayBalance?.status === 'ok' ? viewingCustomerDisplayBalance : null;
   const viewingCustomerTotalDue = Math.max(0, Number(viewingCustomerBalance?.currentDue || 0));
   const viewingCustomerStoreCredit = Math.max(0, Number(viewingCustomerBalance?.storeCredit || 0));
-  const viewingCustomerNetReceivable = Math.max(0, Number(viewingCustomerBalance?.netReceivable || 0));
   const viewingCustomerBalanceMismatch = hasCustomerDisplayBalanceMismatch(viewingCustomerDisplayBalance);
   const viewingCustomerCorrectLedger = useMemo(() => {
     if (!viewingCustomerCanonical) return null;
@@ -1398,27 +1421,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     .sort((a, b) => allOrdersSort === 'newest'
       ? new Date(b.date || b.createdAt || 0).getTime() - new Date(a.date || a.createdAt || 0).getTime()
       : new Date(a.date || a.createdAt || 0).getTime() - new Date(b.date || b.createdAt || 0).getTime()), [popupCustomerOrders, allOrdersSearch, allOrdersStatus, allOrdersSort]);
-  const visibleUpfrontOrders = useMemo(() => {
-    const customerById = new Map(customers.map((customer) => [customer.id, customer]));
-    return upfrontOrders
-      .map((order) => {
-        const customer = customerById.get(order.customerId);
-        return {
-          order,
-          customer,
-          status: getUpfrontOrderStatus(order),
-          total: getUpfrontOrderCustomerTotal(order),
-          paid: getUpfrontOrderPaid(order),
-          remaining: getUpfrontOrderRemaining(order),
-        };
-      })
-      .sort((a, b) => new Date(b.order.date || b.order.createdAt || 0).getTime() - new Date(a.order.date || a.order.createdAt || 0).getTime());
-  }, [customers, upfrontOrders]);
-  const visibleOpenUpfrontOrders = useMemo(
-    () => visibleUpfrontOrders.filter((entry) => entry.remaining > 0.0001),
-    [visibleUpfrontOrders]
-  );
-
   const openCustomerActionModal = (type: 'payment' | 'customer_cash_out' | 'customer_credit' = 'payment') => {
     setCustomerActionType(type);
     setCustomerActionDateTime(toDateTimeLocalNow());
@@ -2645,92 +2647,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.min(customerTotalPages, prev + 1))} disabled={customerPage === customerTotalPages}>Next</Button>
         </div>
       )}
-      <div className="mt-4 rounded-lg border bg-white">
-        <div className="flex flex-col gap-3 border-b px-4 py-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-900">Advance / Custom Orders</h3>
-            <p className="text-xs text-muted-foreground">System-wide visibility for every saved advance/custom order.</p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-            <div className="rounded border bg-slate-50 px-3 py-2">
-              <div className="text-muted-foreground">Total Orders</div>
-              <div className="font-bold text-slate-900">{visibleUpfrontOrders.length}</div>
-            </div>
-            <div className="rounded border bg-slate-50 px-3 py-2">
-              <div className="text-muted-foreground">Open Orders</div>
-              <div className="font-bold text-amber-700">{visibleOpenUpfrontOrders.length}</div>
-            </div>
-            <div className="rounded border bg-slate-50 px-3 py-2">
-              <div className="text-muted-foreground">Advance Paid</div>
-              <div className="font-bold text-emerald-700">{formatINRWhole(visibleUpfrontOrders.reduce((sum, entry) => sum + entry.paid, 0))}</div>
-            </div>
-            <div className="rounded border bg-slate-50 px-3 py-2">
-              <div className="text-muted-foreground">Remaining Due</div>
-              <div className="font-bold text-red-700">{formatINRWhole(visibleOpenUpfrontOrders.reduce((sum, entry) => sum + entry.remaining, 0))}</div>
-            </div>
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[980px] text-sm">
-            <thead className="bg-slate-50 text-slate-600">
-              <tr>
-                <th className="px-3 py-2.5 text-left">Date</th>
-                <th className="px-3 py-2.5 text-left">Customer</th>
-                <th className="px-3 py-2.5 text-left">Product</th>
-                <th className="px-3 py-2.5 text-left">Order ID</th>
-                <th className="px-3 py-2.5 text-right">Total</th>
-                <th className="px-3 py-2.5 text-right">Advance</th>
-                <th className="px-3 py-2.5 text-right">Remaining</th>
-                <th className="px-3 py-2.5 text-left">Status</th>
-                <th className="px-3 py-2.5 text-left">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleUpfrontOrders.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-3 py-6 text-center text-sm text-muted-foreground">No advance/custom orders found.</td>
-                </tr>
-              ) : visibleUpfrontOrders.map(({ order, customer, status, total, paid, remaining }) => (
-                <tr key={order.id} className="border-t hover:bg-slate-50/70">
-                  <td className="px-3 py-2.5 align-top">{new Date(order.date || order.createdAt || Date.now()).toLocaleDateString()}</td>
-                  <td className="px-3 py-2.5 align-top">
-                    <div className="font-medium text-slate-900">{customer?.name || 'Unknown customer'}</div>
-                    <div className="text-[11px] text-muted-foreground">{customer?.phone || order.customerId}</div>
-                  </td>
-                  <td className="px-3 py-2.5 align-top">
-                    <div className="font-medium text-slate-900">{order.productName}</div>
-                    <div className="text-[11px] text-muted-foreground">{order.variantLabel || order.category || 'Custom order'}</div>
-                  </td>
-                  <td className="px-3 py-2.5 align-top font-mono text-xs text-slate-600">#{order.id.slice(-6)}</td>
-                  <td className="px-3 py-2.5 align-top text-right font-semibold text-slate-900">{formatINRWhole(total)}</td>
-                  <td className="px-3 py-2.5 align-top text-right font-semibold text-emerald-700">{formatINRWhole(paid)}</td>
-                  <td className="px-3 py-2.5 align-top text-right font-semibold text-red-700">{formatINRWhole(remaining)}</td>
-                  <td className="px-3 py-2.5 align-top">
-                    <Badge className={status === 'Paid in Full' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>
-                      {status}
-                    </Badge>
-                  </td>
-                  <td className="px-3 py-2.5 align-top">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={!customer}
-                      onClick={() => {
-                        if (!customer) return;
-                        setExpandedCustomerHistoryId(null);
-                        setViewingCustomer(customer);
-                        setCustomerDetailTab('custom_orders');
-                      }}
-                    >
-                      View Order
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
         </>
       )}
 
@@ -2822,12 +2738,14 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                   <CardHeader className="sticky top-0 z-20 border-b bg-white/95 p-3 sm:p-4 backdrop-blur">
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                           <div className="min-w-0">
-                              <CardTitle className="truncate text-xl font-bold tracking-tight text-slate-950">{viewingCustomer.name}</CardTitle>
-                              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-                                  <span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5" /> {viewingCustomer.phone}</span>
-                                  <span>GST Name: <b className="text-slate-700">{viewingCustomer.gstName || 'Not added'}</b></span>
-                                  <span>GST No: <b className="text-slate-700">{viewingCustomer.gstNumber || 'Not added'}</b></span>
-                                  {repairMode && <span className="font-semibold text-amber-700">Repair mode enabled</span>}
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                <CardTitle className="truncate text-xl font-bold tracking-tight text-slate-950">{viewingCustomer.name}</CardTitle>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                                    <span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5" /> {viewingCustomer.phone}</span>
+                                    {viewingCustomer.gstName && <span>GST Name: <b className="text-slate-700">{viewingCustomer.gstName}</b></span>}
+                                    {viewingCustomer.gstNumber && <span>GST No: <b className="text-slate-700">{viewingCustomer.gstNumber}</b></span>}
+                                    {repairMode && <span className="font-semibold text-amber-700">Repair mode enabled</span>}
+                                </div>
                               </div>
                           </div>
                           <div className="flex flex-wrap items-center justify-start gap-1.5 lg:justify-end [&_button]:h-[34px] [&_button]:rounded-lg [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:font-semibold">
@@ -2849,7 +2767,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                               {can('analytics') && <div className="mt-1 text-[11px]">Debug snapshot only: Due {formatINRWhole(viewingCustomerDisplayBalance.snapshotDue)} | Store Credit {formatINRWhole(viewingCustomerDisplayBalance.snapshotStoreCredit)}</div>}
                           </div>
                       )}
-                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
                           <div className="rounded-lg border border-orange-100 bg-orange-50/30 px-3 py-2.5">
                               <div className="text-[10px] font-semibold uppercase tracking-[0.04em] text-orange-700/80">Current Due</div>
                               <div className="mt-0.5 text-[23px] font-bold leading-none text-slate-950">{viewingCustomerDisplayBalance?.status === 'ok' ? formatINRWhole(viewingCustomerTotalDue) : 'Unavailable'}</div>
@@ -2857,10 +2775,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <div className="rounded-lg border border-blue-100 bg-blue-50/30 px-3 py-2.5">
                               <div className="text-[10px] font-semibold uppercase tracking-[0.04em] text-blue-700/80">Store Credit</div>
                               <div className="mt-0.5 text-[23px] font-bold leading-none text-blue-700/90">{viewingCustomerDisplayBalance?.status === 'ok' ? formatINRWhole(viewingCustomerStoreCredit) : 'Unavailable'}</div>
-                          </div>
-                          <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2.5">
-                              <div className="text-[10px] font-semibold uppercase tracking-[0.04em] text-slate-500">Net Receivable</div>
-                              <div className="mt-0.5 text-[23px] font-bold leading-none text-slate-950">{viewingCustomerDisplayBalance?.status === 'ok' ? formatINRWhole(viewingCustomerNetReceivable) : 'Unavailable'}</div>
                           </div>
                       </div>
                       {can('analytics') && viewingCustomerBalanceMismatch && viewingCustomerDisplayBalance && (
@@ -2871,11 +2785,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                   <span>Ledger: {formatINRWhole(viewingCustomerDisplayBalance.netReceivable)}</span>
                                   <span>Repair available</span>
                               </div>
-                          </div>
-                      )}
-                      {can('analytics') && canonicalBalanceMismatchSummary.mismatchCount > 0 && (
-                          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-                              Canonical balance audit: {canonicalBalanceMismatchSummary.mismatchCount}/{canonicalBalanceMismatchSummary.totalCustomersScanned} mismatches | Stored {formatINRWhole(canonicalBalanceMismatchSummary.totalStoredReceivable)} | Ledger {formatINRWhole(canonicalBalanceMismatchSummary.totalCanonicalReceivable)}{canonicalBalanceMismatchSummary.largestMismatch ? ` | Largest ${canonicalBalanceMismatchSummary.largestMismatch.customerName} ${formatINRWhole(Math.abs(canonicalBalanceMismatchSummary.largestMismatch.amount))}` : ''}
                           </div>
                       )}
                       <div className="mt-3 flex flex-wrap gap-1 border-b border-slate-200">
@@ -2896,7 +2805,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <section className="flex min-h-[360px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white">
                             <div className="sticky top-0 z-10 border-b bg-slate-50/95 px-3 py-2 backdrop-blur">
                               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">Business Transactions</div>
-                              <div className="text-[10px] text-slate-500">Sales, returns, and order activity</div>
                             </div>
                             <div className="max-h-[520px] min-w-0 overflow-y-auto overflow-x-hidden">
                               <table className="w-full table-fixed border-collapse text-[13px]">
@@ -2919,13 +2827,13 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                 <tbody className="divide-y divide-slate-100">
                                   {businessTransactionRows.length === 0 ? (
                                     <tr><td colSpan={customerDetailPermissions.canEditTransactions ? 5 : 4} className="px-3 py-8 text-center text-xs text-slate-400">No business transactions yet.</td></tr>
-                                  ) : businessTransactionRows.map((row, idx) => {
+                                  ) : businessTransactionRows.map((row) => {
                                     const isTransactionRow = row.sourceKind === 'transaction';
                                     const transaction = isTransactionRow ? transactions.find((tx) => tx.id === row.id) || null : null;
                                     return (
                                     <tr
                                       key={`business-${row.sourceKind}-${row.id}`}
-                                      className={`h-11 align-middle hover:bg-slate-50 ${isTransactionRow ? 'cursor-pointer' : ''} ${idx % 2 ? 'bg-slate-50/25' : 'bg-white'}`}
+                                      className={`h-11 align-middle ${isTransactionRow ? 'cursor-pointer hover:brightness-[0.985]' : ''} ${getBusinessTransactionToneClass(row, transaction)}`}
                                       onClick={isTransactionRow ? () => openCustomerTransactionDetails(row.id) : undefined}
                                       onKeyDown={isTransactionRow ? (event) => {
                                         if (event.key === 'Enter' || event.key === ' ') {
@@ -2983,7 +2891,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <section className="flex min-h-[360px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white">
                             <div className="sticky top-0 z-10 border-b bg-slate-50/95 px-3 py-2 backdrop-blur">
                               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">Money / Balance Ledger</div>
-                              <div className="text-[10px] text-slate-500">Payments, credits, and running balance</div>
                             </div>
                             <div className="max-h-[520px] min-w-0 overflow-y-auto overflow-x-hidden">
                               <table className="w-full table-fixed border-collapse text-[13px]">
@@ -2999,7 +2906,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                   <tr>
                                     <th className="px-2 py-2 text-left font-semibold">Date</th>
                                     <th className="px-2 py-2 text-left font-semibold">Type</th>
-                                    <th className="px-2 py-2 text-left font-semibold">Reference</th>
+                                    <th className="px-2 py-2 text-left font-semibold">Details</th>
                                     <th className="px-2 py-2 text-right font-semibold">Movement</th>
                                     <th className="px-2 py-2 text-right font-semibold">Balance</th>
                                     {customerDetailPermissions.canEditTransactions && <th className="px-2 py-2 text-right font-semibold">Actions</th>}
@@ -3032,16 +2939,12 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                         <td className="px-2 py-1.5">
                                           <div className="min-w-0">
                                             <Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge>
-                                            <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={getMoneyLedgerTypeDetail(row)}>{getMoneyLedgerTypeDetail(row)}</div>
                                           </div>
                                         </td>
                                         <td className="min-w-0 px-2 py-1.5">
-                                          <div className="min-w-0">
-                                            <div className="flex min-w-0 items-center gap-1.5">
-                                              <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
-                                              {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
-                                            </div>
-                                            {row.description && <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={row.description}>{row.description}</div>}
+                                          <div className="flex min-w-0 items-center gap-1.5">
+                                            {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
+                                            {row.description && <div className="truncate text-[10px] leading-4 text-slate-500" title={row.description}>{row.description}</div>}
                                           </div>
                                         </td>
                                         <td className={`overflow-hidden truncate whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${movement.className}`}>{movement.label}</td>
@@ -3077,102 +2980,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                             </div>
                           </section>
 
-                          <section className="flex min-h-[360px] min-w-0 flex-col overflow-hidden rounded-xl border bg-white">
-                            <div className="sticky top-0 z-10 border-b bg-slate-50/95 px-3 py-2 backdrop-blur">
-                              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-700">Money / Balance Ledger</div>
-                              <div className="text-[10px] text-slate-500">Payments, credits, and running balance</div>
-                            </div>
-                            <div className="max-h-[520px] min-w-0 overflow-y-auto overflow-x-hidden">
-                              <table className="w-full table-fixed border-collapse text-[13px]">
-                                <colgroup>
-                                  <col className="w-[72px]" />
-                                  <col className="w-[82px]" />
-                                  <col className="w-[110px]" />
-                                  <col className="w-[135px]" />
-                                  <col className="w-[135px]" />
-                                  {customerDetailPermissions.canEditTransactions && <col className="w-[128px]" />}
-                                </colgroup>
-                                <thead className="sticky top-0 z-10 bg-white text-[11px] uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_rgba(148,163,184,0.35)]">
-                                  <tr>
-                                    <th className="px-2 py-2 text-left font-semibold">Date</th>
-                                    <th className="px-2 py-2 text-left font-semibold">Type</th>
-                                    <th className="px-2 py-2 text-left font-semibold">Reference</th>
-                                    <th className="px-2 py-2 text-right font-semibold">Movement</th>
-                                    <th className="px-2 py-2 text-right font-semibold">Balance</th>
-                                    {customerDetailPermissions.canEditTransactions && <th className="px-2 py-2 text-right font-semibold">Actions</th>}
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                  {moneyBalanceLedgerRows.length === 0 ? (
-                                    <tr><td colSpan={customerDetailPermissions.canEditTransactions ? 6 : 5} className="px-3 py-8 text-center text-xs text-slate-400">No money ledger movements yet.</td></tr>
-                                  ) : moneyBalanceLedgerRows.map((row, idx) => {
-                                    const movement = getMovementDisplay(row);
-                                    const running = getRunningBalanceDisplay(row.runningBalance);
-                                    const isTransactionRow = row.sourceKind !== 'upfront_order';
-                                    const transaction = isTransactionRow ? transactions.find((tx) => tx.id === row.id) || null : null;
-                                    const transactionRepairCapability = getTransactionRepairCapability(transaction);
-                                    return (
-                                      <tr
-                                        key={`money-${row.sourceKind}-${row.id}`}
-                                        className={`h-11 align-middle hover:bg-slate-50 ${isTransactionRow ? 'cursor-pointer' : ''} ${idx % 2 ? 'bg-slate-50/25' : 'bg-white'}`}
-                                        onClick={isTransactionRow ? () => openCustomerTransactionDetails(row.id) : undefined}
-                                        onKeyDown={isTransactionRow ? (event) => {
-                                          if (event.key === 'Enter' || event.key === ' ') {
-                                            event.preventDefault();
-                                            openCustomerTransactionDetails(row.id);
-                                          }
-                                        } : undefined}
-                                        role={isTransactionRow ? 'button' : undefined}
-                                        tabIndex={isTransactionRow ? 0 : undefined}
-                                      >
-                                        <td className="whitespace-nowrap px-2 py-1.5 text-[13px] font-medium text-slate-600">{formatCompactDate(row.date)}</td>
-                                        <td className="px-2 py-1.5">
-                                          <div className="min-w-0">
-                                            <Badge variant="outline" className="h-5 max-w-full truncate rounded-md bg-slate-50 px-2 py-0 text-[10px] font-semibold uppercase leading-5 text-slate-600">{compactTypeLabel(row.type, row.originalType, row.referenceType)}</Badge>
-                                            <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={getMoneyLedgerTypeDetail(row)}>{getMoneyLedgerTypeDetail(row)}</div>
-                                          </div>
-                                        </td>
-                                        <td className="min-w-0 px-2 py-1.5">
-                                          <div className="min-w-0">
-                                            <div className="flex min-w-0 items-center gap-1.5">
-                                              <span className="truncate font-mono text-[11px] text-slate-600" title={row.reference}>#{row.reference}</span>
-                                              {row.warning && <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold leading-none text-amber-700" title={row.warning}>Review</span>}
-                                            </div>
-                                            {row.description && <div className="mt-1 truncate text-[10px] leading-4 text-slate-500" title={row.description}>{row.description}</div>}
-                                          </div>
-                                        </td>
-                                        <td className={`overflow-hidden truncate whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${movement.className}`}>{movement.label}</td>
-                                        <td className={`whitespace-nowrap px-2 py-1.5 text-right text-[13px] font-semibold ${running.className}`}>{running.label}</td>
-                                        {customerDetailPermissions.canEditTransactions && (
-                                          <td className="px-2 py-1.5">
-                                            {transaction ? (
-                                              <div className="flex flex-col items-end gap-1">
-                                                <div className="flex justify-end gap-1">
-                                                  {transactionRepairCapability?.edit ? (
-                                                    <Button size="sm" variant="outline" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairEditDraft(transaction)); }}>Edit</Button>
-                                                  ) : (
-                                                    <span title={transactionRepairCapability?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}>
-                                                      <Button size="sm" variant="outline" disabled className="pointer-events-none opacity-60">Edit</Button>
-                                                    </span>
-                                                  )}
-                                                  <Button size="sm" variant="outline" className="border-red-200 text-red-700 hover:bg-red-50" onClick={(event) => { event.stopPropagation(); openRepairDraft(createCustomerRepairDeleteDraft(transaction)); }}>Delete</Button>
-                                                </div>
-                                                {!transactionRepairCapability?.edit && (
-                                                  <div className="max-w-[180px] text-right text-[10px] leading-4 text-amber-700">
-                                                    {transactionRepairCapability?.editUnavailableReason || UNSUPPORTED_REPAIR_EDIT_MESSAGE}
-                                                  </div>
-                                                )}
-                                              </div>
-                                            ) : <div className="text-right text-[11px] text-slate-400">Read only</div>}
-                                          </td>
-                                        )}
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          </section>
                         </div>
                       )}
                       {customerDetailTab === 'store_credit' && (

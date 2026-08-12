@@ -863,20 +863,12 @@ const displayProductCategory = (value: unknown): string => {
     productName: string,
     rows: UnifiedPurchaseHistoryRow[]
   ) => (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {rows.map((row) => {
         const lineTotal = Number((toNonNegativeNumber(row.lineTotal || (toNonNegativeNumber(row.quantity) * toNonNegativeNumber(row.unitPrice)))).toFixed(2));
-        const orderTotal = row.orderTotal == null ? null : toNonNegativeNumber(row.orderTotal);
         const orderPaid = row.orderPaid == null ? (row.paidAmount == null ? null : toNonNegativeNumber(row.paidAmount)) : toNonNegativeNumber(row.orderPaid);
         const remainingPayable = row.remainingPayable == null ? null : toNonNegativeNumber(row.remainingPayable);
-        const paymentSummary = row.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 };
-        const partyName = row.partyName || 'Not linked / Unknown';
-        const poLabel = row.purchaseOrderLabel || row.purchaseOrderId || 'Not linked';
-        const subMeta = [
-          partyName,
-          row.reference ? `Ref ${row.reference}` : null,
-          row.purchaseOrderId ? `PO ${poLabel}` : null,
-        ].filter(Boolean).join(' • ');
+        const partyName = row.partyName || 'Unknown supplier';
         const secondaryAuditMeta = [
           row.legacyHistoryId ? `Legacy ID ${row.legacyHistoryId}` : null,
           row.productName && row.productName !== productName ? `Order name ${row.productName}` : null,
@@ -897,76 +889,71 @@ const displayProductCategory = (value: unknown): string => {
           : canOpenLedger
             ? 'Open the purchase ledger screen for this transaction.'
             : 'This row needs supplier or order-link review before it can be safely added to the ledger.';
+        const paidAmount = orderPaid != null ? orderPaid : 0;
+        const disabledActionTitle = 'Temporarily disabled by developer';
 
         return (
-          <div key={row.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0 space-y-1">
+          <div key={row.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="min-w-0 flex-1 space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="text-base font-semibold text-slate-950">{productName}</div>
-                  <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${row.sourceToneClassName}`}>{row.sourceLabel}</span>
+                  <div className="text-sm font-semibold text-slate-950">
+                    {row.date ? new Date(row.date).toLocaleString() : 'Unknown date'} • {partyName}
+                  </div>
+                  {row.reviewReason && (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                      Needs Review
+                    </span>
+                  )}
                 </div>
-                <div className="text-sm text-slate-600">{subMeta}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-[11px] uppercase tracking-wide text-slate-500">Date</div>
-                <div className="text-sm font-medium text-slate-900">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
+                <div className="text-xs text-slate-600">{partyName}</div>
               </div>
             </div>
 
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-              <div className="rounded-lg bg-slate-50 px-3 py-2">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="rounded-lg border bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Qty</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{toNonNegativeNumber(row.quantity)}</div>
+                <div className="mt-1 text-base font-semibold text-slate-950">{toNonNegativeNumber(row.quantity)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 px-3 py-2">
+              <div className="rounded-lg border bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Unit Cost</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{toNonNegativeNumber(row.unitPrice).toFixed(2)}</div>
+                <div className="mt-1 text-base font-semibold text-slate-950">{toNonNegativeNumber(row.unitPrice).toFixed(2)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 px-3 py-2">
+              <div className="rounded-lg border bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Line Total</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{lineTotal.toFixed(2)}</div>
+                <div className="mt-1 text-base font-semibold text-slate-950">{lineTotal.toFixed(2)}</div>
               </div>
-              <div className="rounded-lg bg-slate-50 px-3 py-2">
-                <div className="text-[10px] uppercase tracking-wide text-slate-500">Paid</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{orderPaid != null ? orderPaid.toFixed(2) : '--'}</div>
-              </div>
-              <div className="rounded-lg bg-slate-50 px-3 py-2">
+              <div className="rounded-lg border bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Due</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{remainingPayable != null ? remainingPayable.toFixed(2) : '--'}</div>
+                <div className="mt-1 text-base font-semibold text-slate-950">{remainingPayable != null ? remainingPayable.toFixed(2) : '--'}</div>
               </div>
             </div>
 
-            <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${row.ledgerIndicatorToneClassName}`}>
-              <span className="font-semibold">Purchase Party Ledger:</span> {row.ledgerIndicatorLabel}
-              <div className="mt-1 text-[12px] opacity-90">{row.ledgerIndicatorReason}</div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-              <div className="text-[12px] text-slate-600">
-                Actions
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs text-slate-600">
+                {paidAmount > 0 ? `Paid ${paidAmount.toFixed(2)}` : 'Not paid yet'}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8"
-                  disabled={!canEditSnapshot}
-                  title={editSnapshotHelp}
-                  onClick={() => canEditSnapshot && openEditPurchaseHistoryEntry(String(row.legacyHistoryId))}
-                >
-                  Edit Snapshot
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8 text-rose-600"
-                  disabled={!canDeleteSnapshot}
-                  title={deleteSnapshotHelp}
-                  onClick={() => canDeleteSnapshot && handleDeletePurchaseHistoryEntry(String(row.legacyHistoryId))}
-                >
-                  Reverse
-                </Button>
+                <span title={disabledActionTitle}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    disabled
+                  >
+                    Edit Purchase
+                  </Button>
+                </span>
+                <span title={disabledActionTitle}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-rose-600"
+                    disabled
+                  >
+                    Undo Purchase
+                  </Button>
+                </span>
                 <Button
                   size="sm"
                   variant={canAddToLedger ? 'default' : 'outline'}
@@ -983,35 +970,13 @@ const displayProductCategory = (value: unknown): string => {
                     }
                   }}
                 >
-                  {addingLedgerHistoryId === row.legacyHistoryId ? 'Adding...' : secondaryActionLabel}
+                  {canAddToLedger ? 'Add to Ledger' : canOpenLedger ? 'View Ledger' : 'Ledger Review'}
                 </Button>
               </div>
             </div>
 
-            <div className="mt-4 grid gap-3 lg:grid-cols-2">
-              <div className="space-y-2 rounded-lg border border-slate-200 p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Details</div>
-                <div className="grid gap-1 text-sm text-slate-700">
-                  <div><span className="text-slate-500">Variant:</span> <span className="font-medium text-slate-900">{formatVariantColorValue(row.variant, NO_VARIANT)}</span></div>
-                  <div><span className="text-slate-500">Color:</span> <span className="font-medium text-slate-900">{formatVariantColorValue(row.color, NO_COLOR)}</span></div>
-                  <div><span className="text-slate-500">Payment Method:</span> <span className="font-medium text-slate-900">{row.paymentMethod || '--'}</span></div>
-                  {row.notes ? <div><span className="text-slate-500">Notes:</span> <span className="font-medium text-slate-900">{row.notes}</span></div> : null}
-                </div>
-              </div>
-
-              <div className="space-y-2 rounded-lg border border-slate-200 p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Payment Breakdown</div>
-                <div className="grid gap-1 text-sm text-slate-700">
-                  <div><span className="text-slate-500">Order Total:</span> <span className="font-medium text-slate-900">{orderTotal != null ? orderTotal.toFixed(2) : '--'}</span></div>
-                  <div><span className="text-slate-500">Cash:</span> <span className="font-medium text-slate-900">{paymentSummary.cash.toFixed(2)}</span></div>
-                  <div><span className="text-slate-500">Online/Bank:</span> <span className="font-medium text-slate-900">{paymentSummary.online.toFixed(2)}</span></div>
-                  <div><span className="text-slate-500">Party Credit:</span> <span className="font-medium text-slate-900">{paymentSummary.partyCredit.toFixed(2)}</span></div>
-                </div>
-              </div>
-            </div>
-
-            {(row.reviewReason || row.compatibilityWarnings.length > 0 || secondaryAuditMeta) && (
-              <div className="mt-4 space-y-2">
+            {((row.reviewReason || row.compatibilityWarnings.length > 0) || (row.notes && row.notes.trim())) && (
+              <div className="mt-3 space-y-2">
                 {row.reviewReason && (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                     <span className="font-semibold">Needs attention:</span> {row.reviewReason}
@@ -1022,8 +987,10 @@ const displayProductCategory = (value: unknown): string => {
                     <span className="font-semibold text-slate-900">Legacy notes:</span> {row.compatibilityWarnings.join(' • ')}
                   </div>
                 )}
-                {secondaryAuditMeta && (
-                  <div className="text-[11px] text-slate-500">{secondaryAuditMeta}</div>
+                {row.notes && row.notes.trim() && (
+                  <div className="text-[11px] text-slate-500">
+                    Notes: {row.notes}
+                  </div>
                 )}
               </div>
             )}
@@ -3471,9 +3438,9 @@ useEffect(() => {
 
       {purchaseTarget && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-          <Card className="w-full max-w-6xl max-h-[90vh] overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Add Purchase - {purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }}><X className="w-4 h-4"/></Button></CardHeader>
-            <CardContent className="space-y-3 overflow-y-auto max-h-[calc(90vh-84px)]">
+          <Card className="w-full max-w-6xl max-h-[95vh] overflow-hidden">
+            <CardHeader className="flex flex-row items-center justify-between"><CardTitle>{purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }}><X className="w-4 h-4"/></Button></CardHeader>
+            <CardContent className="space-y-3 overflow-y-auto max-h-[calc(95vh-84px)]">
               <div className="flex gap-2 border-b pb-2">
                 <Button size="sm" variant={purchaseModalTab === 'add' ? 'default' : 'outline'} onClick={() => setPurchaseModalTab('add')}>Add Purchase</Button>
                 <Button size="sm" variant={purchaseModalTab === 'history' ? 'default' : 'outline'} onClick={() => setPurchaseModalTab('history')}>Purchase History</Button>
@@ -3622,35 +3589,13 @@ useEffect(() => {
                       No purchase history found for this product yet.
                     </div>
                   ) : (
-                <div className="space-y-3">
-                  {!!purchaseHistoryRows.length && (
-                    <div className="grid gap-2 md:grid-cols-4">
-                      <div className="rounded-lg border bg-emerald-50 p-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">Purchase Orders</div>
-                        <div className="mt-1 text-xl font-black text-emerald-900">{purchaseHistorySummary.resolved}</div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+                        <span>{purchaseHistorySummary.total} rows</span>
+                        {!!purchaseHistorySummary.needsReview && <span>{purchaseHistorySummary.needsReview} need review</span>}
                       </div>
-                      <div className="rounded-lg border bg-amber-50 p-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">Needs Review</div>
-                        <div className="mt-1 text-xl font-black text-amber-900">{purchaseHistorySummary.needsReview}</div>
-                      </div>
-                      <div className="rounded-lg border bg-slate-50 p-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-700">Legacy Snapshots</div>
-                        <div className="mt-1 text-xl font-black text-slate-900">{purchaseHistorySummary.legacyOnly}</div>
-                      </div>
-                      <div className="rounded-lg border bg-blue-50 p-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-blue-700">Total Rows</div>
-                        <div className="mt-1 text-xl font-black text-blue-900">{purchaseHistorySummary.total}</div>
-                      </div>
-                    </div>
-                  )}
-                  <div className="rounded-lg border bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-                    This view combines canonical purchase orders, rows needing product-link review, and legacy-only history snapshots so no purchase transaction is hidden.
-                  </div>
-                  <div className="space-y-2">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unified Purchase History</div>
-                        <div className="max-h-[420px] overflow-y-auto rounded-md border p-2">
-                          {renderUnifiedPurchaseHistoryCards(purchaseTarget.name, purchaseHistoryRows)}
-                        </div>
+                      <div className="max-h-[420px] overflow-y-auto rounded-md border p-2">
+                        {renderUnifiedPurchaseHistoryCards(purchaseTarget.name, purchaseHistoryRows)}
                       </div>
                     </div>
                   )}

@@ -294,7 +294,7 @@ export default function Cashbook() {
   const [payFilter, setPayFilter] = useState<'all' | 'cash' | 'online' | 'credit'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | LedgerType>('all');
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
-  const [full, setFull] = useState(false); const [visibleRowCount, setVisibleRowCount] = useState(100);
+  const [visibleRowCount, setVisibleRowCount] = useState(100);
   const [activeTab, setActiveTab] = useState<'ledger' | 'daily_breakdown' | 'gross_profit'>('ledger');
   const [selectedDailyBreakdownKey, setSelectedDailyBreakdownKey] = useState<string | null>(null);
   const [grossProfitCustomerSearch, setGrossProfitCustomerSearch] = useState('');
@@ -395,6 +395,7 @@ export default function Cashbook() {
 
   const openManualCashModal = (type: 'cash_in' | 'cash_out') => {
     setManualError(null);
+    setManualDate(new Date().toISOString().slice(0, 10));
     setManualType(type);
     setIsAddCashOpen(true);
   };
@@ -1130,13 +1131,6 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
     return { netSales, cogs, grossProfit, grossMarginPct, numberOfSales, numberOfItemsSold };
   }, [filteredGrossProfitRows]);
 
-  const grossProfitAuditCounts = useMemo(() => {
-    const saleBuyPriceRows = filteredGrossProfitRows.filter((row) => row.source === 'sale_line_buy_price' || row.source === 'linked_sale_buy_price').length;
-    const historicalCostFallbackRows = filteredGrossProfitRows.filter((row) => row.source === 'historical_purchase_cost').length;
-    const missingBuyPriceRows = filteredGrossProfitRows.filter((row) => row.source === 'missing_buy_price').length;
-    const hasHistoricalImportRows = filteredGrossProfitRows.some((row) => row.isHistoricalImport);
-    return { saleBuyPriceRows, historicalCostFallbackRows, missingBuyPriceRows, hasHistoricalImportRows };
-  }, [filteredGrossProfitRows]);
   const grossProfitTotalPages = Math.max(1, Math.ceil(filteredGrossProfitRows.length / GROSS_PROFIT_PAGE_SIZE));
   const grossProfitModalTotalPages = Math.max(1, Math.ceil(filteredGrossProfitRows.length / GROSS_PROFIT_PAGE_SIZE));
   const pagedGrossProfitRows = useMemo(() => {
@@ -1258,14 +1252,14 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
     </section>
 
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex flex-wrap gap-2">
-        <button onClick={() => setActiveTab('ledger')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'ledger' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Cashbook Ledger</button>
-        <button onClick={() => setActiveTab('daily_breakdown')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'daily_breakdown' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Daily Breakdown</button>
-        <button onClick={() => setActiveTab('gross_profit')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'gross_profit' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Gross Profit</button>
-      </div>
-      {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
-      <div className="mt-4 space-y-3">
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setActiveTab('ledger')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'ledger' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Cashbook Ledger</button>
+          <button onClick={() => setActiveTab('daily_breakdown')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'daily_breakdown' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Daily Breakdown</button>
+          <button onClick={() => setActiveTab('gross_profit')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'gross_profit' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Gross Profit</button>
+        </div>
+        {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
+        <div className="flex flex-wrap gap-2 xl:justify-end">
           <FilterSelect value={datePreset} onChange={e => setDatePreset(e.target.value as any)}>
             <option value="all">All</option>
             <option value="today">Today</option>
@@ -1276,16 +1270,21 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
           </FilterSelect>
           {datePreset === 'custom' && (
             <>
-              <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm" />
-              <input type="date" value={to} onChange={e => setTo(e.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm" />
+              <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="h-10 min-w-[170px] rounded-lg border border-slate-200 px-3 text-sm" />
+              <input type="date" value={to} onChange={e => setTo(e.target.value)} className="h-10 min-w-[170px] rounded-lg border border-slate-200 px-3 text-sm" />
             </>
           )}
           <FilterSelect value={payFilter} onChange={e => setPayFilter(e.target.value as any)}><option value="all">All Payment</option><option value="cash">Cash</option><option value="online">Bank / Online</option><option value="credit">Credit</option></FilterSelect>
           <FilterSelect value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">All Type</option><option value="sale">Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></FilterSelect>
           <FilterSelect value={sort} onChange={e => setSort(e.target.value as any)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></FilterSelect>
-          <button onClick={() => setFull(v => !v)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">{full ? 'Compact columns' : 'Expanded columns'}</button>
         </div>
-        <input placeholder="Search description, customer, party, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+        )}
+      </div>
+      {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
+      <div className="mt-4 space-y-3">
+        {activeTab === 'daily_breakdown' && (
+          <input placeholder="Search description, customer, party, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+        )}
       </div>
       )}
       {activeTab === 'gross_profit' && (
@@ -1295,15 +1294,6 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
         <input type="date" value={to} onChange={e => setTo(e.target.value)} className="border rounded px-2 h-9" />
         <input placeholder="Search customer" value={grossProfitCustomerSearch} onChange={e => setGrossProfitCustomerSearch(e.target.value)} className="border rounded px-2 h-9" />
         <input placeholder="Search product" value={grossProfitProductSearch} onChange={e => setGrossProfitProductSearch(e.target.value)} className="border rounded px-2 h-9" />
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <p className="text-xs text-muted-foreground">Gross Profit = Net Sales Revenue - COGS. Sales and sales returns are included.</p>
-        <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-700">Sale Buy Price Rows: {grossProfitAuditCounts.saleBuyPriceRows}</span>
-        <span className="inline-flex rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700">Historical Cost Fallback Rows: {grossProfitAuditCounts.historicalCostFallbackRows}</span>
-        <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-700">Missing Buy Price Rows: {grossProfitAuditCounts.missingBuyPriceRows}</span>
-        {grossProfitAuditCounts.hasHistoricalImportRows && (
-          <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">Historical imported rows may use legacy pricing.</span>
-        )}
       </div>
       </>
       )}
@@ -1455,8 +1445,12 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       )}
       {activeTab === 'ledger' && (
       <>
-      <div className="overflow-auto rounded-2xl border border-slate-200">
-        <table className={`w-full text-sm ${full ? 'min-w-[1480px]' : 'min-w-[1120px]'}`}>
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 p-3">
+          <input placeholder="Search description, customer, party, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+        </div>
+        <div className="overflow-auto">
+        <table className="w-full min-w-[1120px] text-sm">
           <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
             <tr className="border-b border-slate-200">
               <th className="px-3 py-3 text-left font-semibold">Date</th>
@@ -1468,16 +1462,6 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
               <th className="px-3 py-3 text-right font-semibold">Cash Out</th>
               <th className="px-3 py-3 text-right font-semibold">Bank In</th>
               <th className="px-3 py-3 text-right font-semibold">Bank Out</th>
-              {full && (
-                <>
-                  <th className="px-3 py-3 text-right font-semibold">Recv +</th>
-                  <th className="px-3 py-3 text-right font-semibold">Recv -</th>
-                  <th className="px-3 py-3 text-right font-semibold">Pay +</th>
-                  <th className="px-3 py-3 text-right font-semibold">Pay -</th>
-                  <th className="px-3 py-3 text-right font-semibold">SC +</th>
-                  <th className="px-3 py-3 text-right font-semibold">SC -</th>
-                </>
-              )}
             </tr>
           </thead>
           <tbody className="bg-white">
@@ -1514,25 +1498,16 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                 <td className="px-3 py-3 text-right font-medium text-rose-600">{r.cashOut ? fmt(r.cashOut) : '-'}</td>
                 <td className="px-3 py-3 text-right font-medium text-blue-700">{r.bankIn ? fmt(r.bankIn) : '-'}</td>
                 <td className="px-3 py-3 text-right font-medium text-rose-600">{r.bankOut ? fmt(r.bankOut) : '-'}</td>
-                {full && (
-                  <>
-                    <td className="px-3 py-3 text-right text-slate-700">{r.receivableIncrease ? fmt(r.receivableIncrease) : '-'}</td>
-                    <td className="px-3 py-3 text-right text-slate-700">{r.receivableDecrease ? fmt(r.receivableDecrease) : '-'}</td>
-                    <td className="px-3 py-3 text-right text-slate-700">{r.payableIncrease ? fmt(r.payableIncrease) : '-'}</td>
-                    <td className="px-3 py-3 text-right text-slate-700">{r.payableDecrease ? fmt(r.payableDecrease) : '-'}</td>
-                    <td className="px-3 py-3 text-right text-slate-700">{r.storeCreditIncrease ? fmt(r.storeCreditIncrease) : '-'}</td>
-                    <td className="px-3 py-3 text-right text-slate-700">{r.storeCreditDecrease ? fmt(r.storeCreditDecrease) : '-'}</td>
-                  </>
-                )}
               </tr>
             ))}
             {visibleRows.length === 0 && (
               <tr>
-                <td colSpan={full ? 15 : 9} className="px-3 py-10 text-center text-sm text-muted-foreground">No cashbook rows found for the selected filters.</td>
+                <td colSpan={9} className="px-3 py-10 text-center text-sm text-muted-foreground">No cashbook rows found for the selected filters.</td>
               </tr>
             )}
           </tbody>
         </table>
+        </div>
       </div>
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Showing {Math.min(visibleRows.length, filteredDisplayRows.length)} of {filteredDisplayRows.length} entries</span>
@@ -1731,18 +1706,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
     {isAddCashOpen && (
       <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg border shadow-lg w-full max-w-md p-4 space-y-3">
-          <h2 className="text-lg font-semibold">Add Cash Entry</h2>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Date</label>
-            <input type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} className="border rounded px-2 h-9 w-full" />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Type</label>
-            <select value={manualType} onChange={(e) => setManualType(e.target.value as 'cash_in' | 'cash_out')} className="border rounded px-2 h-9 w-full">
-              <option value="cash_in">Cash In</option>
-              <option value="cash_out">Cash Out</option>
-            </select>
-          </div>
+          <h2 className="text-lg font-semibold">{manualType === 'cash_in' ? 'Add Cash In' : 'Add Cash Out'}</h2>
           {manualType === 'cash_out' && (
             <div className="text-xs text-muted-foreground">Available cash: {fmt(availableCashForManualOut)}</div>
           )}
@@ -1757,7 +1721,9 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
           {manualError && <div className="text-xs text-red-600">{manualError}</div>}
           <div className="flex justify-end gap-2">
             <button className="border rounded px-3 h-9" onClick={() => setIsAddCashOpen(false)}>Cancel</button>
-            <button className="border rounded px-3 h-9 bg-slate-900 text-white" onClick={handleSaveManualEntry}>Save Entry</button>
+            <button className="border rounded px-3 h-9 bg-slate-900 text-white" onClick={handleSaveManualEntry}>
+              {manualType === 'cash_in' ? 'Save Cash In' : 'Save Cash Out'}
+            </button>
           </div>
         </div>
       </div>

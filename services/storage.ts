@@ -223,6 +223,8 @@ const writeAuditEvent = async (operation: AuditOperation, payload: Record<string
 const STOCKFLOW_DATA_AUDIT_PREFIX = '[StockFlowDataAudit]';
 let legacyRootProductsCache: Product[] = [];
 let subcollectionProductsCache: Product[] = [];
+let legacyRootUpfrontOrdersCache: UpfrontOrder[] = [];
+let subcollectionUpfrontOrdersCache: UpfrontOrder[] = [];
 let legacyRootPurchaseOrdersCache: PurchaseOrder[] = [];
 let subcollectionPurchaseOrdersCache: PurchaseOrder[] = [];
 let legacyRootPurchasePartiesCache: PurchaseParty[] = [];
@@ -239,6 +241,15 @@ let legacyRootExpenseActivitiesCache: ExpenseActivity[] = [];
 let subcollectionExpenseActivitiesCache: Array<ExpenseActivity & { isDeleted?: boolean; deletedAt?: string }> = [];
 let legacyRootRepairHistoryEntriesCache: RepairHistoryEntry[] = [];
 let subcollectionRepairHistoryEntriesCache: RepairHistoryEntry[] = [];
+let freightInquiriesDocumentCache: FreightInquiry[] | null = null;
+let freightConfirmedOrdersDocumentCache: FreightConfirmedOrder[] | null = null;
+let freightPurchasesDocumentCache: FreightPurchase[] | null = null;
+let freightBrokersDocumentCache: FreightBroker[] | null = null;
+let financeCashSessionsCache: CashSession[] | null = null;
+let financeCashAdjustmentsCache: CashAdjustment[] | null = null;
+let financeManualCashbookEntriesCache: ManualCashbookEntry[] | null = null;
+let deleteCompensationsDocumentCache: DeleteCompensationRecord[] | null = null;
+let updatedTransactionEventsDocumentCache: UpdatedTransactionRecord[] | null = null;
 
 export const mergeByIdPreferPrimary = <T extends { id?: string }>(primaryRows: T[] = [], fallbackRows: T[] = []): T[] => {
   const primaryIds = new Set(primaryRows.map((row) => row?.id).filter((id): id is string => Boolean(id)));
@@ -495,6 +506,11 @@ const buildMergedExpenseHydrationState = () => ({
   expenseActivities: sortExpenseActivitiesDesc(mergeByIdPreferPrimaryRespectDeletes(subcollectionExpenseActivitiesCache, legacyRootExpenseActivitiesCache)).slice(0, 500),
 });
 
+const buildMergedUpfrontOrdersHydrationState = () => ({
+  upfrontOrders: mergeByIdPreferPrimary(subcollectionUpfrontOrdersCache, legacyRootUpfrontOrdersCache)
+    .sort((a, b) => new Date(b.effectiveAt || b.date || b.createdAt || '').getTime() - new Date(a.effectiveAt || a.date || a.createdAt || '').getTime()),
+});
+
 const applyMergedExpenseHydrationToMemory = () => {
   const mergedExpenseState = buildMergedExpenseHydrationState();
   memoryState = { ...memoryState, ...mergedExpenseState };
@@ -591,6 +607,7 @@ const shouldEmitFinanceSnapshot = (reason: string) => {
 const getProductsCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'products');
 const getCustomersCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'customers');
 const getTransactionsCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'transactions');
+const getUpfrontOrdersCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'upfrontOrders');
 const getRepairHistoryCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'repairHistoryEntries');
 const getDeletedTransactionsCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'deletedTransactions');
 const getOperationCommitsCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'operationCommits');
@@ -601,23 +618,46 @@ const getPartyCreditLedgerCollectionRef = (uid: string) => collection(db!, 'stor
 const getPurchaseReceiptPostingsCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'purchaseReceiptPostings');
 const getExpensesCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'expenses');
 const getExpenseActivitiesCollectionRef = (uid: string) => collection(db!, 'stores', uid, 'expenseActivities');
-const getFinanceStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'finance');
-const getSettingsStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'settings');
-const getTelegramStateDocumentRef = (uid: string) => doc(db!, 'stores', uid, 'appState', 'telegram');
+const getAppStateDocumentRef = (uid: string, key: string) => doc(db!, 'stores', uid, 'appState', key);
+const getFinanceStateDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'finance');
+const getFinanceCashSessionsDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'financeCashSessions');
+const getFinanceCashAdjustmentsDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'financeCashAdjustments');
+const getFinanceManualCashbookEntriesDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'financeManualCashbookEntries');
+const getDeleteCompensationsDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'deleteCompensations');
+const getUpdatedTransactionEventsDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'updatedTransactionEvents');
+const getFreightInquiriesDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'freightInquiries');
+const getFreightConfirmedOrdersDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'freightConfirmedOrders');
+const getFreightPurchasesDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'freightPurchases');
+const getFreightBrokersDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'freightBrokers');
+const getSettingsStateDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'settings');
+const getTelegramStateDocumentRef = (uid: string) => getAppStateDocumentRef(uid, 'telegram');
 
 const ROOT_STORE_BLOCKED_ARRAY_FIELDS = [
   'products',
   'transactions',
   'customers',
+  'deletedTransactions',
+  'upfrontOrders',
   'purchaseOrders',
   'expenses',
   'expenseActivities',
   'supplierPayments',
+  'deleteCompensations',
+  'updatedTransactionEvents',
+  'cashSessions',
+  'cashAdjustments',
+  'manualCashbookEntries',
+  'freightInquiries',
+  'freightConfirmedOrders',
+  'freightPurchases',
+  'freightBrokers',
   'auditEvents',
   'operationCommits',
   'customerProductStats',
   'purchaseParties',
   'partyCreditLedger',
+  'purchaseReceiptPostings',
+  'repairHistoryEntries',
 ] as const;
 
 const ROOT_STORE_LEGACY_CLEANUP_FIELDS = [
@@ -625,8 +665,6 @@ const ROOT_STORE_LEGACY_CLEANUP_FIELDS = [
   'freightInquiries',
   'freightConfirmedOrders',
   'freightPurchases',
-  'purchaseReceiptPostings',
-  'repairHistoryEntries',
 ] as const;
 
 const isFirestoreDocumentSizeLikeError = (error: unknown) => {
@@ -823,6 +861,11 @@ const upsertCustomerInSubcollection = async (customer: Customer, reason: string)
   await setDoc(doc(db!, 'stores', user.uid, 'customers', customer.id), sanitizeData(customer), { merge: true });
 };
 
+const upsertUpfrontOrderInSubcollection = async (order: UpfrontOrder, reason: string) => {
+  const user = await assertCloudWriteReady(reason);
+  await setDoc(doc(db!, 'stores', user.uid, 'upfrontOrders', order.id), sanitizeData(order), { merge: true });
+};
+
 export type CustomerLedgerBalanceSnapshotPatch = {
   id: string;
   totalDue: number;
@@ -861,6 +904,11 @@ export const applyCustomerLedgerBalanceSnapshotPatch = async (patch: CustomerLed
 const deleteCustomerInSubcollection = async (customerId: string, reason: string) => {
   const user = await assertCloudWriteReady(reason);
   await deleteDoc(doc(db!, 'stores', user.uid, 'customers', customerId));
+};
+
+const deleteUpfrontOrderInSubcollection = async (orderId: string, reason: string) => {
+  const user = await assertCloudWriteReady(reason);
+  await deleteDoc(doc(db!, 'stores', user.uid, 'upfrontOrders', orderId));
 };
 
 const upsertTransactionInSubcollection = async (transaction: Transaction, reason: string) => {
@@ -2941,11 +2989,21 @@ let hasInitialSynced = false;
 let hasLoggedInitKpiSnapshot = false;
 let unsubscribeSnapshot: any = null;
 let unsubscribeFinanceSnapshot: any = null;
+let unsubscribeFreightInquiriesSnapshot: any = null;
+let unsubscribeFreightConfirmedOrdersSnapshot: any = null;
+let unsubscribeFreightPurchasesSnapshot: any = null;
+let unsubscribeFreightBrokersSnapshot: any = null;
+let unsubscribeFinanceCashSessionsSnapshot: any = null;
+let unsubscribeFinanceCashAdjustmentsSnapshot: any = null;
+let unsubscribeFinanceManualCashbookEntriesSnapshot: any = null;
+let unsubscribeDeleteCompensationsSnapshot: any = null;
+let unsubscribeUpdatedTransactionEventsSnapshot: any = null;
 let unsubscribeSettingsSnapshot: any = null;
 let unsubscribeTelegramSnapshot: any = null;
 let unsubscribeProductsSnapshot: any = null;
 let unsubscribeCustomersSnapshot: any = null;
 let unsubscribeTransactionsSnapshot: any = null;
+let unsubscribeUpfrontOrdersSnapshot: any = null;
 let unsubscribePurchaseOrdersSnapshot: any = null;
 let unsubscribePurchasePartiesSnapshot: any = null;
 let unsubscribeSupplierPaymentsSnapshot: any = null;
@@ -2968,9 +3026,9 @@ const buildHydratedFinanceState = (
 
   const hydrated: Record<string, unknown> = {
     expenseCategories: Array.isArray(preferFinanceField('expenseCategories')) ? preferFinanceField('expenseCategories') : ['General'],
-    cashSessions: Array.isArray(preferFinanceField('cashSessions')) ? preferFinanceField('cashSessions') : [],
-    cashAdjustments: Array.isArray(preferFinanceField('cashAdjustments')) ? preferFinanceField('cashAdjustments') : [],
-    manualCashbookEntries: Array.isArray(preferFinanceField('manualCashbookEntries')) ? preferFinanceField('manualCashbookEntries') : [],
+    cashSessions: financeCashSessionsCache ?? (Array.isArray(preferFinanceField('cashSessions')) ? preferFinanceField('cashSessions') : []),
+    cashAdjustments: financeCashAdjustmentsCache ?? (Array.isArray(preferFinanceField('cashAdjustments')) ? preferFinanceField('cashAdjustments') : []),
+    manualCashbookEntries: financeManualCashbookEntriesCache ?? (Array.isArray(preferFinanceField('manualCashbookEntries')) ? preferFinanceField('manualCashbookEntries') : []),
   };
 
   const financeSettings = preferFinanceField('financeSettings');
@@ -2980,6 +3038,22 @@ const buildHydratedFinanceState = (
 
   return hydrated;
 };
+
+const buildHydratedTransactionAuditState = (
+  rootData: Partial<AppState> & Record<string, unknown>,
+): Pick<AppState, 'deleteCompensations' | 'updatedTransactionEvents'> => ({
+  deleteCompensations: deleteCompensationsDocumentCache ?? (Array.isArray(rootData.deleteCompensations) ? rootData.deleteCompensations : []),
+  updatedTransactionEvents: updatedTransactionEventsDocumentCache ?? (Array.isArray(rootData.updatedTransactionEvents) ? rootData.updatedTransactionEvents : []),
+});
+
+const buildHydratedFreightState = (
+  rootData: Partial<AppState> & Record<string, unknown>,
+): Pick<AppState, 'freightInquiries' | 'freightConfirmedOrders' | 'freightPurchases' | 'freightBrokers'> => ({
+  freightInquiries: freightInquiriesDocumentCache ?? (Array.isArray(rootData.freightInquiries) ? rootData.freightInquiries : []),
+  freightConfirmedOrders: freightConfirmedOrdersDocumentCache ?? (Array.isArray(rootData.freightConfirmedOrders) ? rootData.freightConfirmedOrders : []),
+  freightPurchases: freightPurchasesDocumentCache ?? (Array.isArray(rootData.freightPurchases) ? rootData.freightPurchases : []),
+  freightBrokers: freightBrokersDocumentCache ?? (Array.isArray(rootData.freightBrokers) ? rootData.freightBrokers : []),
+});
 
 const buildHydratedSettingsState = (
   rootData: Partial<AppState> & Record<string, unknown>,
@@ -3042,6 +3116,42 @@ const unsubscribeCloudListeners = (uid: string | null, reason: string) => {
     unsubscribeFinanceSnapshot();
     unsubscribeFinanceSnapshot = null;
   }
+  if (unsubscribeFreightInquiriesSnapshot) {
+    unsubscribeFreightInquiriesSnapshot();
+    unsubscribeFreightInquiriesSnapshot = null;
+  }
+  if (unsubscribeFreightConfirmedOrdersSnapshot) {
+    unsubscribeFreightConfirmedOrdersSnapshot();
+    unsubscribeFreightConfirmedOrdersSnapshot = null;
+  }
+  if (unsubscribeFreightPurchasesSnapshot) {
+    unsubscribeFreightPurchasesSnapshot();
+    unsubscribeFreightPurchasesSnapshot = null;
+  }
+  if (unsubscribeFreightBrokersSnapshot) {
+    unsubscribeFreightBrokersSnapshot();
+    unsubscribeFreightBrokersSnapshot = null;
+  }
+  if (unsubscribeFinanceCashSessionsSnapshot) {
+    unsubscribeFinanceCashSessionsSnapshot();
+    unsubscribeFinanceCashSessionsSnapshot = null;
+  }
+  if (unsubscribeFinanceCashAdjustmentsSnapshot) {
+    unsubscribeFinanceCashAdjustmentsSnapshot();
+    unsubscribeFinanceCashAdjustmentsSnapshot = null;
+  }
+  if (unsubscribeFinanceManualCashbookEntriesSnapshot) {
+    unsubscribeFinanceManualCashbookEntriesSnapshot();
+    unsubscribeFinanceManualCashbookEntriesSnapshot = null;
+  }
+  if (unsubscribeDeleteCompensationsSnapshot) {
+    unsubscribeDeleteCompensationsSnapshot();
+    unsubscribeDeleteCompensationsSnapshot = null;
+  }
+  if (unsubscribeUpdatedTransactionEventsSnapshot) {
+    unsubscribeUpdatedTransactionEventsSnapshot();
+    unsubscribeUpdatedTransactionEventsSnapshot = null;
+  }
   if (unsubscribeSettingsSnapshot) {
     unsubscribeSettingsSnapshot();
     unsubscribeSettingsSnapshot = null;
@@ -3062,6 +3172,10 @@ const unsubscribeCloudListeners = (uid: string | null, reason: string) => {
   if (unsubscribeTransactionsSnapshot) {
     unsubscribeTransactionsSnapshot();
     unsubscribeTransactionsSnapshot = null;
+  }
+  if (unsubscribeUpfrontOrdersSnapshot) {
+    unsubscribeUpfrontOrdersSnapshot();
+    unsubscribeUpfrontOrdersSnapshot = null;
   }
   if (unsubscribePurchaseOrdersSnapshot) {
     unsubscribePurchaseOrdersSnapshot();
@@ -3099,6 +3213,8 @@ const resetCloudStateForUser = (uid: string | null, reason: string) => {
   isCustomerProductStatsBackfillComplete = false;
   legacyRootProductsCache = [];
   subcollectionProductsCache = [];
+  legacyRootUpfrontOrdersCache = [];
+  subcollectionUpfrontOrdersCache = [];
   legacyRootPurchaseOrdersCache = [];
   subcollectionPurchaseOrdersCache = [];
   legacyRootPurchasePartiesCache = [];
@@ -3115,6 +3231,15 @@ const resetCloudStateForUser = (uid: string | null, reason: string) => {
   subcollectionExpenseActivitiesCache = [];
   legacyRootRepairHistoryEntriesCache = [];
   subcollectionRepairHistoryEntriesCache = [];
+  freightInquiriesDocumentCache = null;
+  freightConfirmedOrdersDocumentCache = null;
+  freightPurchasesDocumentCache = null;
+  freightBrokersDocumentCache = null;
+  financeCashSessionsCache = null;
+  financeCashAdjustmentsCache = null;
+  financeManualCashbookEntriesCache = null;
+  deleteCompensationsDocumentCache = null;
+  updatedTransactionEventsDocumentCache = null;
   financeDocumentCache = null;
   settingsDocumentCache = null;
   telegramDocumentCache = null;
@@ -3365,6 +3490,15 @@ async function syncFromCloud(): Promise<void> {
         }, (error) => {
             logStockFlowError('transactions.listener_error', error, { uid: user.uid });
         });
+        unsubscribeUpfrontOrdersSnapshot = onSnapshot(getUpfrontOrdersCollectionRef(user.uid), (upfrontOrdersSnap) => {
+            subcollectionUpfrontOrdersCache = upfrontOrdersSnap.docs
+              .map(docItem => sanitizeUpfrontOrderForPersist({ ...(docItem.data() as UpfrontOrder), id: docItem.id }));
+            memoryState = { ...memoryState, ...buildMergedUpfrontOrdersHydrationState() };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('upfrontOrders.listener_error', error, { uid: user.uid });
+        });
         // deletedTransactions are non-critical and are fetched on Transactions/Bin open or manual refresh.
         unsubscribePurchaseOrdersSnapshot = onSnapshot(getPurchaseOrdersCollectionRef(user.uid), (purchaseOrdersSnap) => {
             subcollectionPurchaseOrdersCache = purchaseOrdersSnap.docs
@@ -3421,6 +3555,114 @@ async function syncFromCloud(): Promise<void> {
             emitLocalStorageUpdate();
         }, (error) => {
             logStockFlowError('financeState.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFreightInquiriesSnapshot = onSnapshot(getFreightInquiriesDocumentRef(user.uid), (freightInquiriesSnap) => {
+            const rows = freightInquiriesSnap.exists() ? (freightInquiriesSnap.data() as Record<string, unknown>).freightInquiries : null;
+            freightInquiriesDocumentCache = Array.isArray(rows) ? (rows as FreightInquiry[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFreightState(memoryState as AppState & Record<string, unknown>),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('freightInquiries.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFreightConfirmedOrdersSnapshot = onSnapshot(getFreightConfirmedOrdersDocumentRef(user.uid), (freightConfirmedOrdersSnap) => {
+            const rows = freightConfirmedOrdersSnap.exists() ? (freightConfirmedOrdersSnap.data() as Record<string, unknown>).freightConfirmedOrders : null;
+            freightConfirmedOrdersDocumentCache = Array.isArray(rows) ? (rows as FreightConfirmedOrder[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFreightState(memoryState as AppState & Record<string, unknown>),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('freightConfirmedOrders.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFreightPurchasesSnapshot = onSnapshot(getFreightPurchasesDocumentRef(user.uid), (freightPurchasesSnap) => {
+            const rows = freightPurchasesSnap.exists() ? (freightPurchasesSnap.data() as Record<string, unknown>).freightPurchases : null;
+            freightPurchasesDocumentCache = Array.isArray(rows) ? (rows as FreightPurchase[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFreightState(memoryState as AppState & Record<string, unknown>),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('freightPurchases.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFreightBrokersSnapshot = onSnapshot(getFreightBrokersDocumentRef(user.uid), (freightBrokersSnap) => {
+            const rows = freightBrokersSnap.exists() ? (freightBrokersSnap.data() as Record<string, unknown>).freightBrokers : null;
+            freightBrokersDocumentCache = Array.isArray(rows) ? (rows as FreightBroker[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFreightState(memoryState as AppState & Record<string, unknown>),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('freightBrokers.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFinanceCashSessionsSnapshot = onSnapshot(getFinanceCashSessionsDocumentRef(user.uid), (cashSessionsSnap) => {
+            const rows = cashSessionsSnap.exists() ? (cashSessionsSnap.data() as Record<string, unknown>).cashSessions : null;
+            financeCashSessionsCache = Array.isArray(rows) ? (rows as CashSession[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFinanceState(memoryState as AppState & Record<string, unknown>, financeDocumentCache),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('financeCashSessions.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFinanceCashAdjustmentsSnapshot = onSnapshot(getFinanceCashAdjustmentsDocumentRef(user.uid), (cashAdjustmentsSnap) => {
+            const rows = cashAdjustmentsSnap.exists() ? (cashAdjustmentsSnap.data() as Record<string, unknown>).cashAdjustments : null;
+            financeCashAdjustmentsCache = Array.isArray(rows) ? (rows as CashAdjustment[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFinanceState(memoryState as AppState & Record<string, unknown>, financeDocumentCache),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('financeCashAdjustments.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeFinanceManualCashbookEntriesSnapshot = onSnapshot(getFinanceManualCashbookEntriesDocumentRef(user.uid), (manualEntriesSnap) => {
+            const rows = manualEntriesSnap.exists() ? (manualEntriesSnap.data() as Record<string, unknown>).manualCashbookEntries : null;
+            financeManualCashbookEntriesCache = Array.isArray(rows) ? (rows as ManualCashbookEntry[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedFinanceState(memoryState as AppState & Record<string, unknown>, financeDocumentCache),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('financeManualCashbookEntries.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeDeleteCompensationsSnapshot = onSnapshot(getDeleteCompensationsDocumentRef(user.uid), (deleteCompSnap) => {
+            const rows = deleteCompSnap.exists() ? (deleteCompSnap.data() as Record<string, unknown>).deleteCompensations : null;
+            deleteCompensationsDocumentCache = Array.isArray(rows) ? (rows as DeleteCompensationRecord[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedTransactionAuditState(memoryState as AppState & Record<string, unknown>),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('deleteCompensations.listener_error', error, { uid: user.uid });
+        });
+        unsubscribeUpdatedTransactionEventsSnapshot = onSnapshot(getUpdatedTransactionEventsDocumentRef(user.uid), (updatedEventsSnap) => {
+            const rows = updatedEventsSnap.exists() ? (updatedEventsSnap.data() as Record<string, unknown>).updatedTransactionEvents : null;
+            updatedTransactionEventsDocumentCache = Array.isArray(rows) ? (rows as UpdatedTransactionRecord[]) : null;
+            memoryState = {
+              ...memoryState,
+              ...buildHydratedTransactionAuditState(memoryState as AppState & Record<string, unknown>),
+            };
+            logLoadedState(memoryState);
+            emitLocalStorageUpdate();
+        }, (error) => {
+            logStockFlowError('updatedTransactionEvents.listener_error', error, { uid: user.uid });
         });
         unsubscribeSettingsSnapshot = onSnapshot(getSettingsStateDocumentRef(user.uid), (settingsSnap) => {
             settingsDocumentCache = settingsSnap.exists()
@@ -3487,13 +3729,11 @@ async function syncFromCloud(): Promise<void> {
                 const hydratedCustomers = memoryState.customers || [];
                 const hydratedTransactions = memoryState.transactions || [];
                 const subcollectionDeletedTransactions = memoryState.deletedTransactions || [];
-                const fallbackFreightInquiries = Array.isArray(memoryState.freightInquiries) ? memoryState.freightInquiries : [];
-                const fallbackFreightConfirmedOrders = Array.isArray(memoryState.freightConfirmedOrders) ? memoryState.freightConfirmedOrders : [];
-                const fallbackFreightPurchases = Array.isArray(memoryState.freightPurchases) ? memoryState.freightPurchases : [];
-                const hydratedUpfrontOrders = resolveLegacyUpfrontOrdersFromCloudData(
+                legacyRootUpfrontOrdersCache = resolveLegacyUpfrontOrdersFromCloudData(
                   cloudData as unknown as Record<string, unknown>,
                   hydratedCustomers,
                 );
+                const hydratedUpfrontOrders = buildMergedUpfrontOrdersHydrationState().upfrontOrders;
                 const hydratedSettingsState = buildHydratedSettingsState(cloudData as AppState & Record<string, unknown>, settingsDocumentCache);
                 memoryState = {
                     ...initialData,
@@ -3501,18 +3741,14 @@ async function syncFromCloud(): Promise<void> {
                     products: hydratedProducts,
                     transactions: hydratedTransactions,
                     deletedTransactions: subcollectionDeletedTransactions,
-                    updatedTransactionEvents: cloudData.updatedTransactionEvents || [],
                     categories: cloudData.categories || [],
                     customers: hydratedCustomers,
                     upfrontOrders: hydratedUpfrontOrders,
                     expenses: mergedExpenseState.expenses,
                     expenseActivities: mergedExpenseState.expenseActivities,
                     repairHistoryEntries: mergedRepairHistoryState.repairHistoryEntries,
-                    freightInquiries: cloudData.freightInquiries ?? fallbackFreightInquiries,
-                    freightConfirmedOrders: cloudData.freightConfirmedOrders ?? fallbackFreightConfirmedOrders,
-                    freightPurchases: cloudData.freightPurchases ?? fallbackFreightPurchases,
                     purchaseReceiptPostings: mergedPurchaseState.purchaseReceiptPostings,
-                    freightBrokers: cloudData.freightBrokers || [],
+                    ...buildHydratedFreightState(cloudData as AppState & Record<string, unknown>),
                     purchaseParties: mergedPurchaseState.purchaseParties,
                     purchaseOrders: mergedPurchaseState.purchaseOrders,
                     supplierPayments: mergedPurchaseState.supplierPayments,
@@ -3521,6 +3757,7 @@ async function syncFromCloud(): Promise<void> {
                     colorsMaster: cloudData.colorsMaster || [],
                     operatorUsers: hydratedSettingsState.operatorUsers,
                     profile: buildHydratedTelegramProfile(hydratedSettingsState.profile, telegramDocumentCache),
+                    ...buildHydratedTransactionAuditState(cloudData as AppState & Record<string, unknown>),
                     ...buildHydratedFinanceState(cloudData as AppState & Record<string, unknown>, financeDocumentCache),
                 };
                 void backfillLegacyRootPurchasePartiesToSubcollection(user.uid, 'root_snapshot_hydration');
@@ -3593,6 +3830,15 @@ async function syncFromCloud(): Promise<void> {
                 subcollectionPartyCreditLedgerCache = [];
                 legacyRootPurchaseReceiptPostingsCache = [];
                 subcollectionPurchaseReceiptPostingsCache = [];
+                freightInquiriesDocumentCache = null;
+                freightConfirmedOrdersDocumentCache = null;
+                freightPurchasesDocumentCache = null;
+                freightBrokersDocumentCache = null;
+                financeCashSessionsCache = null;
+                financeCashAdjustmentsCache = null;
+                financeManualCashbookEntriesCache = null;
+                deleteCompensationsDocumentCache = null;
+                updatedTransactionEventsDocumentCache = null;
                 logStockFlowDataAudit('root.snapshot.missing_store', { uid: user.uid, rootProductsCount: 0, subcollectionProductsCount: 0, mergedProductsCount: 0 });
                 isCustomerProductStatsBackfillComplete = false;
                 hasCompletedInitialCloudLoad = true;
@@ -4250,7 +4496,7 @@ const syncToCloud = async (data: AppState) => {
 
     try {
         // Keep subcollection-owned entities out of root store writes to avoid array-overwrite blast radius.
-        const { products: _omitProducts, customers: _omitCustomers, transactions: _omitTransactions, deletedTransactions: _omitDeletedTransactions, purchaseOrders: _omitPurchaseOrders, expenses: _omitExpenses, expenseActivities: _omitExpenseActivities, supplierPayments: _omitSupplierPayments, customerProductStats: _omitCustomerProductStats, auditEvents: _omitAuditEvents, operationCommits: _omitOperationCommits, purchaseParties: _omitPurchaseParties, partyCreditLedger: _omitPartyCreditLedger, freightInquiries: _omitFreightInquiries, freightConfirmedOrders: _omitFreightConfirmedOrders, freightPurchases: _omitFreightPurchases, cashSessions: _omitCashSessions, cashAdjustments: _omitCashAdjustments, manualCashbookEntries: _omitManualCashbookEntries, operatorUsers: _omitOperatorUsers, repairHistoryEntries: _omitRepairHistoryEntries, ...rootStateWithoutMigratedEntities } = data as AppState & Record<string, unknown>;
+        const { products: _omitProducts, customers: _omitCustomers, transactions: _omitTransactions, deletedTransactions: _omitDeletedTransactions, upfrontOrders: _omitUpfrontOrders, purchaseOrders: _omitPurchaseOrders, expenses: _omitExpenses, expenseActivities: _omitExpenseActivities, supplierPayments: _omitSupplierPayments, customerProductStats: _omitCustomerProductStats, auditEvents: _omitAuditEvents, operationCommits: _omitOperationCommits, purchaseParties: _omitPurchaseParties, partyCreditLedger: _omitPartyCreditLedger, freightInquiries: _omitFreightInquiries, freightConfirmedOrders: _omitFreightConfirmedOrders, freightPurchases: _omitFreightPurchases, freightBrokers: _omitFreightBrokers, cashSessions: _omitCashSessions, cashAdjustments: _omitCashAdjustments, manualCashbookEntries: _omitManualCashbookEntries, deleteCompensations: _omitDeleteCompensations, updatedTransactionEvents: _omitUpdatedTransactionEvents, operatorUsers: _omitOperatorUsers, repairHistoryEntries: _omitRepairHistoryEntries, ...rootStateWithoutMigratedEntities } = data as AppState & Record<string, unknown>;
         const normalizedState = { ...rootStateWithoutMigratedEntities };
         const cleanData = sanitizeData(normalizedState);
         if (!cleanData || typeof cleanData !== 'object' || Object.keys(cleanData).length === 0) {
@@ -4425,6 +4671,13 @@ type FinanceRootAllowedField = (typeof FINANCE_ROOT_ALLOWED_FIELDS)[number];
 type FinancePersistPatch = Partial<Record<FinanceRootAllowedField, unknown>> & Partial<AppState> & Record<string, unknown>;
 
 const FINANCE_ROOT_ALLOWED_FIELD_SET = new Set<string>(FINANCE_ROOT_ALLOWED_FIELDS);
+const FINANCE_SPLIT_DOCUMENT_FIELDS = [
+  'cashSessions',
+  'cashAdjustments',
+  'manualCashbookEntries',
+] as const;
+type FinanceSplitDocumentField = (typeof FINANCE_SPLIT_DOCUMENT_FIELDS)[number];
+const FINANCE_SPLIT_DOCUMENT_FIELD_SET = new Set<string>(FINANCE_SPLIT_DOCUMENT_FIELDS);
 const FINANCE_ROOT_BLOCKED_FIELDS = [
   'purchaseOrders',
   'supplierPayments',
@@ -4512,6 +4765,99 @@ const buildSafeFinanceRootPayload = (patch: FinancePersistPatch) => {
   return { payload, ignoredKeys, blockedKeys, droppedPaths };
 };
 
+const getFinanceSplitDocumentRef = (uid: string, field: FinanceSplitDocumentField) => {
+  switch (field) {
+    case 'cashSessions':
+      return getFinanceCashSessionsDocumentRef(uid);
+    case 'cashAdjustments':
+      return getFinanceCashAdjustmentsDocumentRef(uid);
+    case 'manualCashbookEntries':
+      return getFinanceManualCashbookEntriesDocumentRef(uid);
+  }
+};
+
+const updateFinanceSplitCache = (field: FinanceSplitDocumentField, rows: unknown) => {
+  switch (field) {
+    case 'cashSessions':
+      financeCashSessionsCache = Array.isArray(rows) ? (rows as CashSession[]) : [];
+      break;
+    case 'cashAdjustments':
+      financeCashAdjustmentsCache = Array.isArray(rows) ? (rows as CashAdjustment[]) : [];
+      break;
+    case 'manualCashbookEntries':
+      financeManualCashbookEntriesCache = Array.isArray(rows) ? (rows as ManualCashbookEntry[]) : [];
+      break;
+  }
+};
+
+const persistFinanceSplitDocuments = async (uid: string, payload: Partial<Record<FinanceSplitDocumentField, unknown>>) => {
+  await Promise.all(
+    Object.entries(payload).map(async ([field, rows]) => {
+      const typedField = field as FinanceSplitDocumentField;
+      updateFinanceSplitCache(typedField, rows);
+      await setDoc(getFinanceSplitDocumentRef(uid, typedField), sanitizeData({ [typedField]: rows }), { merge: true });
+    }),
+  );
+};
+
+const persistDeleteCompensationsState = async (uid: string, rows: DeleteCompensationRecord[]) => {
+  deleteCompensationsDocumentCache = rows;
+  await setDoc(getDeleteCompensationsDocumentRef(uid), sanitizeData({ deleteCompensations: rows }), { merge: true });
+};
+
+const persistUpdatedTransactionEventsState = async (uid: string, rows: UpdatedTransactionRecord[]) => {
+  updatedTransactionEventsDocumentCache = rows;
+  await setDoc(getUpdatedTransactionEventsDocumentRef(uid), sanitizeData({ updatedTransactionEvents: rows }), { merge: true });
+};
+
+const persistDocumentSeriesState = async (documentSeries: AppState['documentSeries'], reason: string) => {
+  const user = await assertCloudWriteReady(reason);
+  const payload = sanitizeData({ documentSeries });
+  await retryRootStoreWriteAfterLegacyCleanup(user.uid, payload as Record<string, unknown>, reason);
+};
+
+type FreightStateDocumentField = 'freightInquiries' | 'freightConfirmedOrders' | 'freightPurchases' | 'freightBrokers';
+
+const getFreightStateDocumentRef = (uid: string, field: FreightStateDocumentField) => {
+  switch (field) {
+    case 'freightInquiries':
+      return getFreightInquiriesDocumentRef(uid);
+    case 'freightConfirmedOrders':
+      return getFreightConfirmedOrdersDocumentRef(uid);
+    case 'freightPurchases':
+      return getFreightPurchasesDocumentRef(uid);
+    case 'freightBrokers':
+      return getFreightBrokersDocumentRef(uid);
+  }
+};
+
+const updateFreightStateCache = (field: FreightStateDocumentField, rows: unknown) => {
+  switch (field) {
+    case 'freightInquiries':
+      freightInquiriesDocumentCache = Array.isArray(rows) ? (rows as FreightInquiry[]) : [];
+      break;
+    case 'freightConfirmedOrders':
+      freightConfirmedOrdersDocumentCache = Array.isArray(rows) ? (rows as FreightConfirmedOrder[]) : [];
+      break;
+    case 'freightPurchases':
+      freightPurchasesDocumentCache = Array.isArray(rows) ? (rows as FreightPurchase[]) : [];
+      break;
+    case 'freightBrokers':
+      freightBrokersDocumentCache = Array.isArray(rows) ? (rows as FreightBroker[]) : [];
+      break;
+  }
+};
+
+const persistFreightStateRows = async (uid: string, field: FreightStateDocumentField, rows: unknown[]) => {
+  updateFreightStateCache(field, rows);
+  await setDoc(getFreightStateDocumentRef(uid, field), sanitizeData({ [field]: rows }), { merge: true });
+};
+
+const upsertPurchaseReceiptPostingInSubcollection = async (posting: PurchaseReceiptPosting, reason: string) => {
+  const user = await assertCloudWriteReady(reason);
+  await setDoc(doc(getPurchaseReceiptPostingsCollectionRef(user.uid), posting.id), sanitizeData(posting), { merge: true });
+};
+
 
 const assertFinanceSubcollectionWriteReady = (context: string) => {
   if (!db || !auth) throw new Error(`${context}: cloud database is not configured.`);
@@ -4551,6 +4897,12 @@ export const safeFinancePersistState = async (patch: FinancePersistPatch, option
   const previousState = memoryState;
   const { payload, ignoredKeys, blockedKeys, droppedPaths } = buildSafeFinanceRootPayload(patch);
   const writeKeys = Object.keys(payload);
+  const financeDocumentPayload = Object.fromEntries(
+    Object.entries(payload).filter(([key]) => !FINANCE_SPLIT_DOCUMENT_FIELD_SET.has(key)),
+  );
+  const financeSplitPayload = Object.fromEntries(
+    Object.entries(payload).filter(([key]) => FINANCE_SPLIT_DOCUMENT_FIELD_SET.has(key)),
+  ) as Partial<Record<FinanceSplitDocumentField, unknown>>;
 
   console.info('finance.persistState writing keys:', writeKeys, {
     reason,
@@ -4596,7 +4948,14 @@ export const safeFinancePersistState = async (patch: FinancePersistPatch, option
     if (!hasCompletedInitialCloudLoad) throw new Error('Cloud state not hydrated. Blocking write to prevent bootstrap corruption.');
     if (!storeDocumentExists) throw new Error('Store document missing. Automatic store bootstrap is disabled for data safety.');
 
-    await setDoc(getFinanceStateDocumentRef(user.uid), payload, { merge: true });
+    await Promise.all([
+      ...(Object.keys(financeDocumentPayload).length
+        ? [setDoc(getFinanceStateDocumentRef(user.uid), financeDocumentPayload, { merge: true })]
+        : []),
+      ...(Object.keys(financeSplitPayload).length
+        ? [persistFinanceSplitDocuments(user.uid, financeSplitPayload)]
+        : []),
+    ]);
     memoryState = nextState;
     logLoadedState(memoryState);
     emitLocalStorageUpdate();
@@ -5084,19 +5443,28 @@ export const deleteCategory = (category: string): AppState => {
   );
 
   const changedProducts = newProducts.filter((p, idx) => p.category !== data.products[idx]?.category);
-  if (db && changedProducts.length) {
-    void Promise.all(changedProducts.map(p => upsertProductInSubcollection(p, 'deleteCategory_product_relabel')))
-      .then(() => writeAuditEvent('UPDATE', {
+  const newState = { ...data, categories: newCategories };
+  const previousMemoryState = memoryState;
+  memoryState = { ...memoryState, categories: newCategories, products: newProducts };
+  emitLocalStorageUpdate();
+  if (db) {
+    void (async () => {
+      const user = await assertCloudWriteReady('deleteCategory_categories_only');
+      await Promise.all(changedProducts.map(p => upsertProductInSubcollection(p, 'deleteCategory_product_relabel')));
+      await persistDocumentSeriesState(memoryState.documentSeries, 'deleteCategory_categories_only');
+      await retryRootStoreWriteAfterLegacyCleanup(user.uid, sanitizeData({ categories: newCategories }) as Record<string, unknown>, 'deleteCategory_categories_only');
+      await writeAuditEvent('UPDATE', {
         reason: 'deleteCategory_product_relabel_subcollection',
         migrationPhase: PRODUCTS_MIGRATION_PHASE,
         affectedProducts: changedProducts.map(p => p.id),
-      }))
+      });
+    })().catch(() => {
+      memoryState = previousMemoryState;
+      emitLocalStorageUpdate();
+    });
+  } else {
+    void saveData(newState, { reason: 'deleteCategory', auditOperation: 'DELETE' });
   }
-
-  const newState = { ...data, categories: newCategories };
-  void saveData(newState, { reason: 'deleteCategory', auditOperation: 'DELETE' });
-  memoryState = { ...memoryState, categories: newCategories, products: newProducts };
-  emitLocalStorageUpdate();
   return { ...newState, products: newProducts };
 };
 
@@ -5107,18 +5475,28 @@ export const renameCategory = (oldName: string, newName: string): AppState => {
         p.category === oldName ? { ...p, category: newName } : p
     );
     const changedProducts = newProducts.filter((p, idx) => p.category !== data.products[idx]?.category);
-    if (db && changedProducts.length) {
-      void Promise.all(changedProducts.map(p => upsertProductInSubcollection(p, 'renameCategory_product_relabel')))
-        .then(() => writeAuditEvent('UPDATE', {
+    const newState = { ...data, categories: newCategories };
+    const previousMemoryState = memoryState;
+    memoryState = { ...memoryState, categories: newCategories, products: newProducts };
+    emitLocalStorageUpdate();
+    if (db) {
+      void (async () => {
+        const user = await assertCloudWriteReady('renameCategory_categories_only');
+        await Promise.all(changedProducts.map(p => upsertProductInSubcollection(p, 'renameCategory_product_relabel')));
+        await persistDocumentSeriesState(memoryState.documentSeries, 'renameCategory_categories_only');
+        await retryRootStoreWriteAfterLegacyCleanup(user.uid, sanitizeData({ categories: newCategories }) as Record<string, unknown>, 'renameCategory_categories_only');
+        await writeAuditEvent('UPDATE', {
           reason: 'renameCategory_product_relabel_subcollection',
           migrationPhase: PRODUCTS_MIGRATION_PHASE,
           affectedProducts: changedProducts.map(p => p.id),
-        }))
+        });
+      })().catch(() => {
+        memoryState = previousMemoryState;
+        emitLocalStorageUpdate();
+      });
+    } else {
+      void saveData(newState, { reason: 'renameCategory', auditOperation: 'UPDATE' });
     }
-    const newState = { ...data, categories: newCategories };
-    void saveData(newState, { reason: 'renameCategory', auditOperation: 'UPDATE' });
-    memoryState = { ...memoryState, categories: newCategories, products: newProducts };
-    emitLocalStorageUpdate();
     return { ...newState, products: newProducts };
 };
 
@@ -5846,7 +6224,27 @@ export const addUpfrontOrder = (order: UpfrontOrder): AppState => {
     const newOrders = [...existingOrders, sanitizeUpfrontOrderForPersist(normalizedOrder)];
     const newCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, newOrders, [normalizedOrder.customerId]);
     const newState = { ...data, customers: newCustomers, upfrontOrders: newOrders };
-    void saveData(newState, { reason: 'addUpfrontOrder', auditOperation: 'CREATE' });
+    if (!db) {
+      void saveData(newState, { reason: 'addUpfrontOrder', auditOperation: 'CREATE' });
+      emitBehaviorStateChange({ type: 'order_created', entityId: normalizedOrder.id, to: normalizedOrder.status, metadata: { customerId: normalizedOrder.customerId, totalCost: normalizedOrder.totalCost } });
+      return newState;
+    }
+    memoryState = { ...memoryState, customers: newCustomers, upfrontOrders: newOrders };
+    emitLocalStorageUpdate();
+    const affectedCustomer = newCustomers.find((customer) => customer.id === normalizedOrder.customerId) || null;
+    void Promise.all([
+      upsertUpfrontOrderInSubcollection(normalizedOrder, 'addUpfrontOrder'),
+      ...(affectedCustomer ? [upsertCustomerInSubcollection(affectedCustomer, 'addUpfrontOrder_customer_rebalance')] : []),
+    ])
+      .then(() => writeAuditEvent('CREATE', {
+        reason: 'addUpfrontOrder_subcollection',
+        orderId: normalizedOrder.id,
+        customerId: normalizedOrder.customerId,
+      }))
+      .catch(() => {
+        memoryState = { ...memoryState, customers: data.customers, upfrontOrders: data.upfrontOrders };
+        emitLocalStorageUpdate();
+      });
     emitBehaviorStateChange({ type: 'order_created', entityId: normalizedOrder.id, to: normalizedOrder.status, metadata: { customerId: normalizedOrder.customerId, totalCost: normalizedOrder.totalCost } });
     return newState;
 };
@@ -5869,7 +6267,27 @@ export const updateUpfrontOrder = (order: UpfrontOrder): AppState => {
     const newOrders = sanitizeUpfrontOrdersForPersist(data.upfrontOrders.map(o => o.id === order.id ? normalizedOrder : o), 'updateUpfrontOrder');
     const newCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, newOrders, affectedCustomerIds);
     const newState = { ...data, customers: newCustomers, upfrontOrders: newOrders };
-    void saveData(newState, { reason: 'updateUpfrontOrder', auditOperation: 'UPDATE' });
+    if (!db) {
+      void saveData(newState, { reason: 'updateUpfrontOrder', auditOperation: 'UPDATE' });
+      emitBehaviorStateChange({ type: 'order_status_updated', entityId: normalizedOrder.id, from: previous?.status, to: normalizedOrder.status, metadata: { customerId: normalizedOrder.customerId } });
+      return newState;
+    }
+    memoryState = { ...memoryState, customers: newCustomers, upfrontOrders: newOrders };
+    emitLocalStorageUpdate();
+    const affectedCustomers = newCustomers.filter((customer) => affectedCustomerIds.has(customer.id));
+    void Promise.all([
+      upsertUpfrontOrderInSubcollection(normalizedOrder, 'updateUpfrontOrder'),
+      ...affectedCustomers.map((customer) => upsertCustomerInSubcollection(customer, 'updateUpfrontOrder_customer_rebalance')),
+    ])
+      .then(() => writeAuditEvent('UPDATE', {
+        reason: 'updateUpfrontOrder_subcollection',
+        orderId: normalizedOrder.id,
+        customerIds: Array.from(affectedCustomerIds),
+      }))
+      .catch(() => {
+        memoryState = { ...memoryState, customers: data.customers, upfrontOrders: data.upfrontOrders };
+        emitLocalStorageUpdate();
+      });
     emitBehaviorStateChange({ type: 'order_status_updated', entityId: normalizedOrder.id, from: previous?.status, to: normalizedOrder.status, metadata: { customerId: normalizedOrder.customerId } });
     return newState;
 };
@@ -5932,7 +6350,34 @@ export const collectUpfrontPayment = (
     const newOrders = sanitizeUpfrontOrdersForPersist(data.upfrontOrders.map(o => o.id === orderId ? updatedOrder : o), 'collectUpfrontPayment');
     const newCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, newOrders, [order.customerId]);
     const newState = { ...data, customers: newCustomers, upfrontOrders: newOrders };
-    void saveData(newState, { reason: 'collectUpfrontPayment', auditOperation: 'UPDATE' });
+    if (!db) {
+      void saveData(newState, { reason: 'collectUpfrontPayment', auditOperation: 'UPDATE' });
+      emitBehaviorStateChange({
+        type: 'payment_collected',
+        entityId: orderId,
+        from: order.status,
+        to: updatedOrder.status,
+        metadata: { amount, remainingAmount: Math.max(0, Number(updatedOrder.remainingAmount || 0)) },
+      });
+      return newState;
+    }
+    memoryState = { ...memoryState, customers: newCustomers, upfrontOrders: newOrders };
+    emitLocalStorageUpdate();
+    const affectedCustomer = newCustomers.find((customer) => customer.id === order.customerId) || null;
+    void Promise.all([
+      upsertUpfrontOrderInSubcollection(updatedOrder, 'collectUpfrontPayment'),
+      ...(affectedCustomer ? [upsertCustomerInSubcollection(affectedCustomer, 'collectUpfrontPayment_customer_rebalance')] : []),
+    ])
+      .then(() => writeAuditEvent('UPDATE', {
+        reason: 'collectUpfrontPayment_subcollection',
+        orderId,
+        customerId: order.customerId,
+        paymentAmount: amount,
+      }))
+      .catch(() => {
+        memoryState = { ...memoryState, customers: data.customers, upfrontOrders: data.upfrontOrders };
+        emitLocalStorageUpdate();
+      });
     emitBehaviorStateChange({
       type: 'payment_collected',
       entityId: orderId,
@@ -5979,7 +6424,27 @@ export const deleteUpfrontOrder = (orderId: string): AppState => {
     const newOrders = sanitizeUpfrontOrdersForPersist(data.upfrontOrders.filter((item) => item.id !== orderId), 'deleteUpfrontOrder');
     const newCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, newOrders, [order.customerId]);
     const newState = { ...data, customers: newCustomers, upfrontOrders: newOrders };
-    void saveData(newState, { reason: 'deleteUpfrontOrder', auditOperation: 'DELETE' });
+    if (!db) {
+      void saveData(newState, { reason: 'deleteUpfrontOrder', auditOperation: 'DELETE' });
+      emitBehaviorStateChange({ type: 'order_status_updated', entityId: orderId, from: order.status, to: 'deleted', metadata: { customerId: order.customerId } });
+      return newState;
+    }
+    memoryState = { ...memoryState, customers: newCustomers, upfrontOrders: newOrders };
+    emitLocalStorageUpdate();
+    const affectedCustomer = newCustomers.find((customer) => customer.id === order.customerId) || null;
+    void Promise.all([
+      deleteUpfrontOrderInSubcollection(orderId, 'deleteUpfrontOrder'),
+      ...(affectedCustomer ? [upsertCustomerInSubcollection(affectedCustomer, 'deleteUpfrontOrder_customer_rebalance')] : []),
+    ])
+      .then(() => writeAuditEvent('DELETE', {
+        reason: 'deleteUpfrontOrder_subcollection',
+        orderId,
+        customerId: order.customerId,
+      }))
+      .catch(() => {
+        memoryState = { ...memoryState, customers: data.customers, upfrontOrders: data.upfrontOrders };
+        emitLocalStorageUpdate();
+      });
     emitBehaviorStateChange({ type: 'order_status_updated', entityId: orderId, from: order.status, to: 'deleted', metadata: { customerId: order.customerId } });
     return newState;
 };
@@ -6134,7 +6599,14 @@ const hasLinkedPurchase = (confirmedOrderId: string) => {
 export const createFreightInquiry = async (inquiry: FreightInquiry): Promise<FreightInquiry> => {
   const data = loadData();
   const next = [sanitizeFreightImageFields(inquiry), ...((data.freightInquiries || []).map(item => sanitizeFreightImageFields(item)))];
-  await saveData({ ...data, freightInquiries: next }, { throwOnError: true, reason: 'createFreightInquiry', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('createFreightInquiry');
+    await persistFreightStateRows(user.uid, 'freightInquiries', next);
+    memoryState = { ...memoryState, freightInquiries: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightInquiries: next }, { throwOnError: true, reason: 'createFreightInquiry', auditOperation: 'CREATE' });
+  }
   return next[0];
 };
 
@@ -6142,7 +6614,14 @@ export const updateFreightInquiry = async (inquiry: FreightInquiry): Promise<Fre
   const data = loadData();
   const safeInquiry = sanitizeFreightImageFields(inquiry);
   const next = (data.freightInquiries || []).map(item => item.id === safeInquiry.id ? safeInquiry : sanitizeFreightImageFields(item));
-  await saveData({ ...data, freightInquiries: next }, { throwOnError: true, reason: 'updateFreightInquiry', auditOperation: 'UPDATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('updateFreightInquiry');
+    await persistFreightStateRows(user.uid, 'freightInquiries', next);
+    memoryState = { ...memoryState, freightInquiries: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightInquiries: next }, { throwOnError: true, reason: 'updateFreightInquiry', auditOperation: 'UPDATE' });
+  }
   return safeInquiry;
 };
 
@@ -6158,14 +6637,28 @@ export const getFreightConfirmedOrderById = (id: string): FreightConfirmedOrder 
 export const createFreightConfirmedOrder = async (order: FreightConfirmedOrder): Promise<FreightConfirmedOrder> => {
   const data = loadData();
   const next = [order, ...(data.freightConfirmedOrders || [])];
-  await saveData({ ...data, freightConfirmedOrders: next }, { throwOnError: true, reason: 'createFreightConfirmedOrder', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('createFreightConfirmedOrder');
+    await persistFreightStateRows(user.uid, 'freightConfirmedOrders', next);
+    memoryState = { ...memoryState, freightConfirmedOrders: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightConfirmedOrders: next }, { throwOnError: true, reason: 'createFreightConfirmedOrder', auditOperation: 'CREATE' });
+  }
   return order;
 };
 
 export const updateFreightConfirmedOrder = async (order: FreightConfirmedOrder): Promise<FreightConfirmedOrder> => {
   const data = loadData();
   const next = (data.freightConfirmedOrders || []).map(item => item.id === order.id ? order : item);
-  await saveData({ ...data, freightConfirmedOrders: next }, { throwOnError: true, reason: 'updateFreightConfirmedOrder', auditOperation: 'UPDATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('updateFreightConfirmedOrder');
+    await persistFreightStateRows(user.uid, 'freightConfirmedOrders', next);
+    memoryState = { ...memoryState, freightConfirmedOrders: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightConfirmedOrders: next }, { throwOnError: true, reason: 'updateFreightConfirmedOrder', auditOperation: 'UPDATE' });
+  }
   return order;
 };
 
@@ -6239,7 +6732,14 @@ export const convertInquiryToConfirmedOrder = async (
   };
 
   const nextOrders = [sanitizeFreightImageFields(order), ...((data.freightConfirmedOrders || []).map(item => sanitizeFreightImageFields(item)))];
-  await saveData({ ...data, freightConfirmedOrders: nextOrders }, { throwOnError: true, reason: 'convertInquiryToConfirmedOrder', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('convertInquiryToConfirmedOrder');
+    await persistFreightStateRows(user.uid, 'freightConfirmedOrders', nextOrders);
+    memoryState = { ...memoryState, freightConfirmedOrders: nextOrders };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightConfirmedOrders: nextOrders }, { throwOnError: true, reason: 'convertInquiryToConfirmedOrder', auditOperation: 'CREATE' });
+  }
   return nextOrders[0];
 };
 
@@ -6255,14 +6755,28 @@ export const getFreightPurchaseById = (id: string): FreightPurchase | undefined 
 export const createFreightPurchase = async (purchase: FreightPurchase): Promise<FreightPurchase> => {
   const data = loadData();
   const next = [purchase, ...(data.freightPurchases || [])];
-  await saveData({ ...data, freightPurchases: next }, { throwOnError: true, reason: 'createFreightPurchase', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('createFreightPurchase');
+    await persistFreightStateRows(user.uid, 'freightPurchases', next);
+    memoryState = { ...memoryState, freightPurchases: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightPurchases: next }, { throwOnError: true, reason: 'createFreightPurchase', auditOperation: 'CREATE' });
+  }
   return purchase;
 };
 
 export const updateFreightPurchase = async (purchase: FreightPurchase): Promise<FreightPurchase> => {
   const data = loadData();
   const next = (data.freightPurchases || []).map(item => item.id === purchase.id ? purchase : item);
-  await saveData({ ...data, freightPurchases: next }, { throwOnError: true, reason: 'updateFreightPurchase', auditOperation: 'UPDATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('updateFreightPurchase');
+    await persistFreightStateRows(user.uid, 'freightPurchases', next);
+    memoryState = { ...memoryState, freightPurchases: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightPurchases: next }, { throwOnError: true, reason: 'updateFreightPurchase', auditOperation: 'UPDATE' });
+  }
   return purchase;
 };
 
@@ -6336,7 +6850,14 @@ export const convertConfirmedOrderToPurchase = async (
   };
 
   const nextPurchases = [purchase, ...(data.freightPurchases || [])];
-  await saveData({ ...data, freightPurchases: nextPurchases }, { throwOnError: true, reason: 'convertConfirmedOrderToPurchase', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('convertConfirmedOrderToPurchase');
+    await persistFreightStateRows(user.uid, 'freightPurchases', nextPurchases);
+    memoryState = { ...memoryState, freightPurchases: nextPurchases };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightPurchases: nextPurchases }, { throwOnError: true, reason: 'convertConfirmedOrderToPurchase', auditOperation: 'CREATE' });
+  }
   return purchase;
 };
 
@@ -6487,7 +7008,16 @@ export const getPurchaseReceiptPostings = (): PurchaseReceiptPosting[] => {
 export const createPurchaseReceiptPosting = async (posting: PurchaseReceiptPosting): Promise<PurchaseReceiptPosting> => {
   const data = loadData();
   const next = [posting, ...(data.purchaseReceiptPostings || [])];
-  await saveData({ ...data, purchaseReceiptPostings: next }, { throwOnError: true, reason: 'createPurchaseReceiptPosting', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('createPurchaseReceiptPosting');
+    await upsertPurchaseReceiptPostingInSubcollection(posting, 'createPurchaseReceiptPosting');
+    subcollectionPurchaseReceiptPostingsCache = sortPurchaseReceiptPostingsDesc([posting, ...subcollectionPurchaseReceiptPostingsCache.filter((item) => item.id !== posting.id)]);
+    legacyRootPurchaseReceiptPostingsCache = legacyRootPurchaseReceiptPostingsCache.filter((item) => item.id !== posting.id);
+    memoryState = { ...memoryState, purchaseReceiptPostings: buildMergedPurchaseHydrationState(user.uid, 'createPurchaseReceiptPosting').purchaseReceiptPostings };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, purchaseReceiptPostings: next }, { throwOnError: true, reason: 'createPurchaseReceiptPosting', auditOperation: 'CREATE' });
+  }
   return posting;
 };
 
@@ -6495,7 +7025,14 @@ export const softDeleteFreightInquiry = async (id: string): Promise<void> => {
   const data = loadData();
   const now = new Date().toISOString();
   const next = (data.freightInquiries || []).map(item => item.id === id ? { ...item, isDeleted: true, updatedAt: now } : item);
-  await saveData({ ...data, freightInquiries: next }, { throwOnError: true, reason: 'softDeleteFreightInquiry', auditOperation: 'DELETE' });
+  if (db) {
+    const user = await assertCloudWriteReady('softDeleteFreightInquiry');
+    await persistFreightStateRows(user.uid, 'freightInquiries', next);
+    memoryState = { ...memoryState, freightInquiries: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightInquiries: next }, { throwOnError: true, reason: 'softDeleteFreightInquiry', auditOperation: 'DELETE' });
+  }
 };
 
 export const getFreightBrokers = (): FreightBroker[] => {
@@ -6516,7 +7053,14 @@ export const createFreightBroker = async (payload: Omit<FreightBroker, 'id' | 'c
     updatedAt: now,
   };
   const next = [broker, ...(data.freightBrokers || [])];
-  await saveData({ ...data, freightBrokers: next }, { throwOnError: true, reason: 'createFreightBroker', auditOperation: 'CREATE' });
+  if (db) {
+    const user = await assertCloudWriteReady('createFreightBroker');
+    await persistFreightStateRows(user.uid, 'freightBrokers', next);
+    memoryState = { ...memoryState, freightBrokers: next };
+    emitLocalStorageUpdate();
+  } else {
+    await saveData({ ...data, freightBrokers: next }, { throwOnError: true, reason: 'createFreightBroker', auditOperation: 'CREATE' });
+  }
   return broker;
 };
 
@@ -8270,6 +8814,8 @@ export const createSupplierPayment = async (payload: Omit<SupplierPaymentLedgerE
     ]);
     memoryState = { ...memoryState, documentSeries: data.documentSeries, purchaseOrders: nextOrders, supplierPayments: nextSupplierPayments, partyCreditLedger: nextPartyCredits };
     emitLocalStorageUpdate();
+    void persistDocumentSeriesState(data.documentSeries, 'createSupplierPayment_documentSeries').catch(() => {
+    });
     await writeAuditEvent('CREATE', { reason: 'createSupplierPayment_subcollection', supplierPaymentId: payment.id, supplierPaymentsCount: nextSupplierPayments.length, allocatedOrdersCount: allocations.length });
   } else {
     await saveData({ ...data, purchaseOrders: nextOrders, supplierPayments: nextSupplierPayments, partyCreditLedger: nextPartyCredits }, { throwOnError: true, reason: 'createSupplierPayment_local_fallback', auditOperation: 'CREATE' });
@@ -9478,6 +10024,8 @@ export const processTransaction = (transaction: Transaction): AppState => {
         logKpiSnapshot('AFTER_TX_CREATE', memoryState);
         emitDataOpStatus({ phase: DATA_OP_PHASES.SUCCESS, op: OPERATION_TYPES.PROCESS_TRANSACTION, entity: 'transaction', message: 'Transaction saved.', transactionId: effectiveTransaction.id });
         emitBehaviorStateChange({ type: effectiveTransaction.type === 'payment' ? 'payment_recorded' : 'order_created', entityId: effectiveTransaction.id, to: 'committed', metadata: { transactionType: effectiveTransaction.type, paymentMethod: effectiveTransaction.paymentMethod, total: effectiveTransaction.total } });
+        void persistDocumentSeriesState(data.documentSeries, 'processTransaction_documentSeries').catch(() => {
+        });
 
         void Promise.all([
           touchedProductIds.length > 0
@@ -9779,6 +10327,7 @@ export const deleteTransaction = (
     deletedTransactions: nextDeletedTransactions,
     products: reconciledState.products,
     customers: reconciledState.customers,
+    deleteCompensations: reconciledState.deleteCompensations || [],
   };
   emitLocalStorageUpdate();
   emitFinanceSnapshot('after deleteTransaction_reconcile', memoryState, {
@@ -9793,7 +10342,13 @@ export const deleteTransaction = (
   logKpiSnapshot('AFTER_TX_DELETE', memoryState);
 
   void deleteTransactionAndReconcileInSubcollection(target, deletedRecord, 'deleteTransaction')
-    .then(() => syncToCloud({ ...reconciledWithBin }))
+    .then(async () => {
+      const user = await assertCloudWriteReady('deleteTransaction_deleteCompensations');
+      await Promise.all([
+        persistDeleteCompensationsState(user.uid, reconciledWithBin.deleteCompensations || []),
+        syncToCloud({ ...reconciledWithBin }),
+      ]);
+    })
     .then(() => writeAuditEvent('DELETE', {
       reason: 'deleteTransaction_subcollection',
       migrationPhase: TRANSACTIONS_MIGRATION_PHASE,
@@ -9801,7 +10356,7 @@ export const deleteTransaction = (
       transactionsCount: next.length,
     }))
     .catch(error => {
-      memoryState = { ...memoryState, transactions: data.transactions, deletedTransactions: data.deletedTransactions || [], products: data.products, customers: data.customers };
+      memoryState = { ...memoryState, transactions: data.transactions, deletedTransactions: data.deletedTransactions || [], products: data.products, customers: data.customers, deleteCompensations: data.deleteCompensations || [] };
       emitLocalStorageUpdate();
     });
 
@@ -10002,7 +10557,13 @@ export const updateTransaction = async (updatedTransaction: Transaction): Promis
       stockAffected: originalTransaction.type !== 'payment' || effectiveUpdatedTransaction.type !== 'payment',
       settlementChanged: JSON.stringify(originalTransaction.saleSettlement || null) !== JSON.stringify(effectiveUpdatedTransaction.saleSettlement || null),
     }),
-    syncToCloud({ ...reconciledState }),
+    (async () => {
+      const user = await assertCloudWriteReady('updateTransaction_updatedTransactionEvents');
+      await Promise.all([
+        persistUpdatedTransactionEventsState(user.uid, reconciledState.updatedTransactionEvents || []),
+        syncToCloud({ ...reconciledState }),
+      ]);
+    })(),
   ]).catch(error => {
   });
 
