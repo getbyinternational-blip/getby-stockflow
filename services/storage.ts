@@ -2679,6 +2679,38 @@ const allocateSalesInvoiceNumber = (state: AppState): { state: AppState; invoice
   };
 };
 
+const parseSeriesNumberFromDocumentNo = (documentNo: string, prefix = ''): number | null => {
+  const normalizedDocumentNo = String(documentNo || '').trim();
+  if (!normalizedDocumentNo) return null;
+  const normalizedPrefix = String(prefix || '');
+  const suffix = normalizedPrefix
+    ? (normalizedDocumentNo.startsWith(normalizedPrefix) ? normalizedDocumentNo.slice(normalizedPrefix.length).trim() : '')
+    : normalizedDocumentNo;
+  if (!suffix) return null;
+  const exactDigitsMatch = suffix.match(/^\d+$/);
+  const trailingDigitsMatch = exactDigitsMatch ? null : suffix.match(/(\d+)\s*$/);
+  const numericPortion = exactDigitsMatch?.[0] || trailingDigitsMatch?.[1] || '';
+  if (!numericPortion) return null;
+  const parsed = Number(numericPortion);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+};
+
+const advanceSalesInvoiceSeriesPastValue = (state: AppState, invoiceNo: string): AppState => {
+  const normalized = ensureDocumentSeriesDefaults(state);
+  const series = normalized.documentSeries!.salesInvoice!;
+  const parsedNumber = parseSeriesNumberFromDocumentNo(invoiceNo, series.prefix || '');
+  if (!parsedNumber) return normalized;
+  const nextNumber = Math.max(series.nextNumber, parsedNumber + 1);
+  if (nextNumber === series.nextNumber) return normalized;
+  return {
+    ...normalized,
+    documentSeries: {
+      ...normalized.documentSeries,
+      salesInvoice: { ...series, nextNumber },
+    },
+  };
+};
+
 const allocateSalesCreditNoteNumber = (state: AppState): { state: AppState; creditNoteNo: string } => {
   const normalized = ensureDocumentSeriesDefaults(state);
   const series = normalized.documentSeries!.salesCreditNote!;
@@ -3636,8 +3668,7 @@ const sanitizeProductPayload = (product: Product): Product => {
     ...product,
     id: cleanProductText(product.id) || Date.now().toString(),
     name: cleanProductText(product.name) || 'not set yet',
-    // Empty string is a valid category-less product state.
-    category: cleanProductText(product.category) || '',
+    category: cleanProductText(product.category) || 'not set yet',
     buyPrice: cleanProductNumber(product.buyPrice, 0),
     sellPrice: cleanProductNumber(product.sellPrice, 0),
     stock: cleanProductNumber(product.stock, 0),
@@ -5037,141 +5068,38 @@ export const addCategory = (category: string): string[] => {
   void saveData({ ...data, categories: newCategories }, { reason: 'addCategory', auditOperation: 'CREATE' });
   return newCategories;
 };
-const isDeletedCategoryPlaceholder = (value: unknown): boolean => {
-  const normalized = String(value ?? '').trim();
 
-  return /^deleted(?:\s+category\s+|[_-])/i.test(normalized);
-};
-
-export const deleteCategory = async (
-  category: string,
-): Promise<AppState> => {
+export const deleteCategory = (category: string): AppState => {
   const data = loadData();
-  const targetCategory = String(category || '').trim();
-
-  if (!targetCategory) {
-    throw new Error('Category name is required.');
+  const newCategories = data.categories.filter(c => c !== category);
+  const deletedCategoryName = `deleted category ${category}`;
+  
+  // Add the "deleted category" to categories list if it doesn't exist
+  if (!newCategories.includes(deletedCategoryName)) {
+      newCategories.push(deletedCategoryName);
   }
 
-  // Remove the selected category and clean old deleted-category placeholders.
-  const newCategories = Array.from(
-    new Set(
-      (data.categories || [])
-        .map((item) => String(item || '').trim())
-        .filter(Boolean)
-        .filter((item) => item !== targetCategory)
-        .filter((item) => !isDeletedCategoryPlaceholder(item)),
-    ),
+  const newProducts = data.products.map(p => 
+      p.category === category ? { ...p, category: deletedCategoryName } : p
   );
 
-  const now = new Date().toISOString();
-  const originalProductsById = new Map(
-    data.products.map((product) => [product.id, product] as const),
-  );
-
-  const changedProducts: Product[] = [];
-
-  const newProducts = data.products.map((product) => {
-    const currentCategory = String(product.category || '').trim();
-
-    const shouldClearCategory =
-      currentCategory === targetCategory ||
-      isDeletedCategoryPlaceholder(currentCategory);
-
-    if (!shouldClearCategory) {
-      return product;
-    }
-
-    const updatedProduct: Product = {
-      ...product,
-      category: '',
-      updatedAt: now,
-    };
-
-    changedProducts.push(updatedProduct);
-    return updatedProduct;
-  });
-
-  const rollbackProducts = async (
-    productsToRollback: Product[],
-  ): Promise<void> => {
-    if (!db || productsToRollback.length === 0) return;
-
-    await Promise.allSettled(
-      productsToRollback.map((product) =>
-        upsertProductInSubcollection(
-          product,
-          'deleteCategory_product_rollback',
-        ),
-      ),
-    );
-  };
-
-  if (db && changedProducts.length > 0) {
-    const productWriteResults = await Promise.allSettled(
-      changedProducts.map((product) =>
-        upsertProductInSubcollection(
-          product,
-          'deleteCategory_product_clear',
-        ),
-      ),
-    );
-
-    const firstFailedWrite = productWriteResults.find(
-      (result) => result.status === 'rejected',
-    );
-
-    if (firstFailedWrite?.status === 'rejected') {
-      const successfullyChangedOriginals = productWriteResults
-        .map((result, index) => {
-          if (result.status !== 'fulfilled') return null;
-
-          return (
-            originalProductsById.get(changedProducts[index].id) || null
-          );
-        })
-        .filter(
-          (product): product is Product => product !== null,
-        );
-
-      await rollbackProducts(successfullyChangedOriginals);
-      throw firstFailedWrite.reason;
-    }
+  const changedProducts = newProducts.filter((p, idx) => p.category !== data.products[idx]?.category);
+  if (db && changedProducts.length) {
+    void Promise.all(changedProducts.map(p => upsertProductInSubcollection(p, 'deleteCategory_product_relabel')))
+      .then(() => writeAuditEvent('UPDATE', {
+        reason: 'deleteCategory_product_relabel_subcollection',
+        migrationPhase: PRODUCTS_MIGRATION_PHASE,
+        affectedProducts: changedProducts.map(p => p.id),
+      }))
   }
 
-  const newState: AppState = {
-    ...data,
-    categories: newCategories,
-    products: newProducts,
-  };
-
-  try {
-    await saveData(newState, {
-      throwOnError: true,
-      reason: 'deleteCategory',
-      auditOperation: 'DELETE',
-    });
-  } catch (error) {
-    const originalsToRestore = changedProducts
-      .map((product) => originalProductsById.get(product.id) || null)
-      .filter(
-        (product): product is Product => product !== null,
-      );
-
-    await rollbackProducts(originalsToRestore);
-    throw error;
-  }
-
-  await writeAuditEvent('UPDATE', {
-    reason: 'deleteCategory_products_uncategorized',
-    migrationPhase: PRODUCTS_MIGRATION_PHASE,
-    removedCategory: targetCategory,
-    affectedProducts: changedProducts.map((product) => product.id),
-    affectedProductCount: changedProducts.length,
-  });
-
-  return newState;
+  const newState = { ...data, categories: newCategories };
+  void saveData(newState, { reason: 'deleteCategory', auditOperation: 'DELETE' });
+  memoryState = { ...memoryState, categories: newCategories, products: newProducts };
+  emitLocalStorageUpdate();
+  return { ...newState, products: newProducts };
 };
+
 export const renameCategory = (oldName: string, newName: string): AppState => {
     const data = loadData();
     const newCategories = data.categories.map(c => c === oldName ? newName : c);
@@ -9329,6 +9257,8 @@ export const processTransaction = (transaction: Transaction): AppState => {
     const allocated = allocateSalesInvoiceNumber(data);
     data = allocated.state;
     effectiveTransaction = { ...effectiveTransaction, invoiceNo: allocated.invoiceNo };
+  } else if (effectiveTransaction.type === 'sale' && effectiveTransaction.invoiceNo) {
+    data = advanceSalesInvoiceSeriesPastValue(data, effectiveTransaction.invoiceNo);
   } else if (effectiveTransaction.type === 'return' && !effectiveTransaction.creditNoteNo) {
     const allocated = allocateSalesCreditNoteNumber(data);
     data = allocated.state;

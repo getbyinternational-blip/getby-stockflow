@@ -103,6 +103,7 @@ export function CustomerCatalogOptionsModal({ isOpen, onClose, products, onGener
   const [draggingProductId, setDraggingProductId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const wasOpenRef = useRef(false);
+  useEscapeLayer(isProductPickerOpen, () => setIsProductPickerOpen(false), { priority: 95 });
 
   React.useEffect(() => {
     if (!isOpen) {

@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import jsPDF from 'jspdf';
@@ -2409,7 +2409,7 @@ export default function Sales() {
 
             <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-2">
             <Button className="h-12 text-base font-bold" onClick={() => void completeCheckout()} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
-              {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing…' : (
+              {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing?' : (
                 <span className="flex flex-col items-center leading-tight">
                   <span>Confirm & Pay {formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
                   {cashChangeValue > 0 && <span className="text-[10px] font-semibold opacity-90">Change to give: {formatMoneyPrecise(cashChangeValue)}</span>}
@@ -2417,7 +2417,7 @@ export default function Sales() {
               )}
             </Button>
             <Button variant="secondary" className="h-12 text-sm font-bold" onClick={() => void completeCheckout({ printAfterSave: true })} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
-              {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processingâ€¦' : (
+              {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing?' : (
                 <span className="flex flex-col items-center leading-tight">
                   <span>Pay & Print</span>
                   <span className="text-[10px] font-semibold opacity-90">{formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
@@ -2831,7 +2831,7 @@ export default function Sales() {
                 {!(customerSearch && !hasSelectedCustomer && filteredCustomers.length === 0 && customerTab === 'search') && (
                   <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-2">
                   <Button className={`h-12 text-base font-bold ${isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} onClick={() => void completeCheckout()} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
-                    {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing…' : (
+                    {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing?' : (
                       <span className="flex flex-col items-center leading-tight">
                         <span>Confirm & Pay {formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
                         {cashChangeValue > 0 && <span className="text-[10px] font-semibold opacity-90">Change to give: {formatMoneyPrecise(cashChangeValue)}</span>}
@@ -2839,7 +2839,7 @@ export default function Sales() {
                     )}
                   </Button>
                   <Button variant="secondary" className="h-12 text-sm font-bold" onClick={() => void completeCheckout({ printAfterSave: true })} disabled={transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing'}>
-                    {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processingâ€¦' : (
+                    {transactionSyncStatus.phase === 'pending' || transactionSyncStatus.phase === 'committing' ? 'Processing?' : (
                       <span className="flex flex-col items-center leading-tight">
                         <span>Pay & Print</span>
                         <span className="text-[10px] font-semibold opacity-90">{formatMoneyWhole(tenderedPaymentAppliedValue)}</span>
@@ -3002,3 +3002,4 @@ export default function Sales() {
     </div>
   );
 }
+

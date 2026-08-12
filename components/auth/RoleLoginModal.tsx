@@ -10,7 +10,8 @@ import { getAdminAccessDiagnostics, isAccessDebugEnabled, verifyAdminAccessPassw
 const nowSession = (session: Omit<RoleSession, 'loginAt'>): RoleSession => ({ ...session, loginAt: new Date().toISOString() });
 const FAILED_ATTEMPT_COOLDOWN_MS = 1500;
 const DEV_ACCESS_BYPASS_ENABLED = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_ACCESS_BYPASS === 'true';
-const TEST_AUTH_BYPASS_ENABLED = String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'falsedd').toLowerCase() === 'true';
+const TEST_AUTH_BYPASS_ENABLED =
+  String(import.meta.env.VITE_BYPASS_AUTH_FOR_TESTING || 'false').toLowerCase() === 'true';
 const SIMPLE_ACCESS_MODE_ENABLED = String((import.meta as any).env?.VITE_SIMPLE_ACCESS_MODE || 'true').toLowerCase() !== 'false';
 const AUTH_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_AUTH_LOGS || 'false').toLowerCase() === 'true';
 const DEFAULT_OTP_EXPIRY_SECONDS = 120;
@@ -362,7 +363,9 @@ export default function RoleLoginModal({ onLogin }: { onLogin: (session: RoleSes
           {TEST_AUTH_BYPASS_ENABLED && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
               <p className="text-xs font-bold uppercase tracking-wide text-amber-900">Temporary Bypass</p>
-              <p className="text-xs text-amber-800">Firebase login and email OTP bypass are enabled from env. Do not keep this on in production.</p>
+              <p className="text-xs text-amber-800">
+                Access-role email OTP bypass is enabled for testing. Firebase authentication is still required.
+              </p>
             </div>
           )}
           {SIMPLE_ACCESS_MODE_ENABLED ? (

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry, Expense, CashAdjustment } from '../types';
+import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry, Expense, CashAdjustment, DeleteCompensationRecord, ManualCashbookEntry } from '../types';
 import { NO_COLOR, NO_VARIANT } from '../services/productVariants';
 import { auth } from '../services/firebase';
 import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
@@ -53,15 +53,29 @@ export default function Transactions() {
   const isSupplierPaymentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('supplier-payment-');
   const isExpenseVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('expense-');
   const isCashAdjustmentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-');
+  const isManualCashbookVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('manual-cashbook-');
+  const isDeleteCompensationVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('delete-compensation-');
   const isCashWithdrawalVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-') && String((tx as any)?.notes || '').toLowerCase().includes('cash withdrawal');
   const isCashAdditionVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-') && String((tx as any)?.notes || '').toLowerCase().includes('cash addition');
+  const isManualCashOutVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('manual-cashbook-') && String((tx as any)?.type || '').toLowerCase() === 'manual_cash_out';
+  const isManualCashInVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('manual-cashbook-') && String((tx as any)?.type || '').toLowerCase() === 'manual_cash_in';
   const isCustomOrderPaymentRow = (tx?: Transaction | null) => !!tx && isUpfrontVirtualTransaction(tx) && String(tx.notes || '').toLowerCase().includes('order payment');
   const isCustomOrderReceivableRow = (tx?: Transaction | null) => !!tx && isUpfrontVirtualTransaction(tx) && !isCustomOrderPaymentRow(tx);
-  const canExportInvoiceForTransaction = (tx?: Transaction | null) => !!tx && !isExpenseVirtualTransaction(tx) && !isCashAdjustmentVirtualTransaction(tx) && !isSupplierPaymentVirtualTransaction(tx);
+  const isNonInvoiceVirtualTransaction = (tx?: Transaction | null) => !!tx && (
+    isExpenseVirtualTransaction(tx)
+    || isCashAdjustmentVirtualTransaction(tx)
+    || isSupplierPaymentVirtualTransaction(tx)
+    || isManualCashbookVirtualTransaction(tx)
+    || isDeleteCompensationVirtualTransaction(tx)
+  );
+  const canExportInvoiceForTransaction = (tx?: Transaction | null) => !!tx && !isNonInvoiceVirtualTransaction(tx);
   const getTransactionReceiptTitle = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) return 'Expense Entry';
     if (isCashWithdrawalVirtualTransaction(tx)) return 'Cash Withdrawal Entry';
     if (isCashAdditionVirtualTransaction(tx)) return 'Cash Addition Entry';
+    if (isManualCashOutVirtualTransaction(tx)) return 'Manual Cash Out Entry';
+    if (isManualCashInVirtualTransaction(tx)) return 'Manual Cash In Entry';
+    if (isDeleteCompensationVirtualTransaction(tx)) return 'Delete Compensation Entry';
     if (isSupplierPaymentVirtualTransaction(tx)) return 'Supplier Payment Entry';
     if (isCustomOrderPaymentRow(tx)) return 'Custom Order Payment Receipt';
     if (isCustomOrderReceivableRow(tx)) return 'Custom Order Receipt';
@@ -76,6 +90,8 @@ export default function Transactions() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>([]);
+  const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>([]);
+  const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>([]);
   const [deletedTransactions, setDeletedTransactions] = useState<DeletedTransactionRecord[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -198,6 +214,41 @@ export default function Transactions() {
       sourceTransactionDate: effectiveDate,
     } as Transaction;
   }), [cashAdjustments]);
+  const virtualManualCashbookTransactions = useMemo<Transaction[]>(() => (manualCashbookEntries || [])
+    .filter((entry) => !entry?.isDeleted)
+    .map((entry) => {
+      const effectiveDate = entry.date || entry.createdAt || new Date().toISOString();
+      const isCashOut = entry.type === 'cash_out';
+      return {
+        id: `manual-cashbook-${entry.id}`,
+        type: (isCashOut ? 'manual_cash_out' : 'manual_cash_in') as any,
+        date: effectiveDate,
+        total: Math.max(0, Number(entry.amount || 0)),
+        items: [],
+        customerId: '',
+        customerName: 'Cash Drawer',
+        paymentMethod: 'Cash',
+        receiptNo: entry.id.slice(-6),
+        notes: `${isCashOut ? 'Manual Cash Out' : 'Manual Cash In'}${entry.details ? ` | ${entry.details}` : ''}`,
+        sourceTransactionDate: effectiveDate,
+      } as Transaction;
+    }), [manualCashbookEntries]);
+  const virtualDeleteCompensationTransactions = useMemo<Transaction[]>(() => (deleteCompensations || []).map((entry) => {
+    const effectiveDate = entry.createdAt || new Date().toISOString();
+    return {
+      id: `delete-compensation-${entry.id}`,
+      type: 'delete_compensation' as any,
+      date: effectiveDate,
+      total: Math.max(0, Number(entry.amount || 0)),
+      items: [],
+      customerId: entry.customerId || '',
+      customerName: entry.customerName || 'Customer',
+      paymentMethod: 'Cash',
+      receiptNo: entry.transactionId || entry.id.slice(-6),
+      notes: `Delete Compensation${entry.reason ? ` | Reason: ${entry.reason}` : ''}`,
+      sourceTransactionDate: effectiveDate,
+    } as Transaction;
+  }), [deleteCompensations]);
   const virtualUpfrontOrderTransactions = useMemo<Transaction[]>(() => upfrontOrders.flatMap((order) => {
     const customerName = customers.find(c => c.id === order.customerId)?.name || 'Customer';
     const baseItem: CartItem = {
@@ -275,10 +326,12 @@ export default function Transactions() {
       ...transactions,
       ...virtualExpenseTransactions,
       ...virtualCashAdjustmentTransactions,
+      ...virtualManualCashbookTransactions,
+      ...virtualDeleteCompensationTransactions,
       ...virtualUpfrontOrderTransactions,
       ...virtualSupplierPaymentTransactions,
     ],
-    [transactions, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
+    [transactions, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualManualCashbookTransactions, virtualDeleteCompensationTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
   );
 
   const formatRoleLabel = (role?: string) => {
@@ -307,6 +360,8 @@ export default function Transactions() {
         setTransactions(data.transactions || []);
         setExpenses((data as any).expenses || []);
         setCashAdjustments((data as any).cashAdjustments || []);
+        setManualCashbookEntries((data as any).manualCashbookEntries || []);
+        setDeleteCompensations((data as any).deleteCompensations || []);
         setDeletedTransactions(deletedWindow.rows);
         setCustomers(data.customers);
         setProducts(data.products || []);
@@ -614,6 +669,8 @@ export default function Transactions() {
   const getDisplayPaymentMethod = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) return 'Cash';
     if (isCashAdjustmentVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
+    if (isManualCashbookVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
+    if (isDeleteCompensationVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
     if (tx.id.startsWith('upfront-')) return 'Advance';
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     if (txType !== 'sale' && txType !== 'historical_reference') return tx.paymentMethod || 'Cash';
@@ -638,11 +695,20 @@ export default function Transactions() {
     if (isExpenseVirtualTransaction(tx)) {
       return { typeLabel: 'EXPENSE', typeTone: 'expense', isSale, isReturn, isPayment } as const;
     }
+    if (isDeleteCompensationVirtualTransaction(tx)) {
+      return { typeLabel: 'DELETE REFUND', typeTone: 'cash out', isSale, isReturn, isPayment } as const;
+    }
     if (isCashWithdrawalVirtualTransaction(tx)) {
       return { typeLabel: 'CASH WITHDRAWAL', typeTone: 'cash out', isSale, isReturn, isPayment } as const;
     }
     if (isCashAdditionVirtualTransaction(tx)) {
       return { typeLabel: 'CASH ADDITION', typeTone: 'cash', isSale, isReturn, isPayment } as const;
+    }
+    if (isManualCashOutVirtualTransaction(tx)) {
+      return { typeLabel: 'MANUAL CASH OUT', typeTone: 'cash out', isSale, isReturn, isPayment } as const;
+    }
+    if (isManualCashInVirtualTransaction(tx)) {
+      return { typeLabel: 'MANUAL CASH IN', typeTone: 'cash', isSale, isReturn, isPayment } as const;
     }
     if (tx.id.startsWith('upfront-')) {
       return {
@@ -684,8 +750,11 @@ export default function Transactions() {
     const notes = String(tx.notes || '').toLowerCase();
 
     if (isExpenseVirtualTransaction(tx)) return 'bg-red-100/80 hover:bg-red-50/60';
+    if (isDeleteCompensationVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
     if (isCashWithdrawalVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
     if (isCashAdditionVirtualTransaction(tx)) return 'bg-teal-100/80 hover:bg-teal-50/60';
+    if (isManualCashOutVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
+    if (isManualCashInVirtualTransaction(tx)) return 'bg-teal-100/80 hover:bg-teal-50/60';
     if (tx.id.startsWith('supplier-payment-')) return 'bg-amber-100/80 hover:bg-amber-50/60';
     if (tx.id.startsWith('upfront-')) {
       if (notes.includes('order payment')) return 'bg-sky-100/80 hover:bg-sky-50/60';
@@ -1410,6 +1479,11 @@ export default function Transactions() {
               return;
           }
 
+          if (isDeleteCompensationVirtualTransaction(tx)) {
+              totalCashOut += amount;
+              return;
+          }
+
           if (isCashWithdrawalVirtualTransaction(tx)) {
               if (paymentMethod === 'cash') totalCashOut += amount;
               return;
@@ -1417,6 +1491,16 @@ export default function Transactions() {
 
           if (isCashAdditionVirtualTransaction(tx)) {
               if (paymentMethod === 'cash') totalCashIn += amount;
+              return;
+          }
+
+          if (isManualCashOutVirtualTransaction(tx)) {
+              totalCashOut += amount;
+              return;
+          }
+
+          if (isManualCashInVirtualTransaction(tx)) {
+              totalCashIn += amount;
               return;
           }
 
@@ -1450,7 +1534,8 @@ export default function Transactions() {
           }
 
           if (txType === 'return') {
-              if (paymentMethod === 'cash') totalCashOut += amount;
+              const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
+              if (paymentMethod === 'cash' || returnMode === 'refund_cash') totalCashOut += amount;
               return;
           }
 
@@ -1944,8 +2029,8 @@ export default function Transactions() {
                                         <td className="px-4 py-3 text-center">
                                             <div className="flex items-center justify-center gap-1">
                                                 <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedTx(tx)}><Eye className="w-3.5 h-3.5" /></Button>
-                                                {can('transactionEdit') && !tx.id.startsWith('upfront-') && !isSupplierPaymentVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void openTransactionEditor(tx)}><Edit className="w-3.5 h-3.5" /></Button>}
-                                                {can('transactionDelete') && !tx.id.startsWith('upfront-') && !isSupplierPaymentVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7 text-red-600" onClick={() => void openDeleteModal(tx)}><X className="w-3.5 h-3.5" /></Button>}
+                                                {can('transactionEdit') && !tx.id.startsWith('upfront-') && !isNonInvoiceVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void openTransactionEditor(tx)}><Edit className="w-3.5 h-3.5" /></Button>}
+                                                {can('transactionDelete') && !tx.id.startsWith('upfront-') && !isNonInvoiceVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7 text-red-600" onClick={() => void openDeleteModal(tx)}><X className="w-3.5 h-3.5" /></Button>}
                                                 {canExportInvoiceForTransaction(tx) && (
                                                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openInvoiceOptions(tx)}><FileText className="w-3.5 h-3.5" /></Button>
                                                 )}

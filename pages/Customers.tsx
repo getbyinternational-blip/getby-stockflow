@@ -765,12 +765,14 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     setRepairError(null);
     setRepairConfirmOpen(false);
   }, { priority: 115 });
+  useEscapeLayer(repairConfirmOpen && !!repairDraft, () => setRepairConfirmOpen(false), { priority: 116 });
   useEscapeLayer(Boolean(upfrontRepairDraft), () => {
     setUpfrontRepairDraft(null);
     setUpfrontRepairPreview(null);
     setUpfrontRepairError(null);
     setUpfrontRepairConfirmOpen(false);
   }, { priority: 115 });
+  useEscapeLayer(upfrontRepairConfirmOpen && !!upfrontRepairDraft, () => setUpfrontRepairConfirmOpen(false), { priority: 116 });
   useEscapeLayer(isCollectPaymentModalOpen && !!selectedUpfrontOrder, () => setIsCollectPaymentModalOpen(false), { priority: 110 });
   useEscapeLayer(isUpfrontOrderModalOpen && !!orderCustomer, () => setIsUpfrontOrderModalOpen(false), { priority: 105 });
   useEscapeLayer(Boolean(viewingCustomer), () => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(null); }, { priority: 100 });
@@ -3175,13 +3177,13 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                       )}
                       {customerDetailTab === 'store_credit' && (
                         <div className="space-y-4">
-                          <div className="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm"><div className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Current Available Store Credit</div><div className="mt-1 text-4xl font-black text-emerald-700">?{formatMoneyWhole(viewingCustomerCorrectLedger?.summary.correctedStoreCredit || 0)}</div><p className="mt-1 text-sm text-slate-500">Extra received payments are stored here and can be used later.</p></div>
-                          {storeCreditBreakdownRows.length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No store credit has been created or used in the canonical replay.</div> : <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="hidden gap-2 bg-emerald-50 px-4 py-3 text-[10px] font-black uppercase tracking-wider text-emerald-800 md:grid md:grid-cols-[100px_110px_minmax(0,1fr)_110px_100px_120px]"><div>Date</div><div>Ref</div><div>Source</div><div className="text-right">Credit Created</div><div className="text-right">Credit Used</div><div className="text-right">Running Credit</div></div>{storeCreditBreakdownRows.map((row) => <div key={`sc-${row.id}`} className="grid gap-2 border-t px-4 py-3 text-xs md:grid-cols-[100px_110px_minmax(0,1fr)_110px_100px_120px]"><div>{new Date(row.date).toLocaleDateString()}</div><div className="font-mono text-[11px]">{row.ref}</div><div><div className="font-bold capitalize">{row.originalType === 'upfront_order' ? 'Custom Order' : row.effectiveType.replace(/_/g, ' ')}</div><div className="text-slate-500">{row.description}</div>{row.warnings.length > 0 && <div className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] text-amber-700">Review: {row.warnings.join(' ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ')}</div>}</div><div className="text-right font-black text-emerald-700">{row.storeCreditCreated ? `?${formatMoneyWhole(row.storeCreditCreated)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</div><div className="text-right font-black text-orange-700">{row.displayStoreCreditUsed ? `?${formatMoneyWhole(row.displayStoreCreditUsed)}` : 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</div><div className="text-right font-black">?{formatMoneyWhole(row.runningStoreCredit)}</div></div>)}<div className="grid gap-2 border-t bg-slate-50 px-4 py-3 text-xs font-black sm:grid-cols-[1fr_140px_140px_160px]"><div className="uppercase text-slate-500">Summary</div><div className="text-right text-emerald-700">Created ?{formatMoneyWhole(storeCreditBreakdownRows.reduce((sum, row) => sum + row.storeCreditCreated, 0))}</div><div className="text-right text-orange-700">Used ?{formatMoneyWhole(storeCreditBreakdownRows.reduce((sum, row) => sum + row.displayStoreCreditUsed, 0))}</div><div className="text-right text-emerald-700">Current ?{formatMoneyWhole(viewingCustomerCorrectLedger?.summary.correctedStoreCredit || 0)}</div></div></div>}
+                          <div className="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm"><div className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Current Available Store Credit</div><div className="mt-1 text-4xl font-black text-emerald-700">{formatINRWhole(viewingCustomerCorrectLedger?.summary.correctedStoreCredit || 0)}</div></div>
+                          {storeCreditBreakdownRows.length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No store credit has been created or used in the canonical replay.</div> : <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="hidden gap-2 bg-emerald-50 px-4 py-3 text-[10px] font-black uppercase tracking-wider text-emerald-800 md:grid md:grid-cols-[100px_110px_minmax(0,1fr)_110px_100px_120px]"><div>Date</div><div>Ref</div><div>Source</div><div className="text-right">Credit Created</div><div className="text-right">Credit Used</div><div className="text-right">Running Credit</div></div>{storeCreditBreakdownRows.map((row) => <div key={`sc-${row.id}`} className="grid gap-2 border-t px-4 py-3 text-xs md:grid-cols-[100px_110px_minmax(0,1fr)_110px_100px_120px]"><div>{new Date(row.date).toLocaleDateString()}</div><div className="font-mono text-[11px]">{row.ref}</div><div><div className="font-bold capitalize">{row.originalType === 'upfront_order' ? 'Custom Order' : row.effectiveType.replace(/_/g, ' ')}</div><div className="text-slate-500">{row.description}</div>{row.warnings.length > 0 && <div className="mt-1 rounded-lg bg-amber-50 px-2 py-1 text-[10px] text-amber-700">Review: {row.warnings.join(' · ')}</div>}</div><div className="text-right font-black text-emerald-700">{row.storeCreditCreated ? formatINRWhole(row.storeCreditCreated) : '—'}</div><div className="text-right font-black text-orange-700">{row.displayStoreCreditUsed ? formatINRWhole(row.displayStoreCreditUsed) : '—'}</div><div className="text-right font-black">{formatINRWhole(row.runningStoreCredit)}</div></div>)}<div className="grid gap-2 border-t bg-slate-50 px-4 py-3 text-xs font-black sm:grid-cols-[1fr_140px_140px_160px]"><div className="uppercase text-slate-500">Summary</div><div className="text-right text-emerald-700">Created {formatINRWhole(storeCreditBreakdownRows.reduce((sum, row) => sum + row.storeCreditCreated, 0))}</div><div className="text-right text-orange-700">Used {formatINRWhole(storeCreditBreakdownRows.reduce((sum, row) => sum + row.displayStoreCreditUsed, 0))}</div><div className="text-right text-emerald-700">Current {formatINRWhole(viewingCustomerCorrectLedger?.summary.correctedStoreCredit || 0)}</div></div></div>}
                         </div>
                       )}
                       {customerDetailTab === 'custom_orders' && (
                         <div className="space-y-3">
-                          {customerHistory.filter((item) => item.historyType === 'upfrontOrder').length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No custom orders for this customer.</div> : customerHistory.filter((item) => item.historyType === 'upfrontOrder').map((item) => { const order = item as UpfrontOrder; const orderHistoryId = `order-${order.id}`; const expanded = expandedCustomerHistoryId === orderHistoryId; const repairEligibleForDueCreation = repairMode && getUpfrontOrderAccountingMode(order) !== 'modern_receivable' && Math.max(0, Number(order.remainingAmount || 0)) > 0; return <div key={order.id} className="overflow-hidden rounded-2xl border bg-white shadow-sm"><button type="button" className="grid w-full gap-3 px-4 py-3 text-left hover:bg-slate-50 sm:grid-cols-[110px_minmax(0,1fr)_100px_100px_110px_100px] sm:items-center" onClick={() => setExpandedCustomerHistoryId(expanded ? null : orderHistoryId)}><div className="font-mono text-xs text-slate-500">#{order.id.slice(-6)}</div><div><div className="font-bold text-slate-900">{order.productName}</div><div className="text-xs text-slate-500">{new Date(order.date).toLocaleDateString()} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ {order.quantity} {order.isCarton ? 'carton(s)' : 'unit(s)'}</div></div><div className="text-right text-xs font-bold">?{formatMoneyWhole(order.totalCost)}</div><div className="text-right text-xs font-bold text-emerald-700">?{formatMoneyWhole(order.advancePaid)}</div><div className="text-right text-xs font-bold text-orange-700">?{formatMoneyWhole(order.remainingAmount)}</div><div className="text-right"><Badge className={order.status === 'cleared' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{order.status === 'cleared' ? 'Paid' : 'Pending'}</Badge></div></button>{expanded && <div className="border-t bg-amber-50/40 p-4 text-xs"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Custom Order</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Order ID</span><b>{order.id}</b></div><div className="flex justify-between"><span>Product</span><b>{order.productName}</b></div><div className="flex justify-between"><span>Status</span><b>{order.status}</b></div></div></div><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Balance</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Total</span><b>?{formatMoneyWhole(order.totalCost)}</b></div><div className="flex justify-between"><span>Advance</span><b>?{formatMoneyWhole(order.advancePaid)}</b></div><div className="flex justify-between text-orange-700"><span>Remaining</span><b>?{formatMoneyWhole(order.remainingAmount)}</b></div>{repairMode && <div className="flex justify-between"><span>Accounting Mode</span><b>{getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? 'Modern receivable' : 'Legacy / untrusted'}</b></div>}</div></div></div><div className="mt-3 flex gap-2">{order.status !== 'cleared' && <Button size="sm" onClick={(e) => { e.stopPropagation(); setCollectPaymentError(null); openUpfrontPaymentModal(order); }}>Collect Payment</Button>}{order.status !== 'cleared' && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openUpfrontOrderEditor(order); }}>Edit Order</Button>}{repairEligibleForDueCreation && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); previewCreateDueForRemainingAmount(order); }}>Create Due for Remaining Amount</Button>}</div></div>}</div>; })}
+                          {customerHistory.filter((item) => item.historyType === 'upfrontOrder').length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No custom orders for this customer.</div> : customerHistory.filter((item) => item.historyType === 'upfrontOrder').map((item) => { const order = item as UpfrontOrder; const orderHistoryId = `order-${order.id}`; const expanded = expandedCustomerHistoryId === orderHistoryId; const repairEligibleForDueCreation = repairMode && getUpfrontOrderAccountingMode(order) !== 'modern_receivable' && Math.max(0, Number(order.remainingAmount || 0)) > 0; return <div key={order.id} className="overflow-hidden rounded-2xl border bg-white shadow-sm"><button type="button" className="grid w-full gap-3 px-4 py-3 text-left hover:bg-slate-50 sm:grid-cols-[110px_minmax(0,1fr)_100px_100px_110px_100px] sm:items-center" onClick={() => setExpandedCustomerHistoryId(expanded ? null : orderHistoryId)}><div className="font-mono text-xs text-slate-500">#{order.id.slice(-6)}</div><div><div className="font-bold text-slate-900">{order.productName}</div><div className="text-xs text-slate-500">{new Date(order.date).toLocaleDateString()} · {order.quantity} {order.isCarton ? 'carton(s)' : 'unit(s)'}</div></div><div className="text-right text-xs font-bold">{formatINRWhole(order.totalCost)}</div><div className="text-right text-xs font-bold text-emerald-700">{formatINRWhole(order.advancePaid)}</div><div className="text-right text-xs font-bold text-orange-700">{formatINRWhole(order.remainingAmount)}</div><div className="text-right"><Badge className={order.status === 'cleared' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{order.status === 'cleared' ? 'Paid' : 'Pending'}</Badge></div></button>{expanded && <div className="border-t bg-amber-50/40 p-4 text-xs"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Custom Order</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Order ID</span><b>{order.id}</b></div><div className="flex justify-between"><span>Product</span><b>{order.productName}</b></div><div className="flex justify-between"><span>Status</span><b>{order.status}</b></div></div></div><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Balance</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Total</span><b>{formatINRWhole(order.totalCost)}</b></div><div className="flex justify-between"><span>Advance</span><b>{formatINRWhole(order.advancePaid)}</b></div><div className="flex justify-between text-orange-700"><span>Remaining</span><b>{formatINRWhole(order.remainingAmount)}</b></div>{repairMode && <div className="flex justify-between"><span>Accounting Mode</span><b>{getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? 'Modern receivable' : 'Legacy / untrusted'}</b></div>}</div></div></div><div className="mt-3 flex gap-2">{order.status !== 'cleared' && <Button size="sm" onClick={(e) => { e.stopPropagation(); setCollectPaymentError(null); openUpfrontPaymentModal(order); }}>Collect Payment</Button>}{order.status !== 'cleared' && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openUpfrontOrderEditor(order); }}>Edit Order</Button>}{repairEligibleForDueCreation && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); previewCreateDueForRemainingAmount(order); }}>Create Due for Remaining Amount</Button>}</div></div>}</div>; })}
                         </div>
                       )}
                       {customerDetailTab === 'notes' && (
@@ -3210,12 +3212,12 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                     <div className="font-semibold text-slate-900">{getRepairHistoryLabel(entry.repairKind)}</div>
                                     <div className="text-xs text-slate-500">{new Date(entry.createdAt).toLocaleString()}</div>
                                   </div>
-                                  <div className="mt-1 text-xs text-slate-500">User: {entry.adminEmail || 'Unknown'} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Reason: {entry.reason}</div>
-                                  <div className="mt-1 text-xs text-slate-500">Entity: {entry.entityName} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Transaction: {entry.targetTransactionId?.slice(-6) || 'N/A'} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Financial date: {entry.financialDate ? new Date(entry.financialDate).toLocaleString() : 'N/A'}</div>
+                                  <div className="mt-1 text-xs text-slate-500">User: {entry.adminEmail || 'Unknown'} · Reason: {entry.reason}</div>
+                                  <div className="mt-1 text-xs text-slate-500">Entity: {entry.entityName} · Transaction: {entry.targetTransactionId?.slice(-6) || 'N/A'} · Financial date: {entry.financialDate ? new Date(entry.financialDate).toLocaleString() : 'N/A'}</div>
                                   <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
-                                    <div className="rounded border bg-slate-50 px-3 py-2">Before: ?{formatMoneyPrecise(entry.before.netReceivable)}</div>
-                                    <div className="rounded border bg-slate-50 px-3 py-2">After: ?{formatMoneyPrecise(entry.after.netReceivable)}</div>
-                                    <div className="rounded border bg-slate-50 px-3 py-2">Delta: ?{formatMoneyPrecise(entry.delta.netReceivable)}</div>
+                                    <div className="rounded border bg-slate-50 px-3 py-2">Before: {formatINRPrecise(entry.before.netReceivable)}</div>
+                                    <div className="rounded border bg-slate-50 px-3 py-2">After: {formatINRPrecise(entry.after.netReceivable)}</div>
+                                    <div className="rounded border bg-slate-50 px-3 py-2">Delta: {formatINRPrecise(entry.delta.netReceivable)}</div>
                                   </div>
                                 </div>
                               ))}
@@ -3232,7 +3234,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       {customerActionModalOpen && viewingCustomer && (
         <div className="fixed inset-0 bg-black/80 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
           <Card className="w-full max-w-md">
-            <CardHeader><CardTitle>+ Transaction ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â {viewingCustomer.name}</CardTitle></CardHeader>
+            <CardHeader><CardTitle>+ Transaction — {viewingCustomer.name}</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <Button size="sm" variant={customerActionType === 'payment' ? 'default' : 'outline'} onClick={() => setCustomerActionType('payment')}>Receive Payment</Button>
@@ -3437,21 +3439,21 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
                   <div className="font-semibold text-slate-900">Before</div>
-                  <div className="mt-1">Due: ?{formatMoneyPrecise(repairPreview.before.totalDue)}</div>
-                  <div>Store Credit: ?{formatMoneyPrecise(repairPreview.before.storeCredit)}</div>
-                  <div>Net: ?{formatMoneyPrecise(repairPreview.before.netReceivable)}</div>
+                  <div className="mt-1">Due: {formatINRPrecise(repairPreview.before.totalDue)}</div>
+                  <div>Store Credit: {formatINRPrecise(repairPreview.before.storeCredit)}</div>
+                  <div>Net: {formatINRPrecise(repairPreview.before.netReceivable)}</div>
                 </div>
                 <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
                   <div className="font-semibold text-slate-900">After</div>
-                  <div className="mt-1">Due: ?{formatMoneyPrecise(repairPreview.after.totalDue)}</div>
-                  <div>Store Credit: ?{formatMoneyPrecise(repairPreview.after.storeCredit)}</div>
-                  <div>Net: ?{formatMoneyPrecise(repairPreview.after.netReceivable)}</div>
+                  <div className="mt-1">Due: {formatINRPrecise(repairPreview.after.totalDue)}</div>
+                  <div>Store Credit: {formatINRPrecise(repairPreview.after.storeCredit)}</div>
+                  <div>Net: {formatINRPrecise(repairPreview.after.netReceivable)}</div>
                 </div>
                 <div className="rounded-lg border bg-slate-50 px-3 py-3 text-sm">
                   <div className="font-semibold text-slate-900">Change</div>
-                  <div className="mt-1">Due: ?{formatMoneyPrecise(repairPreview.delta.totalDue)}</div>
-                  <div>Store Credit: ?{formatMoneyPrecise(repairPreview.delta.storeCredit)}</div>
-                  <div>Net: ?{formatMoneyPrecise(repairPreview.delta.netReceivable)}</div>
+                  <div className="mt-1">Due: {formatINRPrecise(repairPreview.delta.totalDue)}</div>
+                  <div>Store Credit: {formatINRPrecise(repairPreview.delta.storeCredit)}</div>
+                  <div>Net: {formatINRPrecise(repairPreview.delta.netReceivable)}</div>
                 </div>
               </div>
               <div className="flex justify-end gap-2">
@@ -3759,16 +3761,16 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                 <div className="flex-1 min-w-0">
                                     <p className="text-sm font-black text-slate-800 leading-tight truncate">{formatItemNameWithVariant(item.name, item.selectedVariant, item.selectedColor)}</p>
                                     <p className="text-[10px] font-bold text-muted-foreground mt-1 tracking-tight">
-                                        Qty: {item.quantity} <span className="mx-1">ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢</span> ?{formatMoneyWhole(item.sellPrice)}
+                                        Qty: {item.quantity} <span className="mx-1">·</span> {formatINRWhole(item.sellPrice)}
                                     </p>
                                     {item.discountAmount !== undefined && item.discountAmount > 0 ? (
                                         <p className="text-[9px] font-bold text-emerald-600 mt-0.5">
-                                            Discount: -?{formatMoneyPrecise(item.discountAmount)} ({item.discountPercent}%)
+                                            Discount: -{formatINRPrecise(item.discountAmount)} ({item.discountPercent}%)
                                         </p>
                                     ) : null}
                                 </div>
                                 <div className="text-sm font-black text-slate-900 bg-slate-50 px-2 py-1 rounded-lg">
-                                    ?{formatMoneyPrecise((item.sellPrice * item.quantity) - (item.discountAmount || 0))}
+                                    {formatINRPrecise((item.sellPrice * item.quantity) - (item.discountAmount || 0))}
                                 </div>
                             </div>
                         ))}
@@ -3777,13 +3779,13 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                       <div className="bg-slate-900 p-5 rounded-2xl text-sm space-y-3 text-white shadow-xl mt-4">
                           <div className="flex justify-between text-slate-400 font-bold uppercase text-[10px] tracking-widest">
                               <span>Subtotal</span>
-                              <span>?{formatMoneyPrecise(selectedTx.subtotal || 0)}</span>
+                              <span>{formatINRPrecise(selectedTx.subtotal || 0)}</span>
                           </div>
                           
                           <div className="flex justify-between text-emerald-400 font-bold uppercase text-[10px] tracking-widest">
                               <span>Savings</span>
                               {selectedTx.discount && selectedTx.discount > 0 ? (
-                                  <span>-?{formatMoneyPrecise(selectedTx.discount)}</span>
+                                  <span>-{formatINRPrecise(selectedTx.discount)}</span>
                               ) : (
                                   <span className="text-slate-500 normal-case font-medium">No discount</span>
                               )}
@@ -3792,22 +3794,22 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           <div className="flex justify-between text-slate-400 font-bold uppercase text-[10px] tracking-widest">
                               <span>Tax {selectedTx.tax && selectedTx.tax > 0 ? `(${selectedTx.taxLabel})` : ''}</span>
                               {selectedTx.tax && selectedTx.tax > 0 ? (
-                                  <span>?{formatMoneyPrecise(selectedTx.tax)}</span>
+                                  <span>{formatINRPrecise(selectedTx.tax)}</span>
                               ) : (
                                   <span className="text-slate-500 normal-case font-medium">No tax applied</span>
                               )}
                           </div>
 
                           <div className="h-px bg-slate-800 my-1"></div>
-                          <div className="flex justify-between font-black text-xl text-white"><span>Grand Total</span><span>?{formatMoneyWhole(Math.abs(selectedTx.total))}</span></div>
+                          <div className="flex justify-between font-black text-xl text-white"><span>Grand Total</span><span>{formatINRWhole(Math.abs(selectedTx.total))}</span></div>
                           {selectedTx.type === 'sale' && (
                             <div className="mt-2 rounded-lg border border-slate-700 bg-slate-800 p-3 text-[11px] space-y-1">
                               <p className="font-bold uppercase tracking-wider text-slate-300">Settlement Breakdown</p>
-                              <div className="flex justify-between"><span>Total Sale</span><span>?{formatMoneyWhole(Math.abs(selectedTx.total))}</span></div>
-                              <div className="flex justify-between"><span>Store Credit Used</span><span>?{formatMoneyWhole(Math.max(0, Number(selectedTx.storeCreditUsed || 0)))}</span></div>
-                              <div className="flex justify-between"><span>Cash Paid</span><span>?{formatMoneyWhole(getSaleSettlementBreakdown(selectedTx).cashPaid)}</span></div>
-                              <div className="flex justify-between"><span>Online Paid</span><span>?{formatMoneyWhole(getSaleSettlementBreakdown(selectedTx).onlinePaid)}</span></div>
-                              <div className="flex justify-between font-semibold"><span>Credit Due Created</span><span>?{formatMoneyWhole(getSaleSettlementBreakdown(selectedTx).creditDue)}</span></div>
+                              <div className="flex justify-between"><span>Total Sale</span><span>{formatINRWhole(Math.abs(selectedTx.total))}</span></div>
+                              <div className="flex justify-between"><span>Store Credit Used</span><span>{formatINRWhole(Math.max(0, Number(selectedTx.storeCreditUsed || 0)))}</span></div>
+                              <div className="flex justify-between"><span>Cash Paid</span><span>{formatINRWhole(getSaleSettlementBreakdown(selectedTx).cashPaid)}</span></div>
+                              <div className="flex justify-between"><span>Online Paid</span><span>{formatINRWhole(getSaleSettlementBreakdown(selectedTx).onlinePaid)}</span></div>
+                              <div className="flex justify-between font-semibold"><span>Credit Due Created</span><span>{formatINRWhole(getSaleSettlementBreakdown(selectedTx).creditDue)}</span></div>
                             </div>
                           )}
                       </div>
@@ -3821,7 +3823,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           <div className="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
               <Card className="w-full max-w-md shadow-2xl animate-in zoom-in border-t-4 border-t-primary overflow-hidden">
                   <CardHeader className="flex flex-row justify-between items-center border-b pb-4">
-                      <CardTitle className="text-lg">{orderStage === 'picker' ? `Create Order ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${orderCustomer.name}` : `Order Form ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${selectedOrderProduct?.name || ''}`}</CardTitle>
+                      <CardTitle className="text-lg">{orderStage === 'picker' ? `Create Order - ${orderCustomer.name}` : `Order Form - ${selectedOrderProduct?.name || ''}`}</CardTitle>
                       <Button variant="ghost" size="icon" onClick={() => { setIsUpfrontOrderModalOpen(false); setEditingUpfrontOrder(null); setUpfrontOrderError(null); setUpfrontRepairError(null); setSelectedOrderProduct(null); }}><X className="w-4 h-4" /></Button>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-6 max-h-[70vh] overflow-y-auto">
@@ -3842,7 +3844,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           </div>
                       )}
                       <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-600">
-                        Store Credit Available: <span className="font-bold text-emerald-700">?{formatMoneyPrecise(availableStoreCredit)}</span>. Store credit is customer-level and is not auto-applied to a custom order at creation time.
+                        Store Credit Available: <span className="font-bold text-emerald-700">{formatINRPrecise(availableStoreCredit)}</span>. Store credit is customer-level and is not auto-applied to a custom order at creation time.
                       </div>
                       {orderPopupTab === 'create' ? (orderStage === 'picker' ? (
                         <>
@@ -3881,15 +3883,15 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                               <Input type="number" min="0" value={upfrontOrderForm.pricePerPieceCustomer} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, pricePerPieceCustomer: e.target.value})} placeholder="0.00" />
                           </div>
                       </div>
-                      <div className="text-xs rounded border p-2 bg-slate-50">Profit: ?{formatMoneyPrecise((Number(upfrontOrderForm.pricePerPieceCustomer||0)-Number(upfrontOrderForm.pricePerPiece||0))*(Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0)))} ({Number(upfrontOrderForm.pricePerPiece||0)>0?((((Number(upfrontOrderForm.pricePerPieceCustomer||0)-Number(upfrontOrderForm.pricePerPiece||0))/Number(upfrontOrderForm.pricePerPiece||1))*100).toFixed(2)):0}%)</div>
+                      <div className="text-xs rounded border p-2 bg-slate-50">Profit: {formatINRPrecise((Number(upfrontOrderForm.pricePerPieceCustomer||0)-Number(upfrontOrderForm.pricePerPiece||0))*(Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0)))} ({Number(upfrontOrderForm.pricePerPiece||0)>0?((((Number(upfrontOrderForm.pricePerPieceCustomer||0)-Number(upfrontOrderForm.pricePerPiece||0))/Number(upfrontOrderForm.pricePerPiece||1))*100).toFixed(2)):0}%)</div>
                       <div className="space-y-2">
                           <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Expense if any (Transport, Labour)</Label>
                           <Input type="number" min="0" value={upfrontOrderForm.expenseAmount} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, expenseAmount: e.target.value})} placeholder="0.00" />
                       </div>
                       <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div>Order Total: ?{formatMoneyPrecise((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPiece||0))}</div>
-                        <div>Order Total Customer: ?{formatMoneyPrecise((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0))}</div>
-                        <div className="font-bold">Customer Total + Expenses: ?{formatMoneyPrecise(((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0)) + Number(upfrontOrderForm.expenseAmount||0))}</div>
+                        <div>Order Total: {formatINRPrecise((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPiece||0))}</div>
+                        <div>Order Total Customer: {formatINRPrecise((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0))}</div>
+                        <div className="font-bold">Customer Total + Expenses: {formatINRPrecise(((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0)) + Number(upfrontOrderForm.expenseAmount||0))}</div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div><Label className="text-xs font-bold">Paid Now Cash</Label><Input type="number" min="0" value={upfrontOrderForm.paidNowCash} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, paidNowCash: e.target.value})} readOnly={Boolean(editingUpfrontOrder)} disabled={Boolean(editingUpfrontOrder)} /></div>
@@ -3900,7 +3902,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           Edit payments separately from Advance Payment actions.
                         </div>
                       )}
-                      <div className="text-xs font-bold text-red-600">On Credit Remaining: ?{formatMoneyPrecise(Math.max(0, (((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0)) + Number(upfrontOrderForm.expenseAmount||0)) - Number(upfrontOrderForm.paidNowCash||0) - Number(upfrontOrderForm.paidNowOnline||0)))}</div>
+                      <div className="text-xs font-bold text-red-600">On Credit Remaining: {formatINRPrecise(Math.max(0, (((Number(upfrontOrderForm.numberOfPieces||0)*Number(upfrontOrderForm.numberOfCartons||0))*Number(upfrontOrderForm.pricePerPieceCustomer||0)) + Number(upfrontOrderForm.expenseAmount||0)) - Number(upfrontOrderForm.paidNowCash||0) - Number(upfrontOrderForm.paidNowOnline||0)))}</div>
                       <div className="space-y-2">
                           <Label className="text-xs font-bold uppercase text-slate-500 tracking-widest">Reminder Date (Optional)</Label>
                           <Input type="date" value={upfrontOrderForm.reminderDate} onChange={e => setUpfrontOrderForm({...upfrontOrderForm, reminderDate: e.target.value})} />
@@ -3932,16 +3934,16 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                         <>
                           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                             <div className="rounded border p-2">Total Orders: <b>{popupCustomerOrders.length}</b></div>
-                            <div className="rounded border p-2">Total Value: <b>?{formatMoneyWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderCustomerTotal(o), 0))}</b></div>
-                            <div className="rounded border p-2 text-emerald-700">Paid: <b>?{formatMoneyWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderPaid(o), 0))}</b></div>
-                            <div className="rounded border p-2 text-red-700">Remaining: <b>?{formatMoneyWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderRemaining(o), 0))}</b></div>
+                            <div className="rounded border p-2">Total Value: <b>{formatINRWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderCustomerTotal(o), 0))}</b></div>
+                            <div className="rounded border p-2 text-emerald-700">Paid: <b>{formatINRWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderPaid(o), 0))}</b></div>
+                            <div className="rounded border p-2 text-red-700">Remaining: <b>{formatINRWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderRemaining(o), 0))}</b></div>
                           </div>
                           <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
                             <Input placeholder="Search product/notes..." value={allOrdersSearch} onChange={(e) => setAllOrdersSearch(e.target.value)} />
                             <Select value={allOrdersStatus} onChange={(e) => setAllOrdersStatus(e.target.value as any)}><option value="all">All</option><option value="pending">Pending</option><option value="paid">Paid in Full</option></Select>
                             <Select value={allOrdersSort} onChange={(e) => setAllOrdersSort(e.target.value as any)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></Select>
                           </div>
-                          <div className="text-xs font-semibold text-red-700">Remaining due from this customerÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢s custom orders: ?{formatMoneyWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderRemaining(o), 0))}</div>
+                          <div className="text-xs font-semibold text-red-700">Remaining due from this customer's custom orders: {formatINRWhole(popupCustomerOrders.reduce((s, o) => s + getUpfrontOrderRemaining(o), 0))}</div>
                           <div className="space-y-2">
                             {filteredPopupCustomerOrders.length === 0 && <div className="text-sm text-muted-foreground border rounded p-3">No custom orders found for this customer.</div>}
                             {filteredPopupCustomerOrders.map((order) => {
@@ -3963,14 +3965,14 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                 </div>
                                 {expandedOrderId === order.id && (
                                   <div className="mt-2 border rounded p-2 bg-slate-50">
-                                    {(order.paymentHistory || []).length > 0 ? (order.paymentHistory || []).map((p) => <div key={p.id} className="flex justify-between"><span>{new Date(p.paidAt).toLocaleString()} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ {p.kind === 'initial_advance' ? 'Initial Advance' : 'Additional Payment'} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ {p.method || 'Advance'}</span><span>?{formatMoneyWhole(p.amount)} (Rem ?{formatMoneyWhole(p.remainingAfterPayment)})</span></div>) : <div>Legacy order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â payment breakdown not available.</div>}
+                                    {(order.paymentHistory || []).length > 0 ? (order.paymentHistory || []).map((p) => <div key={p.id} className="flex justify-between"><span>{new Date(p.paidAt).toLocaleString()} - {p.kind === 'initial_advance' ? 'Initial Advance' : 'Additional Payment'} - {p.method || 'Advance'}</span><span>{formatINRWhole(p.amount)} (Rem {formatINRWhole(p.remainingAfterPayment)})</span></div>) : <div>Legacy order - payment breakdown not available.</div>}
                                   </div>
                                 )}
                                 {repairMode && expandedOrderId === order.id && (order.paymentHistory || []).length > 0 && (
                                   <div className="mt-2 space-y-2">
                                     {(order.paymentHistory || []).map((p) => (
                                       <div key={`repair-${p.id}`} className="flex items-center justify-between rounded border border-slate-200 bg-white px-2 py-2">
-                                        <div className="text-[11px] text-slate-600">{new Date(getUpfrontPaymentFinancialDate(p, order)).toLocaleString()} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ?{formatMoneyWhole(p.amount)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ {p.method || 'Advance'}</div>
+                                        <div className="text-[11px] text-slate-600">{new Date(getUpfrontPaymentFinancialDate(p, order)).toLocaleString()} - {formatINRWhole(p.amount)} - {p.method || 'Advance'}</div>
                                         <div className="flex gap-2">
                                           <Button size="sm" variant="outline" onClick={() => openUpfrontPaymentModal(order, p)}>Edit Payment</Button>
                                           <Button size="sm" variant="outline" className="text-red-600" onClick={() => { openUpfrontPaymentModal(order, p); setCollectPaymentError('Enter repair reason, then preview delete.'); }}>Delete Payment</Button>
@@ -4016,20 +4018,20 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                       <div className="bg-slate-50 p-3 rounded-lg border space-y-1">
                           <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                               <span>Order Total</span>
-                              <span>?{formatMoneyWhole(selectedUpfrontOrder.totalCost)}</span>
+                              <span>{formatINRWhole(selectedUpfrontOrder.totalCost)}</span>
                           </div>
                           <div className="flex justify-between text-[10px] font-bold text-emerald-600 uppercase tracking-wider">
                               <span>Advance Paid</span>
-                              <span>?{formatMoneyWhole(selectedUpfrontOrder.advancePaid)}</span>
+                              <span>{formatINRWhole(selectedUpfrontOrder.advancePaid)}</span>
                           </div>
                           <div className="h-px bg-slate-200 my-1"></div>
                           <div className="flex justify-between text-xs font-black text-red-600">
                               <span>Balance Due</span>
-                              <span>?{formatMoneyWhole(selectedUpfrontOrder.remainingAmount)}</span>
+                              <span>{formatINRWhole(selectedUpfrontOrder.remainingAmount)}</span>
                           </div>
                       </div>
                       <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-[10px]">
-                        <div className="flex justify-between"><span className="text-muted-foreground">Store Credit Available</span><span className="font-black text-emerald-700">?{formatMoneyPrecise(availableStoreCredit)}</span></div>
+                        <div className="flex justify-between"><span className="text-muted-foreground">Store Credit Available</span><span className="font-black text-emerald-700">{formatINRPrecise(availableStoreCredit)}</span></div>
                         <div className="mt-1 text-muted-foreground">Store credit is customer-level and currently not auto-applied in this collect step.</div>
                       </div>
                       <div className="space-y-2">
@@ -4068,9 +4070,9 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                       )}
                       {isCollectAmountValid && (
                         <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] space-y-1">
-                          <div className="flex justify-between"><span className="text-muted-foreground">Remaining after this collection</span><span className="font-black text-slate-700">?{formatMoneyWhole(projectedRemainingAfterCollect)}</span></div>
+                          <div className="flex justify-between"><span className="text-muted-foreground">Remaining after this collection</span><span className="font-black text-slate-700">{formatINRWhole(projectedRemainingAfterCollect)}</span></div>
                           <div className="flex justify-between"><span className="text-muted-foreground">Order status after collection</span><span className={`font-black ${projectedRemainingAfterCollect <= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>{projectedRemainingAfterCollect <= 0 ? 'Paid in Full' : 'Balance Due'}</span></div>
-                          <div className="flex justify-between"><span className="text-muted-foreground">Possible store credit application (manual)</span><span className="font-black text-emerald-700">?{formatMoneyWhole(possibleCreditApplication)}</span></div>
+                          <div className="flex justify-between"><span className="text-muted-foreground">Possible store credit application (manual)</span><span className="font-black text-emerald-700">{formatINRWhole(possibleCreditApplication)}</span></div>
                         </div>
                       )}
                       <div className="flex gap-2 pt-4 border-t">
@@ -4137,8 +4139,8 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
       runningDue = Math.max(0, runningDue + settlement.creditDue);
       runningStoreCredit = Math.max(0, runningStoreCredit - storeCreditUsed);
       saleTotal = amount;
-      statementDescription = `Sale Invoice #${tx.invoiceNo || tx.id.slice(-6)} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${getTransactionProductSummary(tx)} (Total ${formatINRPrecise(amount)}, Paid ${formatINRPrecise(settlement.cashPaid + settlement.onlinePaid)}, Due +${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? `, Used SC ${formatINRPrecise(storeCreditUsed)}` : ''})`;
-      listDescription = `${getTransactionProductSummary(tx)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Sale ${formatINRPrecise(amount)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Cash ${formatINRPrecise(settlement.cashPaid)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Online ${formatINRPrecise(settlement.onlinePaid)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Due ${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Used SC ${formatINRPrecise(storeCreditUsed)}` : ''}`;
+      statementDescription = `Sale Invoice #${tx.invoiceNo || tx.id.slice(-6)} — ${getTransactionProductSummary(tx)} (Total ${formatINRPrecise(amount)}, Paid ${formatINRPrecise(settlement.cashPaid + settlement.onlinePaid)}, Due +${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? `, Used SC ${formatINRPrecise(storeCreditUsed)}` : ''})`;
+      listDescription = `${getTransactionProductSummary(tx)} · Sale ${formatINRPrecise(amount)} · Cash ${formatINRPrecise(settlement.cashPaid)} · Online ${formatINRPrecise(settlement.onlinePaid)} · Due ${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? ` · Used SC ${formatINRPrecise(storeCreditUsed)}` : ''}`;
     } else if (txKind === 'payment') {
       const explicitApplied = Math.max(0, Number((tx as any).paymentAppliedToReceivable || 0));
       const explicitStoreCredit = Math.max(0, Number((tx as any).storeCreditCreated || 0));
@@ -4153,21 +4155,21 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
       paymentAmount = amount;
       const dueLabel = explicitCustomOrderApplied > 0 ? 'Due/custom order' : 'Due';
       statementDescription = `Payment Receipt #${tx.receiptNo || tx.id.slice(-6)} (${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)}, Due -${formatINRPrecise(dueReduced)}${storeCreditAdded > 0 ? `, SC +${formatINRPrecise(storeCreditAdded)}` : ''})`;
-      listDescription = `${tx.paymentMethod || 'Cash'} payment ${formatINRPrecise(amount)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${dueLabel} -${formatINRPrecise(dueReduced)}${storeCreditAdded > 0 ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Store credit +${formatINRPrecise(storeCreditAdded)}` : ''}`;
+      listDescription = `${tx.paymentMethod || 'Cash'} payment ${formatINRPrecise(amount)} · ${dueLabel} -${formatINRPrecise(dueReduced)}${storeCreditAdded > 0 ? ` · Store credit +${formatINRPrecise(storeCreditAdded)}` : ''}`;
     } else if (txKind === 'return') {
       const allocation = getCanonicalReturnAllocation(tx, processed, runningDue);
       runningDue = Math.max(0, runningDue - allocation.dueReduction);
       runningStoreCredit = Math.max(0, runningStoreCredit + allocation.storeCreditIncrease);
-      statementDescription = `Credit Note #${tx.creditNoteNo || tx.id.slice(-6)} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${getTransactionProductSummary(tx)} (${allocation.mode.replace('_', ' ')}: Cash ${formatINRPrecise(allocation.cashRefund)}, Online ${formatINRPrecise(allocation.onlineRefund)}, Due -${formatINRPrecise(allocation.dueReduction)}, SC +${formatINRPrecise(allocation.storeCreditIncrease)})`;
-      listDescription = `Return ${allocation.mode.replace('_', ' ')} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Cash ${formatINRPrecise(allocation.cashRefund)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Online ${formatINRPrecise(allocation.onlineRefund)} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Due -${formatINRPrecise(allocation.dueReduction)}${allocation.storeCreditIncrease > 0 ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ SC +${formatINRPrecise(allocation.storeCreditIncrease)}` : ''}`;
+      statementDescription = `Credit Note #${tx.creditNoteNo || tx.id.slice(-6)} — ${getTransactionProductSummary(tx)} (${allocation.mode.replace('_', ' ')}: Cash ${formatINRPrecise(allocation.cashRefund)}, Online ${formatINRPrecise(allocation.onlineRefund)}, Due -${formatINRPrecise(allocation.dueReduction)}, SC +${formatINRPrecise(allocation.storeCreditIncrease)})`;
+      listDescription = `Return ${allocation.mode.replace('_', ' ')} · Cash ${formatINRPrecise(allocation.cashRefund)} · Online ${formatINRPrecise(allocation.onlineRefund)} · Due -${formatINRPrecise(allocation.dueReduction)}${allocation.storeCreditIncrease > 0 ? ` · SC +${formatINRPrecise(allocation.storeCreditIncrease)}` : ''}`;
     } else if (txKind === 'customer_credit') {
       runningDue = Math.max(0, runningDue + amount);
       statementDescription = String(tx.sourceRef || '').startsWith(ADVANCE_ORDER_DUE_REPAIR_PREFIX)
         ? `Advance Order Due Repair #${String(tx.sourceTransactionId || tx.sourceRef.replace(ADVANCE_ORDER_DUE_REPAIR_PREFIX, '')).slice(-6)} (+${formatINRPrecise(amount)})`
         : `Credit Created #${tx.receiptNo || tx.id.slice(-6)} (${formatINRPrecise(amount)})`;
       listDescription = String(tx.sourceRef || '').startsWith(ADVANCE_ORDER_DUE_REPAIR_PREFIX)
-        ? `Advance Order Due Repair ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Due +${formatINRPrecise(amount)}`
-        : `Credit Created ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Due +${formatINRPrecise(amount)}`;
+        ? `Advance Order Due Repair · Due +${formatINRPrecise(amount)}`
+        : `Credit Created · Due +${formatINRPrecise(amount)}`;
     } else if (txKind === 'customer_cash_out') {
       const explicitStoreCreditUsed = Math.max(0, Number((tx as any).storeCreditUsed || 0));
       const storeCreditUsed = Math.min(explicitStoreCreditUsed, amount, runningStoreCredit);
@@ -4175,7 +4177,7 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
       runningStoreCredit = Math.max(0, runningStoreCredit - storeCreditUsed);
       runningDue = Math.max(0, runningDue + receivableIncrease);
       statementDescription = `Customer Advance #${tx.receiptNo || tx.id.slice(-6)} (${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)})`;
-      listDescription = `Cash Given ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)}${storeCreditUsed > 0 ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Store credit used ${formatINRPrecise(storeCreditUsed)}` : ''} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Due +${formatINRPrecise(receivableIncrease)}`;
+      listDescription = `Cash Given · ${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)}${storeCreditUsed > 0 ? ` · Store credit used ${formatINRPrecise(storeCreditUsed)}` : ''} · Due +${formatINRPrecise(receivableIncrease)}`;
     } else {
       statementDescription = `Historical Reference #${tx.id.slice(-6)} (unclassified)`;
       listDescription = `Historical reference row (unclassified)`;
@@ -4216,8 +4218,8 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
           saleTotal: Math.max(0, Number(effect.receivableIncrease || 0)),
           paymentAmount: groupedCredit,
           netAfter: runningDue - runningStoreCredit,
-          statementDescription: `Custom Order #${effect.orderId.slice(-6)} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${effect.productName} (Total ${formatINRPrecise(effect.receivableIncrease)}${groupedCredit > 0 ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Initial Paid ${formatINRPrecise(groupedCredit)}` : ''} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Remaining ${formatINRPrecise(Math.max(0, Number(effect.receivableIncrease || 0) - groupedCredit))})`,
-          listDescription: `Custom Order ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${effect.productName} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Debit ${formatINRPrecise(effect.receivableIncrease)}${groupedCredit > 0 ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Credit ${formatINRPrecise(groupedCredit)}` : ''}`,
+          statementDescription: `Custom Order #${effect.orderId.slice(-6)} — ${effect.productName} (Total ${formatINRPrecise(effect.receivableIncrease)}${groupedCredit > 0 ? ` · Initial Paid ${formatINRPrecise(groupedCredit)}` : ''} · Remaining ${formatINRPrecise(Math.max(0, Number(effect.receivableIncrease || 0) - groupedCredit))})`,
+          listDescription: `Custom Order · ${effect.productName} · Debit ${formatINRPrecise(effect.receivableIncrease)}${groupedCredit > 0 ? ` · Credit ${formatINRPrecise(groupedCredit)}` : ''}`,
         });
       } else {
         if (consumedPaymentIds.has(effect.id)) return;
@@ -4231,8 +4233,8 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
           saleTotal: 0,
           paymentAmount: dec,
           netAfter: runningDue - runningStoreCredit,
-          statementDescription: `Custom Order Payment #${(effect.paymentId || effect.orderId).slice(-6)} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${effect.productName} (${effect.paymentMethod} ${formatINRPrecise(dec)})`,
-          listDescription: `Custom Order Payment ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${effect.productName} ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${effect.paymentMethod} ${formatINRPrecise(dec)}`,
+          statementDescription: `Custom Order Payment #${(effect.paymentId || effect.orderId).slice(-6)} — ${effect.productName} (${effect.paymentMethod} ${formatINRPrecise(dec)})`,
+          listDescription: `Custom Order Payment · ${effect.productName} · ${effect.paymentMethod} ${formatINRPrecise(dec)}`,
         });
       }
     });

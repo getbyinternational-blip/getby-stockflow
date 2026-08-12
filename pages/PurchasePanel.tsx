@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
 import { PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
@@ -34,8 +34,8 @@ type DraftLine = {
   stock: number;
   variant?: string;
   color?: string;
-  quantity: number | '';
-  unitCost: number | '';
+  quantity: number | '.';
+  unitCost: number | '.';
 };
 
 type PendingProductDraft = {
@@ -47,41 +47,41 @@ type PendingProductDraft = {
   hsn: string;
   variants: string[];
   colors: string[];
-  sellPrice: number | '';
+  sellPrice: number | '.';
 };
 
 type PendingVariantRow = { key: string; label: string; variant?: string; color?: string };
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const toNum = (v: number | '') => (v === '' ? 0 : Number(v));
+const toNum = (v: number | '.') => (v === '.' ? 0 : Number(v));
 const sanitizeAccountingNumberInput = (value: string, decimals = 2) => {
-  const normalized = String(value || '').replace(/[^\d.]/g, '');
+  const normalized = String(value || '.').replace(/[^\d.]/g, '.');
   const firstDotIndex = normalized.indexOf('.');
   const compact = firstDotIndex === -1
     ? normalized
-    : `${normalized.slice(0, firstDotIndex + 1)}${normalized.slice(firstDotIndex + 1).replace(/\./g, '')}`;
-  const [whole = '', fraction = ''] = compact.split('.');
-  if (!compact) return '';
+    : `${normalized.slice(0, firstDotIndex + 1)}${normalized.slice(firstDotIndex + 1).replace(/\./g, '.')}`;
+  const [whole = '.', fraction = '.'] = compact.split('.');
+  if (!compact) return '.';
   return compact.includes('.') ? `${whole}.${fraction.slice(0, decimals)}` : whole;
 };
 const parseAccountingNumber = (value: string) => {
-  if (value.trim() === '') return null;
+  if (value.trim() === '.') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 const formatNumber = (value: number, digits = 2) => value.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const formatLedgerNumber = (value: number) => value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const EMPTY_DASH = '\u2014';
-const DISPLAY_SEPARATOR = '·';
+const DISPLAY_SEPARATOR = '-';
 const formatDisplayText = (value: unknown, fallback = EMPTY_DASH) => sanitizeDisplayText(value, fallback);
-const fixPurchasePanelTextNode = (value: string) => value
-  .replace(/Ã¢â€ â€™|â†’/g, '→')
-  .replace(/Ã¢â‚¬â€|â€”/g, '—')
-  .replace(/Ã‚Â·|Â·|â€¢/g, ` ${DISPLAY_SEPARATOR} `)
-  .replace(/Ã—/g, '×')
-  .replace(/\s+·\s+/g, ` ${DISPLAY_SEPARATOR} `)
-  .replace(/(^|[\s(])\?(\d[\d,]*(?:\.\d{1,2})?)/g, '$1₹$2')
-  .replace(/Ã‚/g, '')
-  .replace(/\s+/g, ' ');
+const fixPurchasePanelTextNode = (value: string) => sanitizeDisplayText(value, EMPTY_DASH)
+  .replace(/\s*[·•]\s*/g, ` ${DISPLAY_SEPARATOR} `)
+  .replace(/\s*[—–]\s*/g, ` ${DISPLAY_SEPARATOR} `)
+  .replace(/\s*→\s*/g, ' -> ')
+  .replace(/\s*×\s*/g, ' x ')
+  .replace(/\b₹\s*/g, 'Rs. ')
+  .replace(/\s+/g, ' ')
+  .trim();
 const todayLabel = () => new Date().toLocaleDateString('en-GB');
 const toDateTimeLocalNow = () => {
   const d = new Date();
@@ -99,25 +99,25 @@ const parseDateTimeInput = (value: string) => {
   if (!parsed || Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
 };
-const normalizePartyName = (value?: string) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
-const partyMatchesCredit = (partyIds: Set<string>, creditEntry: { partyId?: string; partyName?: string }) => partyIds.has(String(creditEntry.partyId || '').trim());
+const normalizePartyName = (value?: string) => String(value || '.').trim().toLowerCase().replace(/\s+/g, ' ');
+const partyMatchesCredit = (partyIds: Set<string>, creditEntry: { partyId?: string; partyName?: string }) => partyIds.has(String(creditEntry.partyId || '.').trim());
 const makePendingBarcode = () => `PENDING-${Math.floor(100000 + Math.random() * 900000)}`;
-const normalizeText = (v?: string) => (v || '').trim();
+const normalizeText = (v?: string) => (v || '.').trim();
 const comboKey = (variant?: string, color?: string) => `${normalizeText(variant)}::${normalizeText(color)}`;
 const isPlaceholder = (v?: string) => {
   const t = normalizeText(v).toLowerCase();
   return !t || t === 'no variant' || t === 'no color' || t === '-';
 };
 const getPurchaseOrderThumbnail = (order: PurchaseOrder): string => {
-  const firstLine = Array.isArray(order.lines) ? order.lines.find((line) => String(line.image || '').trim()) : null;
-  return String(firstLine?.image || '').trim();
+  const firstLine = Array.isArray(order.lines) ? order.lines.find((line) => String(line.image || '.').trim()) : null;
+  return String(firstLine?.image || '.').trim();
 };
 const getPurchaseOrderDetailsText = (order: PurchaseOrder): string => {
   const lines = Array.isArray(order.lines) ? order.lines : [];
   if (!lines.length) return order.notes || '—';
   const parts = lines.slice(0, 2).map((line) => {
     const base = line.productName || 'Product';
-    const variant = [line.variant, line.color].map((value) => String(value || '').trim()).filter(Boolean).join(' / ');
+    const variant = [line.variant, line.color].map((value) => String(value || '.').trim()).filter(Boolean).join(' / ');
     return variant ? `${base} (${variant})` : base;
   });
   return parts.join(', ');
@@ -244,12 +244,12 @@ type PurchaseRepairDraft = {
   oldPayment?: SupplierPaymentLedgerEntry | null;
 };
 
-const normalizeSupplierNameForMatch = (value?: string) => normalizePartyName(value).replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-const normalizeSupplierPhoneForMatch = (value?: string) => String(value || '').replace(/\D/g, '');
-const normalizeSupplierGstForMatch = (value?: string) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+const normalizeSupplierNameForMatch = (value?: string) => normalizePartyName(value).replace(/[^a-z0-9\s]/g, '.').replace(/\s+/g, ' ').trim();
+const normalizeSupplierPhoneForMatch = (value?: string) => String(value || '.').replace(/\D/g, '.');
+const normalizeSupplierGstForMatch = (value?: string) => String(value || '.').trim().toUpperCase().replace(/[^A-Z0-9]/g, '.');
 const isMissingSupplierPhone = (value?: string) => {
-  const raw = String(value || '').trim().toLowerCase();
-  return !raw || raw === '-' || raw === 'â€”' || raw === 'na' || raw === 'n/a' || raw === 'none' || raw === 'null' || raw === 'undefined';
+  const raw = String(value || '.').trim().toLowerCase();
+  return !raw || raw === '-' || raw === '--' || raw === 'na' || raw === 'n/a' || raw === 'none' || raw === 'null' || raw === 'undefined';
 };
 const MAYURBHAI_MANUAL_MERGE = {
   canonicalPartyId: 'party-1777900371469-61499',
@@ -357,8 +357,8 @@ const buildDuplicatePurchasePartyReport = ({ parties, orders, supplierPayments, 
 
     const orderRefs = new Map<string, string[]>();
     orders.filter((order) => groupIds.has(order.partyId)).forEach((order) => {
-      const ref = String(order.billNumber || '').trim().toLowerCase();
-      const signature = ref ? `bill:${ref}` : `signature:${(order.orderDate || '').slice(0, 10)}:${Math.max(0, Number(order.totalAmount || 0)).toFixed(2)}`;
+      const ref = String(order.billNumber || '.').trim().toLowerCase();
+      const signature = ref ? `bill:${ref}` : `signature:${(order.orderDate || '.').slice(0, 10)}:${Math.max(0, Number(order.totalAmount || 0)).toFixed(2)}`;
       orderRefs.set(signature, [...(orderRefs.get(signature) || []), order.id]);
     });
     orderRefs.forEach((ids, key) => {
@@ -385,7 +385,7 @@ const buildDuplicatePurchasePartyReport = ({ parties, orders, supplierPayments, 
       );
       const diff = score(b, bTotals) - score(a, aTotals);
       if (diff !== 0) return diff;
-      return new Date(b.updatedAt || b.createdAt || '').getTime() - new Date(a.updatedAt || a.createdAt || '').getTime();
+      return new Date(b.updatedAt || b.createdAt || '.').getTime() - new Date(a.updatedAt || a.createdAt || '.').getTime();
     })[0];
     const mergedTotals = groupParties.reduce((acc, party) => addDuplicateTotals(acc, totalsByParty[party.id] || emptyDuplicateTotals()), emptyDuplicateTotals());
     const patchCounts = groupParties.reduce((acc, party) => {
@@ -447,8 +447,8 @@ const buildPendingVariantRows = (variants: string[], colors: string[]): PendingV
   const cleanVariants = variants.map(v => v.trim()).filter(Boolean);
   const cleanColors = colors.map(c => c.trim()).filter(Boolean);
   if (!cleanVariants.length && !cleanColors.length) return [{ key: comboKey(), label: 'Default' }];
-  if (cleanVariants.length && !cleanColors.length) return cleanVariants.map(v => ({ key: comboKey(v, ''), label: `${v} / Default`, variant: v }));
-  if (!cleanVariants.length && cleanColors.length) return cleanColors.map(c => ({ key: comboKey('', c), label: `Default / ${c}`, color: c }));
+  if (cleanVariants.length && !cleanColors.length) return cleanVariants.map(v => ({ key: comboKey(v, '.'), label: `${v} / Default`, variant: v }));
+  if (!cleanVariants.length && cleanColors.length) return cleanColors.map(c => ({ key: comboKey('.', c), label: `Default / ${c}`, color: c }));
   const rows: PendingVariantRow[] = [];
   cleanVariants.forEach(v => cleanColors.forEach(c => rows.push({ key: comboKey(v, c), label: `${v} / ${c}`, variant: v, color: c })));
   return rows;
@@ -507,8 +507,8 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-const formatVariantValue = (value?: string | null, fallback = 'â€”') => {
-  const trimmed = String(value || '').trim();
+const formatVariantValue = (value?: string | null, fallback = '--') => {
+  const trimmed = String(value || '.').trim();
   if (!trimmed) return fallback;
   return trimmed;
 };
@@ -544,14 +544,14 @@ function PurchaseHistoryCards({
               <SummaryCard label="Line Total" value={formatCurrency(lineTotal)} />
             </div>
             <div className="mt-2 text-[11px] text-slate-600">
-              Variant: <span className="font-medium text-slate-900">{formatVariantValue(row.variant, NO_VARIANT)}</span> Â· Color: <span className="font-medium text-slate-900">{formatVariantValue(row.color, NO_COLOR)}</span>
+              Variant: <span className="font-medium text-slate-900">{formatVariantValue(row.variant, NO_VARIANT)}</span> • Color: <span className="font-medium text-slate-900">{formatVariantValue(row.color, NO_COLOR)}</span>
             </div>
             <div className="mt-2 grid gap-1 text-[11px] text-slate-600">
-              <div>Party: <span className="font-medium text-slate-900">{row.partyName || 'â€”'}</span></div>
-              <div>Purchase Order: <span className="font-medium text-slate-900">{row.purchaseOrderLabel || row.purchaseOrderId || 'â€”'}</span></div>
-              <div>Reference: <span className="font-medium text-slate-900">{row.reference || 'â€”'}</span></div>
-              <div>Notes: <span className="font-medium text-slate-900">{row.notes || 'â€”'}</span></div>
-              <div>Paid: <span className="font-medium text-slate-900">?{formatNumber(Math.max(0, Number(row.orderPaid || 0)))}</span> Â· Remaining: <span className="font-medium text-slate-900">?{formatNumber(Math.max(0, Number(row.remainingPayable || 0)))}</span></div>
+              <div>Party: <span className="font-medium text-slate-900">{row.partyName || '--'}</span></div>
+              <div>Purchase Order: <span className="font-medium text-slate-900">{row.purchaseOrderLabel || row.purchaseOrderId || '--'}</span></div>
+              <div>Reference: <span className="font-medium text-slate-900">{row.reference || '--'}</span></div>
+              <div>Notes: <span className="font-medium text-slate-900">{row.notes || '--'}</span></div>
+              <div>Paid: <span className="font-medium text-slate-900">Rs.{formatNumber(Math.max(0, Number(row.orderPaid || 0)))}</span> • Remaining: <span className="font-medium text-slate-900">Rs.{formatNumber(Math.max(0, Number(row.remainingPayable || 0)))}</span></div>
             </div>
             <div className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
               {canEditRow ? 'Use Repair Center update to correct quantity, unit cost, average buy price, and linked payable impact.' : 'Edit/delete for purchase-order history will be handled from Purchase Orders.'}
@@ -578,7 +578,7 @@ function LegacyAuditHistoryCards({ productName, rows }: { productName: string; r
             <div className="text-slate-500">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
           </div>
           <div className="mt-2 rounded-xl border border-amber-200 bg-white px-3 py-2 text-[11px] text-amber-900">
-            Legacy-only history row â€” not part of canonical purchase ledger.
+            Legacy-only history row -- not part of canonical purchase ledger.
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-3">
             <SummaryCard label="Qty" value={formatNumber(Math.max(0, Number(row.quantity || 0)), 0)} />
@@ -587,9 +587,9 @@ function LegacyAuditHistoryCards({ productName, rows }: { productName: string; r
           </div>
           <div className="mt-2 grid gap-1 text-[11px] text-slate-600">
             <div>Purchase Order: <span className="font-medium text-slate-900">{row.purchaseOrderLabel || row.purchaseOrderId || 'Not linked'}</span></div>
-            <div>Party: <span className="font-medium text-slate-900">{row.partyName || 'â€”'}</span></div>
-            <div>Reference: <span className="font-medium text-slate-900">{row.reference || 'â€”'}</span></div>
-            <div>Notes: <span className="font-medium text-slate-900">{row.notes || 'â€”'}</span></div>
+            <div>Party: <span className="font-medium text-slate-900">{row.partyName || '--'}</span></div>
+            <div>Reference: <span className="font-medium text-slate-900">{row.reference || '--'}</span></div>
+            <div>Notes: <span className="font-medium text-slate-900">{row.notes || '--'}</span></div>
           </div>
         </div>
       ))}
@@ -597,14 +597,14 @@ function LegacyAuditHistoryCards({ productName, rows }: { productName: string; r
   );
 }
 
-function Modal({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({ open, title, onClose, children }: { open: boolean; title: React.ReactNode; onClose: () => void; children: React.ReactNode }) {
   useEscapeLayer(open, onClose, { priority: 80 });
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-6xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+          <div>{title}</div>
           <button onClick={onClose} className="rounded-full border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"><X className="h-4 w-4" /></button>
         </div>
         <div className="max-h-[84vh] overflow-auto p-5">{children}</div>
@@ -627,7 +627,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [parties, setParties] = useState<PurchaseParty[]>([]);
 
-  const [homeSearch, setHomeSearch] = useState('');
+  const [homeSearch, setHomeSearch] = useState('.');
   const [sortBy, setSortBy] = useState<'latest' | 'amount' | 'party'>('latest');
   const [filterBy, setFilterBy] = useState<'all' | PurchaseOrder['status']>('all');
   const [ordersPage, setOrdersPage] = useState(1);
@@ -636,39 +636,39 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [wizardStep, setWizardStep] = useState<WizardStep>('source');
   const [sourceMode, setSourceMode] = useState<SourceMode>('inventory');
 
-  const [productSearch, setProductSearch] = useState('');
+  const [productSearch, setProductSearch] = useState('.');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedVariantKeys, setSelectedVariantKeys] = useState<string[]>([]);
 
   const [newProductDraft, setNewProductDraft] = useState<PendingProductDraft>({
-    name: '',
-    category: '',
-    image: '',
-    description: '',
+    name: '.',
+    category: '.',
+    image: '.',
+    description: '.',
     barcode: makePendingBarcode(),
-    hsn: '',
+    hsn: '.',
     variants: [],
     colors: [],
-    sellPrice: '',
+    sellPrice: '.',
   });
-  const [newVariantInput, setNewVariantInput] = useState('');
-  const [newColorInput, setNewColorInput] = useState('');
+  const [newVariantInput, setNewVariantInput] = useState('.');
+  const [newColorInput, setNewColorInput] = useState('.');
 
-  const [partyId, setPartyId] = useState('');
-  const [notes, setNotes] = useState('');
-  const [billNumber, setBillNumber] = useState('');
-  const [billDate, setBillDate] = useState('');
-  const [gstPercent, setGstPercent] = useState<number | ''>('');
-  const [initialPaidAmount, setInitialPaidAmount] = useState<number | ''>('');
+  const [partyId, setPartyId] = useState('.');
+  const [notes, setNotes] = useState('.');
+  const [billNumber, setBillNumber] = useState('.');
+  const [billDate, setBillDate] = useState('.');
+  const [gstPercent, setGstPercent] = useState<number | '.'>('.');
+  const [initialPaidAmount, setInitialPaidAmount] = useState<number | '.'>('.');
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [pricingEntries, setPricingEntries] = useState<Record<string, DraftLine>>({});
 
-  const [newPartyName, setNewPartyName] = useState('');
-  const [newPartyPhone, setNewPartyPhone] = useState('');
-  const [newPartyGst, setNewPartyGst] = useState('');
-  const [newPartyLocation, setNewPartyLocation] = useState('');
-  const [newPartyContactPerson, setNewPartyContactPerson] = useState('');
-  const [newPartyNotes, setNewPartyNotes] = useState('');
+  const [newPartyName, setNewPartyName] = useState('.');
+  const [newPartyPhone, setNewPartyPhone] = useState('.');
+  const [newPartyGst, setNewPartyGst] = useState('.');
+  const [newPartyLocation, setNewPartyLocation] = useState('.');
+  const [newPartyContactPerson, setNewPartyContactPerson] = useState('.');
+  const [newPartyNotes, setNewPartyNotes] = useState('.');
   const [partyManagementTab, setPartyManagementTab] = useState<'list' | 'create'>('list');
   const [partyDuplicateWarning, setPartyDuplicateWarning] = useState<PurchaseParty | null>(null);
   const [showDuplicatePartyChecker, setShowDuplicatePartyChecker] = useState(false);
@@ -686,50 +686,50 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [paymentTargetOrder, setPaymentTargetOrder] = useState<PurchaseOrder | null>(null);
   const [paymentTargetParty, setPaymentTargetParty] = useState<PurchaseParty | null>(null);
   const [editingSupplierPaymentId, setEditingSupplierPaymentId] = useState<string | null>(null);
-  const [partialPaymentAmount, setPartialPaymentAmount] = useState<number | ''>('');
+  const [partialPaymentAmount, setPartialPaymentAmount] = useState<number | '.'>('.');
   const [partialPaymentMethod, setPartialPaymentMethod] = useState<'cash' | 'online'>('cash');
-  const [partialPaymentNote, setPartialPaymentNote] = useState('');
-  const [partyPaymentDate, setPartyPaymentDate] = useState('');
+  const [partialPaymentNote, setPartialPaymentNote] = useState('.');
+  const [partyPaymentDate, setPartyPaymentDate] = useState('.');
   const [partyPaymentError, setPartyPaymentError] = useState<string | null>(null);
   const [deletePartyError, setDeletePartyError] = useState<string | null>(null);
   const [expandedPartyId, setExpandedPartyId] = useState<string | null>(null);
   const [repairPartyDetailTab, setRepairPartyDetailTab] = useState<'overview' | 'ledger' | 'repair_history'>('overview');
-  const [purchaseRowsSearch, setPurchaseRowsSearch] = useState('');
+  const [purchaseRowsSearch, setPurchaseRowsSearch] = useState('.');
   const [purchaseRowsPartyFilter, setPurchaseRowsPartyFilter] = useState('all');
   const [purchaseRowsPaymentFilter, setPurchaseRowsPaymentFilter] = useState<'all' | 'paid' | 'partial' | 'unpaid'>('all');
   const [purchaseRowsRemainingFilter, setPurchaseRowsRemainingFilter] = useState<'all' | 'with_remaining' | 'cleared'>('all');
   const [purchaseRowsCreditFilter, setPurchaseRowsCreditFilter] = useState<'all' | 'with_credit_applied' | 'with_credit_created'>('all');
   const [purchaseRowsProductFilter, setPurchaseRowsProductFilter] = useState('all');
-  const [purchaseRowsFrom, setPurchaseRowsFrom] = useState('');
-  const [purchaseRowsTo, setPurchaseRowsTo] = useState('');
+  const [purchaseRowsFrom, setPurchaseRowsFrom] = useState('.');
+  const [purchaseRowsTo, setPurchaseRowsTo] = useState('.');
   const [purchaseRowsPage, setPurchaseRowsPage] = useState(1);
   const [purchaseViewProduct, setPurchaseViewProduct] = useState<Product | null>(null);
   const [purchaseHistoryEditTarget, setPurchaseHistoryEditTarget] = useState<{ productId: string; historyId: string } | null>(null);
-  const [purchaseHistoryEditQuantity, setPurchaseHistoryEditQuantity] = useState('');
-  const [purchaseHistoryEditUnitPrice, setPurchaseHistoryEditUnitPrice] = useState('');
-  const [purchaseHistoryEditAvgPrice, setPurchaseHistoryEditAvgPrice] = useState('');
+  const [purchaseHistoryEditQuantity, setPurchaseHistoryEditQuantity] = useState('.');
+  const [purchaseHistoryEditUnitPrice, setPurchaseHistoryEditUnitPrice] = useState('.');
+  const [purchaseHistoryEditAvgPrice, setPurchaseHistoryEditAvgPrice] = useState('.');
   const [purchaseHistoryEditError, setPurchaseHistoryEditError] = useState<string | null>(null);
   const [purchaseHistoryEditSubmitting, setPurchaseHistoryEditSubmitting] = useState(false);
   const [repairDryRunResult, setRepairDryRunResult] = useState<MissingProductPurchaseHistoryDryRunResult | null>(null);
-  const [repairRollbackPreviewDownloadedAt, setRepairRollbackPreviewDownloadedAt] = useState('');
+  const [repairRollbackPreviewDownloadedAt, setRepairRollbackPreviewDownloadedAt] = useState('.');
   const [isApplyingRepairSafePatches, setIsApplyingRepairSafePatches] = useState(false);
   const [repairApplyResult, setRepairApplyResult] = useState<ApplyMissingProductPurchaseHistorySafeRestoreResult | null>(null);
   const [purchaseRuntimeSearchOrderId, setPurchaseRuntimeSearchOrderId] = useState('po-admin-1781847887520');
   const [purchaseRuntimeSearchProductName, setPurchaseRuntimeSearchProductName] = useState('Breathe Right Nasal Strips - 26 Pcs');
   const [purchaseRuntimeSearchSupplierName, setPurchaseRuntimeSearchSupplierName] = useState('Jenilbhai');
-  const [purchaseRuntimeSearchProductId, setPurchaseRuntimeSearchProductId] = useState('');
-  const [purchaseRuntimeSearchPartyId, setPurchaseRuntimeSearchPartyId] = useState('');
-  const [purchaseRuntimeSearchAmount, setPurchaseRuntimeSearchAmount] = useState<number | ''>(49025);
-  const [purchaseRuntimeSearchQuantity, setPurchaseRuntimeSearchQuantity] = useState<number | ''>(19610);
-  const [purchaseRuntimeSearchDateFrom, setPurchaseRuntimeSearchDateFrom] = useState('');
+  const [purchaseRuntimeSearchProductId, setPurchaseRuntimeSearchProductId] = useState('.');
+  const [purchaseRuntimeSearchPartyId, setPurchaseRuntimeSearchPartyId] = useState('.');
+  const [purchaseRuntimeSearchAmount, setPurchaseRuntimeSearchAmount] = useState<number | '.'>(49025);
+  const [purchaseRuntimeSearchQuantity, setPurchaseRuntimeSearchQuantity] = useState<number | '.'>(19610);
+  const [purchaseRuntimeSearchDateFrom, setPurchaseRuntimeSearchDateFrom] = useState('.');
   const [purchaseRepairFinancialDate, setPurchaseRepairFinancialDate] = useState(toDateTimeLocalNow());
-  const [purchaseRepairReason, setPurchaseRepairReason] = useState('');
+  const [purchaseRepairReason, setPurchaseRepairReason] = useState('.');
   const [purchaseRepairError, setPurchaseRepairError] = useState<string | null>(null);
   const [purchaseRepairDraft, setPurchaseRepairDraft] = useState<PurchaseRepairDraft | null>(null);
   const [purchaseRepairPreview, setPurchaseRepairPreview] = useState<PurchaseRepairPreview | null>(null);
   const [purchaseRepairConfirmOpen, setPurchaseRepairConfirmOpen] = useState(false);
   const [purchaseRepairSubmitting, setPurchaseRepairSubmitting] = useState(false);
-  const [purchaseRuntimeSearchDateTo, setPurchaseRuntimeSearchDateTo] = useState('');
+  const [purchaseRuntimeSearchDateTo, setPurchaseRuntimeSearchDateTo] = useState('.');
   const [purchaseRuntimeSearchResult, setPurchaseRuntimeSearchResult] = useState<PurchaseOrderRuntimeSearchResult | null>(null);
   const [receiveTargetOrder, setReceiveTargetOrder] = useState<PurchaseOrder | null>(null);
   useEscapeLayer(isModalOpen, () => setIsModalOpen(false), { priority: 80 });
@@ -746,16 +746,16 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   useEscapeLayer(Boolean(purchaseViewProduct), () => setPurchaseViewProduct(null), { priority: 80 });
   useEscapeLayer(Boolean(purchaseHistoryEditTarget), () => {
     setPurchaseHistoryEditTarget(null);
-    setPurchaseHistoryEditQuantity('');
-    setPurchaseHistoryEditUnitPrice('');
-    setPurchaseHistoryEditAvgPrice('');
+    setPurchaseHistoryEditQuantity('.');
+    setPurchaseHistoryEditUnitPrice('.');
+    setPurchaseHistoryEditAvgPrice('.');
     setPurchaseHistoryEditError(null);
     setPurchaseHistoryEditSubmitting(false);
   }, { priority: 82 });
   useEscapeLayer(Boolean(repairDryRunResult), () => setRepairDryRunResult(null), { priority: 80 });
   useEscapeLayer(Boolean(purchaseRuntimeSearchResult), () => setPurchaseRuntimeSearchResult(null), { priority: 80 });
   const [receivePriceMethod, setReceivePriceMethod] = useState<ReceivePriceMethod>('no_change');
-  const [partyCreditToApply, setPartyCreditToApply] = useState<number | ''>('');
+  const [partyCreditToApply, setPartyCreditToApply] = useState<number | '.'>('.');
   const [partyCreditTouched, setPartyCreditTouched] = useState(false);
   const [purchaseCreditApplyError, setPurchaseCreditApplyError] = useState<string | null>(null);
 
@@ -769,7 +769,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       if (current instanceof Text) textNodes.push(current);
     }
     textNodes.forEach((node) => {
-      const original = node.textContent || '';
+      const original = node.textContent || '.';
       const cleaned = fixPurchasePanelTextNode(original);
       if (cleaned !== original) node.textContent = cleaned;
     });
@@ -891,14 +891,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         key: row.key,
         label: row.label,
         stock: 0,
-        quantity: '',
-        unitCost: '',
+        quantity: '.',
+        unitCost: '.',
         variant: row.variant,
         color: row.color,
       });
     }
-    if (selectedVariants.length > 0) return selectedVariants.map(v => pricingEntries[v.key] || { key: v.key, label: v.label, stock: v.stock, variant: v.variant, color: v.color, quantity: '', unitCost: '' });
-    return [pricingEntries['standalone'] || { key: 'standalone', label: 'Standalone product', stock: Math.max(0, selectedProduct?.stock || 0), variant: undefined, color: undefined, quantity: '', unitCost: '' }];
+    if (selectedVariants.length > 0) return selectedVariants.map(v => pricingEntries[v.key] || { key: v.key, label: v.label, stock: v.stock, variant: v.variant, color: v.color, quantity: '.', unitCost: '.' });
+    return [pricingEntries['standalone'] || { key: 'standalone', label: 'Standalone product', stock: Math.max(0, selectedProduct?.stock || 0), variant: undefined, color: undefined, quantity: '.', unitCost: '.' }];
   }, [sourceMode, selectedVariants, pricingEntries, pendingVariantRows]);
 
   const draftTotals = useMemo(() => activeLines.reduce((acc, line) => {
@@ -955,7 +955,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       updatedAt: group.latestOrderAt || group.latestPaymentAt || group.latestCreditAt || new Date().toISOString(),
     })), [duplicatePartyCheckReport]);
   const visibleParties = useMemo(() => [...canonicalPartyView.visibleParties, ...orphanStandaloneParties]
-    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')) || new Date(a.createdAt || '').getTime() - new Date(b.createdAt || '').getTime()), [canonicalPartyView, orphanStandaloneParties]);
+    .sort((a, b) => String(a.name || '.').localeCompare(String(b.name || '.')) || new Date(a.createdAt || '.').getTime() - new Date(b.createdAt || '.').getTime()), [canonicalPartyView, orphanStandaloneParties]);
   const visiblePartyById = useMemo(() => new Map(visibleParties.map((party) => [party.id, party])), [visibleParties]);
   const visiblePartyNameCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -979,7 +979,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     relatedIds: Set<string>,
     record: { partyId?: string; partyName?: string },
   ) => {
-    const normalizedPartyId = String(record.partyId || '').trim();
+    const normalizedPartyId = String(record.partyId || '.').trim();
     if (normalizedPartyId) return relatedIds.has(normalizedPartyId);
     const normalizedRecordName = normalizePurchasePartyNameForMatch(record.partyName);
     const normalizedPartyName = normalizePurchasePartyNameForMatch(party.name);
@@ -997,7 +997,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       .filter((entry) => partyRecordMatches(selectedParty, relatedIds, { partyId: entry.partyId, partyName: entry.partyName }))
       .reduce((sum, entry) => sum + Math.max(0, Number(entry.remainingAmount || 0)), 0);
   }, [partyId, visiblePartyById, canonicalPartyView, orders.length, visiblePartyNameCounts]);
-  const gstRateForPreview = gstPercent === '' ? 0 : Math.max(0, Number(gstPercent) || 0);
+  const gstRateForPreview = gstPercent === '.' ? 0 : Math.max(0, Number(gstPercent) || 0);
   const grossTotalPreview = useMemo(() => draftTotals.totalAmount + ((draftTotals.totalAmount * gstRateForPreview) / 100), [draftTotals.totalAmount, gstRateForPreview]);
   const initialPaidPreview = Math.max(0, Number(initialPaidAmount) || 0);
   const maxCreditUsablePreview = Math.max(0, Number((grossTotalPreview - initialPaidPreview).toFixed(2)));
@@ -1007,7 +1007,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
 
   useEffect(() => {
     if (!partyId) {
-      setPartyCreditToApply('');
+      setPartyCreditToApply('.');
       setPartyCreditTouched(false);
       return;
     }
@@ -1032,32 +1032,32 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const resetWizard = () => {
     setWizardStep('source');
     setSourceMode('inventory');
-    setProductSearch('');
+    setProductSearch('.');
     setSelectedProduct(null);
     setSelectedVariantKeys([]);
     setNewProductDraft({
-      name: '',
-      category: '',
-      image: '',
-      description: '',
+      name: '.',
+      category: '.',
+      image: '.',
+      description: '.',
       barcode: makePendingBarcode(),
-      hsn: '',
+      hsn: '.',
       variants: [],
       colors: [],
-      sellPrice: '',
+      sellPrice: '.',
     });
-    setNewVariantInput('');
-    setNewColorInput('');
-    setPartyId('');
-    setNotes('');
-    setBillNumber('');
-    setBillDate('');
-    setGstPercent('');
-    setInitialPaidAmount('');
+    setNewVariantInput('.');
+    setNewColorInput('.');
+    setPartyId('.');
+    setNotes('.');
+    setBillNumber('.');
+    setBillDate('.');
+    setGstPercent('.');
+    setInitialPaidAmount('.');
     setEditingOrderId(null);
     setPricingEntries({});
     setPurchaseRepairFinancialDate(toDateTimeLocalNow());
-    setPurchaseRepairReason('');
+    setPurchaseRepairReason('.');
     setPurchaseRepairError(null);
   };
 
@@ -1087,8 +1087,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           key: row.key,
           label: row.label,
           stock: 0,
-          quantity: '',
-          unitCost: '',
+          quantity: '.',
+          unitCost: '.',
           variant: row.variant,
           color: row.color,
         };
@@ -1101,8 +1101,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           stock: v.stock,
           variant: v.variant,
           color: v.color,
-          quantity: '',
-          unitCost: '',
+          quantity: '.',
+          unitCost: '.',
         };
       });
     }
@@ -1111,12 +1111,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   };
 
   const updatePricingEntry = (key: string, field: 'quantity' | 'unitCost', value: string) => {
-    const parsed = value === '' ? '' : Number(value);
+    const parsed = value === '.' ? '.' : Number(value);
     setPricingEntries(prev => ({
       ...prev,
       [key]: {
         ...prev[key],
-        [field]: Number.isNaN(parsed) ? '' : parsed,
+        [field]: Number.isNaN(parsed) ? '.' : parsed,
       }
     }));
   };
@@ -1144,19 +1144,19 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
+      const result = typeof reader.result === 'string' ? reader.result : '.';
       if (result) updateNewDraft({ image: result });
     };
     reader.readAsDataURL(file);
   };
 
   const resetPartyDraft = () => {
-    setNewPartyName('');
-    setNewPartyPhone('');
-    setNewPartyGst('');
-    setNewPartyLocation('');
-    setNewPartyContactPerson('');
-    setNewPartyNotes('');
+    setNewPartyName('.');
+    setNewPartyPhone('.');
+    setNewPartyGst('.');
+    setNewPartyLocation('.');
+    setNewPartyContactPerson('.');
+    setNewPartyNotes('.');
     setPartyDuplicateWarning(null);
   };
 
@@ -1196,12 +1196,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const startEditingParty = (party: PurchaseParty, openPopup = true) => {
     setPartyDuplicateWarning(null);
     setEditingPartyId(party.id);
-    setNewPartyName(party.name || '');
-    setNewPartyPhone(party.phone || '');
-    setNewPartyGst(party.gst || '');
-    setNewPartyLocation(party.location || '');
-    setNewPartyContactPerson(party.contactPerson || '');
-    setNewPartyNotes(party.notes || '');
+    setNewPartyName(party.name || '.');
+    setNewPartyPhone(party.phone || '.');
+    setNewPartyGst(party.gst || '.');
+    setNewPartyLocation(party.location || '.');
+    setNewPartyContactPerson(party.contactPerson || '.');
+    setNewPartyNotes(party.notes || '.');
     if (openPopup) setShowPartyPopup(true);
   };
 
@@ -1227,12 +1227,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       id: existingLineByBucket.get(comboKey(line.variant, line.color))?.id || `${line.key}-${idx}-${uid()}`,
       sourceType: sourceMode,
       productId: sourceMode === 'inventory'
-        ? String(selectedProduct?.id || '').trim()
+        ? String(selectedProduct?.id || '.').trim()
         : (
-          String(existingLineByBucket.get(comboKey(line.variant, line.color))?.productId || '').trim()
+          String(existingLineByBucket.get(comboKey(line.variant, line.color))?.productId || '.').trim()
           || `pending-product-${orderId}-${existingLineByBucket.get(comboKey(line.variant, line.color))?.id || `${line.key}-${idx}`}`
         ),
-      productName: sourceMode === 'inventory' ? (selectedProduct?.name || '') : newProductDraft.name,
+      productName: sourceMode === 'inventory' ? (selectedProduct?.name || '.') : newProductDraft.name,
       pendingProductBarcode: sourceMode === 'new' ? newProductDraft.barcode : undefined,
       pendingProductDraft: sourceMode === 'new' ? {
         barcode: newProductDraft.barcode,
@@ -1240,7 +1240,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         hsn: newProductDraft.hsn.trim() || undefined,
         variants: newProductDraft.variants,
         colors: newProductDraft.colors,
-        sellPrice: newProductDraft.sellPrice === '' ? undefined : Math.max(0, Number(newProductDraft.sellPrice) || 0),
+        sellPrice: newProductDraft.sellPrice === '.' ? undefined : Math.max(0, Number(newProductDraft.sellPrice) || 0),
         pricingMatrix: activeLines.map(d => ({
           variant: d.variant,
           color: d.color,
@@ -1263,7 +1263,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
 
     const now = effectiveAt || new Date().toISOString();
     const taxableAmount = Number(lines.reduce((s, l) => s + l.totalCost, 0).toFixed(2));
-    const gstRate = gstPercent === '' ? 0 : Math.max(0, Number(gstPercent) || 0);
+    const gstRate = gstPercent === '.' ? 0 : Math.max(0, Number(gstPercent) || 0);
     const gstAmount = Number(((taxableAmount * gstRate) / 100).toFixed(2));
     const initialPaid = Math.max(0, Number(initialPaidAmount) || 0);
     const latestData = loadData();
@@ -1336,7 +1336,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           kind: editingOrderId ? 'edit_purchase' : 'add_purchase',
           partyId: order.partyId,
           reason: purchaseRepairReason,
-          notes: order.notes || '',
+          notes: order.notes || '.',
           financialDate: order.effectiveAt || order.orderDate,
           creditToApply: finalCreditToApply,
           targetOrderId: existingOrder?.id,
@@ -1363,7 +1363,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     }
     const orderAfterApply = (loadData().purchaseOrders || []).find((o) => o.id === order.id);
     const orderHasPartyCreditPaymentHistory = Boolean(
-      orderAfterApply?.paymentHistory?.some((entry) => String(entry.method || '').toLowerCase() === 'party_credit' && Math.max(0, Number(entry.amount || 0)) > 0)
+      orderAfterApply?.paymentHistory?.some((entry) => String(entry.method || '.').toLowerCase() === 'party_credit' && Math.max(0, Number(entry.amount || 0)) > 0)
     );
     const creditApplyFailed = finalCreditToApply > 0 && (!applyResult || Math.max(0, Number(applyResult.appliedAmount || 0)) <= 0 || !orderHasPartyCreditPaymentHistory);
     if (creditApplyFailed) {
@@ -1374,7 +1374,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     if (!creditApplyFailed) {
       setIsModalOpen(false);
       resetWizard();
-      setPartyCreditToApply('');
+      setPartyCreditToApply('.');
       setPartyCreditTouched(false);
     }
     refresh();
@@ -1385,13 +1385,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     if (!first) return;
     setEditingOrderId(order.id);
     setPartyId(order.partyId);
-    setNotes(order.notes || '');
-    setBillNumber(order.billNumber || '');
-    setBillDate(order.billDate ? order.billDate.slice(0, 10) : '');
-    setGstPercent(order.gstPercent ?? '');
+    setNotes(order.notes || '.');
+    setBillNumber(order.billNumber || '.');
+    setBillDate(order.billDate ? order.billDate.slice(0, 10) : '.');
+    setGstPercent(order.gstPercent ?? '.');
     setInitialPaidAmount(Math.max(0, Number(order.totalPaid || 0)));
     setPartyCreditToApply(Number(((order.paymentHistory || []).reduce((sum, entry) => {
-      return String(entry.method || '').toLowerCase() === 'party_credit'
+      return String(entry.method || '.').toLowerCase() === 'party_credit'
         ? sum + Math.max(0, Number(entry.amount || 0))
         : sum;
     }, 0)).toFixed(2)));
@@ -1409,7 +1409,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       const rowMap = new Map<string, { key: string; variant?: string; color?: string; stock: number; label: string }>();
       getProductStockRows(product).forEach((row, idx) => {
         const key = `${product.id}-${idx}-${row.variant}-${row.color}`;
-        rowMap.set(`${row.variant || ''}__${row.color || ''}`, { key, variant: row.variant, color: row.color, stock: row.stock, label: `${row.variant} / ${row.color}` });
+        rowMap.set(`${row.variant || '.'}__${row.color || '.'}`, { key, variant: row.variant, color: row.color, stock: row.stock, label: `${row.variant} / ${row.color}` });
       });
       const selectedKeys: string[] = [];
       const seeded: Record<string, DraftLine> = {};
@@ -1427,7 +1427,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       }
       order.lines.forEach((line) => {
         if (!hasMeaningfulVariants) return;
-        const mapKey = `${line.variant || ''}__${line.color || ''}`;
+        const mapKey = `${line.variant || '.'}__${line.color || '.'}`;
         const row = rowMap.get(mapKey);
         if (!row) return;
         selectedKeys.push(row.key);
@@ -1450,15 +1450,15 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       const uniqueVariants = Array.from(new Set(lineVariants));
       const uniqueColors = Array.from(new Set(lineColors));
       setNewProductDraft({
-        name: first.productName || '',
-        category: first.category || '',
-        image: first.image || '',
-        description: first.pendingProductDraft?.description || '',
+        name: first.productName || '.',
+        category: first.category || '.',
+        image: first.image || '.',
+        description: first.pendingProductDraft?.description || '.',
         barcode: first.pendingProductBarcode || first.pendingProductDraft?.barcode || makePendingBarcode(),
-        hsn: first.pendingProductDraft?.hsn || '',
+        hsn: first.pendingProductDraft?.hsn || '.',
         variants: first.pendingProductDraft?.variants?.length ? first.pendingProductDraft.variants : uniqueVariants,
         colors: first.pendingProductDraft?.colors?.length ? first.pendingProductDraft.colors : uniqueColors,
-        sellPrice: first.pendingProductDraft?.sellPrice ?? '',
+        sellPrice: first.pendingProductDraft?.sellPrice ?? '.',
       });
       const seeded: Record<string, DraftLine> = {};
       order.lines.forEach((line) => {
@@ -1478,14 +1478,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
 
     setWizardStep('pricing');
     setPurchaseRepairFinancialDate(toDateTimeLocalValue(order.effectiveAt || order.orderDate || order.updatedAt));
-    setPurchaseRepairReason('');
+    setPurchaseRepairReason('.');
     setPurchaseRepairError(null);
     setIsModalOpen(true);
   };
 
   const openPurchaseDeleteRepair = (order: PurchaseOrder) => {
     setPurchaseRepairFinancialDate(toDateTimeLocalValue(order.effectiveAt || order.orderDate || order.updatedAt));
-    setPurchaseRepairReason('');
+    setPurchaseRepairReason('.');
     setPurchaseRepairError(null);
     try {
       const financialDate = parseDateTimeInput(toDateTimeLocalValue(order.effectiveAt || order.orderDate || order.updatedAt));
@@ -1493,8 +1493,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       const draft: PurchaseRepairDraft = {
         kind: 'delete_purchase',
         partyId: order.partyId,
-        reason: '',
-        notes: order.notes || '',
+        reason: '.',
+        notes: order.notes || '.',
         financialDate,
         targetOrderId: order.id,
         oldOrder: order,
@@ -1508,17 +1508,17 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   };
 
   const openSupplierPaymentEditModal = (payment: SupplierPaymentLedgerEntry) => {
-    const canonicalPartyId = canonicalPartyView.partyIdToCanonicalId.get(String(payment.partyId || '').trim()) || String(payment.partyId || '').trim();
+    const canonicalPartyId = canonicalPartyView.partyIdToCanonicalId.get(String(payment.partyId || '.').trim()) || String(payment.partyId || '.').trim();
     const party = visiblePartyById.get(canonicalPartyId) || null;
     if (!party) return;
     setPaymentTargetParty(party);
     setEditingSupplierPaymentId(payment.id);
     setPartialPaymentAmount(payment.amount);
     setPartialPaymentMethod(payment.method);
-    setPartialPaymentNote(payment.note || '');
+    setPartialPaymentNote(payment.note || '.');
     setPartyPaymentDate(toDateTimeLocalValue(payment.effectiveAt || payment.paidAt || payment.createdAt));
     setPartyPaymentError(null);
-    setPurchaseRepairReason('');
+    setPurchaseRepairReason('.');
     setPurchaseRepairError(null);
     setShowPartyPaymentPopup(true);
   };
@@ -1530,14 +1530,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       const draft: PurchaseRepairDraft = {
         kind: 'delete_supplier_payment',
         partyId: payment.partyId,
-        reason: '',
-        notes: payment.note || '',
+        reason: '.',
+        notes: payment.note || '.',
         financialDate,
         targetPaymentId: payment.id,
         oldPayment: payment,
       };
       setPurchaseRepairFinancialDate(toDateTimeLocalValue(payment.effectiveAt || payment.paidAt || payment.createdAt));
-      setPurchaseRepairReason('');
+      setPurchaseRepairReason('.');
       setPurchaseRepairError(null);
       setPurchaseRepairDraft(draft);
       setPurchaseRepairPreview(buildPurchaseRepairPreview(draft));
@@ -1578,7 +1578,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             status: 'cancelled' as const,
             effectiveAt: purchaseRepairDraft.financialDate,
             updatedAt: new Date().toISOString(),
-            notes: `${purchaseRepairDraft.oldOrder.notes || ''}${purchaseRepairDraft.oldOrder.notes ? ' | ' : ''}Repair deleted: ${purchaseRepairDraft.reason}`.trim(),
+            notes: `${purchaseRepairDraft.oldOrder.notes || '.'}${purchaseRepairDraft.oldOrder.notes ? ' | ' : '.'}Repair deleted: ${purchaseRepairDraft.reason}`.trim(),
           };
           await updatePurchaseOrder(nextOrder);
           break;
@@ -1616,7 +1616,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       setPurchaseRepairConfirmOpen(false);
       setPurchaseRepairDraft(null);
       setPurchaseRepairPreview(null);
-      setPurchaseRepairReason('');
+      setPurchaseRepairReason('.');
       setPurchaseRepairFinancialDate(toDateTimeLocalNow());
       setEditingSupplierPaymentId(null);
       setPaymentTargetParty(null);
@@ -1687,27 +1687,27 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const purchaseOrderDiagnosticRows = useMemo<PurchaseOrderDiagnosticRow[]>(() => {
     return diagnosticOrders
       .slice()
-      .sort((a, b) => new Date(b.orderDate || b.createdAt || '').getTime() - new Date(a.orderDate || a.createdAt || '').getTime())
+      .sort((a, b) => new Date(b.orderDate || b.createdAt || '.').getTime() - new Date(a.orderDate || a.createdAt || '.').getTime())
       .flatMap((order) => {
         const orderPaid = Math.max(0, Number(order.totalPaid || 0));
         const orderRemaining = Math.max(0, Number(order.remainingAmount ?? ((order.totalAmount || 0) - orderPaid)) || 0);
         const orderTotal = Math.max(0, Number(order.totalAmount || 0));
         const creditApplied = Math.max(0, (order.paymentHistory || []).reduce((sum, entry) => {
-          return sum + (String(entry.method || '').toLowerCase() === 'party_credit' ? Math.max(0, Number(entry.amount || 0)) : 0);
+          return sum + (String(entry.method || '.').toLowerCase() === 'party_credit' ? Math.max(0, Number(entry.amount || 0)) : 0);
         }, 0));
-        const paymentMethodLabel = Array.from(new Set((order.paymentHistory || []).map((entry) => String(entry.method || '').trim()).filter(Boolean))).join(', ') || (orderRemaining > 0 ? 'credit' : 'cash');
+        const paymentMethodLabel = Array.from(new Set((order.paymentHistory || []).map((entry) => String(entry.method || '.').trim()).filter(Boolean))).join(', ') || (orderRemaining > 0 ? 'credit' : 'cash');
         const partyReference = classifyPurchasePartyReference(canonicalPartyView, diagnosticParties, order.partyId);
         const partyFound = partyReference.status !== 'MISSING_PARTY';
         return (order.lines || []).map((line, lineIndex) => {
-          const productId = String(line.productId || '').trim();
-          const lineProductName = String(line.productName || '').trim();
+          const productId = String(line.productId || '.').trim();
+          const lineProductName = String(line.productName || '.').trim();
           const normalizedLineProductName = safeLower(lineProductName);
           const resolvedProduct = productId ? productById.get(productId) : undefined;
           const nameMatchedProducts = !resolvedProduct && normalizedLineProductName
-            ? (productsByNormalizedName.get(normalizedLineProductName) || []).filter((product) => String(product.id || '').trim() !== productId)
+            ? (productsByNormalizedName.get(normalizedLineProductName) || []).filter((product) => String(product.id || '.').trim() !== productId)
             : [];
           const suggestedProduct = nameMatchedProducts.length === 1 ? nameMatchedProducts[0] : undefined;
-          const matchingHistoryRows = resolvedProduct?.purchaseHistory?.filter((row) => String(row.purchaseOrderId || '').trim() === String(order.id || '').trim()) || [];
+          const matchingHistoryRows = resolvedProduct?.purchaseHistory?.filter((row) => String(row.purchaseOrderId || '.').trim() === String(order.id || '.').trim()) || [];
           const quantity = Math.max(0, Number(line.quantity || 0));
           const lineTotal = Math.max(0, Number(line.totalCost || (quantity * Number(line.unitCost || 0))));
           const qtyPerCtn = Number((line as any).piecesPerCartoon || (line as any).piecesPerCtn || (line as any).qtyPerCtn || 0);
@@ -1720,35 +1720,35 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           return {
             rowId: `${order.id}-${line.id || lineIndex}`,
             orderId: order.id,
-            orderDate: String(order.orderDate || order.createdAt || ''),
+            orderDate: String(order.orderDate || order.createdAt || '.'),
             orderStatus: order.status,
             orderTotal,
             orderPaid,
             orderRemaining,
-            orderPartyId: String(order.partyId || ''),
-            orderPartyName: String(order.partyName || ''),
+            orderPartyId: String(order.partyId || '.'),
+            orderPartyName: String(order.partyName || '.'),
             partyFound,
             partyReferenceStatus: partyReference.status,
             resolvedCanonicalPartyId: partyReference.canonicalPartyId,
             lineIndex,
-            lineId: String(line.id || ''),
+            lineId: String(line.id || '.'),
             productId,
             productName: String(line.productName || resolvedProduct?.name || suggestedProduct?.name || 'Unknown product'),
-            productImage: String(line.image || resolvedProduct?.image || suggestedProduct?.image || ''),
+            productImage: String(line.image || resolvedProduct?.image || suggestedProduct?.image || '.'),
             productFound: Boolean(resolvedProduct),
             linkReviewNeeded: linkReviewReason !== 'none',
             linkReviewReason,
-            matchedByNameProductId: String(suggestedProduct?.id || ''),
-            matchedByNameProductName: String(suggestedProduct?.name || ''),
-            resolvedProductName: String(resolvedProduct?.name || suggestedProduct?.name || ''),
+            matchedByNameProductId: String(suggestedProduct?.id || '.'),
+            matchedByNameProductName: String(suggestedProduct?.name || '.'),
+            resolvedProductName: String(resolvedProduct?.name || suggestedProduct?.name || '.'),
             resolvedProductStock: resolvedProduct
               ? Math.max(0, Number(resolvedProduct.stock || 0))
               : suggestedProduct
                 ? Math.max(0, Number(suggestedProduct.stock || 0))
                 : null,
             productHistoryLinked: matchingHistoryRows.length > 0,
-            variant: String(line.variant || ''),
-            color: String(line.color || ''),
+            variant: String(line.variant || '.'),
+            color: String(line.color || '.'),
             quantity,
             qtyPerCtn: Number.isFinite(qtyPerCtn) && qtyPerCtn > 0 ? qtyPerCtn : null,
             totalCtn: Number.isFinite(totalCtn) && totalCtn > 0 ? totalCtn : null,
@@ -1758,9 +1758,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             creditCreated: Math.max(0, Number((line as any).creditCreated || 0)),
             paymentStatus: orderRemaining <= 0 ? 'paid' : orderPaid > 0 ? 'partial' : 'unpaid',
             paymentMethodLabel,
-            createdBy: String(order.createdBy || order.updatedBy || ''),
-            source: String(line.sourceType || ''),
-            notes: String(order.notes || ''),
+            createdBy: String(order.createdBy || order.updatedBy || '.'),
+            source: String(line.sourceType || '.'),
+            notes: String(order.notes || '.'),
           } satisfies PurchaseOrderDiagnosticRow;
         });
       });
@@ -1872,7 +1872,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     const duplicateLedger = buildPurchasePartyLedger({ partyId: MAYURBHAI_MANUAL_MERGE.duplicatePartyId, purchaseOrders: orders, supplierPayments, partyCreditLedger });
     const purchaseOrdersToReassign = orders
       .filter((order) => order.partyId === MAYURBHAI_MANUAL_MERGE.duplicatePartyId)
-      .sort((a, b) => new Date(a.orderDate || a.createdAt || '').getTime() - new Date(b.orderDate || b.createdAt || '').getTime());
+      .sort((a, b) => new Date(a.orderDate || a.createdAt || '.').getTime() - new Date(b.orderDate || b.createdAt || '.').getTime());
     const simulatedOrders = orders.map((order) => {
       if (order.partyId !== MAYURBHAI_MANUAL_MERGE.duplicatePartyId || !canonicalParty) return order;
       return {
@@ -2090,7 +2090,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
 
   const purchaseRepairHistoryEntries = useMemo(
     () => expandedPartyId
-      ? (loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'purchase_party' && getRelatedPartyIdSet(expandedPartyId).has(String(entry.entityId || '').trim()))
+      ? (loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'purchase_party' && getRelatedPartyIdSet(expandedPartyId).has(String(entry.entityId || '.').trim()))
       : [],
     [expandedPartyId, canonicalPartyView, orders, supplierPayments, partyCreditLedger],
   );
@@ -2182,9 +2182,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
 
   const openPartyPaymentModal = (party: PurchaseParty) => {
     setPaymentTargetParty(party);
-    setPartialPaymentAmount('');
+    setPartialPaymentAmount('.');
     setPartialPaymentMethod('cash');
-    setPartialPaymentNote('');
+    setPartialPaymentNote('.');
     setPartyPaymentDate(repairMode ? toDateTimeLocalNow() : new Date().toISOString().slice(0, 10));
     setPartyPaymentError(null);
     setEditingSupplierPaymentId(null);
@@ -2274,9 +2274,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const deletePartySafely = async (party: PurchaseParty) => {
     setDeletePartyError(null);
     const relatedIds = getRelatedPartyIdSet(party.id);
-    const hasOrders = orders.some((o) => relatedIds.has(String(o.partyId || '').trim()));
-    const hasPayments = supplierPayments.some((p: any) => !p.deletedAt && relatedIds.has(String(p.partyId || '').trim()));
-    const hasCredits = partyCreditLedger.some((c: any) => relatedIds.has(String(c.partyId || '').trim()));
+    const hasOrders = orders.some((o) => relatedIds.has(String(o.partyId || '.').trim()));
+    const hasPayments = supplierPayments.some((p: any) => !p.deletedAt && relatedIds.has(String(p.partyId || '.').trim()));
+    const hasCredits = partyCreditLedger.some((c: any) => relatedIds.has(String(c.partyId || '.').trim()));
     if (hasOrders || hasPayments || hasCredits) {
       setDeletePartyError('This party has transactions and cannot be deleted.');
       return;
@@ -2299,9 +2299,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   };
   const closePurchaseHistoryEntryEdit = () => {
     setPurchaseHistoryEditTarget(null);
-    setPurchaseHistoryEditQuantity('');
-    setPurchaseHistoryEditUnitPrice('');
-    setPurchaseHistoryEditAvgPrice('');
+    setPurchaseHistoryEditQuantity('.');
+    setPurchaseHistoryEditUnitPrice('.');
+    setPurchaseHistoryEditAvgPrice('.');
     setPurchaseHistoryEditError(null);
     setPurchaseHistoryEditSubmitting(false);
   };
@@ -2373,7 +2373,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   }, [orders, products, purchaseHistoryEditTarget, purchaseViewProduct]);
   const openRepairDryRun = () => {
     setRepairApplyResult(null);
-    setRepairRollbackPreviewDownloadedAt('');
+    setRepairRollbackPreviewDownloadedAt('.');
     setRepairDryRunResult(repairMissingProductPurchaseHistoryRowsDryRun());
   };
   const openPurchaseRuntimeSearch = () => {
@@ -2383,8 +2383,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       supplierName: purchaseRuntimeSearchSupplierName,
       productId: purchaseRuntimeSearchProductId,
       partyId: purchaseRuntimeSearchPartyId,
-      amount: purchaseRuntimeSearchAmount === '' ? null : Number(purchaseRuntimeSearchAmount),
-      quantity: purchaseRuntimeSearchQuantity === '' ? null : Number(purchaseRuntimeSearchQuantity),
+      amount: purchaseRuntimeSearchAmount === '.' ? null : Number(purchaseRuntimeSearchAmount),
+      quantity: purchaseRuntimeSearchQuantity === '.' ? null : Number(purchaseRuntimeSearchQuantity),
       dateFrom: purchaseRuntimeSearchDateFrom,
       dateTo: purchaseRuntimeSearchDateTo,
     }));
@@ -2491,19 +2491,23 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     () => (expandedPartyId ? visibleParties.find((party) => party.id === expandedPartyId) || null : null),
     [expandedPartyId, visibleParties],
   );
+  const selectedRepairLedger = useMemo(
+    () => (expandedPartyId ? partyLedgers.get(expandedPartyId) || null : null),
+    [expandedPartyId, partyLedgers],
+  );
   const selectedRepairOrders = useMemo(
     () => expandedPartyId
       ? orders
-        .filter((order) => getRelatedPartyIdSet(expandedPartyId).has(String(order.partyId || '').trim()))
-        .sort((a, b) => new Date(b.effectiveAt || b.orderDate || b.createdAt || '').getTime() - new Date(a.effectiveAt || a.orderDate || a.createdAt || '').getTime())
+        .filter((order) => getRelatedPartyIdSet(expandedPartyId).has(String(order.partyId || '.').trim()))
+        .sort((a, b) => new Date(b.effectiveAt || b.orderDate || b.createdAt || '.').getTime() - new Date(a.effectiveAt || a.orderDate || a.createdAt || '.').getTime())
       : [],
     [expandedPartyId, orders, canonicalPartyView],
   );
   const selectedRepairPayments = useMemo(
     () => expandedPartyId
       ? supplierPayments
-        .filter((payment) => getRelatedPartyIdSet(expandedPartyId).has(String(payment.partyId || '').trim()) && !payment.deletedAt)
-        .sort((a, b) => new Date(b.effectiveAt || b.paidAt || b.createdAt || '').getTime() - new Date(a.effectiveAt || a.paidAt || a.createdAt || '').getTime())
+        .filter((payment) => getRelatedPartyIdSet(expandedPartyId).has(String(payment.partyId || '.').trim()) && !payment.deletedAt)
+        .sort((a, b) => new Date(b.effectiveAt || b.paidAt || b.createdAt || '.').getTime() - new Date(a.effectiveAt || a.paidAt || a.createdAt || '.').getTime())
       : [],
     [expandedPartyId, supplierPayments, canonicalPartyView],
   );
@@ -2519,13 +2523,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     const party = visibleParties.find((p) => p.id === expandedPartyId);
     if (!party) return null;
     const relatedIds = getRelatedPartyIdSet(party.id);
-    const partyOrders = (orders || []).filter((o) => relatedIds.has(String(o.partyId || '').trim())).map((o) => ({
+    const partyOrders = (orders || []).filter((o) => relatedIds.has(String(o.partyId || '.').trim())).map((o) => ({
       id: o.id, billNumber: o.billNumber, date: o.orderDate || o.createdAt, totalAmount: o.totalAmount, remainingAmount: o.remainingAmount, paymentHistory: o.paymentHistory || [],
     }));
-    const partyPayments = (supplierPayments || []).filter((p: any) => relatedIds.has(String(p.partyId || '').trim()) && !p.deletedAt).map((p: any) => ({
+    const partyPayments = (supplierPayments || []).filter((p: any) => relatedIds.has(String(p.partyId || '.').trim()) && !p.deletedAt).map((p: any) => ({
       id: p.id, voucherNo: p.voucherNo, date: p.paidAt || p.createdAt, amount: p.amount, paymentAppliedToPayable: p.paymentAppliedToPayable, payableApplied: p.payableApplied, partyCreditCreated: p.partyCreditCreated,
     }));
-    const partyCredits = (partyCreditLedger || []).filter((c: any) => relatedIds.has(String(c.partyId || '').trim())).map((c: any) => ({
+    const partyCredits = (partyCreditLedger || []).filter((c: any) => relatedIds.has(String(c.partyId || '.').trim())).map((c: any) => ({
       id: c.id, partyId: c.partyId, sourceRef: c.sourceVoucherNo || c.sourcePaymentId, amountCreated: c.amountCreated, remainingAmount: c.remainingAmount, usedAmount: c.usageHistory?.reduce((s: number, u: any) => s + Math.max(0, Number(u.amount || 0)), 0) || 0,
     }));
     const helperOutput = partyLedgers.get(party.id) || null;
@@ -2547,9 +2551,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
 
   const openPartialPaymentModal = (order: PurchaseOrder) => {
     setPaymentTargetOrder(order);
-    setPartialPaymentAmount('');
+    setPartialPaymentAmount('.');
     setPartialPaymentMethod('cash');
-    setPartialPaymentNote('');
+    setPartialPaymentNote('.');
     setShowPaymentPopup(true);
   };
 
@@ -2940,7 +2944,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             <div className="font-semibold">Status</div>
             <div className="mt-1">
               {duplicatePartyCheckReport.integrityIssueCount > 0
-                ? `${duplicatePartyCheckReport.duplicateGroupsFound} duplicate group${duplicatePartyCheckReport.duplicateGroupsFound === 1 ? '' : 's'} and ${duplicatePartyCheckReport.uniqueOrphanPartyIds} orphan party reference group${duplicatePartyCheckReport.uniqueOrphanPartyIds === 1 ? '' : 's'} found.`
+                ? `${duplicatePartyCheckReport.duplicateGroupsFound} duplicate group${duplicatePartyCheckReport.duplicateGroupsFound === 1 ? '.' : 's'} and ${duplicatePartyCheckReport.uniqueOrphanPartyIds} orphan party reference group${duplicatePartyCheckReport.uniqueOrphanPartyIds === 1 ? '.' : 's'} found.`
                 : 'No duplicate or orphan Purchase Party issues found.'}
             </div>
           </div>
@@ -3084,7 +3088,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           <div className="text-xs text-slate-500">Snapshot Name: {group.snapshotName || 'Unknown supplier snapshot'}</div>
                         </div>
                         <div className="text-xs text-slate-600">
-                          {group.purchaseOrderCount} purchase order{group.purchaseOrderCount === 1 ? '' : 's'} {'\u00B7'} {group.supplierPaymentCount} payment{group.supplierPaymentCount === 1 ? '' : 's'} {'\u00B7'} {group.partyCreditCount} credit entr{group.partyCreditCount === 1 ? 'y' : 'ies'}
+                          {group.purchaseOrderCount} purchase order{group.purchaseOrderCount === 1 ? '.' : 's'} {'\u00B7'} {group.supplierPaymentCount} payment{group.supplierPaymentCount === 1 ? '.' : 's'} {'\u00B7'} {group.partyCreditCount} credit entr{group.partyCreditCount === 1 ? 'y' : 'ies'}
                         </div>
                       </div>
                     </summary>
@@ -3185,7 +3189,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Purchase Parties</h1>
-            <p className="text-sm text-muted-foreground">Manage supplier profiles, payments, payable balances, and historical purchase ledgers in one merged view.</p>
+            {/* <p className="text-sm text-muted-foreground">Manage supplier profiles, payments, payable balances, and historical purchase ledgers in one merged view.</p> */}
             <div className="hidden flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold tracking-tight">Purchase Parties</h1>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${duplicatePartyCheckReport.duplicateGroupsFound > 0 ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
@@ -3195,7 +3199,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                 Party Issues: {duplicatePartyCheckReport.integrityIssueCount}
               </span>
             </div>
-            <p className="text-sm text-muted-foreground">Manage purchase parties, payable, credit, and party payment ledger. Purchases are now created from Inventory â†’ Add Purchase.</p>
+            {/* <p className="text-sm text-muted-foreground">Manage purchase parties, payable, credit, and party payment ledger. Purchases are now created from Inventory -&gt; Add Purchase.</p> */}
           </div>
           <div className="hidden flex-wrap gap-2">
             <Button size="sm" variant="outline" onClick={() => setShowDuplicatePartyChecker(true)}>
@@ -3243,7 +3247,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             {supplierMergeApplyStatus && (
               <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">
                 <div className="font-semibold">Supplier merge result</div>
-                <div className="mt-1">Applied: {supplierMergeApplyStatus.applied} Â· Skipped: {supplierMergeApplyStatus.skipped} Â· Failed: {supplierMergeApplyStatus.failed}</div>
+                <div className="mt-1">Applied: {supplierMergeApplyStatus.applied} • Skipped: {supplierMergeApplyStatus.skipped} • Failed: {supplierMergeApplyStatus.failed}</div>
                 {supplierMergeApplyStatus.message && <div className="mt-1 text-blue-700">{supplierMergeApplyStatus.message}</div>}
               </div>
             )}
@@ -3259,10 +3263,10 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         <div>
                           <div className="font-semibold text-slate-900">Duplicate group: {group.parties.map((party) => party.name).join(' / ')}</div>
                           <div className="mt-1 text-xs text-muted-foreground">Reasons: {group.reasons.join(', ')}</div>
-                          <div className="mt-1 text-xs text-slate-600">Canonical candidate: <span className="font-semibold">{canonical?.name || group.canonicalPartyId}</span> ({group.canonicalPartyId}) Â· {canonical?.phone || 'No phone'}</div>
+                          <div className="mt-1 text-xs text-slate-600">Canonical candidate: <span className="font-semibold">{canonical?.name || group.canonicalPartyId}</span> ({group.canonicalPartyId}) • {canonical?.phone || 'No phone'}</div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${group.safeToMerge ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{group.safeToMerge ? 'Safe to merge' : 'Unsafe â€” review risks'}</span>
+                          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${group.safeToMerge ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>{group.safeToMerge ? 'Safe to merge' : 'Unsafe -- review risks'}</span>
                           <Button
                             size="sm"
                             variant={group.safeToMerge ? 'default' : 'outline'}
@@ -3286,7 +3290,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           <tbody>
                             {group.parties.map((party) => {
                               const totals = group.totalsByParty[party.id] || emptyDuplicateTotals();
-                              return <tr key={party.id} className="border-t"><td className="p-2 font-medium">{party.name}</td><td className="p-2">{party.phone || 'â€”'}</td><td className="p-2 font-mono text-[11px]">{party.id}</td><td className="p-2 text-right">?{formatNumber(totals.totalPurchase)}</td><td className="p-2 text-right">?{formatNumber(totals.totalSupplierPayments)}</td><td className="p-2 text-right">?{formatNumber(totals.creditRemaining)}</td></tr>;
+                              return <tr key={party.id} className="border-t"><td className="p-2 font-medium">{party.name}</td><td className="p-2">{party.phone || '--'}</td><td className="p-2 font-mono text-[11px]">{party.id}</td><td className="p-2 text-right">Rs.{formatNumber(totals.totalPurchase)}</td><td className="p-2 text-right">Rs.{formatNumber(totals.totalSupplierPayments)}</td><td className="p-2 text-right">Rs.{formatNumber(totals.creditRemaining)}</td></tr>;
                             })}
                           </tbody>
                         </table>
@@ -3330,7 +3334,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             </div>
             <div className={`rounded-xl border p-3 text-xs ${manualMayurbhaiMergePreview.matchesExpected ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
               <div className="font-semibold">{manualMayurbhaiMergePreview.matchesExpected ? 'Preview matches expected Mayurbhai merge totals. Confirm Merge is enabled.' : 'Confirm Merge blocked until every expected value matches.'}</div>
-              <div className="mt-1">Expected: purchases ?{formatNumber(MAYURBHAI_MANUAL_MERGE.expectedTotalPurchases)} Â· payments ?{formatNumber(MAYURBHAI_MANUAL_MERGE.expectedPayments)} Â· net payable ?{formatNumber(MAYURBHAI_MANUAL_MERGE.expectedNetPayable)} Â· orders {MAYURBHAI_MANUAL_MERGE.expectedOrderCount}</div>
+              <div className="mt-1">Expected: purchases Rs.{formatNumber(MAYURBHAI_MANUAL_MERGE.expectedTotalPurchases)} • payments Rs.{formatNumber(MAYURBHAI_MANUAL_MERGE.expectedPayments)} • net payable Rs.{formatNumber(MAYURBHAI_MANUAL_MERGE.expectedNetPayable)} • orders {MAYURBHAI_MANUAL_MERGE.expectedOrderCount}</div>
               {manualMayurbhaiMergePreview.validationMessages.length > 0 && (
                 <ul className="mt-2 list-disc pl-4">
                   {manualMayurbhaiMergePreview.validationMessages.map((message, idx) => <li key={`mayurbhai-validation-${idx}`}>{message}</li>)}
@@ -3340,7 +3344,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             {manualMayurbhaiMergeStatus && (
               <div className="rounded-xl border border-blue-200 bg-white p-3 text-xs text-blue-800">
                 <div className="font-semibold">Manual Mayurbhai merge result</div>
-                <div className="mt-1">Applied: {manualMayurbhaiMergeStatus.applied} Â· Skipped: {manualMayurbhaiMergeStatus.skipped} Â· Failed: {manualMayurbhaiMergeStatus.failed}</div>
+                <div className="mt-1">Applied: {manualMayurbhaiMergeStatus.applied} • Skipped: {manualMayurbhaiMergeStatus.skipped} • Failed: {manualMayurbhaiMergeStatus.failed}</div>
                 {manualMayurbhaiMergeStatus.message && <div className="mt-1">{manualMayurbhaiMergeStatus.message}</div>}
               </div>
             )}
@@ -3353,7 +3357,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   {manualMayurbhaiMergePreview.purchaseOrdersToReassign.map((order) => (
                     <tr key={order.id} className="border-t">
                       <td className="p-2 font-medium">{order.billNumber || order.id}<div className="font-mono text-[10px] text-muted-foreground">{order.id}</div></td>
-                      <td className="p-2">{order.orderDate || order.createdAt || 'â€”'}</td>
+                      <td className="p-2">{order.orderDate || order.createdAt || '--'}</td>
                       <td className="p-2">{order.partyName || MAYURBHAI_MANUAL_MERGE.duplicatePartyId}</td>
                       <td className="p-2 text-right">{formatCurrency(Number(order.totalAmount || 0))}</td>
                       <td className="p-2 text-right">{formatCurrency(Number(order.totalPaid || 0))}</td>
@@ -3382,7 +3386,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               {partyDuplicateWarning && !editingPartyId && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
                   <div className="font-semibold">Existing supplier found. Update existing supplier instead?</div>
-                  <div className="mt-1">{partyDuplicateWarning.name} Â· {partyDuplicateWarning.phone || 'No phone'} Â· ID {partyDuplicateWarning.id}</div>
+                  <div className="mt-1">{partyDuplicateWarning.name} • {partyDuplicateWarning.phone || 'No phone'} • ID {partyDuplicateWarning.id}</div>
                   <Button type="button" size="sm" variant="outline" className="mt-2" onClick={() => startEditingParty(partyDuplicateWarning, true)}>Open Existing Supplier</Button>
                 </div>
               )}
@@ -3397,41 +3401,45 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <div className="text-xs text-muted-foreground">{visibleParties.length} visible supplier parties</div>
             </CardHeader>
             <CardContent className="space-y-2">
+              <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(320px,1fr))]">
               {visibleParties.map(p => (
-                <div key={p.id} className="rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="font-medium">
-                      {p.name}
-                      {isHistoricalOnlyParty(p) && <span className="ml-2 text-[11px] font-normal text-amber-700">Historical only</span>}
-                    </div>
-                    <div className="flex gap-1">
+                <div key={p.id} className="h-full rounded-xl border bg-white p-4">
+                  <div className="grid h-full grid-rows-[auto_1fr_auto] gap-3">
+                    <div className="min-h-[2.75rem]">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium leading-snug text-slate-900">{p.name}</div>
+                          {isHistoricalOnlyParty(p) && <div className="mt-1 text-[11px] font-normal text-amber-700">Historical only</div>}
+                        </div>
+                        <div className="flex flex-wrap justify-end gap-1.5">
                       {repairMode && <Button type="button" variant="outline" size="sm" onClick={() => openCreateOrderForParty(p)} className="h-8 px-2 text-xs">Add Purchase</Button>}
                       <Button type="button" variant="outline" size="sm" onClick={() => openPartyPaymentModal(p)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p)}>{repairMode ? 'Add Supplier Payment' : 'Give Payment'}</Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => startEditingParty(p, true)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p)}><Pencil className="mr-1 h-3.5 w-3.5" />Edit</Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => void deletePartySafely(p)} className="h-8 px-2 text-xs text-red-600" disabled={isHistoricalOnlyParty(p)}><Trash2 className="mr-1 h-3.5 w-3.5" />Delete</Button>
+                        </div>
+                      </div>
+                    </div>
+                  <div className="grid content-start gap-2.5 sm:grid-cols-3">
+                    <div className={`rounded-lg border px-3 py-2 ${(partyLedgers.get(p.id)?.summary.netPayable || 0) > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Net Payable</div>
+                      <div className={`mt-1 text-sm font-semibold ${(partyLedgers.get(p.id)?.summary.netPayable || 0) > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{formatCurrency(partyLedgers.get(p.id)?.summary.netPayable || 0)}</div>
+                    </div>
+                    <div className="rounded-lg border bg-slate-50 px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Current Credit</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">{formatCurrency((partyLedgers.get(p.id)?.summary.currentCredit || partyLedgers.get(p.id)?.summary.ourCredit || 0))}</div>
+                    </div>
+                    <div className="rounded-lg border bg-slate-50 px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Total Purchase</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">{formatCurrency(partyFinancials.get(p.id)?.totalPurchase || 0)}</div>
                     </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">{p.phone || EMPTY_DASH} · GST: {p.gst || EMPTY_DASH} · {p.location || EMPTY_DASH}</div>
-                  <div className="text-xs text-muted-foreground">Contact: {p.contactPerson || EMPTY_DASH}</div>
-                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                    <SummaryCard label="Total Purchase" value={formatCurrency(partyFinancials.get(p.id)?.totalPurchase || 0)} />
-                    <SummaryCard label="Total Payments" value={formatCurrency(partyLedgers.get(p.id)?.summary.actualPayments || 0)} />
-                    <SummaryCard label="Payable Applied" value={formatCurrency(partyLedgers.get(p.id)?.summary.payableApplied || 0)} />
-                  </div>
-                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                    <SummaryCard label="Credit Created" value={formatCurrency(partyLedgers.get(p.id)?.summary.creditCreated || partyLedgers.get(p.id)?.summary.partyCreditCreated || 0)} />
-                    <SummaryCard label="Credit Applied" value={formatCurrency(partyLedgers.get(p.id)?.summary.creditUsed || partyLedgers.get(p.id)?.summary.partyCreditUsed || 0)} />
-                    <SummaryCard label="Current Payable" value={formatCurrency(partyLedgers.get(p.id)?.summary.currentPayable || partyLedgers.get(p.id)?.summary.grossPayable || partyLedgers.get(p.id)?.summary.remainingPayable || 0)} />
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                    <SummaryCard label="Current Credit" value={formatCurrency((partyLedgers.get(p.id)?.summary.currentCredit || partyLedgers.get(p.id)?.summary.ourCredit || 0))} />
-                    <SummaryCard label="Net Payable" value={formatCurrency(partyLedgers.get(p.id)?.summary.netPayable || 0)} />
-                  </div>
-                  <div className="mt-2">
+                  <div>
                     <Button size="sm" variant="outline" onClick={() => setExpandedPartyId((prev) => prev === p.id ? null : p.id)}>{expandedPartyId === p.id ? 'Hide Ledger' : 'View Ledger'}</Button>
                   </div>
                 </div>
+                </div>
               ))}
+              </div>
               {!visibleParties.length && <div className="text-sm text-muted-foreground">No parties yet.</div>}
               {deletePartyError && <div className="text-xs text-red-600">{deletePartyError}</div>}
             </CardContent>
@@ -3439,81 +3447,138 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           )}
         </div>
 
-        {expandedPartyId && (
-          <Card>
-            <CardHeader><CardTitle>Party Ledger</CardTitle></CardHeader>
-            <CardContent>
-              {!partyLedgerRows.length ? <div className="text-sm text-muted-foreground">No ledger rows available.</div> : (
-                <div className="overflow-auto rounded-xl border">
-                  {isPurchaseLedgerDebugEnabled && purchaseLedgerDebugPayload && (
-                    <div className="p-2 border-b">
-                      <Button size="sm" variant="outline" onClick={() => void navigator.clipboard.writeText(JSON.stringify(purchaseLedgerDebugPayload, null, 2))}>Copy Ledger Debug JSON</Button>
+        <Modal
+          open={!!expandedPartyId}
+          onClose={() => setExpandedPartyId(null)}
+          title={selectedRepairParty ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <div className="text-lg font-semibold text-slate-900">{selectedRepairParty.name} Ledger</div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-600">
+                <span>Phone: {selectedRepairParty.phone || 'Not set'}</span>
+                <span>GST: {selectedRepairParty.gst || 'Not set'}</span>
+                <span>Place: {selectedRepairParty.location || 'Not set'}</span>
+                <span>Contact: {selectedRepairParty.contactPerson || 'Not set'}</span>
+                {selectedRepairParty.notes && <span>Notes: {selectedRepairParty.notes}</span>}
+              </div>
+            </div>
+          ) : (
+            <div className="text-lg font-semibold text-slate-900">Party Ledger</div>
+          )}
+        >
+          {selectedRepairParty && (
+            <div className="space-y-4">
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.75fr)]">
+                <div className="space-y-3">
+                  <div className="sticky top-0 z-20 bg-white pb-3">
+                    <div className="rounded-xl border bg-slate-50/80 px-4 py-3 shadow-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-sm font-semibold text-slate-900">Purchases</div>
+                        <div className="flex flex-wrap gap-2">
+                          <div className="min-w-[112px] rounded-lg border border-slate-200 bg-white px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-500">Total Purchase</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">{formatLedgerNumber(partyFinancials.get(selectedRepairParty.id)?.totalPurchase || 0)}</div>
+                          </div>
+                          <div className={`min-w-[112px] rounded-lg border px-3 py-2 ${(partyLedgers.get(selectedRepairParty.id)?.summary.netPayable || 0) > 0 ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                            <div className={`text-[10px] uppercase tracking-wide ${(partyLedgers.get(selectedRepairParty.id)?.summary.netPayable || 0) > 0 ? 'text-amber-700/80' : 'text-emerald-700/80'}`}>Net Due</div>
+                            <div className={`mt-1 text-sm font-semibold ${(selectedRepairLedger?.summary.netPayable || 0) > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{formatLedgerNumber(selectedRepairLedger?.summary.netPayable || 0)}</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid grid-cols-[96px_minmax(220px,1fr)_72px_72px_72px_72px] gap-2 border-t border-slate-200 pt-3 text-xs font-semibold text-slate-900">
+                        <div>Date</div>
+                        <div>Product</div>
+                        <div className="text-right">Total</div>
+                        <div className="text-right">Cash</div>
+                        <div className="text-right">Online</div>
+                        <div className="text-right">Due</div>
+                      </div>
+                    </div>
+                  </div>
+                  {!selectedRepairOrders.length ? <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">No purchases yet for this party.</div> : (
+                    <div className="overflow-x-auto overflow-y-visible rounded-xl border [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                      <div className="min-w-[700px] divide-y text-xs">
+                        {selectedRepairOrders.map((order) => {
+                          const paymentHistory = Array.isArray(order.paymentHistory) ? order.paymentHistory : [];
+                          const cashPaid = paymentHistory.filter((entry) => entry.method === 'cash').reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
+                          const onlinePaid = paymentHistory.filter((entry) => entry.method === 'online' || entry.method === 'bank').reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
+                          const dueAmount = Math.max(0, Number(order.remainingAmount ?? ((Number(order.totalAmount || 0)) - (Number(order.totalPaid || 0)))));
+                          return (
+                            <div key={order.id} className="grid grid-cols-[96px_minmax(220px,1fr)_72px_72px_72px_72px] gap-2 px-2 py-3 [content-visibility:auto] [contain-intrinsic-size:96px]">
+                              <div className="self-center">{new Date(order.effectiveAt || order.orderDate || order.createdAt).toLocaleDateString('en-GB')}</div>
+                              <div className="space-y-2">
+                                {order.lines.map((line) => (
+                                  <div key={line.id} className="flex items-center gap-2">
+                                    <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded border bg-slate-50">
+                                      {line.image ? <img src={line.image} alt={line.productName} className="h-full w-full object-cover" loading="lazy" decoding="async" /> : <Package className="h-4 w-4 text-slate-400" />}
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="truncate font-medium text-slate-900">{line.productName || 'Unknown product'}</div>
+                                      <div className="text-[11px] text-slate-500">x {formatNumber(Math.max(0, Number(line.quantity || 0)), 0)}</div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="self-center text-right font-medium">{formatLedgerNumber(Number(order.totalAmount || 0))}</div>
+                              <div className="self-center text-right">{formatLedgerNumber(cashPaid)}</div>
+                              <div className="self-center text-right">{formatLedgerNumber(onlinePaid)}</div>
+                              <div className="self-center text-right">{formatLedgerNumber(dueAmount)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
-                  <table className="w-full text-xs">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="p-2 text-left">Date</th><th className="p-2 text-left">Type</th><th className="p-2 text-left">Reference</th><th className="p-2 text-left">Description</th>
-                        <th className="p-2 text-right">Purchase +</th><th className="p-2 text-right">Payment -</th><th className="p-2 text-right">Credit Applied</th><th className="p-2 text-right">Credit Created</th><th className="p-2 text-right">Running Payable</th><th className="p-2 text-right">Running Credit</th><th className="p-2 text-right">Net Payable</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {partyLedgerRows.map((row, idx) => (
-                        <tr key={`${row.reference}-${idx}`} className="border-t">
-                          <td className="p-2">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : 'â€”'}</td>
-                          <td className="p-2">{{ purchase: 'Purchase', supplier_payment: 'Payment', credit_used: 'Credit Applied', legacy_payment: 'Payment', edit_credit: 'Adjustment', reversal: 'Adjustment' }[row.type] || row.type || 'â€”'}</td>
-                          <td className="p-2">{row.reference || 'â€”'}</td>
-                          <td className="p-2">{row.description || 'â€”'}</td>
-                          <td className="p-2 text-right">{row.purchaseAmount ? formatCurrency(row.purchaseAmount) : EMPTY_DASH}</td>
-                          <td className="p-2 text-right">{row.paymentAmount ? formatCurrency(row.paymentAmount) : EMPTY_DASH}</td>
-                          <td className="p-2 text-right">{row.creditApplied ? formatCurrency(row.creditApplied) : EMPTY_DASH}</td>
-                          <td className="p-2 text-right">{row.creditCreated ? formatCurrency(row.creditCreated) : EMPTY_DASH}</td>
-                          <td className="p-2 text-right">?{formatNumber((row.runningPayable ?? row.grossPayable ?? row.runningGrossPayable) || 0)}</td>
-                          <td className="p-2 text-right">?{formatNumber((row.runningCredit ?? row.ourCredit ?? row.runningOurCredit) || 0)}</td>
-                          <td className="p-2 text-right font-semibold">?{formatNumber((row.netPayable ?? row.runningNetPayable) || 0)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
                 </div>
-              )}
-              {repairMode && expandedPartyId && (
-                <div className="mt-4 space-y-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">Supplier Payment Repairs</div>
-                    <div className="mt-2 space-y-2">
-                      {supplierPayments.filter((payment) => expandedPartyId && getRelatedPartyIdSet(expandedPartyId).has(String(payment.partyId || '').trim()) && !payment.deletedAt).map((payment) => (
-                        <div key={payment.id} className="flex items-center justify-between rounded-xl border px-3 py-2 text-sm">
-                          <div>
-                            <div className="font-medium text-slate-900">{payment.voucherNo || payment.id}</div>
-                            <div className="text-xs text-slate-500">{new Date(payment.effectiveAt || payment.paidAt || payment.createdAt).toLocaleString()} â€¢ ?{formatNumber(payment.amount)} â€¢ {payment.method}</div>
+                <div className="space-y-3">
+                  <div className="sticky top-0 z-20 bg-white pb-3">
+                    <div className="rounded-xl border bg-slate-50/80 px-4 py-3 shadow-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-sm font-semibold text-slate-900">Payments</div>
+                        <div className="flex flex-wrap gap-2">
+                        <div className={`min-w-[112px] rounded-lg border px-3 py-2 ${(selectedRepairLedger?.summary.actualPayments || 0) > 0 ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                            <div className={`text-[10px] uppercase tracking-wide ${(selectedRepairLedger?.summary.actualPayments || 0) > 0 ? 'text-emerald-700/80' : 'text-slate-500'}`}>Total Paid</div>
+                            <div className={`mt-1 text-sm font-semibold ${(selectedRepairLedger?.summary.actualPayments || 0) > 0 ? 'text-emerald-700' : 'text-slate-900'}`}>{formatLedgerNumber(selectedRepairLedger?.summary.actualPayments || 0)}</div>
                           </div>
-                          <div className="flex gap-2">
-                            <Button size="sm" variant="outline" onClick={() => openSupplierPaymentEditModal(payment)}>Edit</Button>
-                            <Button size="sm" variant="outline" className="text-red-600" onClick={() => openSupplierPaymentDeleteRepair(payment)}>Delete</Button>
+                          <div className="min-w-[84px] rounded-lg border border-slate-200 bg-white px-3 py-2">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-500">Entries</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">{formatNumber(selectedRepairPayments.length, 0)}</div>
                           </div>
                         </div>
-                      ))}
-                      {!supplierPayments.some((payment) => expandedPartyId && getRelatedPartyIdSet(expandedPartyId).has(String(payment.partyId || '').trim()) && !payment.deletedAt) && <div className="text-xs text-slate-500">No supplier payments yet for this party.</div>}
+                      </div>
+                      <div className={`mt-3 grid gap-2 border-t border-slate-200 pt-3 text-xs font-semibold text-slate-900 ${repairMode ? 'grid-cols-[100px_1fr_100px_110px]' : 'grid-cols-[100px_1fr_100px]'}`}>
+                        <div>Date</div>
+                        <div>Method</div>
+                        <div>Amount</div>
+                        {repairMode && <div>Actions</div>}
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">Repair History</div>
-                    <div className="mt-2 space-y-2">
-                      {purchaseRepairHistoryEntries.map((entry) => (
-                        <div key={entry.id} className="rounded-xl border px-3 py-2 text-sm">
-                          <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                          <div className="text-xs text-slate-500">{new Date(entry.createdAt).toLocaleString()} â€¢ {entry.adminEmail || 'Unknown'} â€¢ {entry.reason}</div>
-                        </div>
-                      ))}
-                      {!purchaseRepairHistoryEntries.length && <div className="text-xs text-slate-500">No repair history yet for this party.</div>}
+                  {!selectedRepairPayments.length ? <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">No payments yet for this party.</div> : (
+                    <div className="overflow-x-auto overflow-y-visible rounded-xl border [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+                      <div className="min-w-[360px] divide-y text-xs">
+                        {selectedRepairPayments.map((payment) => (
+                          <div key={payment.id} className={`grid gap-2 px-2 py-3 [content-visibility:auto] [contain-intrinsic-size:56px] ${repairMode ? 'grid-cols-[100px_1fr_100px_110px]' : 'grid-cols-[100px_1fr_100px]'}`}>
+                            <div className="self-center text-left">{new Date(payment.effectiveAt || payment.paidAt || payment.createdAt).toLocaleDateString('en-GB')}</div>
+                            <div className="self-center text-left">{(payment.method || 'cash').toUpperCase()}</div>
+                            <div className="self-center text-left font-medium">{formatLedgerNumber(Number(payment.amount || 0))}</div>
+                            {repairMode && (
+                              <div className="self-center">
+                                <div className="flex justify-start gap-2">
+                                  <Button size="sm" variant="outline" onClick={() => openSupplierPaymentEditModal(payment)}>Edit</Button>
+                                  <Button size="sm" variant="outline" className="text-red-600" onClick={() => openSupplierPaymentDeleteRepair(payment)}>Delete</Button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
+              </div>
+            </div>
+          )}
+        </Modal>
         <Card className="hidden">
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
@@ -3562,11 +3627,11 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   </div>
                   <div>
                     <Label>Amount</Label>
-                    <Input type="number" value={purchaseRuntimeSearchAmount} onChange={(e) => setPurchaseRuntimeSearchAmount(e.target.value === '' ? '' : Number(e.target.value))} placeholder="49025" />
+                    <Input type="number" value={purchaseRuntimeSearchAmount} onChange={(e) => setPurchaseRuntimeSearchAmount(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="49025" />
                   </div>
                   <div>
                     <Label>Quantity</Label>
-                    <Input type="number" value={purchaseRuntimeSearchQuantity} onChange={(e) => setPurchaseRuntimeSearchQuantity(e.target.value === '' ? '' : Number(e.target.value))} placeholder="19610" />
+                    <Input type="number" value={purchaseRuntimeSearchQuantity} onChange={(e) => setPurchaseRuntimeSearchQuantity(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="19610" />
                   </div>
                   <div>
                     <Label>Date From</Label>
@@ -3666,14 +3731,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                 <tbody>
                   {paginatedPurchaseDiagnosticRows.map((row) => (
                     <tr key={row.rowId} className="border-t align-top">
-                      <td className="p-2 whitespace-nowrap">{row.orderDate ? new Date(row.orderDate).toLocaleString() : 'â€”'}</td>
+                      <td className="p-2 whitespace-nowrap">{row.orderDate ? new Date(row.orderDate).toLocaleString() : '--'}</td>
                       <td className="p-2">
                         <div className="font-medium">{row.orderId}</div>
                         <div className="text-[10px] text-muted-foreground">Status: {row.orderStatus}</div>
                       </td>
                       <td className="p-2">
                         <div className="font-medium">{row.orderPartyName || 'Unknown party'}</div>
-                        <div className="font-mono text-[10px] text-muted-foreground">{row.orderPartyId || 'â€”'}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{row.orderPartyId || '--'}</div>
                       </td>
                       <td className="p-2">
                         <div className="flex items-start gap-2">
@@ -3688,8 +3753,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       </td>
                       <td className="p-2">{row.variant || 'No Variant'} / {row.color || 'No Color'}</td>
                       <td className="p-2 text-right">{formatNumber(row.quantity, 0)}</td>
-                      <td className="p-2 text-right">{row.qtyPerCtn ? formatNumber(row.qtyPerCtn, 0) : 'â€”'}</td>
-                      <td className="p-2 text-right">{row.totalCtn ? formatNumber(row.totalCtn, 0) : 'â€”'}</td>
+                      <td className="p-2 text-right">{row.qtyPerCtn ? formatNumber(row.qtyPerCtn, 0) : '--'}</td>
+                      <td className="p-2 text-right">{row.totalCtn ? formatNumber(row.totalCtn, 0) : '--'}</td>
                       <td className="p-2 text-right">{formatCurrency(row.unitCost)}</td>
                       <td className="p-2 text-right">{formatCurrency(row.lineTotal)}</td>
                       <td className="p-2 text-right">{formatCurrency(row.orderTotal)}</td>
@@ -3697,17 +3762,17 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       <td className="p-2 text-right">{formatCurrency(row.orderRemaining)}</td>
                       <td className="p-2">
                         <div className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.paymentStatus === 'paid' ? 'bg-emerald-100 text-emerald-700' : row.paymentStatus === 'partial' ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>{row.paymentStatus}</div>
-                        <div className="mt-1 text-[10px] text-muted-foreground">{row.paymentMethodLabel || 'â€”'}</div>
+                        <div className="mt-1 text-[10px] text-muted-foreground">{row.paymentMethodLabel || '--'}</div>
                       </td>
                       <td className="p-2 text-right">{formatCurrency(row.creditApplied)}</td>
                       <td className="p-2 text-right">{formatCurrency(row.creditCreated)}</td>
-                      <td className="p-2 font-mono text-[10px]">{row.orderPartyId || 'â€”'}</td>
-                      <td className="p-2 font-mono text-[10px]">{row.productId || 'â€”'}</td>
+                      <td className="p-2 font-mono text-[10px]">{row.orderPartyId || '--'}</td>
+                      <td className="p-2 font-mono text-[10px]">{row.productId || '--'}</td>
                       <td className="p-2">
-                        <div>{row.createdBy || 'â€”'}</div>
-                        <div className="text-[10px] text-muted-foreground">{row.source || 'â€”'}</div>
+                        <div>{row.createdBy || '--'}</div>
+                        <div className="text-[10px] text-muted-foreground">{row.source || '--'}</div>
                       </td>
-                      <td className="p-2 max-w-[180px] whitespace-pre-wrap break-words">{row.notes || 'â€”'}</td>
+                      <td className="p-2 max-w-[180px] whitespace-pre-wrap break-words">{row.notes || '--'}</td>
                       <td className="p-2">
                         <div className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.productFound ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{row.productFound ? 'Product found' : 'Product missing'}</div>
                         <div className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.productHistoryLinked ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{row.productHistoryLinked ? 'Canonical row linked' : 'Broken purchase link'}</div>
@@ -3721,9 +3786,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           {row.partyReferenceStatus === 'MISSING_PARTY'
                             ? 'Missing party master'
                             : row.partyReferenceStatus === 'MERGED_ALIAS'
-                              ? `Merged alias${row.resolvedCanonicalPartyId ? ` -> ${row.resolvedCanonicalPartyId}` : ''}`
+                              ? `Merged alias${row.resolvedCanonicalPartyId ? ` -> ${row.resolvedCanonicalPartyId}` : '.'}`
                               : row.partyReferenceStatus === 'HIDDEN_ALIAS'
-                                ? `Hidden alias${row.resolvedCanonicalPartyId ? ` -> ${row.resolvedCanonicalPartyId}` : ''}`
+                                ? `Hidden alias${row.resolvedCanonicalPartyId ? ` -> ${row.resolvedCanonicalPartyId}` : '.'}`
                                 : row.partyReferenceStatus === 'CANONICAL_PARTY'
                                   ? 'Canonical party record'
                                   : 'Active party record'}
@@ -3824,7 +3889,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                             <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" /> {date}</span>
                             <span className="inline-flex items-center gap-1"><User className="h-3.5 w-3.5" /> {order.partyPhone || 'No phone'}</span>
                           </div>
-                          <div className="text-xs text-slate-500 mt-1 line-clamp-1">Products: {productsLabel || 'â€”'}</div>
+                          <div className="text-xs text-slate-500 mt-1 line-clamp-1">Products: {productsLabel || '--'}</div>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:min-w-[430px]">
@@ -3894,9 +3959,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             {repairApplyResult && (
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
                 <div className="font-semibold">Safe restore result</div>
-                <div className="mt-1">Missing rows: {repairApplyResult.currentMissingCountBefore} Ã¢â€ â€™ {repairApplyResult.currentMissingCountAfter}. Current safe dry-run rows at apply start: {repairApplyResult.currentSafeCount}.</div>
-                <div className="mt-1">Applied: {repairApplyResult.appliedCount} Â· Skipped: {repairApplyResult.skippedCount} Â· Failed: {repairApplyResult.failedCount}</div>
-                <div className="mt-1">Purchase orders unchanged: {repairApplyResult.purchaseOrdersCountBefore} â†’ {repairApplyResult.purchaseOrdersCountAfter}. Transactions unchanged: {repairApplyResult.transactionsCountBefore} â†’ {repairApplyResult.transactionsCountAfter}.</div>
+                <div className="mt-1">Missing rows: {repairApplyResult.currentMissingCountBefore} -&gt; {repairApplyResult.currentMissingCountAfter}. Current safe dry-run rows at apply start: {repairApplyResult.currentSafeCount}.</div>
+                <div className="mt-1">Applied: {repairApplyResult.appliedCount} · Skipped: {repairApplyResult.skippedCount} · Failed: {repairApplyResult.failedCount}</div>
+                <div className="mt-1">Purchase orders unchanged: {repairApplyResult.purchaseOrdersCountBefore} -&gt; {repairApplyResult.purchaseOrdersCountAfter}. Transactions unchanged: {repairApplyResult.transactionsCountBefore} -&gt; {repairApplyResult.transactionsCountAfter}.</div>
                 {!!repairApplyResult.appliedPurchaseOrderIds.length && <div className="mt-1 break-words">Applied order IDs: {repairApplyResult.appliedPurchaseOrderIds.join(', ')}</div>}
                 {!!repairApplyResult.skipped.length && <div className="mt-1 break-words">Skipped: {repairApplyResult.skipped.map((item) => `${item.purchaseOrderId} (${item.reason})`).join(', ')}</div>}
                 {!!repairApplyResult.failed.length && <div className="mt-1 break-words">Failed: {repairApplyResult.failed.map((item) => `${item.purchaseOrderId} (${item.reason})`).join(', ')}</div>}
@@ -3906,11 +3971,11 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <div className="rounded-xl border bg-white p-3">
                 <div className="font-semibold text-slate-900">Correlation counts</div>
                 <div className="mt-2 space-y-2 text-xs text-slate-700">
-                  <div><span className="font-medium">By order source:</span> {Object.entries(repairDryRunResult.correlationCounts.byOrderSource).map(([key, value]) => `${key} ${value}`).join(' Â· ') || 'None'}</div>
-                  <div><span className="font-medium">By createdBy/source:</span> {Object.entries(repairDryRunResult.correlationCounts.byCreatedByOrSource).map(([key, value]) => `${key} ${value}`).join(' Â· ') || 'None'}</div>
-                  <div><span className="font-medium">By order id pattern:</span> {Object.entries(repairDryRunResult.correlationCounts.byOrderIdPattern).map(([key, value]) => `${key} ${value}`).join(' Â· ') || 'None'}</div>
-                  <div><span className="font-medium">By product id pattern:</span> {Object.entries(repairDryRunResult.correlationCounts.byProductIdPattern).map(([key, value]) => `${key} ${value}`).join(' Â· ') || 'None'}</div>
-                  <div><span className="font-medium">By date range:</span> {Object.entries(repairDryRunResult.correlationCounts.byDateRange).map(([key, value]) => `${key} ${value}`).join(' Â· ') || 'None'}</div>
+                  <div><span className="font-medium">By order source:</span> {Object.entries(repairDryRunResult.correlationCounts.byOrderSource).map(([key, value]) => `${key} ${value}`).join(' • ') || 'None'}</div>
+                  <div><span className="font-medium">By createdBy/source:</span> {Object.entries(repairDryRunResult.correlationCounts.byCreatedByOrSource).map(([key, value]) => `${key} ${value}`).join(' • ') || 'None'}</div>
+                  <div><span className="font-medium">By order id pattern:</span> {Object.entries(repairDryRunResult.correlationCounts.byOrderIdPattern).map(([key, value]) => `${key} ${value}`).join(' • ') || 'None'}</div>
+                  <div><span className="font-medium">By product id pattern:</span> {Object.entries(repairDryRunResult.correlationCounts.byProductIdPattern).map(([key, value]) => `${key} ${value}`).join(' • ') || 'None'}</div>
+                  <div><span className="font-medium">By date range:</span> {Object.entries(repairDryRunResult.correlationCounts.byDateRange).map(([key, value]) => `${key} ${value}`).join(' • ') || 'None'}</div>
                 </div>
               </div>
               <div className="rounded-xl border bg-white p-3">
@@ -3955,14 +4020,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           <div>{patch.partyName}</div>
                           <div className="font-mono text-[10px] text-muted-foreground">{patch.partyId}</div>
                         </td>
-                        <td className="p-2">{patch.date ? new Date(patch.date).toLocaleString() : 'â€”'}</td>
+                        <td className="p-2">{patch.date ? new Date(patch.date).toLocaleString() : '--'}</td>
                         <td className="p-2 text-right">{formatNumber(patch.quantity, 0)}</td>
                         <td className="p-2 text-right">{formatCurrency(patch.unitPrice)}</td>
                         <td className="p-2 text-right">{formatCurrency(patch.totalAmount)}</td>
-                        <td className="p-2 text-right">{patch.beforeHistoryCount} â†’ {patch.afterHistoryCount}</td>
+                        <td className="p-2 text-right">{patch.beforeHistoryCount} -&gt; {patch.afterHistoryCount}</td>
                         <td className="p-2">{patch.orderSource}</td>
                         <td className="p-2">{patch.createdByOrSource}</td>
-                        <td className="p-2">{patch.orderIdPattern} Â· {patch.productIdPattern}</td>
+                        <td className="p-2">{patch.orderIdPattern} • {patch.productIdPattern}</td>
                       </tr>
                     ))}
                     {!repairDryRunResult.safePatches.length && (
@@ -3992,11 +4057,11 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         <td className="p-2 font-mono">{patch.purchaseOrderId}</td>
                         <td className="p-2">
                           <div className="font-medium">{patch.productName}</div>
-                          <div className="font-mono text-[10px] text-muted-foreground">{patch.productId || 'â€”'}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{patch.productId || '--'}</div>
                         </td>
                         <td className="p-2">
                           <div>{patch.partyName}</div>
-                          <div className="font-mono text-[10px] text-muted-foreground">{patch.partyId || 'â€”'}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{patch.partyId || '--'}</div>
                         </td>
                         <td className="p-2 text-right">{formatCurrency(patch.totalAmount)}</td>
                         <td className="p-2">{patch.orderSource}</td>
@@ -4036,14 +4101,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             <div className="rounded-xl border bg-white p-3">
               <div className="font-semibold text-slate-900">Search criteria</div>
               <div className="mt-2 grid gap-2 text-xs text-slate-700 md:grid-cols-2 xl:grid-cols-4">
-                <div><span className="font-medium">Product:</span> {purchaseRuntimeSearchResult.criteria.productName || 'â€”'}</div>
-                <div><span className="font-medium">Supplier:</span> {purchaseRuntimeSearchResult.criteria.supplierName || 'â€”'}</div>
-                <div><span className="font-medium">Product ID:</span> {purchaseRuntimeSearchResult.criteria.productId || 'â€”'}</div>
-                <div><span className="font-medium">Party ID:</span> {purchaseRuntimeSearchResult.criteria.partyId || 'â€”'}</div>
+                <div><span className="font-medium">Product:</span> {purchaseRuntimeSearchResult.criteria.productName || '--'}</div>
+                <div><span className="font-medium">Supplier:</span> {purchaseRuntimeSearchResult.criteria.supplierName || '--'}</div>
+                <div><span className="font-medium">Product ID:</span> {purchaseRuntimeSearchResult.criteria.productId || '--'}</div>
+                <div><span className="font-medium">Party ID:</span> {purchaseRuntimeSearchResult.criteria.partyId || '--'}</div>
                 <div><span className="font-medium">Amount:</span> {purchaseRuntimeSearchResult.criteria.amount !== null ? formatCurrency(purchaseRuntimeSearchResult.criteria.amount) : EMPTY_DASH}</div>
-                <div><span className="font-medium">Quantity:</span> {purchaseRuntimeSearchResult.criteria.quantity !== null ? formatNumber(purchaseRuntimeSearchResult.criteria.quantity, 0) : 'â€”'}</div>
-                <div><span className="font-medium">Date From:</span> {purchaseRuntimeSearchResult.criteria.dateFrom || 'â€”'}</div>
-                <div><span className="font-medium">Date To:</span> {purchaseRuntimeSearchResult.criteria.dateTo || 'â€”'}</div>
+                <div><span className="font-medium">Quantity:</span> {purchaseRuntimeSearchResult.criteria.quantity !== null ? formatNumber(purchaseRuntimeSearchResult.criteria.quantity, 0) : '--'}</div>
+                <div><span className="font-medium">Date From:</span> {purchaseRuntimeSearchResult.criteria.dateFrom || '--'}</div>
+                <div><span className="font-medium">Date To:</span> {purchaseRuntimeSearchResult.criteria.dateTo || '--'}</div>
               </div>
             </div>
             <div className="rounded-xl border bg-white">
@@ -4071,7 +4136,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                     {purchaseRuntimeSearchResult.candidates.map((candidate) => (
                       <tr key={`${candidate.orderSource}-${candidate.purchaseOrderId}-${candidate.productId}-${candidate.partyId}-${candidate.date}`} className="border-t align-top">
                         <td className="p-2">
-                          <div className="font-mono">{candidate.purchaseOrderId || 'â€”'}</div>
+                          <div className="font-mono">{candidate.purchaseOrderId || '--'}</div>
                           <div className="mt-1 flex flex-wrap gap-1">
                             <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => void copyText(candidate.purchaseOrderId)} disabled={!candidate.purchaseOrderId}>Copy Order ID</Button>
                             <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => void copyText(candidate.productId)} disabled={!candidate.productId}>Copy Product ID</Button>
@@ -4080,21 +4145,21 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         </td>
                         <td className="p-2">
                           <div>{candidate.orderSource}</div>
-                          <div className="mt-1 text-[10px] text-muted-foreground">Root: {candidate.sameOrderAppearsInRootFallback ? 'yes' : 'no'} Â· Sub: {candidate.sameOrderAppearsInSubcollection ? 'yes' : 'no'}</div>
+                          <div className="mt-1 text-[10px] text-muted-foreground">Root: {candidate.sameOrderAppearsInRootFallback ? 'yes' : 'no'} • Sub: {candidate.sameOrderAppearsInSubcollection ? 'yes' : 'no'}</div>
                         </td>
                         <td className="p-2">
-                          <div>Primary: {candidate.date ? new Date(candidate.date).toLocaleString() : 'â€”'}</div>
-                          <div className="text-[10px] text-muted-foreground">orderDate: {candidate.orderDate || 'â€”'}</div>
-                          <div className="text-[10px] text-muted-foreground">createdAt: {candidate.createdAt || 'â€”'}</div>
-                          <div className="text-[10px] text-muted-foreground">updatedAt: {candidate.updatedAt || 'â€”'}</div>
+                          <div>Primary: {candidate.date ? new Date(candidate.date).toLocaleString() : '--'}</div>
+                          <div className="text-[10px] text-muted-foreground">orderDate: {candidate.orderDate || '--'}</div>
+                          <div className="text-[10px] text-muted-foreground">createdAt: {candidate.createdAt || '--'}</div>
+                          <div className="text-[10px] text-muted-foreground">updatedAt: {candidate.updatedAt || '--'}</div>
                         </td>
                         <td className="p-2">
-                          <div>{candidate.partyName || 'â€”'}</div>
-                          <div className="font-mono text-[10px] text-muted-foreground">{candidate.partyId || 'â€”'}</div>
+                          <div>{candidate.partyName || '--'}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{candidate.partyId || '--'}</div>
                         </td>
                         <td className="p-2">
-                          <div className="font-medium">{candidate.productName || 'â€”'}</div>
-                          <div className="font-mono text-[10px] text-muted-foreground">{candidate.productId || 'â€”'}</div>
+                          <div className="font-medium">{candidate.productName || '--'}</div>
+                          <div className="font-mono text-[10px] text-muted-foreground">{candidate.productId || '--'}</div>
                           <div className="text-[10px] text-muted-foreground">{candidate.variant || 'No Variant'} / {candidate.color || 'No Color'}</div>
                         </td>
                         <td className="p-2 text-right">{formatNumber(candidate.quantity, 0)}</td>
@@ -4102,7 +4167,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         <td className="p-2 text-right">{formatCurrency(candidate.total)}</td>
                         <td className="p-2 text-right">{formatCurrency(candidate.paid)}</td>
                         <td className="p-2 text-right">{formatCurrency(candidate.remaining)}</td>
-                        <td className="p-2">{candidate.status || 'â€”'}</td>
+                        <td className="p-2">{candidate.status || '--'}</td>
                         <td className="p-2">
                           <div className={`inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${candidate.productExists ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{candidate.productExists ? 'Product found' : 'Product missing'}</div>
                           <div className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${candidate.partyExists ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{candidate.partyExists ? 'Party found' : 'Party missing'}</div>
@@ -4127,7 +4192,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         ) : null}
       </Modal>
 
-      <Modal open={Boolean(purchaseViewProduct)} onClose={() => setPurchaseViewProduct(null)} title={purchaseViewProduct ? `Product Details Â· ${purchaseViewProduct.name}` : 'Product Details'}>
+      <Modal open={Boolean(purchaseViewProduct)} onClose={() => setPurchaseViewProduct(null)} title={purchaseViewProduct ? `Product Details • ${purchaseViewProduct.name}` : 'Product Details'}>
         {purchaseViewProduct ? (
           <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)]">
             <div className="overflow-hidden rounded-2xl border bg-slate-50">
@@ -4183,9 +4248,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               )}
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
                 <div><span className="font-semibold">Name:</span> {purchaseViewProduct.name}</div>
-                <div><span className="font-semibold">Barcode:</span> {getProductBarcode(purchaseViewProduct) || 'â€”'}</div>
-                <div><span className="font-semibold">Category:</span> {getProductCategory(purchaseViewProduct) || 'â€”'}</div>
-                <div><span className="font-semibold">Description:</span> {purchaseViewProduct.description || 'â€”'}</div>
+                <div><span className="font-semibold">Barcode:</span> {getProductBarcode(purchaseViewProduct) || '--'}</div>
+                <div><span className="font-semibold">Category:</span> {getProductCategory(purchaseViewProduct) || '--'}</div>
+                <div><span className="font-semibold">Description:</span> {purchaseViewProduct.description || '--'}</div>
               </div>
             </div>
           </div>
@@ -4239,7 +4304,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                 <div className="mt-2 grid gap-1 md:grid-cols-2">
                   <div>New line total: <span className="font-semibold text-slate-900">{formatCurrency(newTotal)}</span></div>
                   <div>Difference: <span className="font-semibold text-slate-900">{formatCurrency(newTotal - oldTotal)}</span></div>
-                  <div>Stock delta: <span className="font-semibold text-slate-900">{stockDelta >= 0 ? '+' : ''}{formatNumber(stockDelta, 0)}</span></div>
+                  <div>Stock delta: <span className="font-semibold text-slate-900">{stockDelta >= 0 ? '+' : '.'}{formatNumber(stockDelta, 0)}</span></div>
                   <div>Updated avg buy price: <span className="font-semibold text-slate-900">{formatCurrency(newAvgPrice)}</span></div>
                   <div>Estimated remaining payable: <span className="font-semibold text-slate-900">{formatCurrency(estimatedRemaining)}</span></div>
                   <div>Estimated overpayment credit: <span className="font-semibold text-slate-900">{formatCurrency(estimatedOverpaymentCredit)}</span></div>
@@ -4274,7 +4339,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       <Modal
         open={isModalOpen}
         onClose={() => { setIsModalOpen(false); resetWizard(); }}
-        title={wizardStep === 'source' ? 'Create Purchase Order' : wizardStep === 'product' ? 'Step 1 Â· Select Product' : wizardStep === 'variants' ? 'Step 2 Â· Select Variants' : wizardStep === 'pricing' ? 'Step 3 Â· Pricing & Party' : wizardStep === 'review' ? 'Step 4 Â· Review & Save' : 'Create New Product'}
+        title={wizardStep === 'source' ? 'Create Purchase Order' : wizardStep === 'product' ? 'Step 1 • Select Product' : wizardStep === 'variants' ? 'Step 2 • Select Variants' : wizardStep === 'pricing' ? 'Step 3 • Pricing & Party' : wizardStep === 'review' ? 'Step 4 • Review & Save' : 'Create New Product'}
       >
         {wizardStep !== 'source' && wizardStep !== 'newProduct' ? (
           <div className="mb-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -4323,7 +4388,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {filteredProducts.map(product => (
                 <button key={product.id} onClick={() => selectProduct(product)} className="overflow-hidden rounded-3xl border border-slate-200 text-left transition hover:-translate-y-0.5 hover:shadow-md">
-                  <img src={product.image || ''} alt={getProductName(product)} className="h-44 w-full object-cover" />
+                  <img src={product.image || '.'} alt={getProductName(product)} className="h-44 w-full object-cover" />
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div><h3 className="text-base font-semibold text-slate-900">{getProductName(product)}</h3><p className="text-sm text-slate-500">{getProductCategory(product)}</p></div>
@@ -4360,31 +4425,31 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   </div>
                   <div className="space-y-2">
                     <Input type="file" accept="image/*" onChange={handleNewProductImageUpload} className="text-xs" />
-                    <Input value={newProductDraft.image.startsWith('data:image/') ? '' : newProductDraft.image} onChange={e => updateNewDraft({ image: e.target.value })} placeholder="Optional image URL fallback" />
+                    <Input value={newProductDraft.image.startsWith('data:image/') ? '.' : newProductDraft.image} onChange={e => updateNewDraft({ image: e.target.value })} placeholder="Optional image URL fallback" />
                   </div>
                 </div>
               </div>
               <div className="md:col-span-2"><Label>Description</Label><textarea value={newProductDraft.description} onChange={e => updateNewDraft({ description: e.target.value })} className="w-full rounded-md border px-3 py-2 text-sm" rows={3} placeholder="Product details" /></div>
-              <div><Label>Default Sell Price (optional)</Label><Input type="number" value={newProductDraft.sellPrice} onChange={e => updateNewDraft({ sellPrice: e.target.value === '' ? '' : Number(e.target.value) })} placeholder="0.00" /></div>
+              <div><Label>Default Sell Price (optional)</Label><Input type="number" value={newProductDraft.sellPrice} onChange={e => updateNewDraft({ sellPrice: e.target.value === '.' ? '.' : Number(e.target.value) })} placeholder="0.00" /></div>
               <div className="text-xs text-slate-500 self-end">Buy price will be derived from purchase receive as per existing logic.</div>
               <div>
                 <Label>Add Variant</Label>
                 <div className="flex gap-2">
                   <Input value={newVariantInput} onChange={e => setNewVariantInput(e.target.value)} placeholder="e.g. 64GB" />
-                  <Button type="button" variant="outline" onClick={() => { addNewDraftToken('variants', newVariantInput); setNewVariantInput(''); }}>Add</Button>
+                  <Button type="button" variant="outline" onClick={() => { addNewDraftToken('variants', newVariantInput); setNewVariantInput('.'); }}>Add</Button>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {newProductDraft.variants.map(v => <button key={v} type="button" onClick={() => removeNewDraftToken('variants', v)} className="rounded-full border px-2 py-1 text-xs">{v} Ã—</button>)}
+                  {newProductDraft.variants.map(v => <button key={v} type="button" onClick={() => removeNewDraftToken('variants', v)} className="rounded-full border px-2 py-1 text-xs">{v} x</button>)}
                 </div>
               </div>
               <div>
                 <Label>Add Color</Label>
                 <div className="flex gap-2">
                   <Input value={newColorInput} onChange={e => setNewColorInput(e.target.value)} placeholder="e.g. Black" />
-                  <Button type="button" variant="outline" onClick={() => { addNewDraftToken('colors', newColorInput); setNewColorInput(''); }}>Add</Button>
+                  <Button type="button" variant="outline" onClick={() => { addNewDraftToken('colors', newColorInput); setNewColorInput('.'); }}>Add</Button>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1">
-                  {newProductDraft.colors.map(c => <button key={c} type="button" onClick={() => removeNewDraftToken('colors', c)} className="rounded-full border px-2 py-1 text-xs">{c} Ã—</button>)}
+                  {newProductDraft.colors.map(c => <button key={c} type="button" onClick={() => removeNewDraftToken('colors', c)} className="rounded-full border px-2 py-1 text-xs">{c} x</button>)}
                 </div>
               </div>
             </div>
@@ -4405,7 +4470,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           <div>
             <button onClick={() => setWizardStep('product')} className="mb-4 inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"><ArrowLeft className="h-4 w-4" /> Back</button>
             <div className="grid gap-5 lg:grid-cols-[280px_1fr]">
-              <div className="rounded-3xl border border-slate-200 p-4"><img src={selectedProduct.image || ''} alt={selectedProduct.name} className="h-48 w-full rounded-2xl object-cover" /><div className="mt-4"><h3 className="text-lg font-semibold text-slate-900">{selectedProduct.name}</h3><p className="text-sm text-slate-500">{selectedProduct.category}</p></div></div>
+              <div className="rounded-3xl border border-slate-200 p-4"><img src={selectedProduct.image || '.'} alt={selectedProduct.name} className="h-48 w-full rounded-2xl object-cover" /><div className="mt-4"><h3 className="text-lg font-semibold text-slate-900">{selectedProduct.name}</h3><p className="text-sm text-slate-500">{selectedProduct.category}</p></div></div>
               <div>
                 <div className="mb-4 flex items-center justify-between gap-3"><div><h4 className="text-base font-semibold text-slate-900">{selectableInventoryVariants.length ? 'Select Variants' : 'Standalone product'}</h4></div><div className="rounded-2xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700">{selectableInventoryVariants.length ? `${selectedVariantKeys.length} selected` : 'No variant selection required'}</div></div>
                 {selectableInventoryVariants.length > 0 ? <div className="grid gap-3 sm:grid-cols-2">
@@ -4443,8 +4508,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   <div><Label>Order Date</Label><div className="flex h-10 items-center gap-2 rounded-md border px-3 text-sm"><CalendarDays className="h-4 w-4" /> {todayLabel()}</div></div>
                   <div><Label>Bill Number</Label><Input value={billNumber} onChange={e => setBillNumber(e.target.value)} placeholder="Supplier invoice no." /></div>
                   <div><Label>Bill Date</Label><Input type="date" value={billDate} onChange={e => setBillDate(e.target.value)} /></div>
-                  <div><Label>GST %</Label><Input type="number" value={gstPercent} onChange={e => setGstPercent(e.target.value === '' ? '' : Number(e.target.value))} placeholder="e.g. 18" /></div>
-                  <div><Label>Initial Paid Amount</Label><Input type="number" value={initialPaidAmount} onChange={e => setInitialPaidAmount(e.target.value === '' ? '' : Number(e.target.value))} placeholder="e.g. 1000" /></div>
+                  <div><Label>GST %</Label><Input type="number" value={gstPercent} onChange={e => setGstPercent(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="e.g. 18" /></div>
+                  <div><Label>Initial Paid Amount</Label><Input type="number" value={initialPaidAmount} onChange={e => setInitialPaidAmount(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="e.g. 1000" /></div>
                   <div>
                     <Label>Apply Party Credit</Label>
                     <Input
@@ -4454,7 +4519,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       onChange={e => {
                         setPartyCreditTouched(true);
                         const nextRaw = e.target.value;
-                        if (nextRaw === '') return setPartyCreditToApply('');
+                        if (nextRaw === '.') return setPartyCreditToApply('.');
                         const next = Math.max(0, Number(nextRaw) || 0);
                         const capped = Math.min(next, selectedPartyCreditAvailable, maxCreditUsablePreview);
                         setPartyCreditToApply(Number(capped.toFixed(2)));
@@ -4473,9 +4538,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   <SummaryCard label="Total Amount" value={formatCurrency(draftTotals.totalAmount)} />
                   <SummaryCard label="Lines" value={formatNumber(activeLines.length, 0)} />
                   <SummaryCard label="Party" value={visiblePartyById.get(partyId)?.name || 'Not selected'} />
-                  <SummaryCard label="GST Amount" value={formatCurrency((draftTotals.totalAmount * (gstPercent === '' ? 0 : Number(gstPercent) || 0)) / 100)} />
-                  <SummaryCard label="Grand Total" value={formatCurrency(draftTotals.totalAmount + ((draftTotals.totalAmount * (gstPercent === '' ? 0 : Number(gstPercent) || 0)) / 100))} />
-                  <SummaryCard label="Initial Due" value={formatCurrency(Math.max(0, (draftTotals.totalAmount + ((draftTotals.totalAmount * (gstPercent === '' ? 0 : Number(gstPercent) || 0)) / 100)) - (initialPaidAmount === '' ? 0 : Number(initialPaidAmount) || 0)))} />
+                  <SummaryCard label="GST Amount" value={formatCurrency((draftTotals.totalAmount * (gstPercent === '.' ? 0 : Number(gstPercent) || 0)) / 100)} />
+                  <SummaryCard label="Grand Total" value={formatCurrency(draftTotals.totalAmount + ((draftTotals.totalAmount * (gstPercent === '.' ? 0 : Number(gstPercent) || 0)) / 100))} />
+                  <SummaryCard label="Initial Due" value={formatCurrency(Math.max(0, (draftTotals.totalAmount + ((draftTotals.totalAmount * (gstPercent === '.' ? 0 : Number(gstPercent) || 0)) / 100)) - (initialPaidAmount === '.' ? 0 : Number(initialPaidAmount) || 0)))} />
                 </div>
                 <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
                   <div className="text-xs font-semibold text-emerald-800">Supplier Party Credit Summary</div>
@@ -4501,7 +4566,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         <h4 className="text-base font-semibold text-slate-900">{line.label}</h4>
                         <p className="text-sm text-slate-500">
                           {sourceMode === 'new'
-                            ? `Variant: ${line.variant || 'Default'} Â· Color: ${line.color || 'Default'}`
+                            ? `Variant: ${line.variant || 'Default'} • Color: ${line.color || 'Default'}`
                             : `Current stock: ${line.stock}`}
                         </p>
                       </div>
@@ -4540,7 +4605,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                     <tbody>
                       {activeLines.map((line, i) => (
                         <tr key={`${line.key}-${i}`} className="border-b border-slate-100 last:border-b-0">
-                          <td className="px-4 py-3 font-medium text-slate-900">{sourceMode === 'inventory' ? (selectedProduct?.name || '') : newProductDraft.name}</td>
+                          <td className="px-4 py-3 font-medium text-slate-900">{sourceMode === 'inventory' ? (selectedProduct?.name || '.') : newProductDraft.name}</td>
                           <td className="px-4 py-3">{line.variant || 'Default'} / {line.color || 'Default'}</td>
                           <td className="px-4 py-3">{formatNumber(toNum(line.quantity), 0)}</td>
                           <td className="px-4 py-3">{formatCurrency(toNum(line.unitCost))}</td>
@@ -4554,17 +4619,17 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <div className="text-sm font-semibold text-slate-900">Order Summary</div>
                 <div className="mt-4 space-y-3">
-                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Party</div><div className="font-medium text-slate-900">{visiblePartyById.get(partyId)?.name || 'â€”'}</div></div>
-                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Party Details</div><div className="font-medium text-slate-900 text-sm">{visiblePartyById.get(partyId)?.phone || 'â€”'} Â· GST {visiblePartyById.get(partyId)?.gst || 'â€”'}</div></div>
-                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Location</div><div className="font-medium text-slate-900">{visiblePartyById.get(partyId)?.location || 'â€”'}</div></div>
-                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Bill</div><div className="font-medium text-slate-900 text-sm">{billNumber || 'â€”'} {billDate ? `â€¢ ${billDate}` : ''}</div></div>
+                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Party</div><div className="font-medium text-slate-900">{visiblePartyById.get(partyId)?.name || '--'}</div></div>
+                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Party Details</div><div className="font-medium text-slate-900 text-sm">{visiblePartyById.get(partyId)?.phone || '--'} • GST {visiblePartyById.get(partyId)?.gst || '--'}</div></div>
+                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Location</div><div className="font-medium text-slate-900">{visiblePartyById.get(partyId)?.location || '--'}</div></div>
+                  <div className="rounded-2xl bg-white p-3"><div className="text-xs text-slate-400">Bill</div><div className="font-medium text-slate-900 text-sm">{billNumber || '--'} {billDate ? `• ${billDate}` : '.'}</div></div>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <SummaryCard label="Total Qty" value={formatNumber(draftTotals.totalQty, 0)} />
                   <SummaryCard label="Lines" value={formatNumber(activeLines.length, 0)} />
                   <SummaryCard label="Total Amount" value={formatCurrency(draftTotals.totalAmount)} />
-                  <SummaryCard label="GST Amount" value={formatCurrency((draftTotals.totalAmount * (gstPercent === '' ? 0 : Number(gstPercent) || 0)) / 100)} />
-                  <SummaryCard label="Grand Total" value={formatCurrency(draftTotals.totalAmount + ((draftTotals.totalAmount * (gstPercent === '' ? 0 : Number(gstPercent) || 0)) / 100))} />
+                  <SummaryCard label="GST Amount" value={formatCurrency((draftTotals.totalAmount * (gstPercent === '.' ? 0 : Number(gstPercent) || 0)) / 100)} />
+                  <SummaryCard label="Grand Total" value={formatCurrency(draftTotals.totalAmount + ((draftTotals.totalAmount * (gstPercent === '.' ? 0 : Number(gstPercent) || 0)) / 100))} />
                   <SummaryCard label="Date" value={todayLabel()} />
                 </div>
                 <div className="mt-4 grid gap-2">
@@ -4602,7 +4667,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         {partyDuplicateWarning && !editingPartyId && (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
             <div className="font-semibold">Existing supplier found. Update existing supplier instead?</div>
-            <div className="mt-1">{partyDuplicateWarning.name} Â· {partyDuplicateWarning.phone || 'No phone'} Â· ID {partyDuplicateWarning.id}</div>
+            <div className="mt-1">{partyDuplicateWarning.name} • {partyDuplicateWarning.phone || 'No phone'} • ID {partyDuplicateWarning.id}</div>
             <Button type="button" size="sm" variant="outline" className="mt-2" onClick={() => startEditingParty(partyDuplicateWarning, true)}>Open Existing Supplier</Button>
           </div>
         )}
@@ -4653,10 +4718,10 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       <th className="p-2 border-b text-left">Product / Variant</th>
                       <th className="p-2 border-b text-right">Current</th>
                       <th className="p-2 border-b text-right">Incoming</th>
-                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'avg_method_1' ? 'bg-slate-100 font-semibold' : ''}`}>avg method 1</th>
-                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'avg_method_2' ? 'bg-slate-100 font-semibold' : ''}`}>avg method 2</th>
-                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'no_change' ? 'bg-slate-100 font-semibold' : ''}`}>no change</th>
-                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'latest_purchase' ? 'bg-slate-100 font-semibold' : ''}`}>latest purchase</th>
+                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'avg_method_1' ? 'bg-slate-100 font-semibold' : '.'}`}>avg method 1</th>
+                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'avg_method_2' ? 'bg-slate-100 font-semibold' : '.'}`}>avg method 2</th>
+                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'no_change' ? 'bg-slate-100 font-semibold' : '.'}`}>no change</th>
+                      <th className={`p-2 border-b text-right ${receivePriceMethod === 'latest_purchase' ? 'bg-slate-100 font-semibold' : '.'}`}>latest purchase</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4687,13 +4752,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       </Modal>
       <Modal open={showPartyPaymentPopup} onClose={() => setShowPartyPaymentPopup(false)} title={editingSupplierPaymentId ? 'Edit Supplier Payment' : (repairMode ? 'Add Supplier Payment' : 'Give Payment to Party')}>
         <div className="space-y-3">
-          <div className="text-sm">Party: <span className="font-semibold">{paymentTargetParty?.name || 'â€”'}</span></div>
+          <div className="text-sm">Party: <span className="font-semibold">{paymentTargetParty?.name || '--'}</span></div>
           <div className="grid grid-cols-3 gap-2">
             <SummaryCard label="Payable" value={formatCurrency(Math.max(0, Number(paymentTargetParty ? (partyFinancials.get(paymentTargetParty.id)?.remaining || 0) : 0)))} />
             <SummaryCard label="Current Credit" value={formatCurrency(Math.max(0, Number(paymentTargetParty ? (partyCreditsByPartyId.get(paymentTargetParty.id) || 0) : 0)))} />
             <SummaryCard label="Net Payable" value={formatCurrency(Math.max(0, Number(paymentTargetParty ? (partyFinancials.get(paymentTargetParty.id)?.remaining || 0) : 0) - Number(paymentTargetParty ? (partyCreditsByPartyId.get(paymentTargetParty.id) || 0) : 0)))} />
           </div>
-          <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '' ? '' : Number(e.target.value))} /></div>
+          <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '.' ? '.' : Number(e.target.value))} /></div>
           <div><Label>Method</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentMethod} onChange={e => setPartialPaymentMethod(e.target.value as 'cash' | 'online')}><option value="cash">Cash</option><option value="online">Online</option></select></div>
           <div><Label>{repairMode ? 'Financial Date' : 'Date'}</Label><Input type={repairMode ? 'datetime-local' : 'date'} value={partyPaymentDate} onChange={e => setPartyPaymentDate(e.target.value)} /></div>
           <div><Label>Note</Label><Input value={partialPaymentNote} onChange={e => setPartialPaymentNote(e.target.value)} placeholder="Optional note" /></div>
@@ -4705,8 +4770,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       <Modal open={showPaymentPopup} onClose={() => setShowPaymentPopup(false)} title="Pay Supplier Due">
         <div className="space-y-3">
           <div className="text-sm text-slate-700">Order: <span className="font-semibold">{paymentTargetOrder?.id}</span></div>
-          <div className={`text-sm ${getPaymentStatusColorClass('supplier due').replace('bg-orange-50 border-orange-200 ', '')}`}>Remaining: <span className="font-semibold">{formatCurrency(Math.max(0, Number(paymentTargetOrder?.remainingAmount ?? ((paymentTargetOrder?.totalAmount || 0) - (paymentTargetOrder?.totalPaid || 0)))) )}</span></div>
-          <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '' ? '' : Number(e.target.value))} /></div>
+          <div className={`text-sm ${getPaymentStatusColorClass('supplier due').replace('bg-orange-50 border-orange-200 ', '.')}`}>Remaining: <span className="font-semibold">{formatCurrency(Math.max(0, Number(paymentTargetOrder?.remainingAmount ?? ((paymentTargetOrder?.totalAmount || 0) - (paymentTargetOrder?.totalPaid || 0)))) )}</span></div>
+          <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '.' ? '.' : Number(e.target.value))} /></div>
           <div>
             <Label>Method</Label>
             <select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentMethod} onChange={e => setPartialPaymentMethod(e.target.value as 'cash' | 'online')}>
@@ -4772,5 +4837,8 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     </>
   );
 }
+
+
+
 
 

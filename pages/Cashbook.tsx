@@ -5,7 +5,7 @@ import { CashAdjustment, Expense, ManualCashbookEntry, Product, PurchaseOrder, T
 import { formatCurrency } from '../services/numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
-import { BanknoteArrowDown, BanknoteArrowUp, CreditCard, Receipt, ShoppingCart, Store, Truck, Wallet, X } from 'lucide-react';
+import { BanknoteArrowDown, BanknoteArrowUp, ChevronDown, CreditCard, Receipt, ShoppingCart, Store, Truck, Wallet, X } from 'lucide-react';
 import { ResolvedCostSource, resolveTransactionItemCost } from '../services/costResolution';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
@@ -16,6 +16,7 @@ type Row = {
   cashIn: number; cashOut: number; bankIn: number; bankOut: number;
   receivableIncrease: number; receivableDecrease: number; payableIncrease: number; payableDecrease: number;
   storeCreditIncrease: number; storeCreditDecrease: number;
+  itemPreviews?: Array<{ id: string; name: string; quantity: number; image?: string }>;
 };
 type GrossProfitRow = {
   id: string;
@@ -75,6 +76,14 @@ const getPurchaseOrderProductSummary = (po: PurchaseOrder, maxItems = 2): string
   const shown = names.slice(0, maxItems).join(', ');
   return names.length > maxItems ? `${shown} +${names.length - maxItems} more` : shown;
 };
+const getCashbookItemPreviews = (source: any, maxItems = 3) => normalizeTransactionItems(source?.items)
+  .slice(0, maxItems)
+  .map((item: any) => ({
+    id: String(item?.id || item?.productId || item?.sku || item?.barcode || item?.name || Math.random()),
+    name: getLineProductName(item),
+    quantity: Math.max(0, Number(item?.quantity || item?.qty || 0)),
+    image: String(item?.thumbnailImage || item?.image || ''),
+  }));
 const toNum = (v: unknown) => Number.isFinite(Number(v)) ? Number(v) : 0;
 const CASHBOOK_RECONCILE_DEBUG = import.meta.env.DEV && import.meta.env.VITE_CASHBOOK_RECONCILE_DEBUG === 'true';
 const formatPercent = (value: number) => `${Number.isFinite(value) ? value.toFixed(1) : '0.0'}%`;
@@ -109,6 +118,30 @@ const getSupplierPaymentMethod = (method: unknown): 'cash' | 'online' => {
   const normalized = String(method || '').toLowerCase();
   return normalized === 'online' || normalized === 'bank' ? 'online' : 'cash';
 };
+function FilterSelect({
+  value,
+  onChange,
+  children,
+}: {
+  value: string;
+  onChange: React.ChangeEventHandler<HTMLSelectElement>;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="group relative">
+      <select
+        value={value}
+        onChange={onChange}
+        className="h-10 w-full appearance-none rounded-xl border border-slate-200 bg-white px-4 pr-10 text-sm font-medium text-slate-800 shadow-sm outline-none transition focus:border-slate-300 focus:ring-2 focus:ring-slate-200 group-hover:border-slate-300"
+      >
+        {children}
+      </select>
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-400 transition group-hover:text-slate-600">
+        <ChevronDown className="h-4 w-4" />
+      </span>
+    </div>
+  );
+}
 const getCashbookMoney = (tx: any, candidates: string[]) => candidates.map((k) => toNum(tx?.[k])).find((v) => v > 0) || 0;
 
 const getCashbookSaleBreakdown = (tx: Transaction, txAny: any) => {
@@ -157,6 +190,7 @@ const getDeletedTransactionLedgerRow = (deleted: any, customerMap: Map<string, s
       reference,
       party,
       payment,
+      itemPreviews: getCashbookItemPreviews(original),
       // Deleted transaction rows are audit-only and must not impact cash/bank KPIs.
       // Real cash payout (if any) is represented by explicit delete compensation rows.
       cashIn: 0,
@@ -213,7 +247,7 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
     const pay = getCashbookPaymentMethod(txAny);
     const isMixed = (s.cashPaid > 0 && s.onlinePaid > 0) || (s.creditDue > 0 && (s.cashPaid > 0 || s.onlinePaid > 0));
     const payment: PayType = isMixed ? 'mixed' : (s.creditDue > 0 ? 'credit' : (s.cashPaid > 0 ? 'cash' : s.onlinePaid > 0 ? 'online' : pay));
-    const row = { id: `tx-${tx.id}`, date, type: s.creditDue > 0 && !isMixed ? 'credit' as LedgerType : 'sale' as LedgerType, description: `Sale Invoice #${reference} - ${getTransactionProductSummary(txAny)} - ${party}`, reference, party, payment,
+    const row = { id: `tx-${tx.id}`, date, type: s.creditDue > 0 && !isMixed ? 'credit' as LedgerType : 'sale' as LedgerType, description: `Sale Invoice #${reference} - ${getTransactionProductSummary(txAny)} - ${party}`, reference, party, payment, itemPreviews: getCashbookItemPreviews(txAny),
       cashIn: s.cashPaid, cashOut: 0, bankIn: s.onlinePaid, bankOut: 0,
       receivableIncrease: s.creditDue, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: Math.max(0, toNum(txAny?.storeCreditUsed)) };
     if (row.payment === 'credit') {
@@ -233,7 +267,7 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
   }
   if (normalizedType === 'return') {
     const r = getCashbookReturnBreakdown(txAny);
-    return { id: `tx-${tx.id}`, date, type: 'return', description: `Return/Refund #${reference} - ${getTransactionProductSummary(txAny)} - ${party}`, reference, party, payment: r.payment,
+    return { id: `tx-${tx.id}`, date, type: 'return', description: `Return/Refund #${reference} - ${getTransactionProductSummary(txAny)} - ${party}`, reference, party, payment: r.payment, itemPreviews: getCashbookItemPreviews(txAny),
     cashIn: 0, cashOut: r.cashOut, bankIn: 0, bankOut: r.bankOut,
     receivableIncrease: 0, receivableDecrease: r.receivableDecrease, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: r.storeCreditIncrease, storeCreditDecrease: 0 };
   }
@@ -256,6 +290,7 @@ export default function Cashbook() {
   const [reloadKey, setReloadKey] = useState(0);
   const data = useMemo(() => loadData(), [reloadKey]);
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
+  const [datePreset, setDatePreset] = useState<'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'>('today');
   const [payFilter, setPayFilter] = useState<'all' | 'cash' | 'online' | 'credit'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | LedgerType>('all');
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
@@ -321,6 +356,42 @@ export default function Cashbook() {
   const safeManualCashbookEntries = asArray<ManualCashbookEntry>((data as any).manualCashbookEntries).filter((entry) => !entry?.isDeleted);
   const customerMap = useMemo(() => new Map(safeCustomers.map((c) => [c.id, c.name || ''])), [safeCustomers]);
   const productMap = useMemo(() => new Map(safeProducts.map((product) => [product.id, product])), [safeProducts]);
+  const effectiveDateRange = useMemo(() => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const formatDateInput = (value: Date) => {
+      const year = value.getFullYear();
+      const month = String(value.getMonth() + 1).padStart(2, '0');
+      const day = String(value.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    if (datePreset === 'today') {
+      const key = formatDateInput(today);
+      return { from: key, to: key };
+    }
+    if (datePreset === 'yesterday') {
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const key = formatDateInput(yesterday);
+      return { from: key, to: key };
+    }
+    if (datePreset === 'last_7_days') {
+      const start = new Date(today);
+      start.setDate(start.getDate() - 6);
+      return { from: formatDateInput(start), to: formatDateInput(today) };
+    }
+    if (datePreset === 'this_month') {
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { from: formatDateInput(start), to: formatDateInput(today) };
+    }
+    if (datePreset === 'custom') {
+      return { from, to };
+    }
+    return { from: '', to: '' };
+  }, [datePreset, from, to]);
+  const effectiveFrom = effectiveDateRange.from;
+  const effectiveTo = effectiveDateRange.to;
 
   const openManualCashModal = (type: 'cash_in' | 'cash_out') => {
     setManualError(null);
@@ -464,6 +535,7 @@ export default function Cashbook() {
         reference: String(c.transactionId || c.id),
         party,
         payment: isExplicitRefund ? (c.mode === 'online_refund' ? 'online' as PayType : 'cash' as PayType) : 'na' as PayType,
+        itemPreviews: getCashbookItemPreviews(linkedDeleted?.originalTransaction || null),
         cashIn: 0,
         cashOut: isExplicitRefund ? (c.mode === 'online_refund' ? 0 : Math.max(0, toNum(c.amount))) : 0,
         bankIn: 0,
@@ -488,6 +560,7 @@ export default function Cashbook() {
         reference: String(c.transactionId || c.id),
         party,
         payment: 'cash',
+        itemPreviews: getCashbookItemPreviews(linkedDeleted?.originalTransaction || null),
         cashIn: originalCashIn,
         cashOut: 0,
         bankIn: 0,
@@ -566,18 +639,18 @@ export default function Cashbook() {
   const allLedgerRows = useMemo(() => asArray<Row>(rows), [rows]);
 
   const filteredDisplayRows = useMemo(() => asArray<Row>(allLedgerRows).filter((r) => {
-    const t = new Date(r.date).getTime(); if (from && t < new Date(`${from}T00:00:00`).getTime()) return false; if (to && t > new Date(`${to}T23:59:59`).getTime()) return false;
+    const t = new Date(r.date).getTime(); if (effectiveFrom && t < new Date(`${effectiveFrom}T00:00:00`).getTime()) return false; if (effectiveTo && t > new Date(`${effectiveTo}T23:59:59`).getTime()) return false;
     if (payFilter !== 'all' && r.payment !== payFilter && !(payFilter === 'online' && r.payment === 'mixed')) return false;
     if (typeFilter !== 'all' && r.type !== typeFilter) return false;
     const q = search.trim().toLowerCase(); if (!q) return true; return `${r.description} ${r.reference} ${r.party}`.toLowerCase().includes(q);
-  }).sort((a, b) => sort === 'newest' ? new Date(b.date).getTime() - new Date(a.date).getTime() : new Date(a.date).getTime() - new Date(b.date).getTime()), [allLedgerRows, from, to, payFilter, typeFilter, search, sort]);
+  }).sort((a, b) => sort === 'newest' ? new Date(b.date).getTime() - new Date(a.date).getTime() : new Date(a.date).getTime() - new Date(b.date).getTime()), [allLedgerRows, effectiveFrom, effectiveTo, payFilter, typeFilter, search, sort]);
 
   const currentWindowRows = useMemo(() => asArray<Row>(allLedgerRows).filter((r) => {
     const t = new Date(r.date).getTime();
-    if (from && t < new Date(`${from}T00:00:00`).getTime()) return false;
-    if (to && t > new Date(`${to}T23:59:59`).getTime()) return false;
+    if (effectiveFrom && t < new Date(`${effectiveFrom}T00:00:00`).getTime()) return false;
+    if (effectiveTo && t > new Date(`${effectiveTo}T23:59:59`).getTime()) return false;
     return true;
-  }), [allLedgerRows, from, to]);
+  }), [allLedgerRows, effectiveFrom, effectiveTo]);
 
   // Cashbook KPI cards intentionally use current window rows so cash closing reflects selected range/session.
   const kpi = useMemo(() => {
@@ -629,10 +702,42 @@ export default function Cashbook() {
     return { cash, bank, receivable: canonicalSnapshotError ? 0 : ledgerReceivableKpi, payable: ledgerPayableKpi, ledgerCalculationError: canonicalSnapshotError };
   }, [currentWindowRows, safeCustomers, safeTransactions, safePurchaseOrders]);
   const availableCashForManualOut = useMemo(() => Math.max(0, Number(kpi.cash || 0)), [kpi.cash]);
+  const productImageById = useMemo(
+    () => new Map(asArray<Product>((data as any).products).map((product: any) => [String(product.id), String(product.thumbnailImage || product.image || '')])),
+    [data],
+  );
 
 
-  useEffect(() => setVisibleRowCount(100), [from, to, payFilter, typeFilter, search, sort]);
+  useEffect(() => setVisibleRowCount(100), [datePreset, from, to, payFilter, typeFilter, search, sort]);
   const visibleRows = useMemo(() => asArray<Row>(filteredDisplayRows).slice(0, visibleRowCount), [filteredDisplayRows, visibleRowCount]);
+  const visibleDisplayRows = useMemo(() => visibleRows.map((row) => {
+    const items = (row.itemPreviews || []).map((item) => ({
+      ...item,
+      image: item.image || productImageById.get(String(item.id)) || '',
+    }));
+    const fallbackLabel = ({
+      sale: 'Sale',
+      credit: 'Credit sale',
+      payment: 'Customer payment',
+      return: 'Return / refund',
+      deleted_sale: 'Deleted sale',
+      deleted_refund: 'Deleted refund',
+      purchase: 'Purchase',
+      supplier_payment: 'Supplier payment',
+      expense: 'Expense',
+      adjustment: 'Adjustment',
+      custom_order_receivable: 'Custom order',
+      custom_order_payment: 'Custom order payment',
+      manual_cash_in: 'Manual cash in',
+      manual_cash_out: 'Manual cash out',
+    } as Record<LedgerType, string>)[row.type] || row.type;
+    return {
+      row,
+      items,
+      extraItemCount: Math.max(0, (row.itemPreviews || []).length - items.length),
+      fallbackLabel,
+    };
+  }), [visibleRows, productImageById]);
 
   const getLocalDayKey = (value: string) => {
     const parsed = new Date(value);
@@ -682,12 +787,12 @@ export default function Cashbook() {
     const query = search.trim().toLowerCase();
     return allLedgerRows.filter((r) => {
       const t = new Date(r.date).getTime();
-      if (from && t < new Date(`${from}T00:00:00`).getTime()) return false;
-      if (to && t > new Date(`${to}T23:59:59`).getTime()) return false;
+      if (effectiveFrom && t < new Date(`${effectiveFrom}T00:00:00`).getTime()) return false;
+      if (effectiveTo && t > new Date(`${effectiveTo}T23:59:59`).getTime()) return false;
       if (!query) return true;
       return `${r.description} ${r.reference} ${r.party}`.toLowerCase().includes(query);
     });
-  }, [allLedgerRows, from, to, search]);
+  }, [allLedgerRows, effectiveFrom, effectiveTo, search]);
 
   const dailyBreakdownRows = useMemo(() => {
     const chrono = [...allLedgerRows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
@@ -1123,7 +1228,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-slate-950">Cashbook</h1>
-          <p className="mt-1 text-sm text-slate-500">Track verified cash, bank, receivable, and payable movement across the business.</p>
+          {/* <p className="mt-1 text-sm text-slate-500">Track verified cash, bank, receivable, and payable movement across the business.</p> */}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button className="h-10 rounded-lg border border-emerald-700 bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700" onClick={() => openManualCashModal('cash_in')}>Cash In</button>
@@ -1161,11 +1266,23 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
       <div className="mt-4 space-y-3">
         <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-6">
-          <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm" />
-          <input type="date" value={to} onChange={e => setTo(e.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm" />
-          <select value={payFilter} onChange={e => setPayFilter(e.target.value as any)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm"><option value="all">All Payment</option><option value="cash">Cash</option><option value="online">Bank / Online</option><option value="credit">Credit</option></select>
-          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm"><option value="all">All Type</option><option value="sale">Sale</option><option value="credit">Credit Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></select>
-          <select value={sort} onChange={e => setSort(e.target.value as any)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+          <FilterSelect value={datePreset} onChange={e => setDatePreset(e.target.value as any)}>
+            <option value="all">All</option>
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="last_7_days">7 days</option>
+            <option value="this_month">This month</option>
+            <option value="custom">Custom</option>
+          </FilterSelect>
+          {datePreset === 'custom' && (
+            <>
+              <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm" />
+              <input type="date" value={to} onChange={e => setTo(e.target.value)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm" />
+            </>
+          )}
+          <FilterSelect value={payFilter} onChange={e => setPayFilter(e.target.value as any)}><option value="all">All Payment</option><option value="cash">Cash</option><option value="online">Bank / Online</option><option value="credit">Credit</option></FilterSelect>
+          <FilterSelect value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">All Type</option><option value="sale">Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></FilterSelect>
+          <FilterSelect value={sort} onChange={e => setSort(e.target.value as any)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></FilterSelect>
           <button onClick={() => setFull(v => !v)} className="h-10 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">{full ? 'Compact columns' : 'Expanded columns'}</button>
         </div>
         <input placeholder="Search description, customer, party, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
@@ -1364,7 +1481,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
             </tr>
           </thead>
           <tbody className="bg-white">
-            {visibleRows.map((r, index) => (
+            {visibleDisplayRows.map(({ row: r, items, extraItemCount, fallbackLabel }, index) => (
               <tr key={r.id} className={`border-b border-slate-100 align-top ${getLedgerRowToneClass(r.type)}`}>
                 <td className="px-3 py-3 whitespace-nowrap text-slate-700">{new Date(r.date).toLocaleString()}</td>
                 <td className="px-3 py-3">
@@ -1372,7 +1489,25 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                     {({sale:'Sale',credit:'Credit Sale',payment:'Payment',return:'Return',deleted_sale:'Deleted Sale',deleted_refund:'Deleted Refund',purchase:'Purchase',supplier_payment:'Supplier Payment',expense:'Expense',adjustment:'Adjustment',manual_cash_in:'Manual Cash In',manual_cash_out:'Manual Cash Out',custom_order_receivable:'Custom Order',custom_order_payment:'Custom Order Payment'} as Record<string,string>)[r.type] || r.type}
                   </span>
                 </td>
-                <td className="px-3 py-3 min-w-[320px] text-slate-800">{r.description}</td>
+                <td className="min-w-[320px] px-3 py-3 text-slate-800">
+                  {items.length ? (
+                    <div className="space-y-2">
+                      {items.map((item) => (
+                        <div key={`${r.id}-${item.id}-${item.name}`} className="flex items-center gap-2">
+                          <div className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">
+                            {item.image ? <img src={item.image} alt={item.name} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">No img</div>}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-slate-900">{item.name} x {item.quantity}</div>
+                          </div>
+                        </div>
+                      ))}
+                      {extraItemCount > 0 ? <div className="text-[11px] text-slate-500">+{extraItemCount} more item(s)</div> : null}
+                    </div>
+                  ) : (
+                    <div className="text-sm font-medium text-slate-900">{fallbackLabel}</div>
+                  )}
+                </td>
                 <td className="px-3 py-3 whitespace-nowrap uppercase text-xs font-semibold text-slate-500">{r.payment === 'na' ? '-' : r.payment}</td>
                 <td className="px-3 py-3 text-right font-semibold text-slate-900">{fmt(getCashbookRowAmount(r))}</td>
                 <td className="px-3 py-3 text-right font-medium text-emerald-700">{r.cashIn ? fmt(r.cashIn) : '-'}</td>

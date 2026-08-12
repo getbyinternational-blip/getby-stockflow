@@ -16,15 +16,7 @@ const WHOLE_MONEY_FORMATTER = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 0,
 });
 
-const MOJIBAKE_REPLACEMENTS: Array<[RegExp, string]> = [
-  [/ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¹|Ã¢â€šÂ¹|â‚¹|₹/g, INR_SYMBOL],
-  [/ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢|Ã¢â‚¬Â¢|Ã‚Â·|â€¢|Â·/g, ' · '],
-  [/ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â|Ã¢â‚¬â€|ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â|â€”|â€“/g, DISPLAY_FALLBACK],
-  [/ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢|Ã¢â€ â€™|â†’/g, ' → '],
-  [/ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¢/g, '×'],
-  [/ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦/g, '...'],
-  [/Ã‚+/g, ''],
-];
+const MOJIBAKE_NOISE = /[\u00A0\u00A1\u00A6-\u00A9\u00AB-\u00AE\u00B9\u00C2\u00C3\u00D7\u00E2\u0192\u0152\u0153\u0160\u0161\u0178-\u017E\u2018-\u201E\u2020-\u2022\u2026\u2030\u2039\u203A\u20AC\u2122]+/g;
 
 export const toSafeNumber = (value: unknown) => {
   const numeric = Number(value);
@@ -51,14 +43,17 @@ export const sanitizeDisplayText = (value: unknown, fallback = DISPLAY_FALLBACK)
   const input = String(value ?? '').trim();
   if (!input) return fallback;
 
-  let next = input;
-  MOJIBAKE_REPLACEMENTS.forEach(([pattern, replacement]) => {
-    next = next.replace(pattern, replacement);
-  });
+  let next = input
+    .replace(/(^|[\s(])\?(\d[\d,]*(?:\.\d{1,2})?)/g, `$1${INR_SYMBOL}$2`)
+    .replace(/₹/g, INR_SYMBOL)
+    .replace(/…/g, '...')
+    .replace(MOJIBAKE_NOISE, ' ');
 
   next = next
     .replace(/\s*[•·]\s*/g, ' · ')
     .replace(/\s*→\s*/g, ' → ')
+    .replace(/\s*[–—]\s*/g, ` ${DISPLAY_FALLBACK} `)
+    .replace(/\s*×\s*/g, ' x ')
     .replace(/\s+/g, ' ')
     .trim();
 

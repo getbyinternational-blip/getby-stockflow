@@ -5,7 +5,7 @@ import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
 import { Customer, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
 import { NO_COLOR, NO_VARIANT, getProductStockRows, productHasCombinationStock } from '../services/productVariants';
-import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, analyzeMissingProductPurchaseHistoryRows, MissingProductPurchaseHistoryRowsAnalysis } from '../services/storage';
+import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary } from '../services/storage';
 import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge, LightweightLoader } from '../components/ui';
 import { Plus, Trash2, Edit, Save, X, Search, QrCode, Download, Share2, AlertCircle, Tags, FileDown, Package, Coins, AlertTriangle, Layers, ScanBarcode, Eye, TrendingUp, ChevronRight, MoreVertical } from 'lucide-react';
 import { ExportModal } from '../components/ExportModal';
@@ -32,7 +32,6 @@ import {
 import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 
-const SHOW_FORENSIC_ANALYZER = Boolean((import.meta as any).env?.DEV);
 type UnifiedPurchaseHistoryRow = {
   id: string;
   date: string;
@@ -70,6 +69,21 @@ type UnifiedPurchaseHistoryRow = {
   ledgerIndicatorToneClassName: string;
   ledgerIndicatorReason: string;
 };
+
+async function withUiTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel = 'Confirm' }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void; confirmLabel?: string }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
@@ -190,7 +204,6 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [purchaseEditUnitPrice, setPurchaseEditUnitPrice] = useState('');
   const [purchaseEditError, setPurchaseEditError] = useState<string | null>(null);
   const [addingLedgerHistoryId, setAddingLedgerHistoryId] = useState<string | null>(null);
-  const [missingHistoryAnalysis, setMissingHistoryAnalysis] = useState<MissingProductPurchaseHistoryRowsAnalysis | null>(null);
   const [selectedPhotoProduct, setSelectedPhotoProduct] = useState<Product | null>(null);
   const [isPhotoModalOpen, setIsPhotoModalOpen] = useState(false);
   const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
@@ -206,7 +219,6 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   useEscapeLayer(Boolean(previewImage), () => setPreviewImage(null), { priority: 200 });
   useEscapeLayer(Boolean(barcodePreview), () => setBarcodePreview(null), { priority: 150 });
   useEscapeLayer(Boolean(purchaseEditTarget), () => setPurchaseEditTarget(null), { priority: 130 });
-  useEscapeLayer(Boolean(missingHistoryAnalysis), () => setMissingHistoryAnalysis(null), { priority: 125 });
   useEscapeLayer(Boolean(pendingPurchaseReverse), () => setPendingPurchaseReverse(null), { priority: 120 });
   useEscapeLayer(Boolean(pendingDeleteProductId), () => setPendingDeleteProductId(null), { priority: 120 });
   useEscapeLayer(isBatchDeleteConfirmOpen, () => setIsBatchDeleteConfirmOpen(false), { priority: 120 });
@@ -217,9 +229,9 @@ useEscapeLayer(Boolean(deletingCategory), () => {
   setDeleteConfirmName('');
   setCategoryDeleteError(null);
 }, { priority: 120 });  useEscapeLayer(isPhotoModalOpen && !!selectedPhotoProduct, () => setIsPhotoModalOpen(false), { priority: 120 });
-  useEscapeLayer(Boolean(purchaseTarget), () => setPurchaseTarget(null), { priority: 110 });
-  useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 110 });
-  useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 105 });
+  useEscapeLayer(Boolean(purchaseTarget), () => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }, { priority: 110 });
+  useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 116 });
+  useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 115 });
   useEscapeLayer(Boolean(viewingProduct), () => {
     setViewingProduct(null);
     setViewingProductAuditMode(false);
@@ -363,6 +375,12 @@ useEscapeLayer(Boolean(deletingCategory), () => {
     },
   ), [purchaseOrders, purchaseParties.length]);
   const visiblePurchaseParties = useMemo(() => purchasePartyCanonicalView.visibleParties, [purchasePartyCanonicalView]);
+  const allPurchaseParties = useMemo(
+    () => [...purchaseParties]
+      .filter((party) => !party?.isDeleted)
+      .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' })),
+    [purchaseParties]
+  );
   const purchasePartySuggestions = useMemo(() => {
     const query = purchasePartyName.trim().toLowerCase();
     if (!purchaseTarget || !query || !isPurchasePartyInputFocused) return [];
@@ -370,6 +388,11 @@ useEscapeLayer(Boolean(deletingCategory), () => {
       .filter((party) => party.name.toLowerCase().includes(query))
       .slice(0, 5);
   }, [purchasePartyName, purchaseTarget, isPurchasePartyInputFocused, visiblePurchaseParties]);
+  const filteredAllPurchaseParties = useMemo(() => {
+    const query = supplierPartySearch.trim().toLowerCase();
+    if (!query) return allPurchaseParties;
+    return allPurchaseParties.filter((party) => [party.name, party.phone || '', party.gst || ''].join(' ').toLowerCase().includes(query));
+  }, [allPurchaseParties, supplierPartySearch]);
 
   useEffect(() => {
     refreshData();
@@ -481,11 +504,85 @@ const displayProductCategory = (value: unknown): string => {
     if (fallbackToken && value === fallbackToken) return 'Default';
     return value;
   };
+  const getPurchaseHistoryActionState = (row: UnifiedPurchaseHistoryRow) => {
+    const fallbackEditHelp = 'No editable legacy snapshot exists for this row.';
+    const fallbackDeleteHelp = 'No reversible legacy snapshot exists for this row.';
+    if (!purchaseTarget || !row.legacyHistoryId) {
+      return {
+        canEditSnapshot: false,
+        editSnapshotHelp: fallbackEditHelp,
+        canDeleteSnapshot: false,
+        deleteSnapshotHelp: fallbackDeleteHelp,
+      };
+    }
+
+    if (!row.purchaseOrderId) {
+      return {
+        canEditSnapshot: false,
+        editSnapshotHelp: 'Legacy purchase entry cannot be safely edited without linked purchase order.',
+        canDeleteSnapshot: false,
+        deleteSnapshotHelp: 'Legacy purchase entry cannot be safely reversed without linked purchase order.',
+      };
+    }
+
+    const linkedOrder = purchaseOrders.find((order) => order.id === row.purchaseOrderId);
+    if (!linkedOrder) {
+      return {
+        canEditSnapshot: false,
+        editSnapshotHelp: 'Linked purchase order not found.',
+        canDeleteSnapshot: false,
+        deleteSnapshotHelp: 'Linked purchase order not found.',
+      };
+    }
+
+    const normalizedVariant = String(row.variant || '').trim().toLowerCase();
+    const normalizedColor = String(row.color || '').trim().toLowerCase();
+    const historyQty = toNonNegativeNumber(row.quantity);
+    const orderLines = Array.isArray(linkedOrder.lines) ? linkedOrder.lines : [];
+    let matchingLineCount = 0;
+    if (orderLines.length === 1) {
+      matchingLineCount = 1;
+    } else {
+      matchingLineCount = orderLines
+        .filter((line) => String(line.productId || '').trim() === String(purchaseTarget.id || '').trim())
+        .filter((line) => String(line.variant || '').trim().toLowerCase() === normalizedVariant && String(line.color || '').trim().toLowerCase() === normalizedColor)
+        .filter((line) => Math.abs(toNonNegativeNumber(line.quantity) - historyQty) < 0.0001)
+        .length;
+    }
+    const canIdentifyLinkedLine = matchingLineCount === 1;
+    const hasRecordedPayments = Array.isArray(linkedOrder.paymentHistory) && linkedOrder.paymentHistory.length > 0;
+    const hasEnoughStockToReverse = toNonNegativeNumber(purchaseTarget.stock) >= historyQty;
+
+    return {
+      canEditSnapshot: canIdentifyLinkedLine,
+      editSnapshotHelp: canIdentifyLinkedLine
+        ? 'Edit this purchase history snapshot.'
+        : 'Cannot edit this purchase because the linked purchase order line could not be identified.',
+      canDeleteSnapshot: canIdentifyLinkedLine && !hasRecordedPayments && historyQty > 0 && hasEnoughStockToReverse,
+      deleteSnapshotHelp: canIdentifyLinkedLine
+        ? hasRecordedPayments
+          ? 'Cannot reverse this purchase because payments are already recorded on the linked purchase order.'
+          : historyQty <= 0
+            ? 'Cannot reverse this purchase because the purchase quantity is invalid.'
+            : !hasEnoughStockToReverse
+              ? 'Cannot reverse this purchase because current stock is lower than the purchased quantity.'
+              : 'Reverse this purchase entry and cancel the linked purchase order.'
+        : 'Cannot reverse this purchase because the linked purchase order line could not be identified.',
+    };
+  };
 
   const handleDeletePurchaseHistoryEntry = async (historyId: string) => {
     if (!purchaseTarget) return;
     const entry = (purchaseTarget.purchaseHistory || []).find((h) => h.id === historyId);
     if (!entry) return;
+    const linkedRow = purchaseHistoryRows.find((row) => String(row.legacyHistoryId || '') === String(historyId));
+    if (linkedRow) {
+      const actionState = getPurchaseHistoryActionState(linkedRow);
+      if (!actionState.canDeleteSnapshot) {
+        setNotice({ type: 'error', message: actionState.deleteSnapshotHelp });
+        return;
+      }
+    }
     if (!entry.purchaseOrderId) {
       setNotice({ type: 'error', message: 'Cannot delete legacy purchase entry without linked order metadata.' });
       return;
@@ -511,6 +608,14 @@ const displayProductCategory = (value: unknown): string => {
     if (!purchaseTarget) return;
     const entry = (purchaseTarget.purchaseHistory || []).find((h) => h.id === historyId);
     if (!entry) return;
+    const linkedRow = purchaseHistoryRows.find((row) => String(row.legacyHistoryId || '') === String(historyId));
+    if (linkedRow) {
+      const actionState = getPurchaseHistoryActionState(linkedRow);
+      if (!actionState.canEditSnapshot) {
+        setNotice({ type: 'error', message: actionState.editSnapshotHelp });
+        return;
+      }
+    }
     setPurchaseEditTarget({ productId: purchaseTarget.id, historyId });
     setPurchaseEditQuantity(String(toNonNegativeNumber(entry.quantity)));
     setPurchaseEditUnitPrice(String(toNonNegativeNumber(entry.unitPrice)));
@@ -570,7 +675,11 @@ const displayProductCategory = (value: unknown): string => {
     try {
       const party = partyResolution.status === 'matched'
         ? partyResolution.party
-        : await createPurchaseParty({ name: partyName });
+        : await withUiTimeout(
+            createPurchaseParty({ name: partyName }),
+            15000,
+            'Creating the supplier party took too long. Please try again.'
+          );
       const now = new Date().toISOString();
       const paidAmount = Math.max(0, Number(historyEntry.paidAmount ?? historyEntry.totalPaid ?? 0));
       const normalizedPaymentMethod = String(historyEntry.paymentMethod || '').trim().toLowerCase();
@@ -629,7 +738,11 @@ const displayProductCategory = (value: unknown): string => {
         updatedBy: 'inventory_purchase_history_recovery',
       };
 
-      await createPurchaseOrder(nextOrder);
+      await withUiTimeout(
+        createPurchaseOrder(nextOrder),
+        20000,
+        'Adding this purchase to the ledger took too long. Please try again.'
+      );
 
       const updatedProduct: Product = {
         ...purchaseTarget,
@@ -644,7 +757,11 @@ const displayProductCategory = (value: unknown): string => {
           };
         }),
       };
-      const updatedProducts = await updateProduct(updatedProduct);
+      const updatedProducts = await withUiTimeout(
+        updateProduct(updatedProduct),
+        20000,
+        'Saving the product link took too long. Please try again.'
+      );
       setProducts(updatedProducts);
       setPurchaseOrders(loadData().purchaseOrders || []);
       const nextTarget = updatedProducts.find((item) => item.id === purchaseTarget.id) || null;
@@ -675,7 +792,7 @@ const displayProductCategory = (value: unknown): string => {
           const remainingPayable = h.remainingPayable == null ? null : toNonNegativeNumber(h.remainingPayable);
           const paymentSummary = h.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 };
           const partyName = h.partyName || 'Not linked / Unknown';
-          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || 'â€”';
+          const poLabel = h.purchaseOrderLabel || h.purchaseOrderId || '--';
           const isReviewRow = h.linkStatus === 'needs_review';
           const purchaseOrderActionHelp = 'Edit/delete for purchase-order history will be handled from Purchase Orders.';
 
@@ -694,7 +811,7 @@ const displayProductCategory = (value: unknown): string => {
             </div>
           )}
           <div className="text-muted-foreground">
-            <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(h.variant, NO_VARIANT)} &nbsp;â€¢&nbsp;
+            <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(h.variant, NO_VARIANT)} &nbsp;•&nbsp;
             <span className="font-medium text-foreground">Color:</span> {formatVariantColorValue(h.color, NO_COLOR)}
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -703,8 +820,8 @@ const displayProductCategory = (value: unknown): string => {
             <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">{lineTotal.toFixed(2)}</div></div>
           </div>
           <div className="space-y-1 text-[11px]">
-            <div><span className="text-muted-foreground">Reference:</span> {h.reference || 'â€”'}</div>
-            <div><span className="text-muted-foreground">Notes:</span> {h.notes || 'â€”'}</div>
+            <div><span className="text-muted-foreground">Reference:</span> {h.reference || '--'}</div>
+            <div><span className="text-muted-foreground">Notes:</span> {h.notes || '--'}</div>
             {isReviewRow && (
               <div className="text-amber-700">
                 <span className="font-medium">Review:</span> {h.reviewReason || 'Purchase order line needs a product link review.'}
@@ -717,9 +834,9 @@ const displayProductCategory = (value: unknown): string => {
               <div><span className="text-muted-foreground">Party:</span> <span className="font-medium">{partyName}</span></div>
               <div><span className="text-muted-foreground">PO:</span> <span className="font-medium">{poLabel}</span></div>
               <div><span className="text-muted-foreground">Line Total:</span> <span className="font-medium">{lineTotal.toFixed(2)}</span></div>
-              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `${orderTotal.toFixed(2)}` : 'â€”'}</span></div>
-              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `${orderPaid.toFixed(2)}` : 'â€”'}</span></div>
-              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `${remainingPayable.toFixed(2)}` : 'â€”'}</span></div>
+              <div><span className="text-muted-foreground">Order Total:</span> <span className="font-medium">{orderTotal != null ? `${orderTotal.toFixed(2)}` : '--'}</span></div>
+              <div><span className="text-muted-foreground">Paid:</span> <span className="font-medium">{orderPaid != null ? `${orderPaid.toFixed(2)}` : '--'}</span></div>
+              <div><span className="text-muted-foreground">Remaining Payable:</span> <span className="font-medium">{remainingPayable != null ? `${remainingPayable.toFixed(2)}` : '--'}</span></div>
               <div><span className="text-muted-foreground">Party Credit Used:</span> <span className="font-medium">{paymentSummary.partyCredit.toFixed(2)}</span></div>
               <div><span className="text-muted-foreground">Cash:</span> <span className="font-medium">{paymentSummary.cash.toFixed(2)}</span></div>
               <div><span className="text-muted-foreground">Online/Bank:</span> <span className="font-medium">{paymentSummary.online.toFixed(2)}</span></div>
@@ -759,20 +876,21 @@ const displayProductCategory = (value: unknown): string => {
           partyName,
           row.reference ? `Ref ${row.reference}` : null,
           row.purchaseOrderId ? `PO ${poLabel}` : null,
-        ].filter(Boolean).join(' â€¢ ');
+        ].filter(Boolean).join(' • ');
         const secondaryAuditMeta = [
           row.legacyHistoryId ? `Legacy ID ${row.legacyHistoryId}` : null,
           row.productName && row.productName !== productName ? `Order name ${row.productName}` : null,
           row.previousStock != null ? `Prev stock ${row.previousStock}` : null,
           row.previousBuyPrice != null ? `Prev buy ${row.previousBuyPrice.toFixed(2)}` : null,
           row.nextBuyPrice != null ? `Next buy ${row.nextBuyPrice.toFixed(2)}` : null,
-        ].filter(Boolean).join(' â€¢ ');
-        const canEditSnapshot = !!row.legacyHistoryId;
+        ].filter(Boolean).join(' • ');
+        const actionState = getPurchaseHistoryActionState(row);
+        const canEditSnapshot = actionState.canEditSnapshot;
+        const canDeleteSnapshot = actionState.canDeleteSnapshot;
         const canAddToLedger = row.ledgerIndicatorLabel === 'Not Counted' && !!row.legacyHistoryId;
         const canOpenLedger = !canAddToLedger && !!row.purchaseOrderId;
-        const editSnapshotHelp = canEditSnapshot
-          ? 'Edit this purchase history snapshot.'
-          : 'No editable legacy snapshot exists for this row.';
+        const editSnapshotHelp = actionState.editSnapshotHelp;
+        const deleteSnapshotHelp = actionState.deleteSnapshotHelp;
         const secondaryActionLabel = canAddToLedger ? 'Add to Ledger' : canOpenLedger ? 'Open Ledger' : 'Ledger Review Needed';
         const secondaryActionHelp = canAddToLedger
           ? 'Create a purchase ledger entry from this history row.'
@@ -811,11 +929,11 @@ const displayProductCategory = (value: unknown): string => {
               </div>
               <div className="rounded-lg bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Paid</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{orderPaid != null ? orderPaid.toFixed(2) : 'â€”'}</div>
+                <div className="mt-1 text-lg font-semibold text-slate-950">{orderPaid != null ? orderPaid.toFixed(2) : '--'}</div>
               </div>
               <div className="rounded-lg bg-slate-50 px-3 py-2">
                 <div className="text-[10px] uppercase tracking-wide text-slate-500">Due</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{remainingPayable != null ? remainingPayable.toFixed(2) : 'â€”'}</div>
+                <div className="mt-1 text-lg font-semibold text-slate-950">{remainingPayable != null ? remainingPayable.toFixed(2) : '--'}</div>
               </div>
             </div>
 
@@ -841,6 +959,16 @@ const displayProductCategory = (value: unknown): string => {
                 </Button>
                 <Button
                   size="sm"
+                  variant="outline"
+                  className="h-8 text-rose-600"
+                  disabled={!canDeleteSnapshot}
+                  title={deleteSnapshotHelp}
+                  onClick={() => canDeleteSnapshot && handleDeletePurchaseHistoryEntry(String(row.legacyHistoryId))}
+                >
+                  Reverse
+                </Button>
+                <Button
+                  size="sm"
                   variant={canAddToLedger ? 'default' : 'outline'}
                   className={canAddToLedger ? 'h-8 bg-slate-900 text-white hover:bg-slate-800' : 'h-8'}
                   disabled={(!canAddToLedger && !canOpenLedger) || addingLedgerHistoryId === row.legacyHistoryId}
@@ -855,7 +983,7 @@ const displayProductCategory = (value: unknown): string => {
                     }
                   }}
                 >
-                  {addingLedgerHistoryId === row.legacyHistoryId ? 'Addingâ€¦' : secondaryActionLabel}
+                  {addingLedgerHistoryId === row.legacyHistoryId ? 'Adding...' : secondaryActionLabel}
                 </Button>
               </div>
             </div>
@@ -866,7 +994,7 @@ const displayProductCategory = (value: unknown): string => {
                 <div className="grid gap-1 text-sm text-slate-700">
                   <div><span className="text-slate-500">Variant:</span> <span className="font-medium text-slate-900">{formatVariantColorValue(row.variant, NO_VARIANT)}</span></div>
                   <div><span className="text-slate-500">Color:</span> <span className="font-medium text-slate-900">{formatVariantColorValue(row.color, NO_COLOR)}</span></div>
-                  <div><span className="text-slate-500">Payment Method:</span> <span className="font-medium text-slate-900">{row.paymentMethod || 'â€”'}</span></div>
+                  <div><span className="text-slate-500">Payment Method:</span> <span className="font-medium text-slate-900">{row.paymentMethod || '--'}</span></div>
                   {row.notes ? <div><span className="text-slate-500">Notes:</span> <span className="font-medium text-slate-900">{row.notes}</span></div> : null}
                 </div>
               </div>
@@ -874,7 +1002,7 @@ const displayProductCategory = (value: unknown): string => {
               <div className="space-y-2 rounded-lg border border-slate-200 p-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Payment Breakdown</div>
                 <div className="grid gap-1 text-sm text-slate-700">
-                  <div><span className="text-slate-500">Order Total:</span> <span className="font-medium text-slate-900">{orderTotal != null ? orderTotal.toFixed(2) : 'â€”'}</span></div>
+                  <div><span className="text-slate-500">Order Total:</span> <span className="font-medium text-slate-900">{orderTotal != null ? orderTotal.toFixed(2) : '--'}</span></div>
                   <div><span className="text-slate-500">Cash:</span> <span className="font-medium text-slate-900">{paymentSummary.cash.toFixed(2)}</span></div>
                   <div><span className="text-slate-500">Online/Bank:</span> <span className="font-medium text-slate-900">{paymentSummary.online.toFixed(2)}</span></div>
                   <div><span className="text-slate-500">Party Credit:</span> <span className="font-medium text-slate-900">{paymentSummary.partyCredit.toFixed(2)}</span></div>
@@ -891,7 +1019,7 @@ const displayProductCategory = (value: unknown): string => {
                 )}
                 {row.compatibilityWarnings.length > 0 && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                    <span className="font-semibold text-slate-900">Legacy notes:</span> {row.compatibilityWarnings.join(' â€¢ ')}
+                    <span className="font-semibold text-slate-900">Legacy notes:</span> {row.compatibilityWarnings.join(' • ')}
                   </div>
                 )}
                 {secondaryAuditMeta && (
@@ -922,10 +1050,10 @@ const displayProductCategory = (value: unknown): string => {
               <div className="text-muted-foreground">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
             </div>
             <div className="rounded border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-900">
-              Legacy-only history row â€” not part of canonical purchase ledger.
+              Legacy-only history row -- not part of canonical purchase ledger.
             </div>
             <div className="text-muted-foreground">
-              <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(row.variant, NO_VARIANT)} &nbsp;â€¢&nbsp;
+              <span className="font-medium text-foreground">Variant:</span> {formatVariantColorValue(row.variant, NO_VARIANT)} &nbsp;•&nbsp;
               <span className="font-medium text-foreground">Color:</span> {formatVariantColorValue(row.color, NO_COLOR)}
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -934,10 +1062,10 @@ const displayProductCategory = (value: unknown): string => {
               <div className="rounded border bg-background p-2"><div className="text-[10px] text-muted-foreground">Line Total</div><div className="font-semibold">{lineTotal.toFixed(2)}</div></div>
             </div>
             <div className="space-y-1 text-[11px]">
-              <div><span className="text-muted-foreground">Reference:</span> {row.reference || 'â€”'}</div>
-              <div><span className="text-muted-foreground">Notes:</span> {row.notes || 'â€”'}</div>
+              <div><span className="text-muted-foreground">Reference:</span> {row.reference || '--'}</div>
+              <div><span className="text-muted-foreground">Notes:</span> {row.notes || '--'}</div>
               <div><span className="text-muted-foreground">Linked Purchase Order:</span> {row.purchaseOrderLabel || row.purchaseOrderId || 'Not linked'}</div>
-              <div><span className="text-muted-foreground">Party:</span> {row.partyName || 'â€”'}</div>
+              <div><span className="text-muted-foreground">Party:</span> {row.partyName || '--'}</div>
             </div>
           </div>
         );
@@ -1836,34 +1964,6 @@ const displayProductCategory = (value: unknown): string => {
 
   const handleDelete = async (id: string) => {
     setPendingDeleteProductId(id);
-  };
-  const runMissingProductHistoryAnalysis = () => {
-    setMissingHistoryAnalysis(analyzeMissingProductPurchaseHistoryRows());
-  };
-  const downloadMissingProductHistoryAnalysis = () => {
-    if (!missingHistoryAnalysis) return;
-    const payload = {
-      generatedAt: new Date().toISOString(),
-      reportType: 'missing_product_purchase_history_rows',
-      ...missingHistoryAnalysis,
-      repairPlan: [
-        'Restore missing embedded product.purchaseHistory rows from purchaseOrders.',
-        'Do not alter purchaseOrders.',
-        'Do not alter supplier payments.',
-        'Do not alter ledgers.',
-        'Backup product docs before patching.',
-      ],
-      note: 'Repair is not implemented in this pass.',
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `missing-product-history-analysis-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   };
   const openLostDamageModal = (product: Product) => {
     setLostDamageTarget(product);
@@ -2843,14 +2943,8 @@ useEffect(() => {
                   <Button variant="outline" size="icon" onClick={() => setIsCategoryModalOpen(true)} title="Manage Categories" className="h-9 w-9 rounded-xl bg-white">
                     <Layers className="w-4 h-4" />
                   </Button>
-                  <Button variant="outline" size="icon" onClick={() => { setExportType('inventory'); setIsExportModalOpen(true); }} title="Download Catalog" className="h-9 w-9 rounded-xl bg-white">
-                    <FileDown className="w-4 h-4" />
-                  </Button>
                   <Button variant="outline" onClick={() => downloadInventoryData()} className="h-9 rounded-xl bg-white">Download Data</Button>
                   <Button variant="outline" onClick={() => setIsImportModalOpen(true)} className="h-9 rounded-xl bg-white">Upload Existing File</Button>
-                  {SHOW_FORENSIC_ANALYZER && (
-                    <Button variant="outline" onClick={runMissingProductHistoryAnalysis} className="h-9 rounded-xl bg-white">Analyze Missing Product History</Button>
-                  )}
                   <Button onClick={() => openModal()} className="h-9 rounded-xl bg-slate-950 px-4 text-white shadow-sm hover:bg-slate-800">
                     <Plus className="w-4 h-4 mr-2" />
                     Add Product
@@ -2867,8 +2961,7 @@ useEffect(() => {
               </div>
 
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_220px_220px_auto]">
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Search Products</div>
+                <div>
                   <div className="relative group">
                     <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-700" />
                     <Input
@@ -2879,14 +2972,12 @@ useEffect(() => {
                     />
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Category</div>
+                <div>
                   <Select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="h-11 rounded-xl border-slate-200 bg-slate-50/80">
                     {filterCategories.map(c => <option key={c} value={c}>{c === 'all' ? 'All Categories' : c}</option>)}
                   </Select>
                 </div>
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Sort</div>
+                <div>
                   <Select value={sortOption} onChange={(e) => setSortOption(e.target.value)} className="h-11 rounded-xl border-slate-200 bg-slate-50/80">
                     <option value="name-asc">Name (A-Z)</option>
                     <option value="price-asc">Buy Price (Low-High)</option>
@@ -2895,8 +2986,7 @@ useEffect(() => {
                   </Select>
                 </div>
                 {inventoryViewTab === 'inventory' && filteredProducts.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Pagination</div>
+                  <div>
                     <div className="flex h-11 items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-3">
                       <div className="min-w-0 text-xs text-slate-500">
                         <span>{Math.min(filteredProducts.length, INVENTORY_PAGE_SIZE)} per page</span>
@@ -2988,7 +3078,7 @@ useEffect(() => {
                             {product.stockByVariantColor.map((row, idx) => (
                               <div key={`${row.variant}-${row.color}-${idx}`} className="rounded border p-2 text-[11px]">
                                 <div className="font-semibold">{row.variant || NO_VARIANT} / {row.color || NO_COLOR}</div>
-                                <div className="text-muted-foreground">Stock: {toNonNegativeNumber(row.stock)} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Buy: {toNonNegativeNumber(row.buyPrice)} ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ Sell: {toNonNegativeNumber(row.sellPrice)}</div>
+                                <div className="text-muted-foreground">Stock: {toNonNegativeNumber(row.stock)} · Buy: {toNonNegativeNumber(row.buyPrice)} · Sell: {toNonNegativeNumber(row.sellPrice)}</div>
                               </div>
                             ))}
                           </div>
@@ -3312,7 +3402,7 @@ useEffect(() => {
                           <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowAddSupplierPartyModal(true); }}>+ Add Party</Button>
                         </div>
                       </div>
-                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â purchase price. You can edit it.</p></div>
+                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity × purchase price. You can edit it.</p></div>
                       <div className="space-y-2"><Label>Total Paid</Label><Input type="number" min="0" value={formData.supplierTotalPaid ?? ''} onChange={e => setFormData({ ...formData, supplierTotalPaid: e.target.value })} placeholder="0" /></div>
                       <div className="space-y-2">
                         <Label>Payment Method</Label>
@@ -3348,8 +3438,8 @@ useEffect(() => {
             <CardContent className="space-y-3">
               <Input value={supplierPartySearch} onChange={e => setSupplierPartySearch(e.target.value)} placeholder="Search party by name / phone / GST" />
               <div className="max-h-[50vh] overflow-y-auto border rounded-md">
-                {visiblePurchaseParties.filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? `ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ GST ${p.gst}` : ''}</div></button>)}
-                {!visiblePurchaseParties.filter(p => [p.name, p.phone || '', p.gst || ''].join(' ').toLowerCase().includes(supplierPartySearch.toLowerCase())).length && (
+                {filteredAllPurchaseParties.map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? ` · GST ${p.gst}` : ''}</div></button>)}
+                {!filteredAllPurchaseParties.length && (
                   <div className="p-4 text-sm text-muted-foreground">No parties found. <button type="button" className="text-primary" onClick={() => { setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(true); }}>Add Party</button></div>
                 )}
               </div>
@@ -3382,7 +3472,7 @@ useEffect(() => {
       {purchaseTarget && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
           <Card className="w-full max-w-6xl max-h-[90vh] overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Add Purchase - {purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => setPurchaseTarget(null)}><X className="w-4 h-4"/></Button></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Add Purchase - {purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }}><X className="w-4 h-4"/></Button></CardHeader>
             <CardContent className="space-y-3 overflow-y-auto max-h-[calc(90vh-84px)]">
               <div className="flex gap-2 border-b pb-2">
                 <Button size="sm" variant={purchaseModalTab === 'add' ? 'default' : 'outline'} onClick={() => setPurchaseModalTab('add')}>Add Purchase</Button>
@@ -3397,12 +3487,12 @@ useEffect(() => {
                   </div>
                   <div>
                     <div className="font-semibold text-base">{purchaseTarget.name}</div>
-                    <div className="text-xs text-muted-foreground">{purchaseTarget.category} â€¢ HSN: {purchaseTarget.hsn || 'N/A'}</div>
+                    <div className="text-xs text-muted-foreground">{purchaseTarget.category} • HSN: {purchaseTarget.hsn || 'N/A'}</div>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Stock</div><div className="font-semibold">{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.stock) : purchaseTarget.stock}</div></div>
-                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Buy Price</div><div className="font-semibold">{selectedPurchaseVariantRow ? toNonNegativeNumber(selectedPurchaseVariantRow.buyPrice) : purchaseTarget.buyPrice}</div></div>
+                  <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Current Buy Price</div><div className="font-semibold">{toNonNegativeNumber(selectedPurchaseVariantRow ? selectedPurchaseVariantRow.buyPrice : purchaseTarget.buyPrice).toFixed(2)}</div></div>
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Purchase</div><div className="font-semibold">{toNonNegativeNumber(purchaseTarget.totalPurchase)}</div></div>
                   <div className="rounded-lg border bg-white p-2"><div className="text-[10px] uppercase text-muted-foreground">Total Sold</div><div className="font-semibold">{toNonNegativeNumber(purchaseTarget.totalSold)}</div></div>
                 </div>
@@ -3418,7 +3508,7 @@ useEffect(() => {
                   >
                     {purchaseVariantRows.map((row) => (
                       <option key={row.key} value={row.key}>
-                        {row.variant || NO_VARIANT} / {row.color || NO_COLOR} â€¢ Stock {toNonNegativeNumber(row.stock)} â€¢ Buy {toNonNegativeNumber(row.buyPrice)}
+                        {row.variant || NO_VARIANT} / {row.color || NO_COLOR} • Stock {toNonNegativeNumber(row.stock)} • Buy {toNonNegativeNumber(row.buyPrice)}
                       </option>
                     ))}
                   </select>
@@ -3459,7 +3549,7 @@ useEffect(() => {
                               }}
                             >
                               <div className="text-sm font-medium">{party.name}</div>
-                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` â€¢ GST ${party.gst}` : ''}</div>
+                              <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` • GST ${party.gst}` : ''}</div>
                             </button>
                           ))}
                         </div>
@@ -3500,10 +3590,10 @@ useEffect(() => {
               {purchaseError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{purchaseError}</div>}
               <div className="sticky bottom-0 mt-2 flex flex-col gap-2 rounded-lg border bg-background/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm">
-                  <span className="font-semibold">Total:</span> {purchaseTotalCost.toFixed(2)} â€¢ <span className="font-semibold">Paid:</span> {purchaseEffectivePaidAmount.toFixed(2)} â€¢ <span className="font-semibold">Due:</span> {purchaseRemainingDue.toFixed(2)}
+                  <span className="font-semibold">Total:</span> {purchaseTotalCost.toFixed(2)} • <span className="font-semibold">Paid:</span> {purchaseEffectivePaidAmount.toFixed(2)} • <span className="font-semibold">Due:</span> {purchaseRemainingDue.toFixed(2)}
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={() => setPurchaseTarget(null)}>Cancel</Button>
+                  <Button variant="outline" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }}>Cancel</Button>
                   <Button onClick={handleAddPurchase}>Save Purchase</Button>
                 </div>
               </div>
@@ -3566,120 +3656,6 @@ useEffect(() => {
                   )}
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-      {missingHistoryAnalysis && (
-        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/60 p-4">
-          <Card className="w-full max-w-6xl max-h-[90vh] overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <div>
-                <CardTitle>Missing Product Purchase History Analysis</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Scanned {missingHistoryAnalysis.scannedPurchaseOrders} purchase orders and {missingHistoryAnalysis.scannedLines} product-linked lines.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={downloadMissingProductHistoryAnalysis}><Download className="w-4 h-4 mr-2" /> Download JSON</Button>
-                <Button variant="ghost" size="sm" onClick={() => setMissingHistoryAnalysis(null)}><X className="w-4 h-4" /></Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4 overflow-y-auto max-h-[calc(90vh-84px)]">
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                Repair is not implemented in this pass.
-              </div>
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Missing Rows</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900">{missingHistoryAnalysis.missingCount}</div>
-                </div>
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Scanned Orders</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900">{missingHistoryAnalysis.scannedPurchaseOrders}</div>
-                </div>
-                <div className="rounded-lg border bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Scanned Lines</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900">{missingHistoryAnalysis.scannedLines}</div>
-                </div>
-              </div>
-              {!missingHistoryAnalysis.missingRows.length ? (
-                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-                  No missing product purchase history rows detected in currently loaded data.
-                </div>
-              ) : (
-                <div className="overflow-x-auto rounded-lg border">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40">
-                      <tr>
-                        <th className="text-left p-3">Purchase Order</th>
-                        <th className="text-left p-3">Product</th>
-                        <th className="text-left p-3">Party</th>
-                        <th className="text-left p-3">Date</th>
-                        <th className="text-right p-3">Qty</th>
-                        <th className="text-right p-3">Unit Price</th>
-                        <th className="text-right p-3">Total</th>
-                        <th className="text-left p-3">Reason</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {missingHistoryAnalysis.missingRows.map((row) => {
-                        const linkedProduct = products.find((product) => product.id === row.productId);
-                        const linkedProductImage = getProductImageUrl(linkedProduct);
-                        const previewVariant = formatVariantColorValue(row.expectedHistoryRowPreview.variant, NO_VARIANT);
-                        const previewColor = formatVariantColorValue(row.expectedHistoryRowPreview.color, NO_COLOR);
-                        const previewPaymentMethod = sanitizeDisplayText(row.expectedHistoryRowPreview.paymentMethod || 'N/A');
-                        return (
-                        <tr key={`${row.purchaseOrderId}-${row.productId}-${row.expectedHistoryRowPreview.id}`} className="border-t align-top">
-                          <td className="p-3 font-mono text-xs">{row.purchaseOrderId}</td>
-                          <td className="p-3">
-                            <div className="flex items-start gap-3">
-                              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border bg-muted/20 flex items-center justify-center">
-                                {linkedProductImage ? (
-                                  <img src={linkedProductImage} alt={sanitizeDisplayText(row.productName)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
-                                ) : (
-                                  <Package className="w-5 h-5 text-muted-foreground" />
-                                )}
-                              </div>
-                              <div className="min-w-0">
-                                <div className="font-medium">{sanitizeDisplayText(row.productName)}</div>
-                                <div className="text-xs text-muted-foreground">{row.productId}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  Preview: {previewVariant} / {previewColor}
-                                </div>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <div>{sanitizeDisplayText(row.partyName)}</div>
-                            <div className="text-xs text-muted-foreground">{row.partyId}</div>
-                          </td>
-                          <td className="p-3">{row.date ? new Date(row.date).toLocaleString() : 'N/A'}</td>
-                          <td className="p-3 text-right">{row.quantity}</td>
-                          <td className="p-3 text-right">{row.unitPrice.toFixed(2)}</td>
-                          <td className="p-3 text-right">{row.total.toFixed(2)}</td>
-                          <td className="p-3">
-                            <div className="font-medium">{row.reason === 'product_not_found' ? 'Product doc missing' : 'History row missing'}</div>
-                            <div className="text-xs text-muted-foreground">
-                              Preview payment: {previewPaymentMethod} • Paid {Number(row.expectedHistoryRowPreview.paidAmount || 0).toFixed(2)}
-                            </div>
-                          </td>
-                        </tr>
-                      )})}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div className="rounded-lg border bg-slate-50 p-3 text-sm">
-                <div className="font-semibold">Recommended repair plan</div>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
-                  <li>Restore missing embedded <code>product.purchaseHistory</code> rows from <code>purchaseOrders</code>.</li>
-                  <li>Do not alter <code>purchaseOrders</code>.</li>
-                  <li>Do not alter supplier payments.</li>
-                  <li>Do not alter ledgers.</li>
-                  <li>Backup product docs before patching.</li>
-                </ul>
-              </div>
             </CardContent>
           </Card>
         </div>

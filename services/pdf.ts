@@ -1033,16 +1033,17 @@ const renderFrameAndCommonSections = async (
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(STANDARD_INVOICE_TYPE.companyMeta);
-  const companyAddress = [
-    ...sanitizeLines(invoice.company.addressLines),
-    sanitizeText(invoice.company.mobile) ? `Phone: ${sanitizeText(invoice.company.mobile)}` : '',
-    sanitizeText(invoice.company.email) ? `Email: ${sanitizeText(invoice.company.email)}` : '',
-  ].filter(Boolean);
-  const addressLines = companyAddress
+  const companyAddressLines = sanitizeLines(invoice.company.addressLines)
     .flatMap((line) => wrapAndClipText(doc, line, companyAddressMaxWidth, 1))
     .slice(0, 2);
-  if (addressLines.length) {
-    doc.text(addressLines, companyAddressX, layout.header.address.y, { lineHeightFactor: 1.06 });
+  const companyContactLines = [
+    sanitizeText(invoice.company.email) ? `Email: ${sanitizeText(invoice.company.email)}` : '',
+    sanitizeText(invoice.company.mobile) ? `Phone: ${sanitizeText(invoice.company.mobile)}` : '',
+  ].filter(Boolean)
+    .flatMap((line) => wrapAndClipText(doc, line, companyAddressMaxWidth, 1));
+  const companyHeaderLines = [...companyAddressLines, ...companyContactLines].slice(0, 3);
+  if (companyHeaderLines.length) {
+    doc.text(companyHeaderLines, companyAddressX, layout.header.address.y, { lineHeightFactor: 1.06 });
   }
 
   drawLabelValueRow(doc, 'GSTIN:', sanitizeText(invoice.company.gstin, options.missingRequiredDisplayValue), 154.8, layout.header.taxBlock.right, layout.header.taxBlock.gstY, 'normal', 'normal', STANDARD_INVOICE_TYPE.companyMeta);
@@ -1593,6 +1594,12 @@ const buildExactInvoiceSvgPage = ({
     'Roboto, Arial, sans-serif',
     2,
   );
+  const companyContactLines = [
+    sanitizeText(invoice.company.email) ? `Email: ${sanitizeText(invoice.company.email)}` : '',
+    sanitizeText(invoice.company.mobile) ? `Phone: ${sanitizeText(invoice.company.mobile)}` : '',
+  ].filter(Boolean)
+    .flatMap((line) => wrapSvgText(line, 320, 10, 400, 'Roboto, Arial, sans-serif', 1));
+  const companyHeaderLines = [...companyAddressLines, ...companyContactLines].slice(0, 3);
   const customerName = sanitizeText(invoice.customer.name, options.missingRequiredDisplayValue);
   const customerNameSize = fitSvgFontSize(customerName, 320, 12, 10.2, 700);
   const customerAddressSource = sanitizeLines(invoice.customer.addressLines);
@@ -1771,7 +1778,7 @@ ${buildSvgText({ x: 383.15, y, text: formatMoneyIndian(row.taxAmount), fontSize:
   ${buildSvgText({ x: 49, y: 57, text: businessInitials, fontSize: initialsFontSize, fontWeight: 700, anchor: 'middle' })}
   `}
   ${buildSvgText({ x: 111.17, y: 40.55, text: companyName, fontSize: companyNameSize, fontWeight: 700 })}
-  ${buildSvgTextLines({ x: 111.17, y: 55.8, lines: companyAddressLines, lineGap: 14.22, fontSize: 10 })}
+  ${buildSvgTextLines({ x: 111.17, y: 55.8, lines: companyHeaderLines, lineGap: 14.22, fontSize: 10 })}
   ${buildSvgText({ x: 442.75, y: 55.8, text: 'GSTIN:', fontSize: 10 })}
   ${buildSvgText({ x: 576, y: 55.8, text: sanitizeText(invoice.company.gstin, options.missingRequiredDisplayValue), fontSize: 10, anchor: 'end' })}
   ${buildSvgText({ x: 442.75, y: 74.82, text: 'PAN:', fontSize: 10 })}

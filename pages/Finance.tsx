@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
@@ -26,8 +26,8 @@ type CashbookRow = {
   id: string;
   date: string;
   billNo: string;
-  type: 'sale' | 'payment' | 'return' | 'expense' | 'delete_reversal' | 'delete_compensation' | 'update_correction';
-  eventType?: 'transaction' | 'delete_reversal' | 'delete_compensation' | 'update_correction';
+  type: 'sale' | 'payment' | 'return' | 'expense' | 'delete_reversal' | 'delete_compensation' | 'update_correction' | 'supplier_payment' | 'cash_adjustment' | 'manual_cash_in' | 'manual_cash_out' | 'customer_cash_out';
+  eventType?: 'transaction' | 'delete_reversal' | 'delete_compensation' | 'update_correction' | 'supplier_payment' | 'cash_adjustment' | 'manual_cash_entry';
   isSynthetic?: boolean;
   sourceTxId?: string;
   customer: string;
@@ -117,6 +117,7 @@ const monthKeyOf = (iso: string) => {
 const getExpenseEffectiveDate = (expense: CanonicalExpense) => expense.effectiveAt || expense.createdAt;
 const formatINR = (value: number) => formatINRPrecise(value);
 const formatINRSummary = (value: number) => formatINRWhole(value);
+const formatPlainAmount = (value: number) => formatINRPrecise(value).replace(/₹\s*/g, '');
 const PDF_CURRENCY_PREFIX = '';
 const PDF_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 const PDF_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
@@ -656,7 +657,7 @@ const getSessionCashTotals = (
   return totals;
 };
 
-type ShiftMovementRow = { id: string; date: string; type: string; direction: 'in' | 'out'; name: string; ref: string; description: string; amount: number; source: string };
+type ShiftMovementRow = { id: string; date: string; type: string; direction: 'in' | 'out'; name: string; ref: string; description: string; amount: number; source: string; sourceTxId?: string };
 const buildShiftCashMovementBreakdown = (
   state: AppState,
   session: CashSession,
@@ -673,13 +674,13 @@ const buildShiftCashMovementBreakdown = (
     if (!Number.isFinite(at) || at < start || at > end) return;
     if (tx.type === 'sale') {
       const s = getSaleSettlementBreakdown(tx);
-      if (s.cashPaid > 0) pushRow({ id: `sale-${tx.id}`, date: tx.date, type: 'Cash Sale', direction: 'in', name: tx.customerName || 'Walk-in', ref: tx.id.slice(-6), description: 'Cash from sale invoice', amount: s.cashPaid, source: 'salesCash' });
+      if (s.cashPaid > 0) pushRow({ id: `sale-${tx.id}`, date: tx.date, type: 'Cash Sale', direction: 'in', name: tx.customerName || 'Walk-in', ref: tx.id.slice(-6), description: 'Cash from sale invoice', amount: s.cashPaid, source: 'salesCash', sourceTxId: tx.id });
     }
-    if (tx.type === 'payment' && tx.paymentMethod === 'Cash') pushRow({ id: `pay-${tx.id}`, date: tx.date, type: 'Customer Collection', direction: 'in', name: tx.customerName || 'Customer', ref: tx.id.slice(-6), description: 'Cash collection', amount: Math.abs(tx.total), source: 'customerCollections' });
-    if (tx.type === 'customer_cash_out' && tx.paymentMethod === 'Cash') pushRow({ id: `cashout-${tx.id}`, date: tx.date, type: 'Cash Out', direction: 'out', name: tx.customerName || 'Customer', ref: (tx.receiptNo || tx.id).slice(-6), description: 'Customer cash out / withdrawal', amount: Math.abs(tx.total), source: 'customerCashOut' });
+    if (tx.type === 'payment' && tx.paymentMethod === 'Cash') pushRow({ id: `pay-${tx.id}`, date: tx.date, type: 'Customer Collection', direction: 'in', name: tx.customerName || 'Customer', ref: tx.id.slice(-6), description: 'Cash collection', amount: Math.abs(tx.total), source: 'customerCollections', sourceTxId: tx.id });
+    if (tx.type === 'customer_cash_out' && tx.paymentMethod === 'Cash') pushRow({ id: `cashout-${tx.id}`, date: tx.date, type: 'Cash Out', direction: 'out', name: tx.customerName || 'Customer', ref: (tx.receiptNo || tx.id).slice(-6), description: 'Customer cash out / withdrawal', amount: Math.abs(tx.total), source: 'customerCashOut', sourceTxId: tx.id });
     if (tx.type === 'return') {
       const effects = getReturnFinancialEffectsForFinance(tx);
-      if (effects.affectsCash) pushRow({ id: `ret-${tx.id}`, date: tx.date, type: 'Cash Refund', direction: 'out', name: tx.customerName || 'Customer', ref: tx.id.slice(-6), description: 'Cash refund / return', amount: Math.abs(tx.total), source: 'refunds' });
+      if (effects.affectsCash) pushRow({ id: `ret-${tx.id}`, date: tx.date, type: 'Cash Refund', direction: 'out', name: tx.customerName || 'Customer', ref: tx.id.slice(-6), description: 'Cash refund / return', amount: Math.abs(tx.total), source: 'refunds', sourceTxId: tx.id });
     }
   });
   (state.cashAdjustments || []).forEach((entry) => {
@@ -688,6 +689,23 @@ const buildShiftCashMovementBreakdown = (
     if (entry.type === 'cash_addition') pushRow({ id: `adj-in-${entry.id}`, date: entry.createdAt, type: 'Cash Addition', direction: 'in', name: 'Manual', ref: entry.id.slice(-6), description: entry.note || 'Cash addition', amount: Math.max(0, Number(entry.amount) || 0), source: 'cashAdditions' });
     if (entry.type === 'cash_withdrawal') pushRow({ id: `adj-out-${entry.id}`, date: entry.createdAt, type: 'Cash Withdrawal', direction: 'out', name: 'Manual', ref: entry.id.slice(-6), description: entry.note || 'Cash withdrawal', amount: Math.max(0, Number(entry.amount) || 0), source: 'cashWithdrawals' });
   });
+  (((state as any).manualCashbookEntries || []) as ManualCashbookEntry[])
+    .filter((entry) => !entry?.isDeleted)
+    .forEach((entry) => {
+      const at = new Date(entry.date || entry.createdAt).getTime();
+      if (!Number.isFinite(at) || at < start || at > end) return;
+      pushRow({
+        id: `manual-${entry.id}`,
+        date: entry.date || entry.createdAt,
+        type: entry.type === 'cash_out' ? 'Manual Cash Out' : 'Manual Cash In',
+        direction: entry.type === 'cash_out' ? 'out' : 'in',
+        name: 'Cash Drawer',
+        ref: entry.id.slice(-6),
+        description: entry.details || (entry.type === 'cash_out' ? 'Manual cash out' : 'Manual cash in'),
+        amount: Math.max(0, Number(entry.amount || 0)),
+        source: 'manualCashbookEntries',
+      });
+    });
   (state.expenses || []).forEach((e) => {
     const at = new Date(getExpenseEffectiveDate(e)).getTime();
     if (!Number.isFinite(at) || at < start || at > end) return;
@@ -752,7 +770,7 @@ const buildEmptyCounts = () => CLOSING_DENOMS.reduce((acc, denom) => {
   return acc;
 }, {} as Record<number, number>);
 
-function StatCard({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: 'neutral' | 'good' | 'bad' }) {
+function StatCard({ label, value, tone = 'neutral', interactive = false, hint }: { label: string; value: string; tone?: 'neutral' | 'good' | 'bad'; interactive?: boolean; hint?: string }) {
   const toneClasses = tone === 'good'
     ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
     : tone === 'bad'
@@ -760,8 +778,11 @@ function StatCard({ label, value, tone = 'neutral' }: { label: string; value: st
       : 'border-border bg-muted/30';
 
   return (
-    <div className={`rounded-lg border p-3 ${toneClasses}`}>
-      <p className="text-xs text-muted-foreground">{label}</p>
+    <div className={`rounded-lg border p-3 ${toneClasses} ${interactive ? 'cursor-pointer transition hover:shadow-sm hover:ring-1 hover:ring-slate-300' : ''}`}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        {interactive ? <span aria-hidden="true" className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600">Breakdown</span> : null}
+      </div>
       <p className="text-lg font-semibold">{value}</p>
     </div>
   );
@@ -961,22 +982,26 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [showReturnEffectDetails, setShowReturnEffectDetails] = useState(false);
   const [showFullCashbookColumns, setShowFullCashbookColumns] = useState(false);
   const [isExpectedClosingBreakdownOpen, setIsExpectedClosingBreakdownOpen] = useState(false);
+  const [isCurrentClosingBreakdownOpen, setIsCurrentClosingBreakdownOpen] = useState(false);
   useEscapeLayer(Boolean(activeHistoryDetailSessionId), () => setActiveHistoryDetailSessionId(null), { priority: 110 });
   useEscapeLayer(isOpeningUnlockModalOpen, () => setIsOpeningUnlockModalOpen(false), { priority: 100 });
   useEscapeLayer(Boolean(editingClosingSessionId), () => setEditingClosingSessionId(null), { priority: 100 });
   useEscapeLayer(Boolean(deletingSessionId), () => setDeletingSessionId(null), { priority: 100 });
   useEscapeLayer(isExpectedClosingBreakdownOpen, () => setIsExpectedClosingBreakdownOpen(false), { priority: 100 });
+  useEscapeLayer(isCurrentClosingBreakdownOpen, () => setIsCurrentClosingBreakdownOpen(false), { priority: 101 });
   useEscapeLayer(Boolean(expenseRepairDraft), () => {
     setExpenseRepairDraft(null);
     setExpenseRepairPreview(null);
     setExpenseRepairConfirmOpen(false);
   }, { priority: 105 });
+  useEscapeLayer(expenseRepairConfirmOpen, () => setExpenseRepairConfirmOpen(false), { priority: 106 });
   useEscapeLayer(embeddedExpenseEditorOpen, () => setEmbeddedExpenseEditorOpen(false), { priority: 104 });
   useEscapeLayer(Boolean(withdrawalRepairDraft), () => {
     setWithdrawalRepairDraft(null);
     setWithdrawalRepairPreview(null);
     setWithdrawalRepairConfirmOpen(false);
   }, { priority: 103 });
+  useEscapeLayer(withdrawalRepairConfirmOpen, () => setWithdrawalRepairConfirmOpen(false), { priority: 104 });
   useEscapeLayer(embeddedWithdrawalEditorOpen, () => setEmbeddedWithdrawalEditorOpen(false), { priority: 102 });
 
   const refreshData = () => setData(loadData());
@@ -1291,6 +1316,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const closingCountTotal = useMemo(() => {
     return CLOSING_DENOMS.reduce((sum, denom) => sum + (denom * (closingCounts[denom] || 0)), 0);
   }, [closingCounts]);
+  const closingCountPieces = useMemo(() => {
+    return CLOSING_DENOMS.reduce((sum, denom) => sum + Math.max(0, Number(closingCounts[denom] || 0)), 0);
+  }, [closingCounts]);
+  const closingCountActiveDenoms = useMemo(() => {
+    return CLOSING_DENOMS.filter((denom) => (closingCounts[denom] || 0) > 0).length;
+  }, [closingCounts]);
   const cashManagementKpis = useMemo(() => {
     const cashAtSale = dailyCashTotals.cashSales;
     const customerCashCollections = dailyCashTotals.customerCashCollections ?? Math.max(0, dailyCashTotals.cashCollections - (dailyCashTotals.customOrderCashCollections || 0));
@@ -1543,18 +1574,124 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       const parsed = new Date(iso).getTime();
       return Number.isFinite(parsed) ? parsed : 0;
     };
-    const events: Array<{ date: string; kind: 'tx' | 'expense' | 'deleted' | 'delete_compensation' | 'updated'; tx?: Transaction; expense?: Expense; deleted?: DeletedTransactionRecord; compensation?: DeleteCompensationRecord; updated?: UpdatedTransactionRecord }> = [
+    const events: Array<{ date: string; kind: 'tx' | 'expense' | 'deleted' | 'delete_compensation' | 'updated' | 'supplier_payment' | 'cash_adjustment' | 'manual_cash_entry'; tx?: Transaction; expense?: Expense; deleted?: DeletedTransactionRecord; compensation?: DeleteCompensationRecord; updated?: UpdatedTransactionRecord; supplierPayment?: any; cashAdjustment?: CashAdjustment; manualCashEntry?: ManualCashbookEntry }> = [
       ...scopedCashbookTransactions.map(tx => ({ date: tx.date, kind: 'tx' as const, tx })),
       ...expenses.map(expense => ({ date: getExpenseEffectiveDate(expense), kind: 'expense' as const, expense })),
       ...((data.deletedTransactions || []).map(deleted => ({ date: deleted.deletedAt, kind: 'deleted' as const, deleted }))),
       ...((data.deleteCompensations || []).map(compensation => ({ date: compensation.createdAt, kind: 'delete_compensation' as const, compensation }))),
       ...((data.updatedTransactionEvents || []).map(updated => ({ date: updated.updatedAt, kind: 'updated' as const, updated }))),
+      ...((data.supplierPayments || []).map(supplierPayment => ({ date: supplierPayment.paidAt || supplierPayment.paymentDate || supplierPayment.date || supplierPayment.createdAt, kind: 'supplier_payment' as const, supplierPayment }))),
+      ...((cashAdjustments || []).map(cashAdjustment => ({ date: cashAdjustment.effectiveAt || cashAdjustment.createdAt, kind: 'cash_adjustment' as const, cashAdjustment }))),
+      ...((data.manualCashbookEntries || []).filter((entry) => !entry?.isDeleted).map(manualCashEntry => ({ date: manualCashEntry.date || manualCashEntry.createdAt, kind: 'manual_cash_entry' as const, manualCashEntry }))),
     ].sort((a, b) => parseTime(a.date) - parseTime(b.date));
 
     let runningDue = 0;
     const rows: CashbookRow[] = [];
 
     events.forEach((event) => {
+      if (event.kind === 'supplier_payment' && event.supplierPayment) {
+        const supplierPayment = event.supplierPayment;
+        if (supplierPayment.deletedAt) return;
+        const normalizedMethod = getSupplierPaymentMethodForDrawer(supplierPayment.method);
+        const amount = Math.max(0, Number(supplierPayment.amount || 0));
+        if (!(amount > 0)) return;
+        rows.push({
+          id: `supplier-payment-${supplierPayment.id}`,
+          date: supplierPayment.paidAt || supplierPayment.paymentDate || supplierPayment.date || supplierPayment.createdAt,
+          billNo: supplierPayment.voucherNo || supplierPayment.id,
+          type: 'supplier_payment',
+          eventType: 'supplier_payment',
+          isSynthetic: true,
+          customer: supplierPayment.partyName || 'Supplier',
+          notes: supplierPayment.note || `${normalizedMethod === 'cash' ? 'Cash' : 'Online'} supplier payment`,
+          grossSales: 0,
+          salesReturn: 0,
+          netSales: 0,
+          creditDueCreated: 0,
+          onlineSale: 0,
+          currentDueEffect: 0,
+          currentStoreCreditEffect: 0,
+          cashIn: 0,
+          cashOut: normalizedMethod === 'cash' ? amount : 0,
+          onlineIn: 0,
+          onlineOut: normalizedMethod === 'online' ? amount : 0,
+          netCashEffect: normalizedMethod === 'cash' ? -amount : 0,
+          cogsEffect: 0,
+          grossProfitEffect: 0,
+          expense: 0,
+          netProfitEffect: 0,
+          effectSummary: normalizedMethod === 'cash' ? 'Supplier cash payment' : 'Supplier online payment',
+        });
+        return;
+      }
+      if (event.kind === 'cash_adjustment' && event.cashAdjustment) {
+        const cashAdjustment = event.cashAdjustment;
+        const amount = Math.max(0, Number(cashAdjustment.amount || 0));
+        if (!(amount > 0)) return;
+        const isWithdrawal = cashAdjustment.type === 'cash_withdrawal';
+        rows.push({
+          id: `cash-adjustment-${cashAdjustment.id}`,
+          date: cashAdjustment.effectiveAt || cashAdjustment.createdAt,
+          billNo: cashAdjustment.reference || cashAdjustment.id,
+          type: 'cash_adjustment',
+          eventType: 'cash_adjustment',
+          isSynthetic: true,
+          customer: cashAdjustment.paidTo || 'Cash Drawer',
+          notes: cashAdjustment.note || cashAdjustment.title || (isWithdrawal ? 'Cash withdrawal' : 'Cash addition'),
+          grossSales: 0,
+          salesReturn: 0,
+          netSales: 0,
+          creditDueCreated: 0,
+          onlineSale: 0,
+          currentDueEffect: 0,
+          currentStoreCreditEffect: 0,
+          cashIn: isWithdrawal ? 0 : amount,
+          cashOut: isWithdrawal ? amount : 0,
+          onlineIn: 0,
+          onlineOut: 0,
+          netCashEffect: isWithdrawal ? -amount : amount,
+          cogsEffect: 0,
+          grossProfitEffect: 0,
+          expense: 0,
+          netProfitEffect: 0,
+          effectSummary: isWithdrawal ? 'Cash withdrawal' : 'Cash addition',
+        });
+        return;
+      }
+      if (event.kind === 'manual_cash_entry' && event.manualCashEntry) {
+        const manualCashEntry = event.manualCashEntry;
+        const amount = Math.max(0, Number(manualCashEntry.amount || 0));
+        if (!(amount > 0)) return;
+        const isCashOut = manualCashEntry.type === 'cash_out';
+        rows.push({
+          id: `manual-cash-entry-${manualCashEntry.id}`,
+          date: manualCashEntry.date || manualCashEntry.createdAt,
+          billNo: manualCashEntry.id,
+          type: isCashOut ? 'manual_cash_out' : 'manual_cash_in',
+          eventType: 'manual_cash_entry',
+          isSynthetic: true,
+          customer: 'Cash Drawer',
+          notes: manualCashEntry.details || (isCashOut ? 'Manual cash out' : 'Manual cash in'),
+          grossSales: 0,
+          salesReturn: 0,
+          netSales: 0,
+          creditDueCreated: 0,
+          onlineSale: 0,
+          currentDueEffect: 0,
+          currentStoreCreditEffect: 0,
+          cashIn: isCashOut ? 0 : amount,
+          cashOut: isCashOut ? amount : 0,
+          onlineIn: 0,
+          onlineOut: 0,
+          netCashEffect: isCashOut ? -amount : amount,
+          cogsEffect: 0,
+          grossProfitEffect: 0,
+          expense: 0,
+          netProfitEffect: 0,
+          effectSummary: isCashOut ? 'Manual cash out' : 'Manual cash in',
+        });
+        return;
+      }
       if (event.kind === 'delete_compensation' && event.compensation) {
         const compensation = event.compensation;
         rows.push({
@@ -1849,6 +1986,42 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         });
         return;
       }
+      if (tx.type === 'customer_cash_out') {
+        const storeCreditUsed = Math.max(0, Number(tx.storeCreditUsed || 0));
+        const receivableIncrease = Math.max(0, Number((tx as any).receivableIncrease || 0) || Math.max(0, txAmount - storeCreditUsed));
+        const cashOut = tx.paymentMethod === 'Cash' ? txAmount : 0;
+        const onlineOut = tx.paymentMethod === 'Online' ? txAmount : 0;
+        runningDue = Math.max(0, runningDue + receivableIncrease);
+        rows.push({
+          id: `tx-${tx.id}`,
+          date: tx.date,
+          billNo: tx.id,
+          type: 'customer_cash_out',
+          eventType: 'transaction',
+          isSynthetic: false,
+          sourceTxId: tx.id,
+          customer: tx.customerName || '—',
+          notes: `${tx.paymentMethod || 'Cash'} cash out`,
+          grossSales: 0,
+          salesReturn: 0,
+          netSales: 0,
+          creditDueCreated: 0,
+          onlineSale: 0,
+          currentDueEffect: receivableIncrease,
+          currentStoreCreditEffect: -storeCreditUsed,
+          cashIn: 0,
+          cashOut,
+          onlineIn: 0,
+          onlineOut,
+          netCashEffect: -cashOut,
+          cogsEffect: 0,
+          grossProfitEffect: 0,
+          expense: 0,
+          netProfitEffect: 0,
+          effectSummary: cashOut > 0 ? 'Customer cash out' : 'Customer online cash out',
+        });
+        return;
+      }
       const historicalTransactions = scopedCashbookTransactions
         .filter(candidate => resolveTransactionTimeForSession(candidate) < resolveTransactionTimeForSession(tx)
           || (resolveTransactionTimeForSession(candidate) === resolveTransactionTimeForSession(tx) && candidate.id !== tx.id))
@@ -1902,7 +2075,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         correctionImpactClass,
       });
     });
-  }, [scopedCashbookTransactions, expenses, data.deletedTransactions, data.deleteCompensations, data.updatedTransactionEvents, shouldComputeDetailedCashbook]);
+  }, [scopedCashbookTransactions, expenses, data.deletedTransactions, data.deleteCompensations, data.updatedTransactionEvents, data.supplierPayments, data.manualCashbookEntries, cashAdjustments, shouldComputeDetailedCashbook]);
 
   const cashbookRowsWithSignals = useMemo(() => {
     const returnRows = cashbookRows.filter(row => row.type === 'return');
@@ -1917,6 +2090,111 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       return { ...row, auditFlags: signals.flags, riskLevel: signals.riskLevel };
     });
   }, [cashbookRows]);
+  const currentClosingBreakdownRows = useMemo(() => {
+    if (!openSession) return [] as Array<CashbookRow & { auditFlags?: string[]; riskLevel?: 'low' | 'medium' | 'high' }>;
+    const start = new Date(openSession.startTime).getTime();
+    const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
+    return cashbookRowsWithSignals
+      .filter((row) => {
+        const at = new Date(row.date).getTime();
+        return Number.isFinite(at) && at >= start && at <= end;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [openSession, cashbookRowsWithSignals]);
+  const currentClosingBreakdownRollup = useMemo(() => {
+    const rows = currentClosingBreakdownRows;
+    return {
+      cashIn: roundMoney(rows.reduce((sum, row) => sum + row.cashIn, 0)),
+      cashOut: roundMoney(rows.reduce((sum, row) => sum + row.cashOut, 0)),
+      onlineIn: roundMoney(rows.reduce((sum, row) => sum + row.onlineIn, 0)),
+      onlineOut: roundMoney(rows.reduce((sum, row) => sum + row.onlineOut, 0)),
+      creditCreated: roundMoney(rows.reduce((sum, row) => sum + Math.max(0, row.creditDueCreated), 0)),
+      dueMovement: roundMoney(rows.reduce((sum, row) => sum + row.currentDueEffect, 0)),
+      storeCreditMovement: roundMoney(rows.reduce((sum, row) => sum + row.currentStoreCreditEffect, 0)),
+      netCashEffect: roundMoney(rows.reduce((sum, row) => sum + row.netCashEffect, 0)),
+      grossSales: roundMoney(rows.reduce((sum, row) => sum + row.grossSales, 0)),
+      returns: roundMoney(rows.reduce((sum, row) => sum + row.salesReturn, 0)),
+      expenses: roundMoney(rows.reduce((sum, row) => sum + row.expense, 0)),
+    };
+  }, [currentClosingBreakdownRows]);
+  const currentClosingShiftMovement = useMemo(() => {
+    if (!openSession) return null;
+    try {
+      return buildShiftCashMovementBreakdown(data as AppState, openSession, dailyCashTotals);
+    } catch {
+      return null;
+    }
+  }, [openSession, data, dailyCashTotals]);
+  const currentClosingShiftMovementDisplay = useMemo(() => {
+    if (!currentClosingShiftMovement) return null;
+    const transactionMap = new Map((data.transactions || []).map((tx) => [tx.id, tx]));
+    const productMap = new Map(((data as AppState).products || []).map((product) => [product.id, product]));
+    const enrichRow = (row: ShiftMovementRow) => {
+      const tx = row.sourceTxId ? transactionMap.get(row.sourceTxId) : undefined;
+      const items = tx
+        ? normalizeTransactionItems(tx.items).map((item) => {
+            const product = productMap.get(item.id);
+            return {
+              id: item.id,
+              name: item.name || product?.name || 'Item',
+              quantity: item.quantity || 0,
+              image: item.thumbnailImage || item.image || product?.thumbnailImage || product?.image || '',
+            };
+          }).slice(0, 2)
+        : [];
+      return { ...row, items };
+    };
+    return {
+      cashInRows: currentClosingShiftMovement.cashInRows.map(enrichRow),
+      cashOutRows: currentClosingShiftMovement.cashOutRows.map(enrichRow),
+    };
+  }, [currentClosingShiftMovement, data]);
+  const currentClosingBreakdownDisplayRows = useMemo(() => {
+    const transactionMap = new Map((data.transactions || []).map((tx) => [tx.id, tx]));
+    const productMap = new Map(((data as AppState).products || []).map((product) => [product.id, product]));
+    return currentClosingBreakdownRows.map((row) => {
+      const paymentModes: string[] = [];
+      if (row.cashIn > 0 || row.cashOut > 0) paymentModes.push('cash');
+      if (row.onlineIn > 0 || row.onlineOut > 0) paymentModes.push('online');
+      if (row.creditDueCreated > 0) paymentModes.push('credit');
+      const baseTypeLabel = row.type.replace(/_/g, ' ');
+      const typeLabel = paymentModes.length ? `${baseTypeLabel} - ${paymentModes.join(' - ')}` : baseTypeLabel;
+      const tx = row.sourceTxId ? transactionMap.get(row.sourceTxId) : undefined;
+      const itemRows = tx
+        ? normalizeTransactionItems(tx.items).map((item) => {
+            const product = productMap.get(item.id);
+            return {
+              id: item.id,
+              name: item.name || product?.name || 'Item',
+              quantity: item.quantity || 0,
+              image: item.thumbnailImage || item.image || product?.thumbnailImage || product?.image || '',
+              description: item.description || product?.description || '',
+            };
+          })
+        : [];
+      const rawDescription = itemRows.map((item) => item.description.trim()).find(Boolean)
+        || row.effectSummary
+        || row.type;
+      const helpfulDescription = rawDescription
+        .replace(/\bcash sale\b/gi, 'Sale')
+        .replace(/\bcash out\b/gi, '')
+        .replace(/\bcash in\b/gi, '')
+        .replace(/\bonline out\b/gi, '')
+        .replace(/\bonline in\b/gi, '')
+        .replace(/\bcredit\b/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/\s+([,.-])/g, '$1')
+        .trim()
+        .replace(/[-,]\s*$/, '');
+      return {
+        row,
+        typeLabel,
+        description: helpfulDescription,
+        items: itemRows.slice(0, 3),
+        extraItemCount: Math.max(0, itemRows.length - 3),
+      };
+    });
+  }, [currentClosingBreakdownRows, data]);
 
   const baseFilteredCashbookRows = useMemo(() => {
     const fromTime = cashbookFromDate ? new Date(`${cashbookFromDate}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
@@ -3498,9 +3776,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const normalizedBodyRows = bodyRows.map((row) => {
       if (!Array.isArray(row)) return row;
       return row.map((cell) => {
-        if (typeof cell === 'string') return cell.replaceAll('â€”', '--');
+        if (typeof cell === 'string') return cell.replaceAll('?', '--');
         if (cell && typeof cell === 'object' && 'content' in cell && typeof (cell as { content?: unknown }).content === 'string') {
-          return { ...cell, content: String((cell as { content: string }).content).replaceAll('â€”', '--') };
+          return { ...cell, content: String((cell as { content: string }).content).replaceAll('?', '--') };
         }
         return cell;
       });
@@ -3884,7 +4162,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       <p className="mt-1 text-xs text-muted-foreground">Start your shift by confirming the cash in drawer.</p>
                     </div>
                     <Pill tone={!openSession ? 'neutral' : (openingUnlocked ? 'amber' : 'emerald')}>
-                      {!openSession ? 'Not started' : (openingUnlocked ? 'Shift active • Unlocked' : 'Shift active • Locked')}
+                      {!openSession ? 'Not started' : (openingUnlocked ? 'Open' : 'Open')}
                     </Pill>
                   </div>
                 </CardHeader>
@@ -3895,7 +4173,17 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <StatCard label="Cash Out Movement" value={formatINRSummary(financeMovementSummary.cashOutMovement)} tone={financeMovementSummary.cashOutMovement > 0 ? 'bad' : 'neutral'} />
                     <StatCard label="Bank In Movement" value={formatINRSummary(financeMovementSummary.bankInMovement)} tone={financeMovementSummary.bankInMovement >= 0 ? 'good' : 'neutral'} />
                     <StatCard label="Bank Out Movement" value={formatINRSummary(financeMovementSummary.bankOutMovement)} tone={financeMovementSummary.bankOutMovement > 0 ? 'bad' : 'neutral'} />
-                    <StatCard label="Closing Balance" value={formatINRSummary(openSession ? submittedClosingValue : 0)} tone={openSession ? 'good' : 'neutral'} />
+                    <button
+                      type="button"
+                      className="text-left"
+                      onClick={() => {
+                        if (!openSession) return;
+                        setIsCurrentClosingBreakdownOpen(true);
+                      }}
+                      disabled={!openSession}
+                    >
+                      <StatCard label="Closing Balance" value={formatINRSummary(openSession ? submittedClosingValue : 0)} tone={openSession ? 'good' : 'neutral'} interactive={!!openSession} hint={openSession ? 'Click to view breakdown' : undefined} />
+                    </button>
                   </div>
                   {openSession && (
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
@@ -3914,9 +4202,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                             onChange={(e) => setActiveReserveAmount(e.target.value.replace(/[^\d.]/g, ''))}
                             placeholder="0.00"
                           />
-                          <p className="mt-1 text-xs text-slate-500">
+                          {/* <p className="mt-1 text-xs text-slate-500">
                             Saved cash in hand is held separately, and later cash-out activity consumes this bucket first.
-                          </p>
+                          </p> */}
                         </div>
                         <div className="flex gap-2">
                           <Button type="button" variant="outline" onClick={() => setActiveReserveAmount(activeReserveBase > 0 ? activeReserveBase.toFixed(2) : '')}>Reset</Button>
@@ -3950,7 +4238,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     </div>
                   ) : (
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-muted-foreground">{openingUnlocked ? 'Unlocked — edits allowed.' : 'Locked to avoid accidental edits. Unlock to edit opening balance.'}</p>
+                      <p className="text-xs text-muted-foreground">{openingUnlocked ? 'Unlocked — edits allowed.' : 'Unlock to edit opening balance.'}</p>
                       {!openingUnlocked ? (
                         <Button type="button" variant="outline" size="sm" onClick={() => setIsOpeningUnlockModalOpen(true)}><Unlock className="w-4 h-4 mr-1" /> Unlock to Edit</Button>
                       ) : null}
@@ -3991,7 +4279,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                                 <div key={denom} className="flex items-center justify-between gap-1.5">
                                   <div className="text-xs font-semibold min-w-[36px]">{denom}</div>
                                   <div className="flex items-center gap-1">
-                                    <Button type="button" size="sm" variant="outline" className="h-7 w-7 px-0" onClick={() => updateClosingCount(denom, qty - 1)} disabled={qty <= 0}>-</Button>
+                                    <Button type="button" size="sm" variant="outline" className="h-7 w-7 px-0" tabIndex={-1} onClick={() => updateClosingCount(denom, qty - 1)} disabled={qty <= 0}>-</Button>
                                     <Input
                                       className="w-12 h-7 text-center px-1"
                                       inputMode="numeric"
@@ -4001,13 +4289,28 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                                         updateClosingCount(denom, Number.isFinite(next) ? next : 0);
                                       }}
                                     />
-                                    <Button type="button" size="sm" variant="outline" className="h-7 w-7 px-0" onClick={() => updateClosingCount(denom, qty + 1)}>+</Button>
+                                    <Button type="button" size="sm" variant="outline" className="h-7 w-7 px-0" tabIndex={-1} onClick={() => updateClosingCount(denom, qty + 1)}>+</Button>
                                   </div>
                                 </div>
                               );
                             })}
                           </div>
                         ))}
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-blue-700">Counted Cash Total</div>
+                          <div className="mt-1 text-lg font-semibold text-blue-900">{formatINR(closingCountTotal)}</div>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-slate-500">Pieces Counted</div>
+                          <div className="mt-1 text-lg font-semibold text-slate-900">{closingCountPieces}</div>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="text-[11px] uppercase tracking-wide text-slate-500">Denominations Used</div>
+                          <div className="mt-1 text-lg font-semibold text-slate-900">{closingCountActiveDenoms}</div>
+                        </div>
                       </div>
 
                       <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
@@ -4050,6 +4353,126 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                 <Button onClick={() => addCashAdjustment('cash_addition')} disabled={!(Number(cashAddAmount) > 0)}>Add Cash to Drawer</Button>
               </CardContent>
             </Card>
+
+            {isCurrentClosingBreakdownOpen && openSession && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4" role="dialog" aria-modal="true" onClick={() => setIsCurrentClosingBreakdownOpen(false)}>
+                <div className="max-h-[90vh] w-full max-w-6xl overflow-auto rounded-2xl border border-slate-200 bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                  <div className="space-y-4 p-4 sm:p-6">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold text-slate-900">Closing Balance Breakdown</div>
+                        <div className="mt-1 text-sm text-slate-600">
+                          Shift window: <span className="font-medium text-slate-700">{new Date(openSession.startTime).toLocaleString()} to {openSession.endTime ? new Date(openSession.endTime).toLocaleString() : 'In progress'}</span>
+                        </div>
+                      </div>
+                      <Button type="button" variant="outline" size="sm" onClick={() => setIsCurrentClosingBreakdownOpen(false)}>Close</Button>
+                    </div>
+
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
+                      <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Opening Cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatPlainAmount(openSession.openingBalance)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div className="text-[11px] font-medium text-emerald-700">Cash In</div><div className="mt-1 text-sm font-semibold text-emerald-900">{formatPlainAmount(currentClosingBreakdownRollup.cashIn)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-rose-200 bg-rose-50 p-3"><div className="text-[11px] font-medium text-rose-700">Cash Out</div><div className="mt-1 text-sm font-semibold text-rose-900">{formatPlainAmount(currentClosingBreakdownRollup.cashOut)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-blue-200 bg-blue-50 p-3"><div className="text-[11px] font-medium text-blue-700">Online In</div><div className="mt-1 text-sm font-semibold text-blue-900">{formatPlainAmount(currentClosingBreakdownRollup.onlineIn)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-orange-200 bg-orange-50 p-3"><div className="text-[11px] font-medium text-orange-700">Online Out</div><div className="mt-1 text-sm font-semibold text-orange-900">{formatPlainAmount(currentClosingBreakdownRollup.onlineOut)}</div></div>
+                    </div>
+
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
+                      <div className="min-w-0 rounded-lg border border-violet-200 bg-violet-50 p-3"><div className="text-[11px] font-medium text-violet-700">Credit Due Created</div><div className="mt-1 text-sm font-semibold text-violet-900">{formatPlainAmount(currentClosingBreakdownRollup.creditCreated)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-3"><div className="text-[11px] font-medium text-slate-500">Due Movement</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatPlainAmount(currentClosingBreakdownRollup.dueMovement)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-3"><div className="text-[11px] font-medium text-slate-500">Store Credit Movement</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatPlainAmount(currentClosingBreakdownRollup.storeCreditMovement)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-3"><div className="text-[11px] font-medium text-slate-500">Returns</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatPlainAmount(currentClosingBreakdownRollup.returns)}</div></div>
+                      <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-3"><div className="text-[11px] font-medium text-slate-500">Expenses</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatPlainAmount(currentClosingBreakdownRollup.expenses)}</div></div>
+                    </div>
+
+                    {currentClosingShiftMovement && (
+                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <div className="border-b border-slate-200 p-3 text-sm font-semibold text-emerald-700">Cash In</div>
+                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600"><div className="col-span-3">Time</div><div className="col-span-3">Type</div><div className="col-span-4">Details</div><div className="col-span-2 text-right">Amount</div></div>
+                          <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
+                            {!currentClosingShiftMovementDisplay?.cashInRows.length ? <div className="p-4 text-sm text-slate-500">No cash-in movements for this shift.</div> : currentClosingShiftMovementDisplay.cashInRows.map((row) => <div key={row.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"><div className="col-span-3">{new Date(row.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div><div className="col-span-3">{row.type}</div><div className="col-span-4 min-w-0"><div className="font-medium text-slate-900">{row.name}</div>{row.items.length ? <div className="mt-1 space-y-1">{row.items.map((item) => <div key={`${row.id}-${item.id}-${item.name}`} className="flex items-center gap-2"><div className="h-8 w-8 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">{item.image ? <img src={item.image} alt={item.name} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">No img</div>}</div><div className="min-w-0 truncate text-[11px] text-slate-600">{item.name} x {item.quantity}</div></div>)}</div> : null}</div><div className="col-span-2 text-right font-semibold">{formatPlainAmount(row.amount)}</div></div>)}
+                          </div>
+                        </div>
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <div className="border-b border-slate-200 p-3 text-sm font-semibold text-rose-700">Cash Out</div>
+                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600"><div className="col-span-3">Time</div><div className="col-span-3">Type</div><div className="col-span-4">Details</div><div className="col-span-2 text-right">Amount</div></div>
+                          <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
+                            {!currentClosingShiftMovementDisplay?.cashOutRows.length ? <div className="p-4 text-sm text-slate-500">No cash-out movements for this shift.</div> : currentClosingShiftMovementDisplay.cashOutRows.map((row) => <div key={row.id} className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"><div className="col-span-3">{new Date(row.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div><div className="col-span-3">{row.type}</div><div className="col-span-4 min-w-0"><div className="font-medium text-slate-900">{row.name}</div>{row.items.length ? <div className="mt-1 space-y-1">{row.items.map((item) => <div key={`${row.id}-${item.id}-${item.name}`} className="flex items-center gap-2"><div className="h-8 w-8 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">{item.image ? <img src={item.image} alt={item.name} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">No img</div>}</div><div className="min-w-0 truncate text-[11px] text-slate-600">{item.name} x {item.quantity}</div></div>)}</div> : null}</div><div className="col-span-2 text-right font-semibold">{formatPlainAmount(row.amount)}</div></div>)}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                      <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
+                        <div>
+                          <div className="text-sm font-semibold text-slate-900">Supporting Transactions</div>
+                          <div className="mt-0.5 text-xs text-slate-500">{currentClosingBreakdownRows.length} rows included in this shift breakdown</div>
+                        </div>
+                      </div>
+                      <div className="overflow-auto">
+                        <table className="min-w-[1180px] w-full text-xs">
+                          <thead className="bg-slate-50">
+                            <tr className="text-slate-600">
+                              <th className="p-2 text-left">Time</th>
+                              <th className="p-2 text-left">Type</th>
+                              <th className="p-2 text-left">Customer</th>
+                              <th className="p-2 text-left">Description</th>
+                              <th className="p-2 text-right">Cash In</th>
+                              <th className="p-2 text-right">Cash Out</th>
+                              <th className="p-2 text-right">Online In</th>
+                              <th className="p-2 text-right">Online Out</th>
+                              <th className="p-2 text-right">Due</th>
+                              <th className="p-2 text-right">Store Credit</th>
+                              <th className="p-2 text-right">Net Cash</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {!currentClosingBreakdownDisplayRows.length ? (
+                              <tr><td className="p-4 text-center text-muted-foreground" colSpan={11}>No supporting transactions found for this shift.</td></tr>
+                            ) : currentClosingBreakdownDisplayRows.map(({ row, typeLabel, description, items, extraItemCount }) => (
+                              <tr key={row.id} className="border-t align-top">
+                                <td className="p-2 whitespace-nowrap">{new Date(row.date).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td>
+                                <td className="p-2 font-medium text-slate-900">{typeLabel}</td>
+                                <td className="p-2">{row.customer}</td>
+                                <td className="p-2 min-w-[280px]">
+                                  {!items.length && description ? <div className="font-medium text-slate-900">{description}</div> : null}
+                                  {items.length ? (
+                                    <div className="mt-2 space-y-2">
+                                      {items.map((item) => (
+                                        <div key={`${row.id}-${item.id}-${item.name}`} className="flex items-center gap-2 px-0 py-0.5">
+                                          {item.image ? (
+                                            <img src={item.image} alt={item.name} className="h-9 w-9 rounded-md border border-slate-200 object-cover" />
+                                          ) : (
+                                            <div className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] text-slate-400">No img</div>
+                                          )}
+                                          <div className="min-w-0 flex-1">
+                                            <div className="truncate text-xs font-medium text-slate-900">{item.name} x {item.quantity}</div>
+                                            {item.description ? <div className="truncate text-[10px] text-slate-400">{item.description}</div> : null}
+                                          </div>
+                                        </div>
+                                      ))}
+                                      {extraItemCount > 0 ? <div className="text-[10px] text-slate-400">+{extraItemCount} more item(s)</div> : null}
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className="p-2 text-right">{formatPlainAmount(row.cashIn)}</td>
+                                <td className="p-2 text-right">{formatPlainAmount(row.cashOut)}</td>
+                                <td className="p-2 text-right">{formatPlainAmount(row.onlineIn)}</td>
+                                <td className="p-2 text-right">{formatPlainAmount(row.onlineOut)}</td>
+                                <td className="p-2 text-right">{formatPlainAmount(row.currentDueEffect)}</td>
+                                <td className="p-2 text-right">{formatPlainAmount(row.currentStoreCreditEffect)}</td>
+                                <td className="p-2 text-right font-semibold">{formatPlainAmount(row.netCashEffect)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
 
             {isOpeningUnlockModalOpen && (
@@ -4148,18 +4571,15 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
                   return (
                     <div key={session.id} className="rounded-xl border border-slate-200 bg-white shadow-sm">
-                      <div className="flex flex-col gap-2 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <div className="text-sm font-semibold text-slate-900">{isSameDay(session.startTime, todayKey) ? 'Today' : new Date(session.startTime).toLocaleDateString()}</div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                            <span>Starting date </span>
+                            <span className="font-medium text-slate-700">{new Date(session.startTime).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                            <span>{' • '}</span>
+                            <span>{session.endTime ? 'Closing date ' : 'Not closed'}</span>
+                            {session.endTime ? <span className="font-medium text-slate-700">{new Date(session.endTime).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span> : null}
                             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${statusClass}`}>{statusLabel}</span>
-                          </div>
-                          <div className="mt-1 text-xs text-slate-600">{session.status === 'open' ? 'Started: ' : 'Shift: '}<span className="font-medium text-slate-700">{new Date(session.startTime).toLocaleString()} → {session.endTime ? new Date(session.endTime).toLocaleString() : 'In progress'}</span></div>
-                          <div className="mt-2">
-                            <div className={`text-sm font-semibold ${session.status === 'open' ? 'text-slate-900' : isMatch ? 'text-emerald-700' : isShort ? 'text-rose-700' : 'text-slate-900'}`}>
-                              {session.status === 'open' ? 'Session is ongoing' : isMatch ? 'Cash matched' : isShort ? `Short by ${formatINR(Math.abs(difference))}` : `Over by ${formatINR(difference)}`}
-                            </div>
-                            <div className="mt-0.5 text-xs text-slate-600">Difference = Counted cash − (Sales + Collections − Refunds − Expenses)</div>
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -4178,16 +4598,28 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <div className="px-4 pb-2 text-[11px] text-muted-foreground">Close this shift before editing closing amount.</div>
                       )}
 
-                      <div className="grid grid-cols-1 gap-2 px-4 pb-4 sm:grid-cols-4">
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Opening cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(session.openingBalance)}</div></div>
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-[11px] font-medium text-slate-500">Counted cash</div><div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(session.closingBalance ?? 0)}</div></div>
-                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3"><div className="text-[11px] font-medium text-amber-700">Reserved cash</div><div className="mt-1 text-sm font-semibold text-amber-900">{formatINR(getSessionReservedCash(session))}</div></div>
-                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3"><div className="text-[11px] font-medium text-emerald-700">Carry-forward</div><div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(getSessionCarryForwardBalance(session))}</div></div>
-                      </div>
                       <div className="px-4 pb-4">
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                          <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">System cash movement in this shift: <span className="font-semibold text-slate-900">{formatINR(systemCashTotal)}</span></div>
-                          <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">Cash out in this shift: <span className="font-semibold text-slate-900">{formatINR(sessionExpenseTotal)}</span></div>
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                            <div className="text-[11px] text-slate-500">Opening</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(session.openingBalance)}</div>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                            <div className="text-[11px] text-slate-500">Counted</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(session.closingBalance ?? 0)}</div>
+                          </div>
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                            <div className="text-[11px] text-amber-700">Reserved</div>
+                            <div className="mt-1 text-sm font-semibold text-amber-900">{formatINR(getSessionReservedCash(session))}</div>
+                          </div>
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                            <div className="text-[11px] text-emerald-700">Carry-forward</div>
+                            <div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(getSessionCarryForwardBalance(session))}</div>
+                          </div>
+                          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                            <div className="text-[11px] text-slate-500">{isMatch ? 'Difference' : isShort ? 'Short' : 'Over'}</div>
+                            <div className={`mt-1 text-sm font-semibold ${isMatch ? 'text-slate-900' : isShort ? 'text-rose-700' : 'text-slate-900'}`}>{formatINR(Math.abs(difference))}</div>
+                          </div>
                         </div>
                         {session.closingEditedAt && (
                           <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">Closing edited {new Date(session.closingEditedAt).toLocaleString()}{session.closingEditNote ? ` • ${session.closingEditNote}` : ''}</div>
@@ -4424,7 +4856,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <CardTitle>{repairMode && editingExpenseId ? 'Edit Expense' : 'Add Expense'}</CardTitle>
-                        <p className="mt-1 text-sm text-slate-600">Log a cash expense and it will appear instantly in the register.</p>
+                        {/* <p className="mt-1 text-sm text-slate-600">Log a cash expense and it will appear instantly in the register.</p> */}
                       </div>
                       <Pill tone="neutral">{repairMode && editingExpenseId ? 'Editing' : 'New entry'}</Pill>
                     </div>
@@ -4574,7 +5006,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                       <div>
                         <CardTitle>Expense Register</CardTitle>
-                        <p className="mt-1 text-sm text-slate-600">All expenses are shown by default. Use search or category to narrow the register.</p>
+                        {/* <p className="mt-1 text-sm text-slate-600">All expenses are shown by default. Use search or category to narrow the register.</p> */}
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button variant="outline" onClick={exportExpensePDF}>Download PDF</Button>
@@ -4582,7 +5014,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-5">
-                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr),220px,220px]">
+                    <div className="grid grid-cols-1 gap-3">
                       <div className="space-y-1.5">
                         <Label>Search Expenses</Label>
                         <Input
@@ -4591,58 +5023,34 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           placeholder="Search title, note, category, or ID"
                         />
                       </div>
-                      <div className="space-y-1.5">
-                        <Label>Category</Label>
-                        <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={expenseCategoryFilter} onChange={e => setExpenseCategoryFilter(e.target.value)}>
-                          <option value="all">All Categories</option>
-                          {expenseCategories.map(category => <option key={category} value={category}>{category}</option>)}
-                        </select>
-                      </div>
-                      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Latest Logged</div>
-                        <div className="mt-1 text-sm font-semibold text-slate-900">{latestExpenseLoggedAt ? new Date(latestExpenseLoggedAt).toLocaleString() : 'No expenses logged yet'}</div>
-                      </div>
                     </div>
 
                     {filteredExpenses.length === 0 ? (
                       <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
                         <div>
                           <div className="text-base font-semibold text-slate-900">No matching expenses</div>
-                          <div className="mt-1 text-sm text-slate-600">Try clearing the search, changing the category filter, or adding a new expense.</div>
+                          <div className="mt-1 text-sm text-slate-600">Try clearing the search or adding a new expense.</div>
                         </div>
                       </div>
                     ) : (
                       <div className="max-h-[72vh] space-y-3 overflow-auto pr-1">
                         {filteredExpenses.map(expense => (
                           <div key={expense.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/70">
-                            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+                              <div className="shrink-0">
+                                <div className="text-base font-semibold text-slate-900">{new Date(getExpenseEffectiveDate(expense)).toLocaleDateString()}</div>
+                                <div className="text-sm text-slate-600">{new Date(getExpenseEffectiveDate(expense)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
+                              </div>
                               <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <div className="text-base font-semibold text-slate-900">{expense.title}</div>
-                                  <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">{expense.category}</span>
-                                </div>
-                                <div className="mt-2 text-sm text-slate-600">{expense.note?.trim() || 'No note added.'}</div>
-                                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
-                                  <span>Logged: {new Date(getExpenseEffectiveDate(expense)).toLocaleString()}</span>
-                                  <span>ID: {expense.id}</span>
-                                </div>
+                                <div className="text-base font-bold text-slate-950">{expense.title}</div>
+                                {expense.note?.trim() ? <div className="mt-1 text-sm text-slate-600">{expense.note.trim()}</div> : null}
                               </div>
-                              <div className="flex min-w-[220px] flex-col items-start gap-3 lg:items-end">
-                                <div className="text-right">
-                                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Amount</div>
-                                  <div className="mt-1 text-xl font-semibold text-slate-900">{formatINR(expense.amount)}</div>
-                                </div>
-                                <div className="flex flex-wrap gap-2 lg:justify-end">
-                                  {repairMode ? (
-                                    <>
-                                      <Button type="button" variant="outline" size="sm" onClick={() => startEditExpense(expense)}>Edit</Button>
-                                      <Button type="button" variant="outline" size="sm" onClick={() => startDeleteExpenseRepair(expense)} className="text-rose-600">Delete</Button>
-                                    </>
-                                  ) : (
-                                    <Button type="button" variant="outline" size="sm" onClick={() => removeExpense(expense.id)} className="text-rose-600">Delete</Button>
-                                  )}
-                                </div>
-                              </div>
+                              <div className="shrink-0 text-xl font-semibold text-slate-900">{formatINR(expense.amount)}</div>
+                              {repairMode ? (
+                                <Button type="button" variant="outline" size="sm" onClick={() => startDeleteExpenseRepair(expense)} className="shrink-0 text-rose-600">Delete</Button>
+                              ) : (
+                                <Button type="button" variant="outline" size="sm" onClick={() => removeExpense(expense.id)} className="shrink-0 text-rose-600">Delete</Button>
+                              )}
                             </div>
                           </div>
                         ))}
@@ -5104,3 +5512,4 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     </div>
   );
 }
+
