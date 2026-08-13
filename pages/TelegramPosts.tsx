@@ -79,6 +79,14 @@ const getProductImageUrl = (product?: Product | null) => {
 const getProductName = (product?: Product | null) => safeText(product?.name, 'Unnamed product');
 const getProductCategory = (product?: Product | null) => safeText(product?.category, 'General');
 const getProductBarcode = (product?: Product | null) => safeText(product?.barcode, '-');
+const getProductTelegramKeywords = (product?: Product | null) => safeText((product as any)?.telegramKeywords);
+const getTelegramDescription = (product?: Product | null) => {
+  if (!product) return '';
+  const description = safeText(product.description);
+  const keywords = getProductTelegramKeywords(product);
+  if (!keywords) return description;
+  return [description, `Keywords: ${keywords}`].filter(Boolean).join('\n');
+};
 
 const normalizeCollections = (profile?: StoreProfile | null): TelegramPostCollection[] => (
   Array.isArray(profile?.telegramCollections)
@@ -379,6 +387,7 @@ export default function TelegramPosts() {
       '{category}': getProductCategory(product),
       '{stock}': String(toNonNegativeNumber(product.stock)),
       '{barcode}': getProductBarcode(product),
+      '{keywords}': getProductTelegramKeywords(product),
     };
     let output = telegramTemplate || DEFAULT_TEMPLATE;
     Object.entries(replacements).forEach(([token, value]) => {
@@ -390,7 +399,7 @@ export default function TelegramPosts() {
   const buildSchedulerProducts = (rows: Product[]): TelegramSchedulerProduct[] => rows.map((product) => ({
     id: product.id,
     name: getProductName(product),
-    description: safeText(product.description),
+    description: getTelegramDescription(product),
     price: toNonNegativeNumber(product.buyPrice),
     salePrice: toNonNegativeNumber(product.sellPrice || product.buyPrice),
     imageUrl: getProductImageUrl(product),
@@ -881,6 +890,8 @@ export default function TelegramPosts() {
               image: getProductImageUrl(product),
               category: getProductCategory(product),
               stock: toNonNegativeNumber(product.stock),
+              description: getTelegramDescription(product),
+              keywords: getProductTelegramKeywords(product),
             },
             template: telegramTemplate.trim() || DEFAULT_TEMPLATE,
             notes: telegramNotes.trim(),
@@ -1423,7 +1434,7 @@ export default function TelegramPosts() {
                       <div className="space-y-2">
                         <Label>Text Template</Label>
                         <textarea value={telegramTemplate} onChange={(event) => setTelegramTemplate(event.target.value)} rows={7} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
-                        <p className="text-xs text-muted-foreground">{'Use {product_name}, {price}, {category}, {stock}, {barcode}'}</p>
+                        <p className="text-xs text-muted-foreground">{'Use {product_name}, {price}, {category}, {stock}, {barcode}, {keywords}'}</p>
                       </div>
                       <div className="space-y-2">
                         <Label>Notes</Label>
@@ -1479,6 +1490,7 @@ export default function TelegramPosts() {
                                   <div className="min-w-0">
                                     <div className="truncate font-semibold text-slate-900">{getProductName(product)}</div>
                                     <div className="truncate text-xs text-muted-foreground">{getProductBarcode(product)} • {getProductCategory(product)}</div>
+                                    {getProductTelegramKeywords(product) && <div className="mt-1 truncate text-[11px] text-sky-700">Keywords: {getProductTelegramKeywords(product)}</div>}
                                     <div className="mt-1 flex items-center gap-3 text-xs text-slate-600">
                                       <span>Stock {toNonNegativeNumber(product.stock)}</span>
                                       <span>{formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice))}</span>
@@ -1836,7 +1848,7 @@ export default function TelegramPosts() {
               <div className="space-y-2">
                 <Label>Text Template</Label>
                 <textarea value={telegramTemplate} onChange={(event) => setTelegramTemplate(event.target.value)} rows={7} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
-                <p className="text-xs text-muted-foreground">{'Use {product_name}, {price}, {category}, {stock}, {barcode}'}</p>
+                <p className="text-xs text-muted-foreground">{'Use {product_name}, {price}, {category}, {stock}, {barcode}, {keywords}'}</p>
               </div>
               <div className="space-y-2">
                 <Label>Notes</Label>
@@ -2045,6 +2057,7 @@ export default function TelegramPosts() {
                               <div className="truncate font-semibold text-slate-900">{getProductName(product)}</div>
                               <div className="truncate text-xs text-muted-foreground">{getProductBarcode(product)} • {getProductCategory(product)}</div>
                             </div>
+                            {getProductTelegramKeywords(product) && <div className="max-w-[180px] truncate text-[11px] text-sky-700">Keywords: {getProductTelegramKeywords(product)}</div>}
                             <Button type="button" variant="outline" size="sm" onClick={() => removeProductFromQueue(product.id)}>
                               <Trash2 className="mr-1 h-4 w-4" /> Remove
                             </Button>
@@ -2074,6 +2087,7 @@ export default function TelegramPosts() {
                       : <div className="flex h-64 items-center justify-center bg-slate-50"><ImageIcon className="h-10 w-10 text-slate-300" /></div>}
                   </div>
                   <div className="text-2xl font-bold text-slate-950">{getProductName(previewProduct)}</div>
+                  {getProductTelegramKeywords(previewProduct) && <div className="rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700">Keywords: {getProductTelegramKeywords(previewProduct)}</div>}
                   <div className="whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">{buildCaption(previewProduct)}</div>
                 </>
               ) : (

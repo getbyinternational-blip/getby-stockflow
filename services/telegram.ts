@@ -137,6 +137,8 @@ export type TelegramProductPostPayload = {
     image: string;
     category: string;
     stock: number;
+    description?: string;
+    keywords?: string;
   };
   template: string;
   notes: string;

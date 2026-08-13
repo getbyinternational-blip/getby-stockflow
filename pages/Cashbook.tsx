@@ -290,7 +290,7 @@ export default function Cashbook() {
   const [reloadKey, setReloadKey] = useState(0);
   const data = useMemo(() => loadData(), [reloadKey]);
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
-  const [datePreset, setDatePreset] = useState<'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'>('today');
+  const [datePreset, setDatePreset] = useState<'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'>('all');
   const [payFilter, setPayFilter] = useState<'all' | 'cash' | 'online' | 'credit'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | LedgerType>('all');
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');

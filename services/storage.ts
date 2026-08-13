@@ -3088,21 +3088,21 @@ const buildHydratedTelegramProfile = (
 
   return sanitizeStoreProfileForPersistence({
     ...baseProfile,
-  telegramChannelId: String(telegramData.telegramChannelId || baseProfile.telegramChannelId || '').trim(),
-  telegramChannels: Array.from(new Set(
-    (Array.isArray(telegramData.telegramChannels) ? telegramData.telegramChannels : Array.isArray(baseProfile.telegramChannels) ? baseProfile.telegramChannels : [])
-      .map((channelId) => String(channelId || '').trim())
-      .filter(Boolean)
-  )),
-  telegramTemplate: String(telegramData.telegramTemplate || baseProfile.telegramTemplate || '').trim(),
-    telegramNotes: String(telegramData.telegramNotes || baseProfile.telegramNotes || '').trim(),
+    telegramChannelId: String(telegramData.telegramChannelId || '').trim(),
+    telegramChannels: Array.from(new Set(
+      (Array.isArray(telegramData.telegramChannels) ? telegramData.telegramChannels : [])
+        .map((channelId) => String(channelId || '').trim())
+        .filter(Boolean)
+    )),
+    telegramTemplate: String(telegramData.telegramTemplate || '').trim(),
+    telegramNotes: String(telegramData.telegramNotes || '').trim(),
     telegramCollections: Array.isArray(telegramData.telegramCollections)
       ? (telegramData.telegramCollections as any[])
-      : (baseProfile.telegramCollections || []),
+      : [],
     telegramPostActivity: Array.isArray(telegramData.telegramPostActivity)
       ? (telegramData.telegramPostActivity as any[])
-      : (baseProfile.telegramPostActivity || []),
-    telegramActiveCollectionId: String(telegramData.telegramActiveCollectionId || baseProfile.telegramActiveCollectionId || '').trim(),
+      : [],
+    telegramActiveCollectionId: String(telegramData.telegramActiveCollectionId || '').trim(),
   });
 };
 

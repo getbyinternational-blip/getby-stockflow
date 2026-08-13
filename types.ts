@@ -13,6 +13,8 @@ export interface Product {
   locationRow?: string;
   locationRack?: string;
   locationShelf?: string;
+  piecesPerCarton?: number;
+  telegramKeywords?: string;
   totalPurchase?: number;
   totalSold?: number;
   hsn?: string;

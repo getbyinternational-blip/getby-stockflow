@@ -978,12 +978,12 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     return { displayCustomers: processed, totalDues, totalCount: processed.length };
   }, [canonicalCustomers, deferredSearchQuery, filterType, sortBy, sortOrder, highValueThreshold, canonicalDisplayBalanceByCustomerId]);
   const customerSeriesById = useMemo(() => buildCustomerSeriesMap(customers), [customers]);
+  const customerById = useMemo(() => new Map(customers.map((customer) => [customer.id, customer])), [customers]);
   const customerTotalPages = Math.max(1, Math.ceil(filteredData.displayCustomers.length / CUSTOMERS_PAGE_SIZE));
   const paginatedCustomers = useMemo(
     () => filteredData.displayCustomers.slice((customerPage - 1) * CUSTOMERS_PAGE_SIZE, customerPage * CUSTOMERS_PAGE_SIZE),
     [filteredData.displayCustomers, customerPage]
   );
-
   const correctCustomerLedgerPreviews = useMemo(() => {
     if (!showCorrectLedgerView) return [];
     return customers.map((customer) => buildCorrectCustomerLedgerPreview(customer, transactions, upfrontOrders));
@@ -2254,7 +2254,6 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       </div>
 
 
-
       {false ? (
         <div className="space-y-4">
           <div className="rounded-2xl border border-blue-200 bg-blue-50/60 p-4 shadow-sm">
@@ -2461,143 +2460,143 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         </div>
       ) : (
         <>
-      <div className="overflow-x-auto rounded-lg border bg-white">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40">
-            <tr>
-              <th className="px-3 py-2.5 text-left w-12">
-                <input
-                  type="checkbox"
-                  checked={allFilteredCustomersSelected}
-                  onChange={handleToggleSelectAllCustomers}
-                  aria-label="Select all customers"
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'customer' ? null : 'customer'); }}>
-                    Customer <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'customer' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('name'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Sort A to Z</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('name'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Sort Z to A</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'phone' ? null : 'phone'); }}>
-                    Phone <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'phone' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_phone'); setCustomerHeaderMenu(null); }}>Only with phone</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('missing_phone'); setCustomerHeaderMenu(null); }}>Only missing phone</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('phone'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Sort phone ascending</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'visits' ? null : 'visits'); }}>
-                    Visits <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'visits' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('visits'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest visits first</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('visits'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Lowest visits first</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'spend' ? null : 'spend'); }}>
-                    Total Spend <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'spend' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('spend'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest spend first</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('high_value'); setCustomerHeaderMenu(null); }}>Filter high spend</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'due' ? null : 'due'); }}>
-                    Due <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'due' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_due'); setCustomerHeaderMenu(null); }}>Only customers with due</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('due'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest due first</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'storeCredit' ? null : 'storeCredit'); }}>
-                    Store Credit <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'storeCredit' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_store_credit'); setCustomerHeaderMenu(null); }}>Only with store credit</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('storeCredit'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest credit first</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">
-                <div className="relative">
-                  <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'lastVisit' ? null : 'lastVisit'); }}>
-                    Last Visit <ArrowUpDown className="h-3.5 w-3.5" />
-                  </button>
-                  {customerHeaderMenu === 'lastVisit' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('lastVisit'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Newest first</button>
-                    <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('recent_30_days'); setCustomerHeaderMenu(null); }}>Only recent 30 days</button>
-                  </div>}
-                </div>
-              </th>
-              <th className="px-3 py-2.5 text-left">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {paginatedCustomers.map((customer) => {
-              return (
-              <tr key={customer.id} className="border-t hover:bg-muted/20">
-                <td className="px-3 py-2.5 align-top">
-                  <input
-                    type="checkbox"
-                    checked={selectedCustomerIds.includes(customer.id)}
-                    onChange={() => handleToggleCustomerSelection(customer.id)}
-                    aria-label={`Select ${customer.name}`}
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                </td>
-                <td className="px-3 py-2.5 align-top font-medium">
-                  <div>{customer.name}</div>
-                  <div className="text-[11px] text-muted-foreground">{customerSeriesById.get(customer.id) || 'CU01'}</div>
-                </td>
-                <td className="px-3 py-2.5 align-top">
-                  <div>{formatOptionalText(customer.phone)}</div>
-                  <div className="text-[11px] text-muted-foreground">{formatGstText(customer.gstNumber)}</div>
-                </td>
-                <td className="px-3 py-2.5 align-top">{customer.visitCount}</td>
-                <td className="px-3 py-2.5 align-top">{formatINRWhole(customer.totalSpend)}</td>
-                {(() => {
-                  const balance = canonicalDisplayBalanceByCustomerId.get(customer.id);
-                  if (!balance || balance.status !== 'ok') {
-                    return <>
-                      <td className="px-3 py-2.5 align-top font-semibold text-amber-700">Ledger calculation unavailable</td>
-                      <td className="px-3 py-2.5 align-top font-semibold text-amber-700">Ledger calculation unavailable</td>
-                    </>;
-                  }
-                  return <>
-                    <td className={`px-3 py-2.5 align-top font-semibold ${balance.currentDue > 0 ? 'text-orange-700' : 'text-green-700'}`}>{formatINRWhole(balance.currentDue)}</td>
-                    <td className={`px-3 py-2.5 align-top font-semibold ${balance.storeCredit > 0 ? 'text-emerald-600' : 'text-muted-foreground'}`}>{formatINRWhole(balance.storeCredit)}</td>
-                  </>;
-                })()}
-                <td className="px-3 py-2.5 align-top">{formatDateDisplay(customer.lastVisit)}</td>
-                <td className="px-3 py-2.5 align-top">
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-9 w-9 px-0"
+          <div className="overflow-x-auto rounded-lg border bg-white">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40">
+                <tr>
+                  <th className="px-3 py-2.5 text-left w-12">
+                    <input
+                      type="checkbox"
+                      checked={allFilteredCustomersSelected}
+                      onChange={handleToggleSelectAllCustomers}
+                      aria-label="Select all customers"
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'customer' ? null : 'customer'); }}>
+                        Customer <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'customer' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('name'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Sort A to Z</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('name'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Sort Z to A</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'phone' ? null : 'phone'); }}>
+                        Phone <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'phone' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_phone'); setCustomerHeaderMenu(null); }}>Only with phone</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('missing_phone'); setCustomerHeaderMenu(null); }}>Only missing phone</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('phone'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Sort phone ascending</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'visits' ? null : 'visits'); }}>
+                        Visits <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'visits' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('visits'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest visits first</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('visits'); setSortOrder('asc'); setCustomerHeaderMenu(null); }}>Lowest visits first</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'spend' ? null : 'spend'); }}>
+                        Total Spend <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'spend' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('spend'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest spend first</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('high_value'); setCustomerHeaderMenu(null); }}>Filter high spend</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'due' ? null : 'due'); }}>
+                        Due <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'due' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_due'); setCustomerHeaderMenu(null); }}>Only customers with due</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('due'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest due first</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'storeCredit' ? null : 'storeCredit'); }}>
+                        Store Credit <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'storeCredit' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('has_store_credit'); setCustomerHeaderMenu(null); }}>Only with store credit</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('storeCredit'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Highest credit first</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">
+                    <div className="relative">
+                      <button type="button" className="flex items-center gap-1 font-semibold" onClick={(e) => { e.stopPropagation(); setCustomerHeaderMenu(customerHeaderMenu === 'lastVisit' ? null : 'lastVisit'); }}>
+                        Last Visit <ArrowUpDown className="h-3.5 w-3.5" />
+                      </button>
+                      {customerHeaderMenu === 'lastVisit' && <div className="absolute z-20 mt-2 w-44 rounded-lg border bg-white p-1 shadow-lg">
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setSortBy('lastVisit'); setSortOrder('desc'); setCustomerHeaderMenu(null); }}>Newest first</button>
+                        <button type="button" className="block w-full rounded px-3 py-2 text-left text-xs hover:bg-slate-50" onClick={(e) => { e.stopPropagation(); setFilterType('recent_30_days'); setCustomerHeaderMenu(null); }}>Only recent 30 days</button>
+                      </div>}
+                    </div>
+                  </th>
+                  <th className="px-3 py-2.5 text-left">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedCustomers.map((customer) => {
+                  return (
+                  <tr key={customer.id} className="border-t hover:bg-muted/20">
+                    <td className="px-3 py-2.5 align-top">
+                      <input
+                        type="checkbox"
+                        checked={selectedCustomerIds.includes(customer.id)}
+                        onChange={() => handleToggleCustomerSelection(customer.id)}
+                        aria-label={`Select ${customer.name}`}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 align-top font-medium">
+                      <div>{customer.name}</div>
+                      <div className="text-[11px] text-muted-foreground">{customerSeriesById.get(customer.id) || 'CU01'}</div>
+                    </td>
+                    <td className="px-3 py-2.5 align-top">
+                      <div>{formatOptionalText(customer.phone)}</div>
+                      <div className="text-[11px] text-muted-foreground">{formatGstText(customer.gstNumber)}</div>
+                    </td>
+                    <td className="px-3 py-2.5 align-top">{customer.visitCount}</td>
+                    <td className="px-3 py-2.5 align-top">{formatINRWhole(customer.totalSpend)}</td>
+                    {(() => {
+                      const balance = canonicalDisplayBalanceByCustomerId.get(customer.id);
+                      if (!balance || balance.status !== 'ok') {
+                        return <>
+                          <td className="px-3 py-2.5 align-top font-semibold text-amber-700">Ledger calculation unavailable</td>
+                          <td className="px-3 py-2.5 align-top font-semibold text-amber-700">Ledger calculation unavailable</td>
+                        </>;
+                      }
+                      return <>
+                        <td className={`px-3 py-2.5 align-top font-semibold ${balance.currentDue > 0 ? 'text-orange-700' : 'text-green-700'}`}>{formatINRWhole(balance.currentDue)}</td>
+                        <td className={`px-3 py-2.5 align-top font-semibold ${balance.storeCredit > 0 ? 'text-emerald-600' : 'text-muted-foreground'}`}>{formatINRWhole(balance.storeCredit)}</td>
+                      </>;
+                    })()}
+                    <td className="px-3 py-2.5 align-top">{formatDateDisplay(customer.lastVisit)}</td>
+                    <td className="px-3 py-2.5 align-top">
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-9 w-9 px-0"
                       title="View Details"
                       aria-label={`View details for ${customer.name}`}
                       onClick={() => { setExpandedCustomerHistoryId(null); setCustomerDetailTab('ledger'); setViewingCustomer(customer); }}
@@ -2632,21 +2631,21 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                         if (viewingCustomer?.id === customer.id) setViewingCustomer(null);
                       }
                     }}><Trash2 className="h-4 w-4" /></Button>}
-                  </div>
-                </td>
-              </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {filteredData.displayCustomers.length > CUSTOMERS_PAGE_SIZE && (
-        <div className="mt-3 flex items-center justify-between rounded-lg border bg-card p-2">
-          <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.max(1, prev - 1))} disabled={customerPage === 1}>Prev</Button>
-          <span className="text-xs text-muted-foreground">Page {customerPage} of {customerTotalPages}</span>
-          <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.min(customerTotalPages, prev + 1))} disabled={customerPage === customerTotalPages}>Next</Button>
-        </div>
-      )}
+                      </div>
+                    </td>
+                  </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {filteredData.displayCustomers.length > CUSTOMERS_PAGE_SIZE && (
+            <div className="mt-3 flex items-center justify-between rounded-lg border bg-card p-2">
+              <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.max(1, prev - 1))} disabled={customerPage === 1}>Prev</Button>
+              <span className="text-xs text-muted-foreground">Page {customerPage} of {customerTotalPages}</span>
+              <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.min(customerTotalPages, prev + 1))} disabled={customerPage === customerTotalPages}>Next</Button>
+            </div>
+          )}
         </>
       )}
 

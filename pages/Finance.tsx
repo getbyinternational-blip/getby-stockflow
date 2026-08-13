@@ -4189,12 +4189,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <StatCard label="Current Shift Cash" value={formatINRSummary(currentShiftTotalCash)} tone="good" />
-                        <StatCard label="Cash In Hand" value={formatINRSummary(activeCashInHand)} tone={activeCashInHand > 0 ? 'good' : 'neutral'} />
-                        <StatCard label="Operational Cash" value={formatINRSummary(currentOperationalCash)} tone={currentOperationalCash > 0 ? 'good' : 'neutral'} />
+                        <StatCard label="Reserved Cash" value={formatINRSummary(activeCashInHand)} tone={activeCashInHand > 0 ? 'good' : 'neutral'} />
+                        <StatCard label="Usable Cash" value={formatINRSummary(currentOperationalCash)} tone={currentOperationalCash > 0 ? 'good' : 'neutral'} />
                       </div>
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                         <div>
-                          <Label>Save Cash In Hand</Label>
+                          <Label>Save Reserved Cash</Label>
                           <Input
                             type="number"
                             min="0"
@@ -4202,13 +4202,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                             onChange={(e) => setActiveReserveAmount(e.target.value.replace(/[^\d.]/g, ''))}
                             placeholder="0.00"
                           />
-                          {/* <p className="mt-1 text-xs text-slate-500">
-                            Saved cash in hand is held separately, and later cash-out activity consumes this bucket first.
-                          </p> */}
+                          <p className="mt-1 text-xs text-slate-500">
+                            Reserved cash is kept aside. Usable cash updates after subtracting it from shift cash.
+                          </p>
                         </div>
                         <div className="flex gap-2">
                           <Button type="button" variant="outline" onClick={() => setActiveReserveAmount(activeReserveBase > 0 ? activeReserveBase.toFixed(2) : '')}>Reset</Button>
-                          <Button type="button" onClick={() => void saveActiveReserveAmount()}>Save Cash In Hand</Button>
+                          <Button type="button" onClick={() => void saveActiveReserveAmount()}>Save Reserved Cash</Button>
                         </div>
                       </div>
                     </div>
@@ -4314,28 +4314,32 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       </div>
 
                       <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
-                        <Label>Closing Balance</Label>
+                        <Label>Split Counted Closing Cash</Label>
+                        <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                          Counted cash total = next shift opening cash + reserved cash
+                        </div>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <div>
-                            <Input type="number" min="0" value={closingBalance} onChange={e => setClosingBalance(e.target.value)} placeholder="Enter closing balance or use counted total" />
+                            <Label className="mb-2 block">Next Shift Opening Cash</Label>
+                            <Input type="number" min="0" value={closingBalance} onChange={e => setClosingBalance(e.target.value)} placeholder="Cash to carry forward into next shift" />
                           </div>
                           <div>
-                            <Label className="mb-2 block">Reserve Cash on Hand</Label>
+                            <Label className="mb-2 block">Keep Aside / Reserve Cash</Label>
                             <Input type="number" min="0" value={closingReserveAmount} onChange={e => handleClosingReserveAmountChange(e.target.value)} placeholder="0.00" />
                           </div>
                         </div>
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">
-                            Reserved cash stays out of the next shift.
+                            Reserved cash kept outside the next shift
                             <div className="mt-1 text-sm font-semibold text-slate-900">{formatINR(closingReserveValue)}</div>
                           </div>
                           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
-                            Next shift will open with this carry-forward cash.
+                            Next shift opening cash
                             <div className="mt-1 text-sm font-semibold text-emerald-900">{formatINR(carryForwardPreview)}</div>
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <Button type="button" variant="outline" onClick={applyCountedTotalToClosing}>Use Counted Total</Button>
+                          <Button type="button" variant="outline" onClick={applyCountedTotalToClosing}>Use Counted Total as Next Shift Cash</Button>
                           <Button type="button" variant="outline" onClick={resetClosingCounts}>Reset Counts</Button>
                           <Button onClick={closeShift}>Close Shift</Button>
                         </div>

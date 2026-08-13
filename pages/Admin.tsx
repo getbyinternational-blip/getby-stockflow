@@ -3,9 +3,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
-import { Customer, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
+import { CashSession, Customer, Expense, ManualCashbookEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
 import { NO_COLOR, NO_VARIANT, getProductStockRows, productHasCombinationStock } from '../services/productVariants';
-import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary } from '../services/storage';
+import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, getSaleSettlementBreakdown } from '../services/storage';
 import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge, LightweightLoader } from '../components/ui';
 import { Plus, Trash2, Edit, Save, X, Search, QrCode, Download, Share2, AlertCircle, Tags, FileDown, Package, Coins, AlertTriangle, Layers, ScanBarcode, Eye, TrendingUp, ChevronRight, MoreVertical } from 'lucide-react';
 import { ExportModal } from '../components/ExportModal';
@@ -16,7 +16,7 @@ import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadInventoryData, downloadInventoryTemplate, importInventoryFromFile } from '../services/importExcel';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { formatCurrency, formatCurrencyWhole, sanitizeDisplayText } from '../services/numberFormat';
-import { buildPurchasePartyCanonicalView, resolveCanonicalPurchasePartyForDraft, resolvePurchasePartyIdentity } from '../services/purchasePartyIdentity';
+import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, resolveCanonicalPurchasePartyForDraft, resolvePurchasePartyIdentity } from '../services/purchasePartyIdentity';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
 
 const STORAGE_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_STORAGE_LOGS || 'false').toLowerCase() === 'true';
@@ -91,6 +91,31 @@ function ConfirmDialog({ open, title, message, onCancel, onConfirm, confirmLabel
   return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 p-4"><Card className="w-full max-w-md"><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">{message}</p><div className="flex justify-end gap-2"><Button variant="outline" onClick={onCancel}>Cancel</Button><Button className="bg-red-600 hover:bg-red-700" onClick={onConfirm}>{confirmLabel}</Button></div></CardContent></Card></div>;
 }
 
+const roundAdminMoney = (value: unknown) => Math.round(((Number(value) || 0) + Number.EPSILON) * 100) / 100;
+const getAdminTxType = (tx: Transaction) => String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+const isAdminSaleLikeTx = (tx: Transaction) => getAdminTxType(tx) === 'sale' || getAdminTxType(tx) === 'historical_reference';
+const isAdminExplicitDeleteRefund = (record: any) => record?.isExplicitRefund === true || record?.refundConfirmed === true || record?.source === 'explicit_refund';
+const getAdminSupplierPaymentMethodForDrawer = (rawMethod: unknown): 'cash' | 'non_cash' => {
+  const method = String(rawMethod || '').trim().toLowerCase();
+  if (method === 'cash') return 'cash';
+  if (method === 'online' || method === 'bank') return 'non_cash';
+  return 'cash';
+};
+const getAdminSupplierPaymentTimestamp = (payment: any): number => {
+  const at = new Date(payment?.paidAt || payment?.paymentDate || payment?.date || payment?.createdAt).getTime();
+  return Number.isFinite(at) ? at : Number.NaN;
+};
+const getAdminTransactionTimeForSession = (transaction: Transaction) => {
+  const effectiveMs = new Date(transaction.effectiveAt || '').getTime();
+  if (Number.isFinite(effectiveMs)) return effectiveMs;
+  const transactionDateMs = new Date(transaction.date || '').getTime();
+  if (Number.isFinite(transactionDateMs)) return transactionDateMs;
+  const asNumber = Number(transaction.id);
+  if (Number.isFinite(asNumber) && asNumber >= 946684800000 && asNumber <= 4102444800000) return asNumber;
+  return Number.NaN;
+};
+const getAdminExpenseEffectiveDate = (expense: Expense & { effectiveAt?: string }) => expense.effectiveAt || expense.createdAt;
+
 export default function Admin() {
   const navigate = useNavigate();
   const INVENTORY_PAGE_SIZE = 100;
@@ -145,13 +170,34 @@ export default function Admin() {
   const [purchaseModalTab, setPurchaseModalTab] = useState<'add' | 'history'>('add');
   const [purchaseHistoryVariantFilter, setPurchaseHistoryVariantFilter] = useState('all');
   const [selectedPurchaseVariantKey, setSelectedPurchaseVariantKey] = useState('');
+  const [stockSourceProduct, setStockSourceProduct] = useState<Product | null>(null);
+  const [stockSourceMode, setStockSourceMode] = useState<'choice' | 'opening' | 'purchase'>('choice');
+  const [stockSourceQueueNext, setStockSourceQueueNext] = useState(false);
+  const [stockSourceVariantKey, setStockSourceVariantKey] = useState('');
+  const [stockSourceQty, setStockSourceQty] = useState('');
+  const [stockSourceUnitCost, setStockSourceUnitCost] = useState('');
+  const [stockSourceSellPrice, setStockSourceSellPrice] = useState('');
+  const [stockSourcePartyName, setStockSourcePartyName] = useState('');
+  const [stockSourcePartyId, setStockSourcePartyId] = useState('');
+  const [stockSourceDate, setStockSourceDate] = useState(new Date().toISOString().slice(0, 16));
+  const [stockSourceNote, setStockSourceNote] = useState('');
+  const [stockSourcePaymentMethod, setStockSourcePaymentMethod] = useState<'cash' | 'credit' | 'online' | 'partial'>('cash');
+  const [stockSourcePartialPaidVia, setStockSourcePartialPaidVia] = useState<'cash' | 'online'>('cash');
+  const [stockSourcePaidAmount, setStockSourcePaidAmount] = useState('');
+  const [stockSourceCashPaid, setStockSourceCashPaid] = useState('');
+  const [stockSourceOnlinePaid, setStockSourceOnlinePaid] = useState('');
+  const [stockSourceSettlementTouched, setStockSourceSettlementTouched] = useState(false);
+  const [stockSourcePurchaseOnly, setStockSourcePurchaseOnly] = useState(false);
+  const [stockSourceError, setStockSourceError] = useState<string | null>(null);
+  const [stockSourceSubmitting, setStockSourceSubmitting] = useState(false);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
   const [viewingProductAuditMode, setViewingProductAuditMode] = useState(false);
+  const [selectedImageFileName, setSelectedImageFileName] = useState('');
   const barcodeCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Form State
   const emptyProductForm = {
-    name: '', barcode: '', buyPrice: '', sellPrice: '', stock: '', totalPurchase: '', totalSold: '', description: '', category: '', hsn: '', locationZone: '', locationRow: '', locationRack: '', locationShelf: '',
+    name: '', barcode: '', buyPrice: '', sellPrice: '', stock: '', totalPurchase: '', totalSold: '', description: '', category: '', hsn: '', locationZone: '', locationRow: '', locationRack: '', locationShelf: '', piecesPerCarton: '', telegramKeywords: '',
     variants: [] as string[],
     colors: [] as string[],
     stockByVariantColor: [] as Array<{ variant: string; color: string; stock: number; buyPrice?: number | ''; sellPrice?: number | ''; totalPurchase?: number | ''; totalSold?: number | '' }>,
@@ -181,7 +227,7 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [stockManuallyEdited, setStockManuallyEdited] = useState(false);
 
   const [showSupplierPartyModal, setShowSupplierPartyModal] = useState(false);
-  const [supplierPartyPickerContext, setSupplierPartyPickerContext] = useState<'product' | 'purchase'>('product');
+  const [supplierPartyPickerContext, setSupplierPartyPickerContext] = useState<'product' | 'purchase' | 'stock_source'>('product');
   const [supplierPartySearch, setSupplierPartySearch] = useState('');
   const [showAddSupplierPartyModal, setShowAddSupplierPartyModal] = useState(false);
   const [newSupplierPartyName, setNewSupplierPartyName] = useState('');
@@ -193,11 +239,13 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [showAddCategoryInline, setShowAddCategoryInline] = useState(false);
   const [newInlineCategory, setNewInlineCategory] = useState('');
   const [isPurchasePartyInputFocused, setIsPurchasePartyInputFocused] = useState(false);
+  const [isStockSourcePartyInputFocused, setIsStockSourcePartyInputFocused] = useState(false);
   const [pendingPurchaseReverse, setPendingPurchaseReverse] = useState<{ productId: string; historyId: string } | null>(null);
   const [pendingDeleteProductId, setPendingDeleteProductId] = useState<string | null>(null);
   const [isBatchDeleteConfirmOpen, setIsBatchDeleteConfirmOpen] = useState(false);
   const [notice, setNotice] = useState<{ type: 'error' | 'success' | 'info'; message: string } | null>(null);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
+  const [appStateSnapshot, setAppStateSnapshot] = useState<any>(() => loadData());
 
   const [purchaseEditTarget, setPurchaseEditTarget] = useState<{ productId: string; historyId: string } | null>(null);
   const [purchaseEditQuantity, setPurchaseEditQuantity] = useState('');
@@ -229,6 +277,9 @@ useEscapeLayer(Boolean(deletingCategory), () => {
   setDeleteConfirmName('');
   setCategoryDeleteError(null);
 }, { priority: 120 });  useEscapeLayer(isPhotoModalOpen && !!selectedPhotoProduct, () => setIsPhotoModalOpen(false), { priority: 120 });
+  useEscapeLayer(Boolean(stockSourceProduct), () => {
+    resetStockSourceState();
+  }, { priority: 111 });
   useEscapeLayer(Boolean(purchaseTarget), () => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }, { priority: 110 });
   useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 116 });
   useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 115 });
@@ -292,8 +343,10 @@ useEscapeLayer(Boolean(deletingCategory), () => {
   };
   const renderLocationDisplay = (product: Product) => {
     const location = getProductLocationFields(product);
-    if (!Object.values(location).some((value) => value.trim())) return <span className="text-xs text-muted-foreground">Not set</span>;
-    return <div className="space-y-0.5 text-xs">{location.locationZone && <div><span className="font-semibold">Zone:</span> {location.locationZone}</div>}{location.locationRow && <div><span className="font-semibold">Row:</span> {location.locationRow}</div>}{location.locationRack && <div><span className="font-semibold">Rack:</span> {location.locationRack}</div>}{location.locationShelf && <div><span className="font-semibold">Shelf:</span> {location.locationShelf}</div>}</div>;
+    const piecesPerCarton = Math.max(0, Number((product as any)?.piecesPerCarton || 0));
+    const hasLocation = Object.values(location).some((value) => value.trim());
+    if (!hasLocation && piecesPerCarton <= 0) return <span className="text-xs text-muted-foreground">Not set</span>;
+    return <div className="space-y-0.5 text-xs">{location.locationZone && <div><span className="font-semibold">Zone:</span> {location.locationZone}</div>}{location.locationRow && <div><span className="font-semibold">Row:</span> {location.locationRow}</div>}{location.locationRack && <div><span className="font-semibold">Rack:</span> {location.locationRack}</div>}{location.locationShelf && <div><span className="font-semibold">Shelf:</span> {location.locationShelf}</div>}{piecesPerCarton > 0 && <div><span className="font-semibold">Carton:</span> {piecesPerCarton} pcs</div>}</div>;
   };
 
   const openProductPhotoModal = (product: Product) => {
@@ -354,6 +407,7 @@ useEscapeLayer(Boolean(deletingCategory), () => {
 
   const refreshData = () => {
     const data = loadData();
+    setAppStateSnapshot(data);
     setProducts(data.products);
     setPurchaseOrders(Array.isArray(data.purchaseOrders) ? data.purchaseOrders : []);
     setCustomers(Array.isArray(data.customers) ? data.customers : []);
@@ -374,13 +428,52 @@ useEscapeLayer(Boolean(deletingCategory), () => {
       partyCreditLedger: loadData().partyCreditLedger || [],
     },
   ), [purchaseOrders, purchaseParties.length]);
-  const visiblePurchaseParties = useMemo(() => purchasePartyCanonicalView.visibleParties, [purchasePartyCanonicalView]);
-  const allPurchaseParties = useMemo(
-    () => [...purchaseParties]
-      .filter((party) => !party?.isDeleted)
-      .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' })),
-    [purchaseParties]
+  const purchasePartyDuplicateCheckReport = useMemo(() => buildPurchasePartyDuplicateCheckReport(
+    purchaseParties,
+    {
+      purchaseOrders,
+      supplierPayments: loadData().supplierPayments || [],
+      partyCreditLedger: loadData().partyCreditLedger || [],
+    },
+  ), [purchaseParties, purchaseOrders]);
+  const orphanStandalonePurchaseParties = useMemo<PurchaseParty[]>(() => purchasePartyDuplicateCheckReport.orphanGroups
+    .filter((group) => !group.possibleCanonical?.canonicalPartyId)
+    .map((group) => ({
+      id: `orphan:${group.partyId}`,
+      name: group.snapshotName || group.partyId,
+      phone: group.snapshotPhone || undefined,
+      gst: group.snapshotGst || undefined,
+      createdAt: group.earliestOrderAt || group.earliestPaymentAt || group.earliestCreditAt || new Date(0).toISOString(),
+      updatedAt: group.latestOrderAt || group.latestPaymentAt || group.latestCreditAt || new Date().toISOString(),
+    })), [purchasePartyDuplicateCheckReport]);
+  const visiblePurchaseParties = useMemo(
+    () => [...purchasePartyCanonicalView.visibleParties, ...orphanStandalonePurchaseParties]
+      .sort((a, b) => String(a.name || '.').localeCompare(String(b.name || '.')) || new Date(a.createdAt || '.').getTime() - new Date(b.createdAt || '.').getTime()),
+    [purchasePartyCanonicalView, orphanStandalonePurchaseParties]
   );
+  const allPurchaseParties = useMemo(
+    () => {
+      const byId = new Map<string, PurchaseParty>();
+      [...purchaseParties, ...orphanStandalonePurchaseParties]
+        .filter((party) => {
+          if (!party?.id) return false;
+          if (!party?.isDeleted) return true;
+          return Boolean(String((party as any)?.mergedIntoPartyId || '').trim());
+        })
+        .forEach((party) => {
+          if (!byId.has(party.id)) byId.set(party.id, party);
+        });
+      return Array.from(byId.values())
+        .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' }));
+    },
+    [purchaseParties, orphanStandalonePurchaseParties]
+  );
+  const getCanonicalPurchasePartySelectionId = (party?: PurchaseParty | null) => {
+    if (!party?.id || party.id.startsWith('orphan:')) return '';
+    return purchasePartyCanonicalView.partyIdToCanonicalId.get(party.id)
+      || String((party as any)?.mergedIntoPartyId || '').trim()
+      || party.id;
+  };
   const purchasePartySuggestions = useMemo(() => {
     const query = purchasePartyName.trim().toLowerCase();
     if (!purchaseTarget || !query || !isPurchasePartyInputFocused) return [];
@@ -388,11 +481,18 @@ useEscapeLayer(Boolean(deletingCategory), () => {
       .filter((party) => party.name.toLowerCase().includes(query))
       .slice(0, 5);
   }, [purchasePartyName, purchaseTarget, isPurchasePartyInputFocused, visiblePurchaseParties]);
-  const filteredAllPurchaseParties = useMemo(() => {
+  const stockSourcePartySuggestions = useMemo(() => {
+    const query = stockSourcePartyName.trim().toLowerCase();
+    if (!stockSourceProduct || !query || !isStockSourcePartyInputFocused) return [];
+    return visiblePurchaseParties
+      .filter((party) => party.name.toLowerCase().includes(query))
+      .slice(0, 5);
+  }, [stockSourcePartyName, stockSourceProduct, isStockSourcePartyInputFocused, visiblePurchaseParties]);
+  const filteredVisiblePurchaseParties = useMemo(() => {
     const query = supplierPartySearch.trim().toLowerCase();
-    if (!query) return allPurchaseParties;
-    return allPurchaseParties.filter((party) => [party.name, party.phone || '', party.gst || ''].join(' ').toLowerCase().includes(query));
-  }, [allPurchaseParties, supplierPartySearch]);
+    if (!query) return visiblePurchaseParties;
+    return visiblePurchaseParties.filter((party) => [party.name, party.phone || '', party.gst || ''].join(' ').toLowerCase().includes(query));
+  }, [visiblePurchaseParties, supplierPartySearch]);
 
   useEffect(() => {
     refreshData();
@@ -1150,35 +1250,25 @@ const displayProductCategory = (value: unknown): string => {
 
   const saveProduct = async (keepOpenForNext = false) => {
     if (isSaving) return;
+    const productName = String(formData.name ?? '').trim();
+    if (!productName) {
+      setError('Product name is required.');
+      return;
+    }
     const hasVariantAxes = !!(formData.variants?.length || formData.colors?.length);
     const hasCombos = hasVariantAxes && Array.isArray(formData.stockByVariantColor) && formData.stockByVariantColor.length > 0;
-
-    const stockBlank = formData.stock === '' || formData.stock === null || formData.stock === undefined;
-    const suggestedStockValue = getSuggestedStock(formData.totalPurchase, formData.totalSold);
-    const openingStockValue = stockBlank ? suggestedStockValue : cleanOptionalNumber(formData.stock, 0);
-    const totalPurchaseBlank = formData.totalPurchase === '' || formData.totalPurchase === null || formData.totalPurchase === undefined;
-    const effectiveTotalPurchase = totalPurchaseBlank && openingStockValue > 0 ? openingStockValue : cleanOptionalNumber(formData.totalPurchase, 0);
-    const supplierName = String(formData.supplierName || '').trim();
-    const supplierPayableRaw = formData.supplierTotalPayable;
-    const supplierPaidRaw = formData.supplierTotalPaid;
-    const supplierMethod = String(formData.supplierPaymentMethod || '').trim();
-    const supplierNote = String(formData.supplierNote || '').trim();
-    const supplierSectionTouched = supplierName !== '' || supplierPayableRaw !== '' || supplierPaidRaw !== '' || supplierMethod !== '' || supplierNote !== '';
-    const supplierPayable = supplierPayableRaw === '' ? 0 : Number(supplierPayableRaw);
-    const supplierPaid = supplierPaidRaw === '' ? 0 : Number(supplierPaidRaw);
-    if (supplierSectionTouched) {
-      if (!supplierName) return setError('Party / supplier name is required when supplier details are entered.');
-      if (!Number.isFinite(supplierPayable) || supplierPayable < 0) return setError('Total payable must be a valid number >= 0.');
-      if (!Number.isFinite(supplierPaid) || supplierPaid < 0) return setError('Total paid must be a valid number >= 0.');
-      if (supplierPaid > supplierPayable) return setError('Total paid cannot exceed total payable.');
-      if ((supplierPaid > 0 || supplierPayable > 0) && !supplierMethod) return setError('Payment method is required when payable/paid amount is entered.');
-      if (supplierMethod === 'credit' && supplierPaid > 0) return setError('Credit purchase requires total paid = 0.');
+    const sellPriceRaw = String(formData.sellPrice ?? '').trim();
+    if (sellPriceRaw && !/^\d+(\.\d+)?$/.test(sellPriceRaw)) {
+      setError('Sell price must contain numbers only.');
+      return;
     }
     setError(null);
-
-    const totalComboStock = hasCombos
+    const totalComboStock = editingProduct && hasCombos
       ? formData.stockByVariantColor.reduce((sum: number, row: any) => sum + toNonNegativeNumber(row.stock), 0)
-      : openingStockValue;
+      : 0;
+    const effectiveTotalPurchase = editingProduct ? cleanOptionalNumber(formData.totalPurchase, 0) : 0;
+    const effectiveTotalSold = editingProduct ? cleanOptionalNumber(formData.totalSold, 0) : 0;
+    const effectiveBuyPrice = editingProduct || !hasCombos ? cleanOptionalNumber(formData.buyPrice, 0) : cleanOptionalNumber(editingProduct?.buyPrice, 0);
 
     const productPayload = {
       id: editingProduct ? editingProduct.id : Date.now().toString(),
@@ -1192,23 +1282,25 @@ const displayProductCategory = (value: unknown): string => {
       locationRow: cleanOptionalText(formData.locationRow) || '',
       locationRack: cleanOptionalText(formData.locationRack) || '',
       locationShelf: cleanOptionalText(formData.locationShelf) || '',
+      piecesPerCarton: cleanOptionalNumber(formData.piecesPerCarton, 0),
+      telegramKeywords: cleanOptionalText(formData.telegramKeywords) || '',
       ...(cleanOptionalText(formData.hsn) ? { hsn: cleanOptionalText(formData.hsn)! } : {}),
-      buyPrice: hasCombos ? cleanOptionalNumber(editingProduct?.buyPrice, 0) : cleanOptionalNumber(formData.buyPrice, 0),
+      buyPrice: hasCombos ? cleanOptionalNumber(editingProduct?.buyPrice, 0) : effectiveBuyPrice,
       sellPrice: hasCombos ? cleanOptionalNumber(editingProduct?.sellPrice, 0) : cleanOptionalNumber(formData.sellPrice, 0),
       totalPurchase: cleanOptionalNumber(effectiveTotalPurchase, 0),
-      totalSold: cleanOptionalNumber(formData.totalSold, 0),
-      stock: totalComboStock,
+      totalSold: cleanOptionalNumber(effectiveTotalSold, 0),
+      stock: editingProduct ? totalComboStock : 0,
       variants: hasCombos ? (formData.variants || []) : [],
       colors: hasCombos ? (formData.colors || []) : [],
       stockByVariantColor: hasCombos
         ? (formData.stockByVariantColor || []).map((row: any) => ({
             variant: row.variant,
             color: row.color,
-            stock: toNonNegativeNumber(row.stock),
-            buyPrice: cleanOptionalNumber(row.buyPrice, 0),
+            stock: editingProduct ? toNonNegativeNumber(row.stock) : 0,
+            buyPrice: editingProduct ? cleanOptionalNumber(row.buyPrice, 0) : 0,
             sellPrice: cleanOptionalNumber(row.sellPrice, 0),
-            totalPurchase: cleanOptionalNumber(row.totalPurchase, 0),
-            totalSold: cleanOptionalNumber(row.totalSold, 0),
+            totalPurchase: editingProduct ? cleanOptionalNumber(row.totalPurchase, 0) : 0,
+            totalSold: editingProduct ? cleanOptionalNumber(row.totalSold, 0) : 0,
           }))
         : []
     } as Product;
@@ -1220,85 +1312,7 @@ const displayProductCategory = (value: unknown): string => {
         updated = await updateProduct(productPayload);
         setProducts(updated);
       } else {
-        if (supplierSectionTouched) {
-          const now = new Date().toISOString();
-          const supplierPaidEffective = supplierMethod === 'credit' ? 0 : supplierPaid;
-          const remainingDue = Math.max(0, Number((supplierPayable - supplierPaidEffective).toFixed(2)));
-          
-          const linkedOrderId = `po-admin-create-${Date.now()}`;
-          productPayload.purchaseHistory = [
-            {
-              id: `ph-admin-create-${Date.now()}`,
-              date: now,
-              variant: NO_VARIANT,
-              color: NO_COLOR,
-              quantity: toNonNegativeNumber(formData.stock),
-              unitPrice: toNonNegativeNumber(formData.buyPrice),
-              previousStock: 0,
-              previousBuyPrice: 0,
-              nextBuyPrice: toNonNegativeNumber(formData.buyPrice),
-              purchaseOrderId: linkedOrderId,
-              paymentMethod: (supplierMethod as 'cash' | 'online' | 'credit') || undefined,
-              paidAmount: supplierPaidEffective,
-              partyName: supplierName,
-              notes: supplierNote || `Source: admin_product_create`,
-              reference: `Supplier:${supplierName} | Payable:${supplierPayable.toFixed(2)} | Paid:${supplierPaidEffective.toFixed(2)} | Due:${remainingDue.toFixed(2)} | Method:${supplierMethod || 'n/a'} | Source:admin_product_create`,
-            },
-          ];
-          (productPayload as any).__linkedOrderId = linkedOrderId;
-        }
         updated = await addProduct(productPayload);
-        if (supplierSectionTouched) {
-          const partyResolution = resolvePurchasePartyForAdmin({
-            id: formData.supplierPartyId,
-            name: supplierName,
-          });
-          if (partyResolution.status === 'ambiguous') {
-            throw new Error('Multiple supplier parties match this name. Please select the correct supplier from the supplier list before saving.');
-          }
-          const party = partyResolution.status === 'matched'
-            ? partyResolution.party
-            : await createPurchaseParty({ name: supplierName });
-          if (supplierPayable > 0) {
-            const now = new Date().toISOString();
-            const order: PurchaseOrder = {
-              id: (productPayload as any).__linkedOrderId || `po-admin-create-${Date.now()}`,
-              partyId: party.id,
-              partyName: party.name,
-              partyPhone: party.phone,
-              partyGst: party.gst,
-              partyLocation: party.location,
-              status: 'received',
-              orderDate: now,
-              notes: supplierNote || 'Admin product creation',
-              lines: [{
-                id: `line-admin-create-${Date.now()}`,
-                sourceType: 'inventory',
-                productId: productPayload.id,
-                productName: displayProductText(productPayload.name),
-                category: displayProductText(productPayload.category),
-                image: productPayload.image || '',
-                variant: NO_VARIANT,
-                color: NO_COLOR,
-                quantity: openingStockValue,
-                unitCost: toNonNegativeNumber(formData.buyPrice),
-                totalCost: supplierPayable,
-              }],
-              totalQuantity: openingStockValue,
-              totalAmount: supplierPayable,
-              paymentHistory: supplierMethod === 'credit' ? [] : supplierPaid > 0 ? [{
-                id: `pop-admin-create-${Date.now()}`,
-                paidAt: now,
-                amount: supplierPaid,
-                method: supplierMethod === 'cash' ? 'cash' : 'online',
-                note: supplierNote || 'Admin product creation',
-              }] : [],
-              createdAt: now,
-              updatedAt: now,
-            };
-            await createPurchaseOrder(order);
-          }
-        }
         setProducts(updated);
       }
       if (keepOpenForNext) {
@@ -1314,13 +1328,25 @@ const displayProductCategory = (value: unknown): string => {
           } else {
             closeModal();
           }
+        } else if (editingProduct) {
+          closeModal();
         } else {
-          setEditingProduct(null);
-          setFormData({ ...emptyProductForm, variants: [], colors: [], stockByVariantColor: [] });
-          setError(null);
+          closeModal();
+          const createdProduct = updated.find((product) => product.id === productPayload.id);
+      if (createdProduct) {
+            openStockSourceMainActionFlow(createdProduct, true);
+          } else {
+            openModal();
+          }
         }
       } else {
-        closeModal();
+        if (editingProduct) {
+          closeModal();
+        } else {
+          closeModal();
+          const createdProduct = updated.find((product) => product.id === productPayload.id);
+          if (createdProduct) openStockSourceMainActionFlow(createdProduct, false);
+        }
       }
     } catch (saveError) {
       const message = getFriendlyErrorMessage(saveError, 'admin.product_save');
@@ -1349,6 +1375,536 @@ const displayProductCategory = (value: unknown): string => {
     () => purchaseVariantRows.find(row => row.key === selectedPurchaseVariantKey) || null,
     [purchaseVariantRows, selectedPurchaseVariantKey]
   );
+  const stockSourceVariantRows = useMemo(() => {
+    if (!stockSourceProduct || !productHasCombinationStock(stockSourceProduct)) return [];
+    return getProductStockRows(stockSourceProduct).map((row, idx) => ({
+      ...row,
+      key: `${row.variant || NO_VARIANT}__${row.color || NO_COLOR}__${idx}`,
+    }));
+  }, [stockSourceProduct]);
+  const selectedStockSourceVariantRow = useMemo(
+    () => stockSourceVariantRows.find((row) => row.key === stockSourceVariantKey) || null,
+    [stockSourceVariantRows, stockSourceVariantKey]
+  );
+
+  const resetStockSourceState = () => {
+    setStockSourceProduct(null);
+    setStockSourceMode('choice');
+    setStockSourceQueueNext(false);
+    setStockSourceVariantKey('');
+    setStockSourceQty('');
+    setStockSourceUnitCost('');
+    setStockSourceSellPrice('');
+    setStockSourcePartyName('');
+    setStockSourcePartyId('');
+    setStockSourceDate(new Date().toISOString().slice(0, 16));
+    setStockSourceNote('');
+    setStockSourcePaymentMethod('cash');
+    setStockSourcePartialPaidVia('cash');
+    setStockSourcePaidAmount('');
+    setStockSourceCashPaid('');
+    setStockSourceOnlinePaid('');
+    setStockSourceSettlementTouched(false);
+    setStockSourcePurchaseOnly(false);
+    setStockSourceError(null);
+    setStockSourceSubmitting(false);
+  };
+
+  const openStockSourceFlow = (product: Product, queueNext = false) => {
+    resetStockSourceState();
+    setStockSourceProduct(product);
+    setStockSourceQueueNext(queueNext);
+    setStockSourceSellPrice(Number.isFinite(Number(product.sellPrice)) && Number(product.sellPrice) > 0 ? String(product.sellPrice) : '');
+  };
+
+  const openStockSourceMainActionFlow = (product: Product, queueNext = false) => {
+    openStockSourceFlow(product, queueNext);
+    setStockSourceMode('purchase');
+  };
+
+  const openStockSourcePurchaseFlow = (product: Product, queueNext = false) => {
+    openStockSourceFlow(product, queueNext);
+    setStockSourceMode('purchase');
+    setStockSourcePurchaseOnly(true);
+  };
+
+  const finishStockSourceFlow = () => {
+    const shouldQueueNext = stockSourceQueueNext;
+    resetStockSourceState();
+    if (shouldQueueNext) openModal();
+  };
+
+  const resolveAdminIsoFromLocalInput = (value?: string) => {
+    const direct = new Date(String(value || '')).getTime();
+    if (Number.isFinite(direct)) return new Date(direct).toISOString();
+    return new Date().toISOString();
+  };
+
+  const currentShiftPreviewBase = useMemo(() => {
+    const snapshot = appStateSnapshot || loadData();
+    const cashSessions = Array.isArray(snapshot.cashSessions) ? (snapshot.cashSessions as CashSession[]) : [];
+    const openSession = cashSessions.find((session) => session.status === 'open');
+    const purchaseOrdersInput = Array.isArray(snapshot.purchaseOrders) ? (snapshot.purchaseOrders as PurchaseOrder[]) : [];
+    const payableTotal = purchaseOrdersInput
+      .filter((order) => String(order.status || '').trim().toLowerCase() !== 'cancelled')
+      .reduce((sum, order) => sum + Math.max(0, Number(order.remainingAmount || 0)), 0);
+
+    if (!openSession) {
+      return {
+        hasOpenSession: false,
+        openingBalance: 0,
+        cashIn: 0,
+        cashOut: 0,
+        netCashMovement: 0,
+        currentSystemCash: 0,
+        supplierPayable: roundAdminMoney(payableTotal),
+      };
+    }
+
+    const start = new Date(openSession.startTime).getTime();
+    const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
+    const transactionsInput = Array.isArray(snapshot.transactions) ? (snapshot.transactions as Transaction[]) : [];
+    const expensesInput = Array.isArray(snapshot.expenses) ? (snapshot.expenses as Expense[]) : [];
+    const deletedTransactionsInput = Array.isArray(snapshot.deletedTransactions) ? snapshot.deletedTransactions : [];
+    const deleteCompensationsInput = Array.isArray(snapshot.deleteCompensations) ? snapshot.deleteCompensations : [];
+    const manualCashbookEntriesInput = Array.isArray(snapshot.manualCashbookEntries) ? (snapshot.manualCashbookEntries as ManualCashbookEntry[]) : [];
+    const cashAdjustmentsInput = Array.isArray(snapshot.cashAdjustments) ? snapshot.cashAdjustments : [];
+    const upfrontOrdersInput = Array.isArray(snapshot.upfrontOrders) ? (snapshot.upfrontOrders as UpfrontOrder[]) : [];
+    const supplierPaymentsInput = Array.isArray(snapshot.supplierPayments) ? snapshot.supplierPayments : [];
+
+    const scopedTransactions = transactionsInput.filter((tx) => {
+      const at = getAdminTransactionTimeForSession(tx);
+      return Number.isFinite(at) && at >= start && at <= end;
+    });
+    const scopedExpenses = expensesInput.filter((expense) => {
+      const at = new Date(getAdminExpenseEffectiveDate(expense)).getTime();
+      return Number.isFinite(at) && at >= start && at <= end;
+    });
+    const cashSales = scopedTransactions
+      .filter((tx) => isAdminSaleLikeTx(tx))
+      .reduce((sum, tx) => sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0)), 0);
+    const cashCollections = scopedTransactions
+      .filter((tx) => tx.type === 'payment' && tx.paymentMethod === 'Cash')
+      .reduce((sum, tx) => sum + Math.abs(Number(tx.total || 0)), 0);
+    const customerCashOutflow = scopedTransactions
+      .filter((tx) => tx.type === 'customer_cash_out' && tx.paymentMethod !== 'Online')
+      .reduce((sum, tx) => sum + Math.abs(Number(tx.total || 0)), 0);
+    const cashRefunds = scopedTransactions
+      .filter((tx) => tx.type === 'return')
+      .reduce((sum, tx) => {
+        try {
+          const allocation = getCanonicalReturnAllocation(tx, [], 0);
+          return sum + Math.max(0, Number(allocation.cashRefund || 0));
+        } catch {
+          return sum;
+        }
+      }, 0);
+    const deleteCompensationRefunds = deleteCompensationsInput
+      .filter((record) => {
+        const at = new Date(record?.createdAt || '').getTime();
+        return Number.isFinite(at) && at >= start && at <= end && isAdminExplicitDeleteRefund(record);
+      })
+      .reduce((sum, record) => sum + Math.max(0, Number(record?.amount || 0)), 0);
+    const supplierCashPaymentsFromLedger = supplierPaymentsInput.reduce((sum, payment) => {
+      const at = getAdminSupplierPaymentTimestamp(payment);
+      if (!Number.isFinite(at) || at < start || at > end) return sum;
+      if ((payment as any)?.deletedAt || (payment as any)?.isDeleted === true) return sum;
+      if (getAdminSupplierPaymentMethodForDrawer((payment as any)?.method) !== 'cash') return sum;
+      return sum + Math.max(0, Number((payment as any)?.amount || (payment as any)?.total || (payment as any)?.paidAmount || 0));
+    }, 0);
+    const legacySupplierCashPayments = purchaseOrdersInput.reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
+      if (payment?.supplierPaymentId) return inner;
+      const at = new Date(payment?.paidAt || '').getTime();
+      if (!Number.isFinite(at) || at < start || at > end) return inner;
+      if (getAdminSupplierPaymentMethodForDrawer(payment?.method) !== 'cash') return inner;
+      return inner + Math.max(0, Number(payment?.amount || 0));
+    }, 0), 0);
+    const scopedManualEntries = manualCashbookEntriesInput.filter((entry) => {
+      if (entry?.isDeleted) return false;
+      const at = new Date(entry.date || entry.createdAt).getTime();
+      return Number.isFinite(at) && at >= start && at <= end;
+    });
+    const manualCashIn = scopedManualEntries
+      .filter((entry) => entry.type === 'cash_in')
+      .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
+    const manualCashOut = scopedManualEntries
+      .filter((entry) => entry.type === 'cash_out')
+      .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
+    const cashAdjustmentsIn = cashAdjustmentsInput
+      .filter((entry: any) => {
+        const at = new Date(entry?.createdAt || '').getTime();
+        return Number.isFinite(at) && at >= start && at <= end && entry?.type === 'cash_addition';
+      })
+      .reduce((sum: number, entry: any) => sum + Math.max(0, Number(entry?.amount || 0)), 0);
+    const cashAdjustmentsOut = cashAdjustmentsInput
+      .filter((entry: any) => {
+        const at = new Date(entry?.createdAt || '').getTime();
+        return Number.isFinite(at) && at >= start && at <= end && entry?.type === 'cash_withdrawal';
+      })
+      .reduce((sum: number, entry: any) => sum + Math.max(0, Number(entry?.amount || 0)), 0);
+    const customOrderCashIn = buildUpfrontOrderLedgerEffects(upfrontOrdersInput)
+      .filter((effect) => effect.type === 'custom_order_payment' && effect.isLegacyInfoOnly !== true)
+      .filter((effect) => {
+        const at = new Date(effect.date).getTime();
+        return Number.isFinite(at) && at >= start && at <= end;
+      })
+      .reduce((sum, effect) => sum + Math.max(0, Number(effect.cashIn || 0)), 0);
+    const expenseTotal = scopedExpenses.reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+    const cashIn = roundAdminMoney(cashSales + cashCollections + customOrderCashIn + manualCashIn + cashAdjustmentsIn);
+    const cashOut = roundAdminMoney(cashRefunds + deleteCompensationRefunds + customerCashOutflow + supplierCashPaymentsFromLedger + legacySupplierCashPayments + manualCashOut + cashAdjustmentsOut + expenseTotal);
+    const netCashMovement = roundAdminMoney(cashIn - cashOut);
+
+    return {
+      hasOpenSession: true,
+      openingBalance: roundAdminMoney(openSession.openingBalance),
+      cashIn,
+      cashOut,
+      netCashMovement,
+      currentSystemCash: roundAdminMoney(Number(openSession.openingBalance || 0) + netCashMovement),
+      supplierPayable: roundAdminMoney(payableTotal),
+    };
+  }, [appStateSnapshot]);
+
+  const stockSourceComputed = useMemo(() => {
+    const qty = Math.max(0, Number(stockSourceQty || 0) || 0);
+    const unitCost = Math.max(0, Number(stockSourceUnitCost || 0) || 0);
+    const totalAmount = roundAdminMoney(qty * unitCost);
+    const rawCashPaid = Math.max(0, Number(stockSourceCashPaid || 0) || 0);
+    const rawOnlinePaid = Math.max(0, Number(stockSourceOnlinePaid || 0) || 0);
+    const rawPaid = Math.max(0, Number(stockSourcePaidAmount || 0) || 0);
+    const useDefaultCashSettlement = stockSourcePurchaseOnly && stockSourceMode === 'purchase'
+      && !stockSourceSettlementTouched
+      && !String(stockSourceCashPaid || '').trim()
+      && !String(stockSourceOnlinePaid || '').trim();
+    const cashPaid = stockSourceMode === 'purchase'
+      ? stockSourcePurchaseOnly
+        ? useDefaultCashSettlement
+          ? totalAmount
+          : Math.min(totalAmount, rawCashPaid)
+        : stockSourcePaymentMethod === 'cash'
+          ? totalAmount
+          : stockSourcePaymentMethod === 'partial' && stockSourcePartialPaidVia === 'cash'
+            ? Math.min(totalAmount, rawPaid)
+            : 0
+      : 0;
+    const onlinePaid = stockSourceMode === 'purchase'
+      ? stockSourcePurchaseOnly
+        ? Math.min(Math.max(0, totalAmount - cashPaid), rawOnlinePaid)
+        : stockSourcePaymentMethod === 'online'
+          ? totalAmount
+          : stockSourcePaymentMethod === 'partial' && stockSourcePartialPaidVia === 'online'
+            ? Math.min(Math.max(0, totalAmount - cashPaid), rawPaid)
+            : 0
+      : 0;
+    const effectivePaid = roundAdminMoney(cashPaid + onlinePaid);
+    const remainingPayable = stockSourceMode === 'purchase' ? roundAdminMoney(Math.max(0, totalAmount - effectivePaid)) : 0;
+    const cashOutDelta = stockSourceMode === 'purchase'
+      ? roundAdminMoney(cashPaid)
+      : 0;
+    const payableDelta = stockSourceMode === 'purchase' ? remainingPayable : 0;
+    const beforeCashIn = currentShiftPreviewBase.cashIn;
+    const beforeCashOut = currentShiftPreviewBase.cashOut;
+    const beforeNet = currentShiftPreviewBase.netCashMovement;
+    const beforeSystemCash = currentShiftPreviewBase.currentSystemCash;
+    const beforePayable = currentShiftPreviewBase.supplierPayable;
+
+    return {
+      qty,
+      unitCost,
+      totalAmount,
+      cashPaid: roundAdminMoney(cashPaid),
+      onlinePaid: roundAdminMoney(onlinePaid),
+      effectivePaid,
+      remainingPayable,
+      cashOutDelta: roundAdminMoney(cashOutDelta),
+      payableDelta: roundAdminMoney(payableDelta),
+      kpis: [
+        { label: 'Cash In', before: beforeCashIn, change: 0, after: beforeCashIn },
+        { label: 'Cash Out', before: beforeCashOut, change: roundAdminMoney(cashOutDelta), after: roundAdminMoney(beforeCashOut + cashOutDelta) },
+        { label: 'Net Cash Movement', before: beforeNet, change: roundAdminMoney(-cashOutDelta), after: roundAdminMoney(beforeNet - cashOutDelta) },
+        { label: 'Current/System Cash', before: beforeSystemCash, change: roundAdminMoney(-cashOutDelta), after: roundAdminMoney(beforeSystemCash - cashOutDelta) },
+        { label: 'Supplier Due', before: beforePayable, change: roundAdminMoney(payableDelta), after: roundAdminMoney(beforePayable + payableDelta) },
+      ],
+    };
+  }, [
+    stockSourceQty,
+    stockSourceUnitCost,
+    stockSourceMode,
+    stockSourcePaidAmount,
+    stockSourcePaymentMethod,
+    stockSourcePartialPaidVia,
+    stockSourceCashPaid,
+    stockSourceOnlinePaid,
+    stockSourceSettlementTouched,
+    stockSourcePurchaseOnly,
+    currentShiftPreviewBase,
+  ]);
+
+  useEffect(() => {
+    if (!stockSourceProduct || !productHasCombinationStock(stockSourceProduct)) {
+      setStockSourceVariantKey((prev) => (prev ? '' : prev));
+      return;
+    }
+    if (!stockSourceVariantRows.length) {
+      setStockSourceVariantKey((prev) => (prev ? '' : prev));
+      return;
+    }
+    setStockSourceVariantKey((prev) => {
+      if (prev && stockSourceVariantRows.some((row) => row.key === prev)) return prev;
+      const nextKey = stockSourceVariantRows[0].key;
+      return prev === nextKey ? prev : nextKey;
+    });
+  }, [stockSourceProduct, stockSourceVariantRows]);
+
+  const applyStockSourceInventoryUpdate = async (options: {
+    product: Product;
+    quantity: number;
+    unitCost: number;
+    sellPrice?: number;
+    partyName: string;
+    note?: string;
+    isoDate: string;
+    purchaseOrderId?: string;
+    paymentMethod?: 'cash' | 'online' | 'credit';
+    totalPaid?: number;
+    remainingAmount?: number;
+    openingStockMode?: boolean;
+  }) => {
+    const isVariantPurchase = productHasCombinationStock(options.product) && !!selectedStockSourceVariantRow;
+    const currentStock = isVariantPurchase ? toNonNegativeNumber(selectedStockSourceVariantRow?.stock) : toNonNegativeNumber(options.product.stock);
+    const currentBuyPrice = isVariantPurchase ? toNonNegativeNumber(selectedStockSourceVariantRow?.buyPrice) : toNonNegativeNumber(options.product.buyPrice);
+    const nextBuyPrice = currentStock + options.quantity > 0
+      ? (((currentStock * currentBuyPrice) + (options.quantity * options.unitCost)) / (currentStock + options.quantity))
+      : options.unitCost;
+
+    const updatedVariantRows = isVariantPurchase
+      ? (options.product.stockByVariantColor || []).map((row) => {
+          const variant = row.variant || NO_VARIANT;
+          const color = row.color || NO_COLOR;
+          if (variant !== (selectedStockSourceVariantRow?.variant || NO_VARIANT) || color !== (selectedStockSourceVariantRow?.color || NO_COLOR)) {
+            return row;
+          }
+          return {
+            ...row,
+            stock: toNonNegativeNumber(row.stock) + options.quantity,
+            buyPrice: nextBuyPrice,
+            totalPurchase: toNonNegativeNumber(row.totalPurchase) + options.quantity,
+          };
+        })
+      : (options.product.stockByVariantColor || []);
+
+    const rolledUpBuyPrice = isVariantPurchase
+      ? (() => {
+          const rows = updatedVariantRows.map((row) => ({
+            stock: toNonNegativeNumber(row.stock),
+            buyPrice: toNonNegativeNumber(row.buyPrice),
+          }));
+          const totalStock = rows.reduce((sum, row) => sum + row.stock, 0);
+          if (totalStock <= 0) return nextBuyPrice;
+          return rows.reduce((sum, row) => sum + (row.stock * row.buyPrice), 0) / totalStock;
+        })()
+      : nextBuyPrice;
+
+    const nextProduct: Product = {
+      ...options.product,
+      stock: toNonNegativeNumber(options.product.stock) + options.quantity,
+      buyPrice: rolledUpBuyPrice,
+      sellPrice: typeof options.sellPrice === 'number' && Number.isFinite(options.sellPrice)
+        ? Math.max(0, options.sellPrice)
+        : toNonNegativeNumber(options.product.sellPrice),
+      totalPurchase: toNonNegativeNumber(options.product.totalPurchase) + options.quantity,
+      stockByVariantColor: updatedVariantRows,
+      purchaseHistory: [
+        {
+          id: `ph-stock-source-${Date.now()}`,
+          date: options.isoDate,
+          variant: isVariantPurchase ? (selectedStockSourceVariantRow?.variant || NO_VARIANT) : NO_VARIANT,
+          color: isVariantPurchase ? (selectedStockSourceVariantRow?.color || NO_COLOR) : NO_COLOR,
+          quantity: options.quantity,
+          unitPrice: options.unitCost,
+          previousStock: currentStock,
+          previousBuyPrice: currentBuyPrice,
+          nextBuyPrice,
+          purchaseOrderId: options.purchaseOrderId,
+          paymentMethod: options.paymentMethod,
+          paidAmount: options.totalPaid,
+          totalPaid: options.totalPaid,
+          remainingAmount: options.remainingAmount,
+          partyName: options.partyName || undefined,
+          notes: options.openingStockMode
+            ? `Opening Stock / Non-Accounting Stock${options.note ? ` - ${options.note}` : ''}`
+            : options.note || undefined,
+          reference: options.openingStockMode
+            ? `Opening Stock | Non-Accounting | Party:${options.partyName || 'Not set'}`
+            : undefined,
+        },
+        ...(options.product.purchaseHistory || []),
+      ],
+    };
+
+    await updateProduct(nextProduct);
+  };
+
+  const handleSaveOpeningStockFromStockSource = async () => {
+    if (!stockSourceProduct || stockSourceSubmitting) return;
+    setStockSourceError(null);
+    const quantity = stockSourceComputed.qty;
+    const unitCost = stockSourceComputed.unitCost;
+    const sellPriceRaw = String(stockSourceSellPrice ?? '').trim();
+    const partyName = stockSourcePartyName.trim();
+    if (quantity <= 0 || unitCost < 0) {
+      setStockSourceError('Enter a valid quantity and cost price.');
+      return;
+    }
+    if (sellPriceRaw && !/^\d+(\.\d+)?$/.test(sellPriceRaw)) {
+      setStockSourceError('Sell price must contain numbers only.');
+      return;
+    }
+    if (!partyName) {
+      setStockSourceError('Purchase party is required for opening stock.');
+      return;
+    }
+
+    setStockSourceSubmitting(true);
+    try {
+      const partyResolution = resolvePurchasePartyForAdmin({ id: stockSourcePartyId, name: partyName });
+      if (partyResolution.status === 'ambiguous') {
+        throw new Error('Multiple supplier parties match this name. Please select the correct party.');
+      }
+      const party = partyResolution.status === 'matched'
+        ? partyResolution.party
+        : await createPurchaseParty({ name: partyName });
+      await applyStockSourceInventoryUpdate({
+        product: stockSourceProduct,
+        quantity,
+        unitCost,
+        sellPrice: sellPriceRaw ? Number(sellPriceRaw) : 0,
+        partyName: party.name,
+        note: stockSourceNote.trim() || undefined,
+        isoDate: resolveAdminIsoFromLocalInput(stockSourceDate),
+        openingStockMode: true,
+      });
+      refreshData();
+      finishStockSourceFlow();
+    } catch (stockSourceSaveError) {
+      setStockSourceError(getFriendlyErrorMessage(stockSourceSaveError, 'admin.stock_source.opening_stock'));
+    } finally {
+      setStockSourceSubmitting(false);
+    }
+  };
+
+  const handleSavePurchaseFromStockSource = async () => {
+    if (!stockSourceProduct || stockSourceSubmitting) return;
+    setStockSourceError(null);
+    const quantity = stockSourceComputed.qty;
+    const unitCost = stockSourceComputed.unitCost;
+    const totalAmount = stockSourceComputed.totalAmount;
+    const paidAmount = stockSourceComputed.effectivePaid;
+    const cashPaidAmount = stockSourceComputed.cashPaid;
+    const onlinePaidAmount = stockSourceComputed.onlinePaid;
+    const remainingAmount = stockSourceComputed.remainingPayable;
+    const sellPriceRaw = String(stockSourceSellPrice ?? '').trim();
+    const partyName = stockSourcePartyName.trim();
+    if (quantity <= 0 || unitCost <= 0) {
+      setStockSourceError('Enter a valid quantity and unit cost.');
+      return;
+    }
+    if (sellPriceRaw && !/^\d+(\.\d+)?$/.test(sellPriceRaw)) {
+      setStockSourceError('Sell price must contain numbers only.');
+      return;
+    }
+    if (!partyName) {
+      setStockSourceError('Purchase party is required.');
+      return;
+    }
+
+    setStockSourceSubmitting(true);
+    try {
+      const partyResolution = resolvePurchasePartyForAdmin({ id: stockSourcePartyId, name: partyName });
+      if (partyResolution.status === 'ambiguous') {
+        throw new Error('Multiple supplier parties match this name. Please select the correct party.');
+      }
+      const party = partyResolution.status === 'matched'
+        ? partyResolution.party
+        : await createPurchaseParty({ name: partyName });
+      const now = resolveAdminIsoFromLocalInput(stockSourceDate);
+      const orderId = `po-admin-stock-source-${Date.now()}`;
+      const isVariantPurchase = productHasCombinationStock(stockSourceProduct) && !!selectedStockSourceVariantRow;
+      const order: PurchaseOrder = {
+        id: orderId,
+        partyId: party.id,
+        partyName: party.name,
+        partyPhone: party.phone,
+        partyGst: party.gst,
+        partyLocation: party.location,
+        status: 'received',
+        orderDate: now,
+        notes: stockSourceNote.trim() || undefined,
+        lines: [{
+          id: `line-stock-source-${Date.now()}`,
+          sourceType: 'inventory',
+          productId: stockSourceProduct.id,
+          productName: stockSourceProduct.name,
+          category: stockSourceProduct.category,
+          image: stockSourceProduct.image,
+          variant: isVariantPurchase ? (selectedStockSourceVariantRow?.variant || NO_VARIANT) : NO_VARIANT,
+          color: isVariantPurchase ? (selectedStockSourceVariantRow?.color || NO_COLOR) : NO_COLOR,
+          quantity,
+          unitCost,
+          totalCost: totalAmount,
+          lineTotal: totalAmount,
+        }],
+        totalQuantity: quantity,
+        totalAmount,
+        totalPaid: paidAmount,
+        remainingAmount,
+        paymentHistory: [
+          ...(cashPaidAmount > 0
+            ? [{ id: `pop-stock-source-cash-${Date.now()}`, paidAt: now, amount: cashPaidAmount, method: 'cash' as const, note: stockSourceNote.trim() || 'Stock source purchase' }]
+            : []),
+          ...(onlinePaidAmount > 0
+            ? [{ id: `pop-stock-source-online-${Date.now()}`, paidAt: now, amount: onlinePaidAmount, method: 'online' as const, note: stockSourceNote.trim() || 'Stock source purchase' }]
+            : []),
+        ],
+        receivedQuantity: quantity,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const savedOrder = await createPurchaseOrder(order);
+      const latestData = loadData();
+      const availablePartyCredit = (latestData.partyCreditLedger || [])
+        .filter((entry: any) => Math.max(0, Number(entry.remainingAmount || 0)) > 0 && partyCreditEntryMatchesParty(entry, { id: party.id, name: party.name }))
+        .reduce((sum: number, entry: any) => sum + Math.max(0, Number(entry.remainingAmount || 0)), 0);
+      const maxCreditUsable = Math.max(0, Number((totalAmount - paidAmount).toFixed(2)));
+      const creditToApply = Math.min(availablePartyCredit, maxCreditUsable);
+      if (creditToApply > 0) {
+        await applyPartyCreditToPurchaseOrder(savedOrder.id, creditToApply, savedOrder.billNumber || savedOrder.id.slice(-6));
+      }
+      await applyStockSourceInventoryUpdate({
+        product: stockSourceProduct,
+        quantity,
+        unitCost,
+        sellPrice: sellPriceRaw ? Number(sellPriceRaw) : 0,
+        partyName: party.name,
+        note: stockSourceNote.trim() || undefined,
+        isoDate: now,
+        purchaseOrderId: savedOrder.id,
+        paymentMethod: onlinePaidAmount > 0 && cashPaidAmount <= 0
+          ? 'online'
+          : cashPaidAmount > 0
+            ? 'cash'
+            : 'credit',
+        totalPaid: paidAmount,
+        remainingAmount,
+      });
+      refreshData();
+      finishStockSourceFlow();
+    } catch (stockSourceSaveError) {
+      setStockSourceError(getFriendlyErrorMessage(stockSourceSaveError, 'admin.stock_source.purchase'));
+    } finally {
+      setStockSourceSubmitting(false);
+    }
+  };
 
   const canonicalPurchaseHistoryRows = useMemo(
     () => getResolvedPurchaseHistoryRowsFromPurchaseOrdersForProduct(purchaseTarget, purchaseOrders),
@@ -2016,6 +2572,9 @@ const displayProductCategory = (value: unknown): string => {
     if (supplierPartyPickerContext === 'purchase') {
       setPurchasePartyName(party.name);
       setSelectedPurchasePartyId(party.id);
+    } else if (supplierPartyPickerContext === 'stock_source') {
+      setStockSourcePartyName(party.name);
+      setStockSourcePartyId(party.id);
     } else {
       setFormData((prev: any) => ({ ...prev, supplierName: party.name, supplierPartyId: party.id }));
     }
@@ -2204,6 +2763,7 @@ const confirmDeleteCategory = async () => {
     setError(null);
     if (product) {
       setEditingProduct(product);
+      setSelectedImageFileName('');
       setFormData({
         ...emptyProductForm,
         ...product,
@@ -2212,6 +2772,8 @@ const confirmDeleteCategory = async () => {
         stock: Number.isFinite(product.stock) ? product.stock : '',
         totalPurchase: Number.isFinite(product.totalPurchase) ? product.totalPurchase : '',
         totalSold: Number.isFinite(product.totalSold) ? product.totalSold : '',
+        piecesPerCarton: Number.isFinite((product as any).piecesPerCarton) ? Number((product as any).piecesPerCarton) : '',
+        telegramKeywords: String((product as any).telegramKeywords || ''),
         variants: product.variants || [],
         colors: product.colors || [],
         stockByVariantColor: (product.stockByVariantColor || []).map((row: any) => ({
@@ -2227,6 +2789,7 @@ const confirmDeleteCategory = async () => {
       });
     } else {
       setEditingProduct(null);
+      setSelectedImageFileName('');
       setFormData({ ...emptyProductForm, variants: [], colors: [], stockByVariantColor: [] });
     }
     setIsModalOpen(true);
@@ -2290,6 +2853,7 @@ const confirmDeleteCategory = async () => {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setSelectedImageFileName(file.name);
       const reader = new FileReader();
       reader.onload = (event) => {
         const img = new Image();
@@ -2325,6 +2889,8 @@ const confirmDeleteCategory = async () => {
         img.src = event.target?.result as string;
       };
       reader.readAsDataURL(file);
+    } else {
+      setSelectedImageFileName('');
     }
   };
 
@@ -2434,7 +3000,7 @@ useEffect(() => {
   lowStockCategoryFilter,
 ]);
 
-  const getProductSearchTextForAdmin = (p: Product) => [p.name, p.barcode, p.category, (p as any).locationZone, (p as any).locationRow, (p as any).locationRack, (p as any).locationShelf, (p as any).hsn, (p as any).description].map((value) => safeText(value)).filter(Boolean).join(' ');
+  const getProductSearchTextForAdmin = (p: Product) => [p.name, p.barcode, p.category, (p as any).locationZone, (p as any).locationRow, (p as any).locationRack, (p as any).locationShelf, (p as any).hsn, (p as any).description, (p as any).telegramKeywords, (p as any).piecesPerCarton].map((value) => safeText(value)).filter(Boolean).join(' ');
 
   const filteredProducts = useMemo(() => {
     let result = products.filter(p => 
@@ -2520,7 +3086,7 @@ useEffect(() => {
   const operatorFilteredProducts = useMemo(() => {
     const term = safeLower(searchTerm);
     const result = products.filter((product) => {
-      const matchesSearch = !term || safeLower([getProductName(product), getProductCategory(product), getProductBarcode(product), (product as any).locationZone, (product as any).locationRow, (product as any).locationRack, (product as any).locationShelf].join(' ')).includes(term);
+      const matchesSearch = !term || safeLower([getProductName(product), getProductCategory(product), getProductBarcode(product), (product as any).locationZone, (product as any).locationRow, (product as any).locationRack, (product as any).locationShelf, (product as any).telegramKeywords, (product as any).piecesPerCarton].join(' ')).includes(term);
       const stock = Math.max(0, Number(product.stock || 0));
       const matchesFilter = operatorStockFilter === 'all'
         || (operatorStockFilter === 'low' && stock > 0 && stock <= 10)
@@ -3074,7 +3640,7 @@ useEffect(() => {
                 <td className="p-3">{formatCurrency(metrics.combinedAvgBuyPrice)} / {formatCurrency(metrics.combinedAvgSellPrice)}</td>
                 <td className="p-3">
                   <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => { setPurchaseTarget(product); setPurchaseQty(''); setPurchasePrice(''); setPurchaseNextBuyPrice(''); setPurchaseReference(''); setPurchaseNotes(''); setPurchasePartyName(''); setSelectedPurchasePartyId(''); setPurchaseCashPaid(''); setPurchaseBankPaid(''); setPurchasePaymentNote(''); setPurchaseModalTab('add'); setPurchaseHistoryVariantFilter('all'); setPurchaseError(null); }}>Add Purchase</Button>
+                    <Button size="sm" variant="outline" onClick={() => openStockSourcePurchaseFlow(product, false)}>Add Purchase</Button>
                     <Button size="sm" variant="outline" onClick={() => openModal(product)}>Edit</Button>
                     <div className="relative">
                       <Button size="sm" variant="outline" onClick={() => setOpenActionMenuProductId(prev => prev === product.id ? null : product.id)}><MoreVertical className="w-4 h-4" /></Button>
@@ -3163,20 +3729,28 @@ useEffect(() => {
                     </div>
                 )}
                 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.18fr_0.82fr] lg:items-start">
+                  <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="space-y-2">
                       <Label>Product Image</Label>
-                      <div className="flex items-center gap-4 p-3 border rounded-lg border-dashed hover:bg-muted/10 transition-colors">
-                        <div className="h-16 w-16 bg-white rounded-md overflow-hidden border flex items-center justify-center shadow-sm">
+                      <div className="flex flex-col gap-3 rounded-xl border border-dashed border-slate-200 p-3 transition-colors sm:flex-row sm:items-center hover:bg-muted/10">
+                        <div className="h-16 w-16 shrink-0 bg-white rounded-md overflow-hidden border flex items-center justify-center shadow-sm">
                           {formData.image ? (
                             <img src={formData.image} alt="Preview" className="h-full w-full object-contain"  loading="lazy"  decoding="async" />
                           ) : (
                             <span className="text-[10px] text-muted-foreground">No Image</span>
                           )}
                         </div>
-                        <div className="flex-1">
-                          <Input type="file" accept="image/*" onChange={handleImageUpload} className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90" />
+                        <div className="min-w-0 flex-1">
+                          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 transition hover:border-slate-300 hover:bg-slate-50">
+                            <span className="inline-flex h-9 shrink-0 items-center rounded-full bg-slate-950 px-4 text-sm font-semibold text-white">
+                              Choose Image
+                            </span>
+                            <span className="min-w-0 truncate text-sm text-slate-600">
+                              {selectedImageFileName || (formData.image ? 'Image selected' : 'Upload product image')}
+                            </span>
+                            <input type="file" accept="image/*" onChange={handleImageUpload} className="sr-only" />
+                          </label>
                         </div>
                       </div>
                     </div>
@@ -3210,8 +3784,8 @@ useEffect(() => {
                       {showAddCategoryInline && <div className="flex gap-2"><Input value={newInlineCategory} onChange={e => setNewInlineCategory(e.target.value)} placeholder="New category" /><Button type="button" variant="outline" onClick={() => { const c = newInlineCategory.trim(); if (!c) return; const next = addCategory(c); setCategories(next); setFormData({ ...formData, category: c }); setNewInlineCategory(''); setShowAddCategoryInline(false); }}>Save</Button></div>}
                     </div>
 
-                    <div className="space-y-3 rounded-md border p-3 md:col-span-2">
-                      <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Location</h4>
+                    <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3 md:col-span-2">
+                      <h4 className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Location</h4>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         <div className="space-y-2"><Label>Zone</Label><Input value={formData.locationZone || ''} onChange={e => setFormData({ ...formData, locationZone: e.target.value })} placeholder="A, Front, B-2" /></div>
                         <div className="space-y-2"><Label>Row</Label><Input value={formData.locationRow || ''} onChange={e => setFormData({ ...formData, locationRow: e.target.value })} placeholder="03" /></div>
@@ -3221,174 +3795,102 @@ useEffect(() => {
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Barcode</Label>
-                      <Input value={formData.barcode || ''} readOnly disabled className="bg-muted/50" />
-                    </div>
-
-                    <div className="space-y-2">
                       <Label>HSN Code</Label>
                       <Input value={formData.hsn || ''} onChange={e => setFormData({ ...formData, hsn: e.target.value })} placeholder="Tax HSN Code" />
                     </div>
 
-                    <div className="space-y-3 border rounded-md p-3">
-                      <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Variant / Color (Optional)</h4>
-                      <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label className="text-xs">Variant master</Label>
-                        <div className="flex gap-2 mt-1">
-                          <Input list="variant-master" className="appearance-none [&::-webkit-calendar-picker-indicator]:hidden" value={formData.variantInput || ''} onChange={e => setFormData({ ...formData, variantInput: e.target.value })} placeholder="Search or add variant" />
-                          <Button type="button" variant="outline" onClick={addVariantToForm}>+</Button>
-                        </div>
-                        <datalist id="variant-master">{variantsMaster.map(v => <option key={v} value={v} />)}</datalist>
-                        <div className="mt-1 flex flex-wrap gap-1">{(formData.variants || []).map((v: string) => <span key={v}><Badge variant="outline">{v}</Badge></span>)}</div>
-                      </div>
-                      <div>
-                        <Label className="text-xs">Color master</Label>
-                        <div className="flex gap-2 mt-1">
-                          <Input list="color-master" className="appearance-none [&::-webkit-calendar-picker-indicator]:hidden" value={formData.colorInput || ''} onChange={e => setFormData({ ...formData, colorInput: e.target.value })} placeholder="Search or add color" />
-                          <Button type="button" variant="outline" onClick={addColorToForm}>+</Button>
-                        </div>
-                        <datalist id="color-master">{colorsMaster.map(v => <option key={v} value={v} />)}</datalist>
-                        <div className="mt-1 flex flex-wrap gap-1">{(formData.colors || []).map((v: string) => <span key={v}><Badge variant="outline">{v}</Badge></span>)}</div>
-                      </div>
+                  </div>
+
+                  <div className="space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 p-4 shadow-sm">
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{editingProduct ? 'Inventory, Telegram & Packing' : 'Telegram & Packing'}</h4>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                        <Label>Telegram Keywords</Label>
+                        <Input
+                          value={formData.telegramKeywords || ''}
+                          onChange={e => setFormData({ ...formData, telegramKeywords: e.target.value })}
+                          placeholder="gift, trending, premium"
+                        />
                       </div>
 
-                      {(formData.variants?.length || formData.colors?.length) && (
-                      <div className="border rounded-md overflow-hidden">
-                        <div className="grid grid-cols-7 gap-2 bg-muted px-2 py-1 text-xs font-semibold">
-                          <div>Variant</div><div>Color</div><div>Opening/Current Stock</div><div>Buy Price</div><div>Sell Price</div><div>Total Purchase</div><div>Total Sold</div>
-                        </div>
-                        {(formData.stockByVariantColor || []).map((row: any, idx: number) => (
-                          <div className="grid grid-cols-7 gap-2 px-2 py-1 border-t" key={getRowKey(row.variant || NO_VARIANT, row.color || NO_COLOR)}>
-                            <div className="text-xs py-2">{row.variant || NO_VARIANT}</div>
-                            <div className="text-xs py-2">{row.color || NO_COLOR}</div>
-                            <div>
-                              <Input type="number" min="0" value={row.stock ?? 0} placeholder={String(getSuggestedStock(row.totalPurchase, row.totalSold))} onChange={e => {
-                                const next = [...(formData.stockByVariantColor || [])];
-                                next[idx] = { ...next[idx], stock: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
-                                setFormData({ ...formData, stockByVariantColor: next });
-                              }} />
-                              <p className="text-[10px] text-muted-foreground mt-1">Suggested: {getSuggestedStock(row.totalPurchase, row.totalSold)}</p>
-                            </div>
-                            <Input type="number" min="0" value={row.buyPrice ?? ''} placeholder="0.00" onChange={e => {
-                              const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], buyPrice: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
-                              setFormData({ ...formData, stockByVariantColor: next });
-                            }} />
-                            <Input type="number" min="0" value={row.sellPrice ?? ''} placeholder="0.00" onChange={e => {
-                              const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], sellPrice: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
-                              setFormData({ ...formData, stockByVariantColor: next });
-                            }} />
-                            <Input type="number" min="0" value={row.totalPurchase ?? ''} placeholder="0" onChange={e => {
-                              const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], totalPurchase: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
-                              setFormData({ ...formData, stockByVariantColor: next });
-                            }} />
-                            <Input type="number" min="0" value={row.totalSold ?? ''} placeholder="0" onChange={e => {
-                              const next = [...(formData.stockByVariantColor || [])];
-                              next[idx] = { ...next[idx], totalSold: e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0) };
-                              setFormData({ ...formData, stockByVariantColor: next });
-                            }} />
-                          </div>
-                        ))}
+                      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                        <Label>Pieces Per Carton</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          value={formData.piecesPerCarton ?? ''}
+                          onChange={e => setFormData({ ...formData, piecesPerCarton: e.target.value })}
+                          placeholder="0"
+                        />
                       </div>
+
+                      {editingProduct && (
+                        <>
+                          <div className="space-y-2 col-span-2">
+                            <Label>Opening / Current Stock</Label>
+                            {(!formData.variants?.length && !formData.colors?.length) ? (
+                              <Input
+                                type="number"
+                                value={formData.stock ?? ''}
+                                onChange={e => {
+                                  setStockManuallyEdited(true);
+                                  setFormData({ ...formData, stock: e.target.value });
+                                }}
+                                placeholder={String(getSuggestedStock(formData.totalPurchase, formData.totalSold))}
+                              />
+                            ) : (
+                              <Input
+                                value={(formData.stockByVariantColor || []).reduce((sum: number, row: any) => sum + toNonNegativeNumber(row.stock), 0)}
+                                readOnly
+                                disabled
+                              />
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>Purchase / Buy Price</Label>
+                            <div className="relative">
+                              <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
+                              <Input type="number" className="pl-6" value={formData.buyPrice ?? ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {editingProduct && (
+                        <>
+                          <div className="space-y-2">
+                            <Label>Total Purchase</Label>
+                            <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => {
+                              const value = e.target.value;
+                              if (value === '') setStockManuallyEdited(false);
+                              setFormData({ ...formData, totalPurchase: value });
+                            }} placeholder="0" />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>Total Sold <span className="text-muted-foreground">(Optional)</span></Label>
+                            <Input type="number" min="0" value={formData.totalSold ?? ''} onChange={e => setFormData({ ...formData, totalSold: e.target.value })} placeholder="0" />
+                          </div>
+                        </>
                       )}
                     </div>
-                  </div>
-
-                  <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
-                    <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Inventory & Pricing</h4>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2 col-span-2">
-                        <Label>Opening / Current Stock</Label>
-                        {(!formData.variants?.length && !formData.colors?.length) ? (
-                          <Input
-                            type="number"
-                            value={formData.stock ?? ''}
-                            onChange={e => {
-                              setStockManuallyEdited(true);
-                              setFormData({ ...formData, stock: e.target.value });
-                            }}
-                            placeholder={String(getSuggestedStock(formData.totalPurchase, formData.totalSold))}
-                          />
-                        ) : (
-                          <Input
-                            value={(formData.stockByVariantColor || []).reduce((sum: number, row: any) => sum + toNonNegativeNumber(row.stock), 0)}
-                            readOnly
-                            disabled
-                          />
-                        )}
+                    {editingProduct && (
+                      <div className="rounded-xl border border-slate-200 bg-white p-3 text-[12px] text-slate-500">
+                        Suggested stock: {getSuggestedStock(formData.totalPurchase, formData.totalSold)}
                       </div>
-
-                      <div className="space-y-2">
-                        <Label>Purchase / Buy Price</Label>
-                        <div className="relative">
-                          <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
-                          <Input type="number" className="pl-6" value={formData.buyPrice ?? ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Sell Price</Label>
-                        <div className="relative">
-                          <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
-                          <Input type="number" className="pl-6 font-bold text-primary" value={formData.sellPrice ?? ''} onChange={e => setFormData({ ...formData, sellPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Total Purchase</Label>
-                        <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => {
-                          const value = e.target.value;
-                          if (value === '') setStockManuallyEdited(false);
-                          setFormData({ ...formData, totalPurchase: value });
-                        }} placeholder="0" />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Total Sold <span className="text-muted-foreground">(Optional)</span></Label>
-                        <Input type="number" min="0" value={formData.totalSold ?? ''} onChange={e => setFormData({ ...formData, totalSold: e.target.value })} placeholder="0" />
-                      </div>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">Opening Stock = current available stock. Total Purchase = lifetime/recorded purchased quantity. Suggested stock: {getSuggestedStock(formData.totalPurchase, formData.totalSold)} (Total Purchase - Total Sold)</p>
+                    )}
                 </div>
-                {!editingProduct && (
-                  <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
-                    <h4 className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Supplier / Purchase Details (optional)</h4>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2 col-span-2 relative">
-                        <Label>Party / Supplier</Label>
-                        <Input value={formData.supplierName ?? ''} onChange={e => {
-                          const value = e.target.value;
-                          const matched = visiblePurchaseParties.find((party) => party.name.toLowerCase() === value.trim().toLowerCase());
-                          setFormData({ ...formData, supplierName: value, supplierPartyId: matched?.id || '' });
-                        }} placeholder="Select or type supplier name" />
-                        <div className="mt-2 flex items-center gap-2">
-                          <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowSupplierPartyModal(true); }}>See All Parties</Button>
-                          <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('product'); setShowAddSupplierPartyModal(true); }}>+ Add Party</Button>
-                        </div>
-                      </div>
-                      <div className="space-y-2"><Label>Total Payable</Label><Input type="number" min="0" value={formData.supplierTotalPayable ?? ''} onChange={e => { setSupplierPayableManuallyEdited(true); setFormData({ ...formData, supplierTotalPayable: e.target.value }); }} placeholder="0" /><p className="text-[10px] text-muted-foreground">Auto calculated from quantity × purchase price. You can edit it.</p></div>
-                      <div className="space-y-2"><Label>Total Paid</Label><Input type="number" min="0" value={formData.supplierTotalPaid ?? ''} onChange={e => setFormData({ ...formData, supplierTotalPaid: e.target.value })} placeholder="0" /></div>
-                      <div className="space-y-2">
-                        <Label>Payment Method</Label>
-                        <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={formData.supplierPaymentMethod || ''} onChange={e => setFormData({ ...formData, supplierPaymentMethod: e.target.value, supplierTotalPaid: e.target.value === 'credit' ? '0' : formData.supplierTotalPaid })}>
-                          <option value="">Select</option><option value="cash">Cash</option><option value="credit">Credit</option><option value="bank">Bank</option>
-                        </select>
-                      </div>
-                      <div className="space-y-2"><Label>Note / Reference</Label><Input value={formData.supplierNote ?? ''} onChange={e => setFormData({ ...formData, supplierNote: e.target.value })} placeholder="Optional" /></div>
-                    </div>
-                  </div>
-                )}
                 </div>
                 
-                <div className="pt-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button className="h-11 text-base shadow-lg" onClick={handleSave} disabled={isSaving}>
+                <div className="pt-3">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <Button className="h-11 rounded-xl text-base shadow-sm" onClick={handleSave} disabled={isSaving}>
                           <Save className="w-4 h-4 mr-2" /> {isSaving ? 'Saving...' : editingProduct ? 'Update Product' : 'Save Product'}
                       </Button>
-                      <Button variant="outline" className="h-11 text-base" onClick={handleSaveAndNext} disabled={isSaving}>
+                      <Button variant="outline" className="h-11 rounded-xl text-base bg-white" onClick={handleSaveAndNext} disabled={isSaving}>
                           {isSaving ? 'Saving...' : editingProduct ? (remainingBatchProducts > 0 ? `Update & Next (${remainingBatchProducts} left)` : 'Update & Next') : 'Save & Next'}
                       </Button>
                     </div>
@@ -3398,15 +3900,353 @@ useEffect(() => {
         </div>
       )}
 
+      {stockSourceProduct && (
+        <div className="fixed inset-0 z-[75] bg-black/55 flex items-center justify-center p-4">
+          <Card className="w-full max-w-4xl max-h-[92vh] overflow-hidden">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle>{stockSourcePurchaseOnly ? 'Add Purchase' : 'Choose How Stock Enters'}</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">{stockSourceProduct.name}{stockSourcePurchaseOnly ? '' : ' • Pick one'}</p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={finishStockSourceFlow}><X className="w-4 h-4" /></Button>
+            </CardHeader>
+            <CardContent className="space-y-4 overflow-y-auto max-h-[calc(92vh-88px)]">
+              {stockSourceError && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">{stockSourceError}</div>
+              )}
+
+              {!stockSourcePurchaseOnly && <div className="grid gap-4 md:grid-cols-3">
+                <button
+                  type="button"
+                  className={`group rounded-2xl border p-5 text-left shadow-sm transition-all hover:shadow-md ${stockSourceMode === 'opening' ? 'border-emerald-400 bg-emerald-50 ring-2 ring-emerald-200' : 'border-emerald-200 bg-white hover:border-emerald-300'}`}
+                  onClick={() => setStockSourceMode('opening')}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="rounded-2xl bg-emerald-100 p-3 text-emerald-700">
+                      <Package className="h-6 w-6" />
+                    </div>
+                    <Badge variant="outline" className="border-emerald-200 bg-white text-emerald-700">No Accounting</Badge>
+                  </div>
+                  <div className="mt-4 text-lg font-semibold text-slate-900">Opening Stock</div>
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium">
+                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">Stock ↑</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Cash —</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Bank —</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Due —</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className={`group rounded-2xl border p-5 text-left shadow-sm transition-all hover:shadow-md ${stockSourceMode === 'purchase' ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200' : 'border-blue-200 bg-white hover:border-blue-300'}`}
+                  onClick={() => setStockSourceMode('purchase')}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="rounded-2xl bg-blue-100 p-3 text-blue-700">
+                      <Coins className="h-6 w-6" />
+                    </div>
+                    <Badge className="bg-blue-600 text-white hover:bg-blue-600">Main Action</Badge>
+                  </div>
+                  <div className="mt-4 text-lg font-semibold text-slate-900">Record Purchase</div>
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium">
+                    <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">Stock ↑</span>
+                    <span className="rounded-full bg-amber-100 px-3 py-1 text-amber-800">Cash ↓</span>
+                    <span className="rounded-full bg-sky-100 px-3 py-1 text-sky-800">Bank ↓</span>
+                    <span className="rounded-full bg-rose-100 px-3 py-1 text-rose-800">Due ↑</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className="group rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left shadow-sm transition-all hover:border-slate-300 hover:shadow-md"
+                  onClick={finishStockSourceFlow}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="rounded-2xl bg-slate-200 p-3 text-slate-600">
+                      <ChevronRight className="h-6 w-6" />
+                    </div>
+                    <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">Later</Badge>
+                  </div>
+                  <div className="mt-4 text-lg font-semibold text-slate-900">Skip</div>
+                  <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium">
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-slate-700">Stock 0</span>
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-slate-700">Cash —</span>
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-slate-700">Bank —</span>
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-slate-700">Due —</span>
+                  </div>
+                </button>
+              </div>}
+
+              {stockSourceMode !== 'choice' && (
+                <>
+                  <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
+                    <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
+                      {stockSourceVariantRows.length > 0 && (
+                        <div className="space-y-2">
+                          <Label>Variant / Color</Label>
+                          <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={stockSourceVariantKey} onChange={(e) => setStockSourceVariantKey(e.target.value)}>
+                            {stockSourceVariantRows.map((row) => (
+                              <option key={row.key} value={row.key}>
+                                {row.variant || NO_VARIANT} / {row.color || NO_COLOR}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Quantity</Label>
+                          <Input type="number" min="0" value={stockSourceQty} onChange={(e) => setStockSourceQty(e.target.value)} placeholder="0" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>{stockSourceMode === 'opening' ? 'Buy / Cost Price' : 'Unit Cost'}</Label>
+                          <Input type="number" min="0" value={stockSourceUnitCost} onChange={(e) => setStockSourceUnitCost(e.target.value)} placeholder="0.00" />
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>Sell Price</Label>
+                          <Input
+                            type="text"
+                            inputMode="decimal"
+                            value={stockSourceSellPrice}
+                            onChange={(e) => setStockSourceSellPrice(e.target.value)}
+                            placeholder="0.00"
+                          />
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>Purchase Party</Label>
+                          <div className="relative">
+                            <Input
+                              value={stockSourcePartyName}
+                              placeholder="Select or type supplier / party name"
+                              onFocus={() => setIsStockSourcePartyInputFocused(true)}
+                              onBlur={() => window.setTimeout(() => setIsStockSourcePartyInputFocused(false), 120)}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                const matched = visiblePurchaseParties.find((party) => party.name.toLowerCase() === value.trim().toLowerCase());
+                                setStockSourcePartyName(value);
+                                setStockSourcePartyId(getCanonicalPurchasePartySelectionId(matched));
+                              }}
+                            />
+                            {stockSourcePartySuggestions.length > 0 && (
+                              <div className="absolute z-40 mt-1 w-full rounded-md border bg-white shadow-lg max-h-44 overflow-y-auto">
+                                {stockSourcePartySuggestions.map((party) => (
+                                  <button
+                                    key={party.id}
+                                    type="button"
+                                    className="w-full border-b last:border-b-0 px-3 py-2 text-left hover:bg-muted"
+                                    onClick={() => {
+                                      setStockSourcePartyName(party.name);
+                                      setStockSourcePartyId(getCanonicalPurchasePartySelectionId(party));
+                                      setIsStockSourcePartyInputFocused(false);
+                                    }}
+                                  >
+                                    <div className="text-sm font-medium">{party.name}</div>
+                                    <div className="text-xs text-muted-foreground">{party.phone || 'No phone'}{party.gst ? ` • GST ${party.gst}` : ''}</div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('stock_source'); setShowSupplierPartyModal(true); }}>Select Party</Button>
+                            <Button type="button" variant="outline" size="sm" onClick={() => { setSupplierPartyPickerContext('stock_source'); setShowAddSupplierPartyModal(true); }}>+ Add Party</Button>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Date</Label>
+                          <Input type="datetime-local" value={stockSourceDate} onChange={(e) => setStockSourceDate(e.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Note</Label>
+                          <Input value={stockSourceNote} onChange={(e) => setStockSourceNote(e.target.value)} placeholder={stockSourceMode === 'opening' ? 'Opening stock note' : 'Reference / note'} />
+                        </div>
+                      </div>
+
+                      {stockSourceMode === 'purchase' && stockSourcePurchaseOnly && (
+                        <div className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-2">
+                          <div className="space-y-2 md:col-span-2">
+                            <p className="text-xs font-bold uppercase text-muted-foreground">Settlement Split</p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-[11px] font-bold uppercase text-muted-foreground">Original Purchase Total</Label>
+                                <Input value={stockSourceComputed.totalAmount} disabled className="bg-muted/40 font-bold" />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[11px] font-bold uppercase text-muted-foreground">Cash Paid</Label>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={!stockSourceSettlementTouched && !String(stockSourceCashPaid || '').trim() && !String(stockSourceOnlinePaid || '').trim()
+                                    ? String(stockSourceComputed.totalAmount || '')
+                                    : stockSourceCashPaid}
+                                  onChange={(e) => {
+                                    setStockSourceCashPaid(e.target.value);
+                                    setStockSourceSettlementTouched(true);
+                                    setStockSourceError(null);
+                                  }}
+                                  placeholder="0.00"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[11px] font-bold uppercase text-muted-foreground">Online/Bank Paid</Label>
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={stockSourceOnlinePaid}
+                                  onChange={(e) => {
+                                    setStockSourceOnlinePaid(e.target.value);
+                                    setStockSourceSettlementTouched(true);
+                                    setStockSourceError(null);
+                                  }}
+                                  placeholder="0.00"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-[11px] font-bold uppercase text-muted-foreground">Credit Due</Label>
+                                <div className="flex items-center gap-1">
+                                  <Input value={stockSourceComputed.remainingPayable} readOnly className="bg-white font-semibold" />
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-10 px-2 text-[10px] font-semibold"
+                                    onClick={() => {
+                                      setStockSourceCashPaid('');
+                                      setStockSourceOnlinePaid('');
+                                      setStockSourceSettlementTouched(true);
+                                      setStockSourceError(null);
+                                    }}
+                                  >
+                                    All Credit
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="rounded border bg-white p-2 text-xs space-y-1">
+                              <div className="flex justify-between"><span>Cash Applied</span><span className="font-semibold">{formatCurrencyWhole(stockSourceComputed.cashPaid)}</span></div>
+                              <div className="flex justify-between"><span>Bank Applied</span><span className="font-semibold">{formatCurrencyWhole(stockSourceComputed.onlinePaid)}</span></div>
+                            </div>
+                            <div className="text-xs space-y-1 border-t pt-2">
+                              <div className="flex justify-between"><span>Original Purchase Total</span><span>{formatCurrencyWhole(stockSourceComputed.totalAmount)}</span></div>
+                              <div className="flex justify-between"><span>Amount Paid</span><span>{formatCurrencyWhole(stockSourceComputed.effectivePaid)}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {stockSourceMode === 'purchase' && !stockSourcePurchaseOnly && (
+                        <div className="grid gap-3 rounded-xl border bg-white p-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>Payment Method</Label>
+                            <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={stockSourcePaymentMethod} onChange={(e) => setStockSourcePaymentMethod(e.target.value as 'cash' | 'credit' | 'online' | 'partial')}>
+                              <option value="cash">Cash</option>
+                              <option value="credit">Credit</option>
+                              <option value="online">Bank / Online</option>
+                              <option value="partial">Partial</option>
+                            </select>
+                          </div>
+                          {stockSourcePaymentMethod === 'partial' && (
+                            <>
+                              <div className="space-y-2">
+                                <Label>Paid Amount</Label>
+                                <Input type="number" min="0" value={stockSourcePaidAmount} onChange={(e) => setStockSourcePaidAmount(e.target.value)} placeholder="0.00" />
+                              </div>
+                              <div className="space-y-2">
+                                <Label>Paid Via</Label>
+                                <select className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm" value={stockSourcePartialPaidVia} onChange={(e) => setStockSourcePartialPaidVia(e.target.value as 'cash' | 'online')}>
+                                  <option value="cash">Cash</option>
+                                  <option value="online">Bank / Online</option>
+                                </select>
+                              </div>
+                            </>
+                          )}
+                          {stockSourcePaymentMethod !== 'partial' && (
+                            <div className="rounded-lg border bg-muted/10 px-3 py-2 text-sm text-muted-foreground">
+                              {stockSourcePaymentMethod === 'cash' && 'Cash purchase will be treated as fully paid.'}
+                              {stockSourcePaymentMethod === 'credit' && 'Credit purchase will create supplier due only.'}
+                              {stockSourcePaymentMethod === 'online' && 'Bank / online purchase will not change physical cash.'}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
+                      <div className="rounded-xl border bg-white p-4">
+                        <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Impact Preview</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800">
+                            {stockSourceMode === 'opening' ? 'Stock In' : 'Purchase In'}
+                          </span>
+                          <span className={`rounded-full px-3 py-1 text-xs font-medium ${stockSourceComputed.cashOutDelta > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700'}`}>
+                            {stockSourceComputed.cashOutDelta > 0 ? 'Cash Out' : 'No Cash'}
+                          </span>
+                          <span className={`rounded-full px-3 py-1 text-xs font-medium ${stockSourceComputed.remainingPayable > 0 ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'}`}>
+                            {stockSourceComputed.remainingPayable > 0 ? 'Due Up' : 'No Due'}
+                          </span>
+                          <span className={`rounded-full px-3 py-1 text-xs font-medium ${stockSourceMode === 'opening' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
+                            {stockSourceMode === 'opening' ? 'Inventory Only' : 'Accounting On'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {stockSourceComputed.kpis.map((kpi) => (
+                          <div key={kpi.label} className="grid grid-cols-[1.1fr_auto_1fr_auto_1fr] items-center gap-2 rounded-lg border bg-white px-3 py-3 text-sm">
+                            <div className="font-medium text-slate-700">{kpi.label}</div>
+                            <div className="text-slate-500">{formatCurrencyWhole(kpi.before)}</div>
+                            <div className={`text-center text-xs font-semibold ${kpi.change > 0 ? 'text-rose-600' : kpi.change < 0 ? 'text-emerald-700' : 'text-slate-400'}`}>
+                              {kpi.change === 0 ? '—' : `${kpi.change > 0 ? '+' : '-'}${formatCurrencyWhole(Math.abs(kpi.change))}`}
+                            </div>
+                            <div className="text-slate-300">→</div>
+                            <div className="font-semibold text-slate-900">{formatCurrencyWhole(kpi.after)}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="rounded-xl border bg-white px-3 py-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Inventory</div>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium">
+                            <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">Qty +{stockSourceComputed.qty || 0}</span>
+                            <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">Value {formatCurrencyWhole(stockSourceComputed.totalAmount)}</span>
+                          </div>
+                        </div>
+                        <div className="rounded-xl border bg-white px-3 py-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Money</div>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium">
+                            <span className={`rounded-full px-3 py-1 ${stockSourceComputed.effectivePaid > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700'}`}>
+                              Cash/Bank {stockSourceComputed.effectivePaid > 0 ? formatCurrencyWhole(stockSourceComputed.effectivePaid) : '—'}
+                            </span>
+                            <span className={`rounded-full px-3 py-1 ${stockSourceComputed.remainingPayable > 0 ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'}`}>
+                              Due {stockSourceComputed.remainingPayable > 0 ? formatCurrencyWhole(stockSourceComputed.remainingPayable) : '—'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={finishStockSourceFlow} disabled={stockSourceSubmitting}>Skip</Button>
+                    <Button onClick={stockSourceMode === 'opening' ? handleSaveOpeningStockFromStockSource : handleSavePurchaseFromStockSource} disabled={stockSourceSubmitting}>
+                      {stockSourceSubmitting ? 'Saving...' : stockSourceMode === 'opening' ? 'Save Opening Stock' : 'Save Purchase'}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {showSupplierPartyModal && (
-        <div className="fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[90] bg-black/50 flex items-center justify-center p-4">
           <Card className="w-full max-w-xl max-h-[80vh] overflow-hidden">
             <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Select Party</CardTitle><Button variant="ghost" size="sm" onClick={() => setShowSupplierPartyModal(false)}><X className="w-4 h-4" /></Button></CardHeader>
             <CardContent className="space-y-3">
               <Input value={supplierPartySearch} onChange={e => setSupplierPartySearch(e.target.value)} placeholder="Search party by name / phone / GST" />
               <div className="max-h-[50vh] overflow-y-auto border rounded-md">
-                {filteredAllPurchaseParties.map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(p.id); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: p.id }); } setShowSupplierPartyModal(false); }}>{p.name}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? ` · GST ${p.gst}` : ''}</div></button>)}
-                {!filteredAllPurchaseParties.length && (
+                {filteredVisiblePurchaseParties.map(p => <button type="button" key={p.id} className="w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-muted" onClick={() => { const safePartyId = getCanonicalPurchasePartySelectionId(p); if (supplierPartyPickerContext === 'purchase') { setPurchasePartyName(p.name); setSelectedPurchasePartyId(safePartyId); } else if (supplierPartyPickerContext === 'stock_source') { setStockSourcePartyName(p.name); setStockSourcePartyId(safePartyId); } else { setFormData({ ...formData, supplierName: p.name, supplierPartyId: safePartyId }); } setShowSupplierPartyModal(false); }}>{p.name}{String((p as any)?.mergedIntoPartyId || '').trim() ? <span className="ml-2 text-[10px] font-medium text-sky-700">Imported alias</span> : null}<div className="text-xs text-muted-foreground">{p.phone || 'No phone'} {p.gst ? ` · GST ${p.gst}` : ''}</div></button>)}
+                {!filteredVisiblePurchaseParties.length && (
                   <div className="p-4 text-sm text-muted-foreground">No parties found. <button type="button" className="text-primary" onClick={() => { setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(true); }}>Add Party</button></div>
                 )}
               </div>
@@ -3415,7 +4255,7 @@ useEffect(() => {
         </div>
       )}
       {showAddSupplierPartyModal && (
-        <div className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[95] bg-black/50 flex items-center justify-center p-4">
           <Card className="w-full max-w-lg max-h-[85vh] overflow-y-auto">
             <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Add Party</CardTitle><Button variant="ghost" size="sm" onClick={() => setShowAddSupplierPartyModal(false)}><X className="w-4 h-4" /></Button></CardHeader>
             <CardContent className="space-y-3">
@@ -3499,7 +4339,7 @@ useEffect(() => {
                           const value = e.target.value;
                           setPurchasePartyName(value);
                           const matched = visiblePurchaseParties.find((party) => party.name.toLowerCase() === value.trim().toLowerCase());
-                          setSelectedPurchasePartyId(matched?.id || '');
+                          setSelectedPurchasePartyId(getCanonicalPurchasePartySelectionId(matched));
                         }}
                       />
                       {purchasePartySuggestions.length > 0 && (
