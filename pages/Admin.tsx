@@ -26,6 +26,7 @@ import {
   PurchaseOrderDerivedHistoryRow,
   compareProductPurchaseHistoryForProduct,
   getBrokenPurchaseLinkRowsForProduct,
+  getProductPurchaseHistoryRowsFromPurchaseOrders,
   getLegacyOnlyPurchaseHistoryRowsForProduct,
   getResolvedPurchaseHistoryRowsFromPurchaseOrdersForProduct,
 } from '../services/purchaseHistoryView';
@@ -179,7 +180,7 @@ export default function Admin() {
   const [stockSourceSellPrice, setStockSourceSellPrice] = useState('');
   const [stockSourcePartyName, setStockSourcePartyName] = useState('');
   const [stockSourcePartyId, setStockSourcePartyId] = useState('');
-  const [stockSourceDate, setStockSourceDate] = useState(new Date().toISOString().slice(0, 16));
+  const [stockSourceDate, setStockSourceDate] = useState(new Date().toISOString().slice(0, 10));
   const [stockSourceNote, setStockSourceNote] = useState('');
   const [stockSourcePaymentMethod, setStockSourcePaymentMethod] = useState<'cash' | 'credit' | 'online' | 'partial'>('cash');
   const [stockSourcePartialPaidVia, setStockSourcePartialPaidVia] = useState<'cash' | 'online'>('cash');
@@ -187,6 +188,9 @@ export default function Admin() {
   const [stockSourceCashPaid, setStockSourceCashPaid] = useState('');
   const [stockSourceOnlinePaid, setStockSourceOnlinePaid] = useState('');
   const [stockSourceSettlementTouched, setStockSourceSettlementTouched] = useState(false);
+  const [stockSourceModalTab, setStockSourceModalTab] = useState<'add' | 'history'>('add');
+  const [stockSourceHistoryVariantFilter, setStockSourceHistoryVariantFilter] = useState('all');
+  const [stockSourceHistoryView, setStockSourceHistoryView] = useState<'active' | 'bin'>('active');
   const [stockSourcePurchaseOnly, setStockSourcePurchaseOnly] = useState(false);
   const [stockSourceError, setStockSourceError] = useState<string | null>(null);
   const [stockSourceSubmitting, setStockSourceSubmitting] = useState(false);
@@ -604,10 +608,10 @@ const displayProductCategory = (value: unknown): string => {
     if (fallbackToken && value === fallbackToken) return 'Default';
     return value;
   };
-  const getPurchaseHistoryActionState = (row: UnifiedPurchaseHistoryRow) => {
+  const getPurchaseHistoryActionState = (row: UnifiedPurchaseHistoryRow, targetProduct: Product | null = purchaseTarget) => {
     const fallbackEditHelp = 'No editable legacy snapshot exists for this row.';
     const fallbackDeleteHelp = 'No reversible legacy snapshot exists for this row.';
-    if (!purchaseTarget || !row.legacyHistoryId) {
+    if (!targetProduct || !row.legacyHistoryId) {
       return {
         canEditSnapshot: false,
         editSnapshotHelp: fallbackEditHelp,
@@ -644,14 +648,14 @@ const displayProductCategory = (value: unknown): string => {
       matchingLineCount = 1;
     } else {
       matchingLineCount = orderLines
-        .filter((line) => String(line.productId || '').trim() === String(purchaseTarget.id || '').trim())
+        .filter((line) => String(line.productId || '').trim() === String(targetProduct.id || '').trim())
         .filter((line) => String(line.variant || '').trim().toLowerCase() === normalizedVariant && String(line.color || '').trim().toLowerCase() === normalizedColor)
         .filter((line) => Math.abs(toNonNegativeNumber(line.quantity) - historyQty) < 0.0001)
         .length;
     }
     const canIdentifyLinkedLine = matchingLineCount === 1;
     const hasRecordedPayments = Array.isArray(linkedOrder.paymentHistory) && linkedOrder.paymentHistory.length > 0;
-    const hasEnoughStockToReverse = toNonNegativeNumber(purchaseTarget.stock) >= historyQty;
+    const hasEnoughStockToReverse = toNonNegativeNumber(targetProduct.stock) >= historyQty;
 
     return {
       canEditSnapshot: canIdentifyLinkedLine,
@@ -689,17 +693,112 @@ const displayProductCategory = (value: unknown): string => {
     }
     setPendingPurchaseReverse({ productId: purchaseTarget.id, historyId });
   };
+  const handleDeleteStockSourcePurchaseHistoryEntry = async (historyId: string) => {
+    if (!stockSourceProduct) return;
+    const entry = (stockSourceProduct.purchaseHistory || []).find((h) => h.id === historyId);
+    if (!entry) {
+      setStockSourceError('Purchase history entry could not be found.');
+      return;
+    }
+    const linkedRow = stockSourcePurchaseHistoryRows.find((row) => String(row.legacyHistoryId || '') === String(historyId));
+    if (linkedRow) {
+      const actionState = getPurchaseHistoryActionState(linkedRow, stockSourceProduct);
+      if (!actionState.canDeleteSnapshot) {
+        setStockSourceError(actionState.deleteSnapshotHelp);
+        return;
+      }
+    }
+    if (!entry.purchaseOrderId) {
+      setStockSourceError('Cannot delete legacy purchase entry without linked order metadata.');
+      return;
+    }
+    setStockSourceError(null);
+    setPendingPurchaseReverse({ productId: stockSourceProduct.id, historyId });
+  };
+  const moveStockSourcePurchaseHistoryEntryToRecycleBin = async (row: UnifiedPurchaseHistoryRow) => {
+    if (!stockSourceProduct) return;
+    try {
+      const now = new Date().toISOString();
+      const existingHistory = Array.isArray(stockSourceProduct.purchaseHistory) ? [...stockSourceProduct.purchaseHistory] : [];
+      const legacyId = String(row.legacyHistoryId || '').trim();
+      const existingIndex = legacyId ? existingHistory.findIndex((entry) => String(entry.id || '').trim() === legacyId) : -1;
+      let nextHistory = existingHistory;
+      if (existingIndex >= 0) {
+        nextHistory = existingHistory.map((entry, index) => index === existingIndex ? { ...entry, deletedAt: now } : entry);
+      } else {
+        nextHistory = [
+          {
+            id: `archived-${row.purchaseOrderId || row.id}`,
+            date: row.date,
+            variant: row.variant || NO_VARIANT,
+            color: row.color || NO_COLOR,
+            quantity: row.quantity,
+            unitPrice: row.unitPrice,
+            previousStock: row.previousStock || 0,
+            previousBuyPrice: row.previousBuyPrice || 0,
+            nextBuyPrice: row.nextBuyPrice || row.unitPrice,
+            purchaseOrderId: row.purchaseOrderId || undefined,
+            paidAmount: row.orderPaid ?? row.paidAmount ?? undefined,
+            totalPaid: row.orderPaid ?? row.paidAmount ?? undefined,
+            remainingAmount: row.remainingPayable ?? undefined,
+            partyName: row.partyName || undefined,
+            notes: row.notes || undefined,
+            reference: row.reference || undefined,
+            deletedAt: now,
+          },
+          ...existingHistory,
+        ];
+      }
+      const updatedProduct = { ...stockSourceProduct, purchaseHistory: nextHistory };
+      await updateProduct(updatedProduct);
+      refreshData();
+      const latest = loadData().products;
+      const nextTarget = latest.find((product) => product.id === stockSourceProduct.id) || null;
+      setStockSourceProduct(nextTarget);
+      setStockSourceHistoryView('bin');
+      setStockSourceError(null);
+    } catch (error) {
+      setStockSourceError(getFriendlyErrorMessage(error, 'admin.purchase_history.recycle_bin'));
+    }
+  };
+  const restoreStockSourcePurchaseHistoryEntryFromRecycleBin = async (historyId: string) => {
+    if (!stockSourceProduct) return;
+    try {
+      const nextHistory = (stockSourceProduct.purchaseHistory || []).map((entry) => {
+        if (String(entry.id || '').trim() !== String(historyId || '').trim()) return entry;
+        const { deletedAt, ...rest } = entry as any;
+        return rest;
+      });
+      const updatedProduct = { ...stockSourceProduct, purchaseHistory: nextHistory };
+      await updateProduct(updatedProduct);
+      refreshData();
+      const latest = loadData().products;
+      const nextTarget = latest.find((product) => product.id === stockSourceProduct.id) || null;
+      setStockSourceProduct(nextTarget);
+      setStockSourceHistoryView('active');
+      setStockSourceError(null);
+    } catch (error) {
+      setStockSourceError(getFriendlyErrorMessage(error, 'admin.purchase_history.restore'));
+    }
+  };
   const confirmDeletePurchaseHistoryEntry = async () => {
     if (!pendingPurchaseReverse) return;
     try {
       await reverseInventoryPurchaseHistoryEntry(pendingPurchaseReverse.productId, pendingPurchaseReverse.historyId);
+      refreshData();
       const latest = loadData().products;
-      setProducts(latest);
       const nextTarget = latest.find((p) => p.id === pendingPurchaseReverse.productId) || null;
       setPurchaseTarget(nextTarget);
+      setStockSourceProduct((current) => current && current.id === pendingPurchaseReverse.productId ? nextTarget : current);
+      setStockSourceError(null);
       setPendingPurchaseReverse(null);
     } catch (error) {
-      setNotice({ type: 'error', message: getFriendlyErrorMessage(error, 'admin.reverse_purchase') });
+      const message = getFriendlyErrorMessage(error, 'admin.reverse_purchase');
+      if (stockSourceProduct && stockSourceProduct.id === pendingPurchaseReverse.productId) {
+        setStockSourceError(message);
+      } else {
+        setNotice({ type: 'error', message });
+      }
     }
   };
 
@@ -721,6 +820,27 @@ const displayProductCategory = (value: unknown): string => {
     setPurchaseEditUnitPrice(String(toNonNegativeNumber(entry.unitPrice)));
     setPurchaseEditError(null);
   };
+  const openEditStockSourcePurchaseHistoryEntry = (historyId: string) => {
+    if (!stockSourceProduct) return;
+    const entry = (stockSourceProduct.purchaseHistory || []).find((h) => h.id === historyId);
+    if (!entry) {
+      setStockSourceError('Purchase history entry could not be found.');
+      return;
+    }
+    const linkedRow = stockSourcePurchaseHistoryRows.find((row) => String(row.legacyHistoryId || '') === String(historyId));
+    if (linkedRow) {
+      const actionState = getPurchaseHistoryActionState(linkedRow, stockSourceProduct);
+      if (!actionState.canEditSnapshot) {
+        setStockSourceError(actionState.editSnapshotHelp);
+        return;
+      }
+    }
+    setStockSourceError(null);
+    setPurchaseEditTarget({ productId: stockSourceProduct.id, historyId });
+    setPurchaseEditQuantity(String(toNonNegativeNumber(entry.quantity)));
+    setPurchaseEditUnitPrice(String(toNonNegativeNumber(entry.unitPrice)));
+    setPurchaseEditError(null);
+  };
 
   const confirmEditPurchaseHistoryEntry = async () => {
     if (!purchaseEditTarget) return;
@@ -728,9 +848,10 @@ const displayProductCategory = (value: unknown): string => {
       const quantity = Number(purchaseEditQuantity);
       const unitPrice = Number(purchaseEditUnitPrice);
       const updatedProducts = await editInventoryPurchaseHistoryEntry(purchaseEditTarget.productId, purchaseEditTarget.historyId, { quantity, unitPrice });
-      setProducts(updatedProducts);
+      refreshData();
       const nextTarget = updatedProducts.find((item) => item.id === purchaseEditTarget.productId) || null;
       setPurchaseTarget(nextTarget);
+      setStockSourceProduct((current) => current && current.id === purchaseEditTarget.productId ? nextTarget : current);
       setPurchaseEditTarget(null);
       setPurchaseEditQuantity('');
       setPurchaseEditUnitPrice('');
@@ -1405,6 +1526,9 @@ const displayProductCategory = (value: unknown): string => {
     setStockSourceCashPaid('');
     setStockSourceOnlinePaid('');
     setStockSourceSettlementTouched(false);
+    setStockSourceModalTab('add');
+    setStockSourceHistoryVariantFilter('all');
+    setStockSourceHistoryView('active');
     setStockSourcePurchaseOnly(false);
     setStockSourceError(null);
     setStockSourceSubmitting(false);
@@ -1435,7 +1559,8 @@ const displayProductCategory = (value: unknown): string => {
   };
 
   const resolveAdminIsoFromLocalInput = (value?: string) => {
-    const direct = new Date(String(value || '')).getTime();
+    const normalized = String(value || '').trim();
+    const direct = new Date(normalized.length === 10 ? `${normalized}T00:00:00` : normalized).getTime();
     if (Number.isFinite(direct)) return new Date(direct).toISOString();
     return new Date().toISOString();
   };
@@ -2135,6 +2260,200 @@ const displayProductCategory = (value: unknown): string => {
     if (!viewingProduct) return [];
     return getLegacyOnlyPurchaseHistoryRowsForProduct(viewingProduct, purchaseOrders);
   }, [viewingProduct, purchaseOrders]);
+  const stockSourceCanonicalPurchaseHistoryRows = useMemo(
+    () => getResolvedPurchaseHistoryRowsFromPurchaseOrdersForProduct(stockSourceProduct, purchaseOrders),
+    [stockSourceProduct, purchaseOrders]
+  );
+  const stockSourceBrokenPurchaseHistoryRows = useMemo(() => {
+    if (!stockSourceProduct) return [];
+    return getBrokenPurchaseLinkRowsForProduct(stockSourceProduct, purchaseOrders)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [stockSourceProduct, purchaseOrders]);
+  const stockSourceLegacyOnlyPurchaseHistoryRows = useMemo(() => {
+    if (!stockSourceProduct) return [];
+    return getLegacyOnlyPurchaseHistoryRowsForProduct(stockSourceProduct, purchaseOrders);
+  }, [stockSourceProduct, purchaseOrders]);
+  const stockSourcePurchaseHistoryAllRows = useMemo(() => {
+    const resolvedRows: UnifiedPurchaseHistoryRow[] = stockSourceCanonicalPurchaseHistoryRows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      variant: row.variant,
+      color: row.color,
+      quantity: row.quantity,
+      unitPrice: row.unitPrice,
+      lineTotal: row.lineTotal,
+      reference: row.reference,
+      notes: row.notes,
+      partyName: row.partyName,
+      paymentMethod: row.paymentMethod,
+      paidAmount: row.paidAmount,
+      orderPaid: row.orderPaid,
+      orderTotal: row.orderTotal,
+      remainingPayable: row.remainingPayable,
+      purchaseOrderId: row.purchaseOrderId,
+      purchaseOrderLabel: row.purchaseOrderLabel,
+      sourceKind: 'resolved',
+      sourceLabel: 'Purchase Order',
+      sourceToneClassName: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
+      productName: row.productName,
+      reviewReason: row.reviewReason,
+      paymentBreakdown: row.paymentBreakdown,
+      previousStock: row.previousStock,
+      previousBuyPrice: row.previousBuyPrice,
+      nextBuyPrice: row.nextBuyPrice,
+      legacyHistoryId: row.legacyHistoryId,
+      compatibilityWarnings: [],
+      ledgerIndicatorLabel: 'Counted',
+      ledgerIndicatorToneClassName: 'bg-emerald-100 text-emerald-800 border border-emerald-200',
+      ledgerIndicatorReason: 'Linked purchase order is active.',
+    }));
+    const reviewRows: UnifiedPurchaseHistoryRow[] = stockSourceBrokenPurchaseHistoryRows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      variant: row.variant,
+      color: row.color,
+      quantity: row.quantity,
+      unitPrice: row.unitPrice,
+      lineTotal: row.lineTotal,
+      reference: row.reference,
+      notes: row.notes,
+      partyName: row.partyName,
+      paymentMethod: row.paymentMethod,
+      paidAmount: row.paidAmount,
+      orderPaid: row.orderPaid,
+      orderTotal: row.orderTotal,
+      remainingPayable: row.remainingPayable,
+      purchaseOrderId: row.purchaseOrderId,
+      purchaseOrderLabel: row.purchaseOrderLabel,
+      sourceKind: 'needs_review',
+      sourceLabel: 'Needs Review',
+      sourceToneClassName: 'bg-amber-100 text-amber-900 border border-amber-200',
+      productName: row.productName,
+      reviewReason: row.reviewReason,
+      paymentBreakdown: row.paymentBreakdown,
+      previousStock: row.previousStock,
+      previousBuyPrice: row.previousBuyPrice,
+      nextBuyPrice: row.nextBuyPrice,
+      legacyHistoryId: row.legacyHistoryId,
+      compatibilityWarnings: [],
+      ledgerIndicatorLabel: 'Review',
+      ledgerIndicatorToneClassName: 'bg-amber-100 text-amber-900 border border-amber-200',
+      ledgerIndicatorReason: 'Product link needs review.',
+    }));
+    const legacyRows: UnifiedPurchaseHistoryRow[] = stockSourceLegacyOnlyPurchaseHistoryRows.map((row) => ({
+      id: row.id,
+      date: row.date,
+      variant: row.variant,
+      color: row.color,
+      quantity: row.quantity,
+      unitPrice: row.unitPrice,
+      lineTotal: row.lineTotal,
+      reference: row.reference,
+      notes: row.notes,
+      partyName: row.partyName,
+      paymentMethod: row.paymentMethod,
+      paidAmount: row.paidAmount,
+      orderPaid: row.orderPaid,
+      orderTotal: row.orderTotal,
+      remainingPayable: row.remainingPayable,
+      purchaseOrderId: row.purchaseOrderId,
+      purchaseOrderLabel: row.purchaseOrderLabel,
+      sourceKind: 'legacy_only',
+      sourceLabel: 'Legacy',
+      sourceToneClassName: 'bg-slate-100 text-slate-800 border border-slate-200',
+      productName: null,
+      reviewReason: row.compatibility.orphanedLegacyRow ? 'Legacy snapshot only.' : null,
+      paymentBreakdown: row.paymentBreakdown,
+      previousStock: row.previousStock,
+      previousBuyPrice: row.previousBuyPrice,
+      nextBuyPrice: row.nextBuyPrice,
+      legacyHistoryId: row.legacyHistoryId,
+      compatibilityWarnings: [],
+      ledgerIndicatorLabel: 'Legacy',
+      ledgerIndicatorToneClassName: 'bg-slate-100 text-slate-800 border border-slate-200',
+      ledgerIndicatorReason: 'Legacy snapshot.',
+    }));
+    return [...resolvedRows, ...reviewRows, ...legacyRows]
+      .sort((a, b) => new Date(b.date || '').getTime() - new Date(a.date || '').getTime());
+  }, [stockSourceCanonicalPurchaseHistoryRows, stockSourceBrokenPurchaseHistoryRows, stockSourceLegacyOnlyPurchaseHistoryRows]);
+  const stockSourcePurchaseHistoryRows = useMemo(() => {
+    if (!stockSourceProduct) return [];
+    if (stockSourceHistoryVariantFilter === 'all') return stockSourcePurchaseHistoryAllRows;
+    return stockSourcePurchaseHistoryAllRows.filter((row) => `${row.variant || NO_VARIANT}::${row.color || NO_COLOR}` === stockSourceHistoryVariantFilter);
+  }, [stockSourceProduct, stockSourceHistoryVariantFilter, stockSourcePurchaseHistoryAllRows]);
+  const stockSourcePurchaseHistoryVariantOptions = useMemo(() => {
+    if (!stockSourceProduct) return [];
+    const map = new Map<string, { variant: string; color: string }>();
+    stockSourcePurchaseHistoryAllRows.forEach((row) => {
+      const variant = row.variant || NO_VARIANT;
+      const color = row.color || NO_COLOR;
+      const key = `${variant}::${color}`;
+      if (!map.has(key)) {
+        map.set(key, { variant, color });
+      }
+    });
+    return Array.from(map.entries()).map(([key, value]) => ({ key, ...value }));
+  }, [stockSourceProduct, stockSourcePurchaseHistoryAllRows]);
+  const stockSourcePurchaseHistoryRecycleRows = useMemo(() => {
+    if (!stockSourceProduct) return [];
+    const deletedLegacyRows = Array.isArray(stockSourceProduct.purchaseHistory)
+      ? stockSourceProduct.purchaseHistory.filter((row) => String((row as any)?.deletedAt || '').trim())
+      : [];
+    const orderById = new Map((purchaseOrders || []).map((order) => [String(order.id || '').trim(), order] as const));
+    const activeOrderIds = new Set(
+      deletedLegacyRows
+        .map((row) => String(row.purchaseOrderId || '').trim())
+        .filter(Boolean)
+    );
+    const archivedOrderRows = getProductPurchaseHistoryRowsFromPurchaseOrders({
+      orders: purchaseOrders.filter((order) => activeOrderIds.has(String(order.id || '').trim())),
+      productId: stockSourceProduct.id,
+      productName: stockSourceProduct.name,
+      legacyRows: [],
+    });
+    const archivedOrderRowsById = new Map(archivedOrderRows.map((row) => [String(row.purchaseOrderId || '').trim(), row] as const));
+
+    return deletedLegacyRows.map((row) => {
+      const purchaseOrderId = String(row.purchaseOrderId || '').trim();
+      const orderRow = purchaseOrderId ? archivedOrderRowsById.get(purchaseOrderId) : undefined;
+      const linkedOrder = purchaseOrderId ? orderById.get(purchaseOrderId) : undefined;
+      const paidAmount = orderRow?.orderPaid ?? (Number(row.totalPaid || row.paidAmount || 0) || 0);
+      const remainingAmount = orderRow?.remainingPayable ?? (Number(row.remainingAmount || 0) || 0);
+      return {
+        id: orderRow?.id || String(row.id || ''),
+        date: String(row.date || orderRow?.date || ''),
+        variant: String(row.variant || orderRow?.variant || NO_VARIANT || ''),
+        color: String(row.color || orderRow?.color || NO_COLOR || ''),
+        quantity: Math.max(0, Number(orderRow?.quantity ?? (row.quantity || 0))),
+        unitPrice: Math.max(0, Number(orderRow?.unitPrice ?? (row.unitPrice || 0))),
+        lineTotal: Math.max(0, Number(orderRow?.lineTotal ?? ((Number(row.quantity || 0) || 0) * (Number(row.unitPrice || 0) || 0)))),
+        reference: String(row.reference || orderRow?.reference || linkedOrder?.billNumber || '').trim() || null,
+        notes: String(row.notes || orderRow?.notes || '').trim() || null,
+        partyName: String(row.partyName || orderRow?.partyName || linkedOrder?.partyName || '').trim() || null,
+        paymentMethod: orderRow?.paymentMethod || row.paymentMethod || null,
+        paidAmount,
+        orderPaid: paidAmount,
+        orderTotal: orderRow?.orderTotal ?? ((Math.max(0, Number(linkedOrder?.totalAmount || 0)) || null)),
+        remainingPayable: remainingAmount,
+        purchaseOrderId: purchaseOrderId || null,
+        purchaseOrderLabel: String(linkedOrder?.billNumber || linkedOrder?.id || purchaseOrderId || '').trim() || null,
+        sourceKind: 'legacy_only' as const,
+        sourceLabel: 'Recycle Bin',
+        sourceToneClassName: 'bg-slate-100 text-slate-800 border border-slate-200',
+        productName: stockSourceProduct.name,
+        reviewReason: null,
+        paymentBreakdown: orderRow?.paymentBreakdown || { cash: 0, online: 0, partyCredit: 0 },
+        previousStock: Number(row.previousStock || 0) || null,
+        previousBuyPrice: Number(row.previousBuyPrice || 0) || null,
+        nextBuyPrice: Number(row.nextBuyPrice || 0) || null,
+        legacyHistoryId: String(row.id || '') || null,
+        compatibilityWarnings: [],
+        ledgerIndicatorLabel: 'Recycle Bin',
+        ledgerIndicatorToneClassName: 'bg-slate-100 text-slate-800 border border-slate-200',
+        ledgerIndicatorReason: 'Hidden from active purchase history.',
+      } satisfies UnifiedPurchaseHistoryRow;
+    }).sort((a, b) => new Date(b.date || '').getTime() - new Date(a.date || '').getTime());
+  }, [stockSourceProduct, purchaseOrders]);
 
   useEffect(() => {
     if (!purchaseTarget || !productHasCombinationStock(purchaseTarget)) {
@@ -3902,7 +4221,7 @@ useEffect(() => {
 
       {stockSourceProduct && (
         <div className="fixed inset-0 z-[75] bg-black/55 flex items-center justify-center p-4">
-          <Card className="w-full max-w-4xl max-h-[92vh] overflow-hidden">
+          <Card className={`w-full max-w-4xl max-h-[92vh] overflow-hidden ${stockSourceMode === 'purchase' ? 'min-h-[78vh]' : ''}`}>
             <CardHeader className="flex flex-row items-center justify-between">
               <div>
                 <CardTitle>{stockSourcePurchaseOnly ? 'Add Purchase' : 'Choose How Stock Enters'}</CardTitle>
@@ -3913,6 +4232,13 @@ useEffect(() => {
             <CardContent className="space-y-4 overflow-y-auto max-h-[calc(92vh-88px)]">
               {stockSourceError && (
                 <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">{stockSourceError}</div>
+              )}
+
+              {stockSourceMode === 'purchase' && (
+                <div className="flex gap-2 border-b pb-2">
+                  <Button size="sm" variant={stockSourceModalTab === 'add' ? 'default' : 'outline'} onClick={() => setStockSourceModalTab('add')}>Add Purchase</Button>
+                  <Button size="sm" variant={stockSourceModalTab === 'history' ? 'default' : 'outline'} onClick={() => setStockSourceModalTab('history')}>Purchase History</Button>
+                </div>
               )}
 
               {!stockSourcePurchaseOnly && <div className="grid gap-4 md:grid-cols-3">
@@ -3975,7 +4301,7 @@ useEffect(() => {
                 </button>
               </div>}
 
-              {stockSourceMode !== 'choice' && (
+              {stockSourceMode !== 'choice' && stockSourceModalTab === 'add' && (
                 <>
                   <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">
                     <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
@@ -4053,7 +4379,7 @@ useEffect(() => {
                         </div>
                         <div className="space-y-2">
                           <Label>Date</Label>
-                          <Input type="datetime-local" value={stockSourceDate} onChange={(e) => setStockSourceDate(e.target.value)} />
+                          <Input type="date" value={stockSourceDate} onChange={(e) => setStockSourceDate(e.target.value)} />
                         </div>
                         <div className="space-y-2">
                           <Label>Note</Label>
@@ -4232,6 +4558,114 @@ useEffect(() => {
                     </Button>
                   </div>
                 </>
+              )}
+
+              {stockSourceMode === 'purchase' && stockSourceModalTab === 'history' && (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant={stockSourceHistoryView === 'active' ? 'default' : 'outline'}
+                        onClick={() => setStockSourceHistoryView('active')}
+                      >
+                        Purchase History
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={stockSourceHistoryView === 'bin' ? 'default' : 'outline'}
+                        onClick={() => setStockSourceHistoryView('bin')}
+                      >
+                        Recycle Bin
+                      </Button>
+                    </div>
+                    <div className="text-sm text-slate-500">
+                      {stockSourceHistoryView === 'active' ? stockSourcePurchaseHistoryRows.length : stockSourcePurchaseHistoryRecycleRows.length} records
+                    </div>
+                  </div>
+
+                  {stockSourceHistoryView === 'active' && !stockSourcePurchaseHistoryRows.length ? (
+                    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                      No purchase history found for this product yet.
+                    </div>
+                  ) : null}
+
+                  {stockSourceHistoryView === 'bin' && !stockSourcePurchaseHistoryRecycleRows.length ? (
+                    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                      Recycle bin is empty for this product.
+                    </div>
+                  ) : null}
+
+                  {((stockSourceHistoryView === 'active' && stockSourcePurchaseHistoryRows.length > 0) ||
+                    (stockSourceHistoryView === 'bin' && stockSourcePurchaseHistoryRecycleRows.length > 0)) && (
+                    <div className="rounded-xl border">
+                      <div className="max-h-[58vh] overflow-auto">
+                        <table className="min-w-full text-sm">
+                          <thead className="sticky top-0 bg-white">
+                            <tr className="border-b text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              <th className="px-4 py-3">Date</th>
+                              <th className="px-4 py-3">Party</th>
+                              <th className="px-4 py-3 text-right">Qty</th>
+                              <th className="px-4 py-3 text-right">Unit Cost</th>
+                              <th className="px-4 py-3 text-right">Total</th>
+                              <th className="px-4 py-3 text-right">Paid</th>
+                              <th className="px-4 py-3 text-right">Due</th>
+                              <th className="px-4 py-3 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(stockSourceHistoryView === 'active' ? stockSourcePurchaseHistoryRows : stockSourcePurchaseHistoryRecycleRows).map((row) => (
+                              <tr key={`${stockSourceHistoryView}-${row.id}`} className="border-b last:border-b-0 align-top">
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                  {row.date ? new Date(row.date).toLocaleDateString() : '-'}
+                                </td>
+                                <td className="px-4 py-3">{row.partyName || 'No party'}</td>
+                                <td className="px-4 py-3 text-right">{row.quantity}</td>
+                                <td className="px-4 py-3 text-right">{formatCurrencyWhole(row.unitPrice)}</td>
+                                <td className="px-4 py-3 text-right font-medium">{formatCurrencyWhole(row.lineTotal)}</td>
+                                <td className="px-4 py-3 text-right">{formatCurrencyWhole(row.orderPaid ?? row.paidAmount ?? 0)}</td>
+                                <td className="px-4 py-3 text-right">{formatCurrencyWhole(row.remainingPayable ?? 0)}</td>
+                                <td className="px-4 py-3">
+                                  <div className="flex justify-end gap-2">
+                                    {stockSourceHistoryView === 'active' ? (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-8"
+                                          onClick={() => openEditStockSourcePurchaseHistoryEntry(String(row.legacyHistoryId || row.id))}
+                                        >
+                                          Edit
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-8 text-rose-600"
+                                          onClick={() => void moveStockSourcePurchaseHistoryEntryToRecycleBin(row)}
+                                        >
+                                          Delete
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-8"
+                                        onClick={() => void restoreStockSourcePurchaseHistoryEntryFromRecycleBin(String(row.legacyHistoryId || row.id))}
+                                      >
+                                        Recover
+                                      </Button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>

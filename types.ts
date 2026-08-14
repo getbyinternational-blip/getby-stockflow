@@ -53,6 +53,7 @@ export interface Product {
     partyName?: string;
     notes?: string;
     reference?: string;
+    deletedAt?: string;
   }>;
 }
 

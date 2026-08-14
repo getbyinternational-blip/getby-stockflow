@@ -233,6 +233,8 @@ const normalizeHistoryOrderId = (row?: Partial<ProductPurchaseHistoryRow>) => {
   return value || null;
 };
 
+const isDeletedPurchaseHistoryRow = (row?: Partial<ProductPurchaseHistoryRow>) => Boolean(String((row as any)?.deletedAt || '').trim());
+
 const buildLegacyFallbackRow = (
   productId: string,
   row: ProductPurchaseHistoryRow,
@@ -331,6 +333,13 @@ export const getProductPurchaseHistoryRowsFromPurchaseOrders = ({
   const normalizedProductId = String(productId || '').trim();
   const normalizedProductName = normalizeProductName(productName);
   if (!normalizedProductId && !normalizedProductName) return [];
+  const activeLegacyRows = legacyRows.filter((row) => !isDeletedPurchaseHistoryRow(row));
+  const hiddenOrderIds = new Set(
+    legacyRows
+      .filter((row) => isDeletedPurchaseHistoryRow(row))
+      .map((row) => normalizeHistoryOrderId(row))
+      .filter((value): value is string => Boolean(value))
+  );
 
   const variantFilter = normalizeOptionalFilter(variant);
   const colorFilter = normalizeOptionalFilter(color);
@@ -340,6 +349,7 @@ export const getProductPurchaseHistoryRowsFromPurchaseOrders = ({
     .slice()
     .sort((a, b) => new Date(b.orderDate || b.createdAt || '').getTime() - new Date(a.orderDate || a.createdAt || '').getTime())
     .flatMap((order) => {
+      if (hiddenOrderIds.has(String(order.id || '').trim())) return [];
       const orderDate = String(order.orderDate || order.createdAt || '');
       const orderTotal = Math.max(0, toSafeNumber(order.totalAmount));
       const orderPaid = Math.max(0, toSafeNumber(order.totalPaid));
@@ -404,10 +414,10 @@ export const getProductPurchaseHistoryRowsFromPurchaseOrders = ({
             return draftRow;
           }
 
-          const matchedLegacyIndex = findBestLegacyMatchIndex(legacyRows, draftRow, usedLegacyIndexes);
+          const matchedLegacyIndex = findBestLegacyMatchIndex(activeLegacyRows, draftRow, usedLegacyIndexes);
           if (matchedLegacyIndex >= 0) {
             usedLegacyIndexes.add(matchedLegacyIndex);
-            const matchedLegacy = legacyRows[matchedLegacyIndex];
+            const matchedLegacy = activeLegacyRows[matchedLegacyIndex];
             return {
               ...draftRow,
               legacyHistoryId: matchedLegacy.id || null,
@@ -499,7 +509,7 @@ export const getLegacyOnlyPurchaseHistoryRowsForProduct = (
 ): LegacyProductPurchaseHistoryFallbackRow[] => {
   if (!product) return [];
 
-  const legacyRows = Array.isArray(product.purchaseHistory) ? product.purchaseHistory : [];
+  const legacyRows = Array.isArray(product.purchaseHistory) ? product.purchaseHistory.filter((row) => !isDeletedPurchaseHistoryRow(row)) : [];
   if (!legacyRows.length) return [];
 
   const matchedLegacyIds = new Set(

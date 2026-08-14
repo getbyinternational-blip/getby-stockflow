@@ -16,13 +16,13 @@ type Row = {
   cashIn: number; cashOut: number; bankIn: number; bankOut: number;
   receivableIncrease: number; receivableDecrease: number; payableIncrease: number; payableDecrease: number;
   storeCreditIncrease: number; storeCreditDecrease: number;
-  itemPreviews?: Array<{ id: string; name: string; quantity: number; image?: string }>;
+  itemPreviews?: Array<{ id: string; name: string; quantity: number; image?: string; meta?: string }>;
 };
 type GrossProfitRow = {
   id: string;
   date: string;
   transactionId: string;
-  transactionType: 'sale' | 'return';
+  transactionType: 'sale' | 'return' | 'expense';
   invoiceRef: string;
   customer: string;
   product: string;
@@ -83,6 +83,15 @@ const getCashbookItemPreviews = (source: any, maxItems = 3) => normalizeTransact
     name: getLineProductName(item),
     quantity: Math.max(0, Number(item?.quantity || item?.qty || 0)),
     image: String(item?.thumbnailImage || item?.image || ''),
+  }));
+const getPurchaseOrderItemPreviews = (po: PurchaseOrder, maxItems = 3) => (Array.isArray((po as any)?.lines) ? (po as any).lines : [])
+  .slice(0, maxItems)
+  .map((line: any) => ({
+    id: String(line?.id || line?.productId || line?.pendingProductBarcode || line?.productName || Math.random()),
+    name: getLineProductName(line),
+    quantity: Math.max(0, Number(line?.quantity || 0)),
+    image: String(line?.image || ''),
+    meta: `Qty ${Math.max(0, Number(line?.quantity || 0))} • ${fmt(Math.max(0, Number(line?.unitCost || 0)))}`,
   }));
 const toNum = (v: unknown) => Number.isFinite(Number(v)) ? Number(v) : 0;
 const CASHBOOK_RECONCILE_DEBUG = import.meta.env.DEV && import.meta.env.VITE_CASHBOOK_RECONCILE_DEBUG === 'true';
@@ -261,7 +270,7 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
     const payment = getCashbookPaymentMethod(txAny);
     const explicitReceivableDecrease = toNum(txAny?.paymentAppliedToReceivable);
     const receivableDecrease = Math.max(0, explicitReceivableDecrease > 0 ? explicitReceivableDecrease : amount);
-    return { id: `tx-${tx.id}`, date, type: 'payment', description: `Payment Receipt #${reference} - ${party}`, reference, party, payment,
+    return { id: `tx-${tx.id}`, date, type: 'payment', description: party, reference, party, payment,
       cashIn: payment === 'cash' ? amount : 0, cashOut: 0, bankIn: payment === 'online' ? amount : 0, bankOut: 0,
       receivableIncrease: 0, receivableDecrease, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: Math.max(0, toNum(txAny?.storeCreditCreated)), storeCreditDecrease: 0 };
   }
@@ -291,7 +300,7 @@ export default function Cashbook() {
   const data = useMemo(() => loadData(), [reloadKey]);
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [datePreset, setDatePreset] = useState<'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'>('all');
-  const [payFilter, setPayFilter] = useState<'all' | 'cash' | 'online' | 'credit'>('all');
+  const [payFilter, setPayFilter] = useState<'all' | 'cash' | 'online' | 'credit' | 'mixed'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | LedgerType>('all');
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [visibleRowCount, setVisibleRowCount] = useState(100);
@@ -300,6 +309,7 @@ export default function Cashbook() {
   const [grossProfitCustomerSearch, setGrossProfitCustomerSearch] = useState('');
   const [grossProfitProductSearch, setGrossProfitProductSearch] = useState('');
   const [isGrossProfitModalOpen, setIsGrossProfitModalOpen] = useState(false);
+  const [grossProfitModalScope, setGrossProfitModalScope] = useState<'all' | 'net_sales' | 'gross_profit' | 'expenses'>('all');
   const [grossProfitPage, setGrossProfitPage] = useState(1);
   const [grossProfitModalPage, setGrossProfitModalPage] = useState(1);
   const [isAddCashOpen, setIsAddCashOpen] = useState(false);
@@ -440,7 +450,7 @@ export default function Cashbook() {
           id: `sp-${sp.id}`,
           date: sp.paidAt || sp.createdAt,
           type: 'supplier_payment',
-          description: `Supplier Payment - ${sp.partyName || 'Supplier'} - ${paymentMethod}${overpaymentText}`,
+          description: `${sp.partyName || 'Supplier'}${overpaymentText}`,
           reference: sp.voucherNo || sp.id,
           party: sp.partyName || 'Supplier',
           payment: paymentMethod,
@@ -472,7 +482,7 @@ export default function Cashbook() {
         id: `legacy-sp-${key}`,
         date: g.date,
         type: 'supplier_payment',
-        description: `${g.method === 'online' ? 'Online' : 'Cash'} supplier payment allocated across ${g.allocations} POs - ${g.party}`,
+        description: `${g.party}${g.allocations > 1 ? ` - allocated across ${g.allocations} POs` : ''}`,
         reference: key,
         party: g.party,
         payment: g.method === 'online' ? 'online' : 'cash',
@@ -486,7 +496,7 @@ export default function Cashbook() {
   const rows = useMemo(() => {
     const txRows = safeTransactions.map((tx) => normalizeTransactionForCashbook(tx, customerMap));
     const purchaseRows: Row[] = safePurchaseOrders.flatMap((po) => {
-      const base: Row = { id: `po-${po.id}`, date: po.orderDate || po.createdAt, type: 'purchase', description: `Purchase #${po.id.slice(-6)} - ${getPurchaseOrderProductSummary(po)} - ${po.partyName}`, reference: po.billNumber || po.id, party: po.partyName, payment: 'credit',
+      const base: Row = { id: `po-${po.id}`, date: po.orderDate || po.createdAt, type: 'purchase', description: `Purchase #${po.id.slice(-6)} - ${getPurchaseOrderProductSummary(po)} - ${po.partyName}`, reference: po.billNumber || po.id, party: po.partyName, payment: 'credit', itemPreviews: getPurchaseOrderItemPreviews(po),
         cashIn: 0, cashOut: 0, bankIn: 0, bankOut: 0, receivableIncrease: 0, receivableDecrease: 0, payableIncrease: Math.max(0, Number(po.totalAmount || 0)), payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
       return [base];
     });
@@ -641,7 +651,7 @@ export default function Cashbook() {
 
   const filteredDisplayRows = useMemo(() => asArray<Row>(allLedgerRows).filter((r) => {
     const t = new Date(r.date).getTime(); if (effectiveFrom && t < new Date(`${effectiveFrom}T00:00:00`).getTime()) return false; if (effectiveTo && t > new Date(`${effectiveTo}T23:59:59`).getTime()) return false;
-    if (payFilter !== 'all' && r.payment !== payFilter && !(payFilter === 'online' && r.payment === 'mixed')) return false;
+    if (payFilter !== 'all' && r.payment !== payFilter) return false;
     if (typeFilter !== 'all' && r.type !== typeFilter) return false;
     const q = search.trim().toLowerCase(); if (!q) return true; return `${r.description} ${r.reference} ${r.party}`.toLowerCase().includes(q);
   }).sort((a, b) => sort === 'newest' ? new Date(b.date).getTime() - new Date(a.date).getTime() : new Date(a.date).getTime() - new Date(b.date).getTime()), [allLedgerRows, effectiveFrom, effectiveTo, payFilter, typeFilter, search, sort]);
@@ -1106,46 +1116,98 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       });
     });
 
+    safeExpenses.forEach((expense) => {
+      const amount = Math.max(0, Number(expense.amount || 0));
+      if (amount <= 0) return;
+      rowsOut.push({
+        id: `gp-exp-${expense.id}`,
+        date: expense.effectiveAt || expense.createdAt,
+        transactionId: expense.id,
+        transactionType: 'expense',
+        invoiceRef: expense.id.slice(-6),
+        customer: expense.category || 'Expense',
+        product: expense.title || 'Expense',
+        details: expense.note?.trim() || expense.title || 'Expense',
+        qty: 0,
+        sellPrice: 0,
+        revenue: 0,
+        buyPrice: 0,
+        cogs: amount,
+        grossProfit: -amount,
+        marginPct: 0,
+        source: 'missing_buy_price',
+        paymentMethod: 'Cash',
+        productId: '',
+        isHistoricalImport: false,
+      });
+    });
+
     return rowsOut.sort((a, b) => getDateValue(b.date) - getDateValue(a.date));
-  }, [customerMap, productMap, safeTransactions]);
+  }, [customerMap, productMap, safeTransactions, safeExpenses]);
 
   const filteredGrossProfitRows = useMemo(() => {
     const customerQuery = grossProfitCustomerSearch.trim().toLowerCase();
     const productQuery = grossProfitProductSearch.trim().toLowerCase();
 
     return grossProfitRows.filter((row) => {
-      if (!matchesDateRange(row.date, from, to)) return false;
+      if (!matchesDateRange(row.date, effectiveFrom, effectiveTo)) return false;
       if (customerQuery && !row.customer.toLowerCase().includes(customerQuery)) return false;
       if (productQuery && !row.product.toLowerCase().includes(productQuery)) return false;
       return true;
     });
-  }, [from, grossProfitCustomerSearch, grossProfitProductSearch, grossProfitRows, to]);
+  }, [effectiveFrom, effectiveTo, grossProfitCustomerSearch, grossProfitProductSearch, grossProfitRows]);
 
   const grossProfitSummary = useMemo(() => {
     const netSales = filteredGrossProfitRows.reduce((sum, row) => sum + row.revenue, 0);
-    const cogs = filteredGrossProfitRows.reduce((sum, row) => sum + row.cogs, 0);
+    const cogs = filteredGrossProfitRows
+      .filter((row) => row.transactionType !== 'expense')
+      .reduce((sum, row) => sum + row.cogs, 0);
+    const expenseLoss = filteredGrossProfitRows
+      .filter((row) => row.transactionType === 'expense')
+      .reduce((sum, row) => sum + Math.abs(row.grossProfit), 0);
     const grossProfit = netSales - cogs;
+    const netProfitLoss = grossProfit - expenseLoss;
     const numberOfItemsSold = filteredGrossProfitRows.reduce((sum, row) => sum + row.qty, 0);
     const numberOfSales = new Set(filteredGrossProfitRows.map((row) => row.transactionId)).size;
     const grossMarginPct = Math.abs(netSales) > 0 ? (grossProfit / netSales) * 100 : 0;
-    return { netSales, cogs, grossProfit, grossMarginPct, numberOfSales, numberOfItemsSold };
+    return { netSales, cogs, expenseLoss, grossProfit, netProfitLoss, grossMarginPct, numberOfSales, numberOfItemsSold };
   }, [filteredGrossProfitRows]);
 
+  const grossProfitModalRows = useMemo(() => {
+    if (grossProfitModalScope === 'expenses') {
+      return filteredGrossProfitRows.filter((row) => row.transactionType === 'expense');
+    }
+    if (grossProfitModalScope === 'gross_profit') {
+      return filteredGrossProfitRows.filter((row) => row.transactionType !== 'expense');
+    }
+    if (grossProfitModalScope === 'net_sales') {
+      return filteredGrossProfitRows.filter((row) => row.transactionType === 'sale' || row.transactionType === 'return');
+    }
+    return filteredGrossProfitRows;
+  }, [filteredGrossProfitRows, grossProfitModalScope]);
+
+  const grossProfitModalTitle = useMemo(() => {
+    if (grossProfitModalScope === 'net_sales') return 'Net Sales Transactions';
+    if (grossProfitModalScope === 'gross_profit') return 'Gross Profit Transactions';
+    if (grossProfitModalScope === 'expenses') return 'Expenses / Loss Transactions';
+    return 'Profit / Loss Summary';
+  }, [grossProfitModalScope]);
+
   const grossProfitTotalPages = Math.max(1, Math.ceil(filteredGrossProfitRows.length / GROSS_PROFIT_PAGE_SIZE));
-  const grossProfitModalTotalPages = Math.max(1, Math.ceil(filteredGrossProfitRows.length / GROSS_PROFIT_PAGE_SIZE));
+  const grossProfitModalTotalPages = Math.max(1, Math.ceil(grossProfitModalRows.length / GROSS_PROFIT_PAGE_SIZE));
   const pagedGrossProfitRows = useMemo(() => {
     const start = (grossProfitPage - 1) * GROSS_PROFIT_PAGE_SIZE;
     return filteredGrossProfitRows.slice(start, start + GROSS_PROFIT_PAGE_SIZE);
   }, [filteredGrossProfitRows, grossProfitPage]);
   const pagedGrossProfitModalRows = useMemo(() => {
     const start = (grossProfitModalPage - 1) * GROSS_PROFIT_PAGE_SIZE;
-    return filteredGrossProfitRows.slice(start, start + GROSS_PROFIT_PAGE_SIZE);
-  }, [filteredGrossProfitRows, grossProfitModalPage]);
+    return grossProfitModalRows.slice(start, start + GROSS_PROFIT_PAGE_SIZE);
+  }, [grossProfitModalRows, grossProfitModalPage]);
 
   useEffect(() => {
     setGrossProfitPage(1);
     setGrossProfitModalPage(1);
-  }, [from, to, grossProfitCustomerSearch, grossProfitProductSearch]);
+  }, [effectiveFrom, effectiveTo, grossProfitCustomerSearch, grossProfitProductSearch]);
 
   useEffect(() => {
     if (grossProfitPage > grossProfitTotalPages) {
@@ -1252,13 +1314,13 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
     </section>
 
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+      <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setActiveTab('ledger')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'ledger' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Cashbook Ledger</button>
           <button onClick={() => setActiveTab('daily_breakdown')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'daily_breakdown' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Daily Breakdown</button>
           <button onClick={() => setActiveTab('gross_profit')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'gross_profit' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Gross Profit</button>
         </div>
-        {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
+        {(activeTab === 'ledger' || activeTab === 'daily_breakdown' || activeTab === 'gross_profit') && (
         <div className="flex flex-wrap gap-2 xl:justify-end">
           <FilterSelect value={datePreset} onChange={e => setDatePreset(e.target.value as any)}>
             <option value="all">All</option>
@@ -1274,66 +1336,58 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
               <input type="date" value={to} onChange={e => setTo(e.target.value)} className="h-10 min-w-[170px] rounded-lg border border-slate-200 px-3 text-sm" />
             </>
           )}
-          <FilterSelect value={payFilter} onChange={e => setPayFilter(e.target.value as any)}><option value="all">All Payment</option><option value="cash">Cash</option><option value="online">Bank / Online</option><option value="credit">Credit</option></FilterSelect>
-          <FilterSelect value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">All Type</option><option value="sale">Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></FilterSelect>
-          <FilterSelect value={sort} onChange={e => setSort(e.target.value as any)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></FilterSelect>
+          {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
+            <>
+              <FilterSelect value={payFilter} onChange={e => setPayFilter(e.target.value as any)}><option value="all">All Payment</option><option value="cash">Cash</option><option value="online">Bank / Online</option><option value="credit">Credit</option><option value="mixed">Mixed Payment</option></FilterSelect>
+              <FilterSelect value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">All Type</option><option value="sale">Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></FilterSelect>
+              <FilterSelect value={sort} onChange={e => setSort(e.target.value as any)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></FilterSelect>
+            </>
+          )}
         </div>
         )}
       </div>
-      {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
-      <div className="mt-4 space-y-3">
-        {activeTab === 'daily_breakdown' && (
-          <input placeholder="Search description, customer, party, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
-        )}
-      </div>
-      )}
-      {activeTab === 'gross_profit' && (
-      <>
-      <div className="grid gap-2 md:grid-cols-4">
-        <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="border rounded px-2 h-9" />
-        <input type="date" value={to} onChange={e => setTo(e.target.value)} className="border rounded px-2 h-9" />
-        <input placeholder="Search customer" value={grossProfitCustomerSearch} onChange={e => setGrossProfitCustomerSearch(e.target.value)} className="border rounded px-2 h-9" />
-        <input placeholder="Search product" value={grossProfitProductSearch} onChange={e => setGrossProfitProductSearch(e.target.value)} className="border rounded px-2 h-9" />
-      </div>
-      </>
-      )}
       {activeTab === 'daily_breakdown' && (
-      <div className="space-y-3">
-        {dailyBreakdownRows.map((day) => {
-          return (
-            <div key={day.dayKey} className="rounded-lg border">
-              <button
-                type="button"
-                onClick={(event) => openDailyBreakdownModal(day.dayKey, event.currentTarget)}
-                className="w-full rounded-lg p-3 text-left hover:bg-slate-50"
-              >
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <div className="font-semibold">{formatDayLabel(day.dayKey)}</div>
-                    <div className="text-xs text-muted-foreground">{day.rows.length} entries</div>
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 p-3">
+          <input placeholder="Search description, customer, party, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+        </div>
+        <div className="space-y-3 p-3">
+          {dailyBreakdownRows.map((day) => {
+            return (
+              <div key={day.dayKey} className="rounded-lg border">
+                <button
+                  type="button"
+                  onClick={(event) => openDailyBreakdownModal(day.dayKey, event.currentTarget)}
+                  className="w-full rounded-lg p-3 text-left hover:bg-slate-50"
+                >
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="font-semibold">{formatDayLabel(day.dayKey)}</div>
+                      <div className="text-xs text-muted-foreground">{day.rows.length} entries</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
+                      <div className="rounded border bg-slate-50 px-2 py-1"><div className="text-muted-foreground">Opening Cash</div><div className="font-semibold">{fmt(day.openingCash)}</div></div>
+                      <div className="rounded border bg-emerald-50 px-2 py-1"><div className="text-muted-foreground">Cash In</div><div className="font-semibold">{fmt(day.cashIn)}</div></div>
+                      <div className="rounded border bg-rose-50 px-2 py-1"><div className="text-muted-foreground">Cash Out</div><div className="font-semibold">{fmt(day.cashOut)}</div></div>
+                      <div className="rounded border bg-blue-50 px-2 py-1"><div className="text-muted-foreground">Online In</div><div className="font-semibold">{fmt(day.onlineIn)}</div></div>
+                      <div className="rounded border bg-orange-50 px-2 py-1"><div className="text-muted-foreground">Online Out</div><div className="font-semibold">{fmt(day.onlineOut)}</div></div>
+                      <div className="rounded border bg-slate-100 px-2 py-1"><div className="text-muted-foreground">Closing Cash</div><div className="font-semibold">{fmt(day.closingCash)}</div></div>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
-                    <div className="rounded border bg-slate-50 px-2 py-1"><div className="text-muted-foreground">Opening Cash</div><div className="font-semibold">{fmt(day.openingCash)}</div></div>
-                    <div className="rounded border bg-emerald-50 px-2 py-1"><div className="text-muted-foreground">Cash In</div><div className="font-semibold">{fmt(day.cashIn)}</div></div>
-                    <div className="rounded border bg-rose-50 px-2 py-1"><div className="text-muted-foreground">Cash Out</div><div className="font-semibold">{fmt(day.cashOut)}</div></div>
-                    <div className="rounded border bg-blue-50 px-2 py-1"><div className="text-muted-foreground">Online In</div><div className="font-semibold">{fmt(day.onlineIn)}</div></div>
-                    <div className="rounded border bg-orange-50 px-2 py-1"><div className="text-muted-foreground">Online Out</div><div className="font-semibold">{fmt(day.onlineOut)}</div></div>
-                    <div className="rounded border bg-slate-100 px-2 py-1"><div className="text-muted-foreground">Closing Cash</div><div className="font-semibold">{fmt(day.closingCash)}</div></div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4 xl:grid-cols-6">
+                    <div className="rounded border px-2 py-1">Credit Created: <span className="font-semibold">{fmt(day.creditCreated)}</span></div>
+                    <div className="rounded border px-2 py-1">Credit Due Received: <span className="font-semibold">{fmt(day.creditDueReceived)}</span></div>
+                    <div className="rounded border px-2 py-1">Purchase Added: <span className="font-semibold">{fmt(day.purchaseAdded)}</span></div>
+                    <div className="rounded border px-2 py-1">Supplier Payments: <span className="font-semibold">{fmt(day.supplierPayments)}</span></div>
+                    <div className="rounded border px-2 py-1">Expenses: <span className="font-semibold">{fmt(day.expenses)}</span></div>
+                    <div className="rounded border px-2 py-1">Withdrawals: <span className="font-semibold">{fmt(day.withdrawals)}</span></div>
                   </div>
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4 xl:grid-cols-6">
-                  <div className="rounded border px-2 py-1">Credit Created: <span className="font-semibold">{fmt(day.creditCreated)}</span></div>
-                  <div className="rounded border px-2 py-1">Credit Due Received: <span className="font-semibold">{fmt(day.creditDueReceived)}</span></div>
-                  <div className="rounded border px-2 py-1">Purchase Added: <span className="font-semibold">{fmt(day.purchaseAdded)}</span></div>
-                  <div className="rounded border px-2 py-1">Supplier Payments: <span className="font-semibold">{fmt(day.supplierPayments)}</span></div>
-                  <div className="rounded border px-2 py-1">Expenses: <span className="font-semibold">{fmt(day.expenses)}</span></div>
-                  <div className="rounded border px-2 py-1">Withdrawals: <span className="font-semibold">{fmt(day.withdrawals)}</span></div>
-                </div>
-              </button>
-            </div>
-          );
-        })}
-        {dailyBreakdownRows.length === 0 && <div className="rounded border px-3 py-6 text-sm text-muted-foreground">No daily rows found for the current filters.</div>}
+                </button>
+              </div>
+            );
+          })}
+          {dailyBreakdownRows.length === 0 && <div className="rounded border px-3 py-6 text-sm text-muted-foreground">No daily rows found for the current filters.</div>}
+        </div>
       </div>
       )}
       {selectedDailyBreakdown && (
@@ -1483,13 +1537,14 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                           </div>
                           <div className="min-w-0">
                             <div className="truncate text-sm font-medium text-slate-900">{item.name} x {item.quantity}</div>
+                            {item.meta ? <div className="truncate text-[11px] text-slate-500">{item.meta}</div> : null}
                           </div>
                         </div>
                       ))}
                       {extraItemCount > 0 ? <div className="text-[11px] text-slate-500">+{extraItemCount} more item(s)</div> : null}
                     </div>
                   ) : (
-                    <div className="text-sm font-medium text-slate-900">{fallbackLabel}</div>
+                    <div className="text-sm font-medium text-slate-900">{r.description || fallbackLabel}</div>
                   )}
                 </td>
                 <td className="px-3 py-3 whitespace-nowrap uppercase text-xs font-semibold text-slate-500">{r.payment === 'na' ? '-' : r.payment}</td>
@@ -1516,32 +1571,71 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       </>
       )}
       {activeTab === 'gross_profit' && (
-        <div className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2">
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="grid gap-3 border-b border-slate-200 p-3 md:grid-cols-2 xl:grid-cols-4">
             <button
               type="button"
-              onClick={() => filteredGrossProfitRows.length > 0 && setIsGrossProfitModalOpen(true)}
+              onClick={() => {
+                if (filteredGrossProfitRows.length <= 0) return;
+                setGrossProfitModalScope('all');
+                setIsGrossProfitModalOpen(true);
+              }}
               disabled={filteredGrossProfitRows.length === 0}
               className="rounded border bg-emerald-50 p-3 text-left transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <div className="text-xs uppercase tracking-wide text-emerald-700">Gross Profit</div>
-              <div className={`text-xl font-bold ${grossProfitSummary.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(grossProfitSummary.grossProfit)}</div>
-              <div className="mt-1 text-xs text-muted-foreground">Open invoice summary</div>
+              <div className="text-xs uppercase tracking-wide text-emerald-700">Net Profit / Loss</div>
+              <div className={`text-xl font-bold ${grossProfitSummary.netProfitLoss >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(grossProfitSummary.netProfitLoss)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">Open transaction summary</div>
             </button>
-            <div className="rounded border bg-blue-50 p-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (filteredGrossProfitRows.length <= 0) return;
+                setGrossProfitModalScope('net_sales');
+                setIsGrossProfitModalOpen(true);
+              }}
+              disabled={filteredGrossProfitRows.length === 0}
+              className="rounded border bg-blue-50 p-3 text-left transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
               <div className="text-xs uppercase tracking-wide text-blue-700">Net Sales</div>
               <div className="text-xl font-bold text-blue-700">{fmt(grossProfitSummary.netSales)}</div>
-            </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (filteredGrossProfitRows.length <= 0) return;
+                setGrossProfitModalScope('gross_profit');
+                setIsGrossProfitModalOpen(true);
+              }}
+              disabled={filteredGrossProfitRows.length === 0}
+              className="rounded border bg-amber-50 p-3 text-left transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <div className="text-xs uppercase tracking-wide text-amber-700">Gross Profit</div>
+              <div className={`text-xl font-bold ${grossProfitSummary.grossProfit >= 0 ? 'text-amber-700' : 'text-rose-700'}`}>{fmt(grossProfitSummary.grossProfit)}</div>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (filteredGrossProfitRows.length <= 0) return;
+                setGrossProfitModalScope('expenses');
+                setIsGrossProfitModalOpen(true);
+              }}
+              disabled={filteredGrossProfitRows.length === 0}
+              className="rounded border bg-rose-50 p-3 text-left transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <div className="text-xs uppercase tracking-wide text-rose-700">Expenses / Loss</div>
+              <div className="text-xl font-bold text-rose-700">{fmt(grossProfitSummary.expenseLoss)}</div>
+            </button>
           </div>
 
-          <div className="overflow-auto rounded border">
+          <div className="overflow-auto">
             <table className="min-w-[1500px] w-full text-xs">
               <thead className="sticky top-0 z-10 bg-slate-50">
                 <tr className="border-b text-left">
                   <th className="px-3 py-2">Date</th>
                   <th className="px-3 py-2">Invoice / Transaction ID</th>
-                  <th className="px-3 py-2">Customer</th>
-                  <th className="px-3 py-2">Product</th>
+                  <th className="px-3 py-2">Party / Category</th>
+                  <th className="px-3 py-2">Product / Expense</th>
                   <th className="px-3 py-2">Type</th>
                   <th className="px-3 py-2 text-right">Qty</th>
                   <th className="px-3 py-2 text-right">Sell Price</th>
@@ -1564,8 +1658,8 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                     <td className="px-3 py-2">{row.customer}</td>
                     <td className="px-3 py-2">{row.product}</td>
                     <td className="px-3 py-2">
-                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
-                        {row.transactionType === 'return' ? 'Return' : 'Sale'}
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : row.transactionType === 'expense' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                        {row.transactionType === 'return' ? 'Return' : row.transactionType === 'expense' ? 'Expense' : 'Sale'}
                       </span>
                     </td>
                     <td className={`px-3 py-2 text-right ${row.qty >= 0 ? '' : 'text-rose-700'}`}>{row.qty}</td>
@@ -1576,16 +1670,22 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                     <td className={`px-3 py-2 text-right font-semibold ${row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{fmt(row.grossProfit)}</td>
                     <td className={`px-3 py-2 text-right ${row.marginPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatPercent(row.marginPct)}</td>
                     <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-1">
-                        <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${getGrossProfitSourceClass(row.source)}`}>
-                          {getGrossProfitSourceLabel(row.source)}
+                      {row.transactionType === 'expense' ? (
+                        <span className="inline-flex rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-700">
+                          Direct loss
                         </span>
-                        {row.source === 'current_product_buy_price' && (
-                          <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                            Fallback
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${getGrossProfitSourceClass(row.source)}`}>
+                            {getGrossProfitSourceLabel(row.source)}
                           </span>
-                        )}
-                      </div>
+                          {row.source === 'current_product_buy_price' && (
+                            <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                              Fallback
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1620,7 +1720,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
           <div className="sticky top-0 z-20 border-b bg-white/95 px-5 py-4 backdrop-blur">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 id="gross-profit-modal-title" className="text-xl font-semibold text-slate-900">Gross Profit Summary</h2>
+                <h2 id="gross-profit-modal-title" className="text-xl font-semibold text-slate-900">{grossProfitModalTitle}</h2>
                 <p className="text-sm text-slate-500">Showing latest 200 rows. Use filters to narrow results.</p>
               </div>
               <button
@@ -1633,9 +1733,11 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-2">
-              <div className="rounded-xl border bg-emerald-50 px-3 py-2"><div className="text-emerald-700">Gross Profit</div><div className={`text-sm font-semibold ${grossProfitSummary.grossProfit >= 0 ? 'text-emerald-800' : 'text-rose-700'}`}>{fmt(grossProfitSummary.grossProfit)}</div></div>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border bg-emerald-50 px-3 py-2"><div className="text-emerald-700">Net Profit / Loss</div><div className={`text-sm font-semibold ${grossProfitSummary.netProfitLoss >= 0 ? 'text-emerald-800' : 'text-rose-700'}`}>{fmt(grossProfitSummary.netProfitLoss)}</div></div>
               <div className="rounded-xl border bg-blue-50 px-3 py-2"><div className="text-blue-700">Net Sales</div><div className="text-sm font-semibold text-blue-800">{fmt(grossProfitSummary.netSales)}</div></div>
+              <div className="rounded-xl border bg-amber-50 px-3 py-2"><div className="text-amber-700">Gross Profit</div><div className={`text-sm font-semibold ${grossProfitSummary.grossProfit >= 0 ? 'text-amber-800' : 'text-rose-700'}`}>{fmt(grossProfitSummary.grossProfit)}</div></div>
+              <div className="rounded-xl border bg-rose-50 px-3 py-2"><div className="text-rose-700">Expenses / Loss</div><div className="text-sm font-semibold text-rose-700">{fmt(grossProfitSummary.expenseLoss)}</div></div>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/60 px-5 py-4">
@@ -1648,7 +1750,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                       <th className="px-3 py-2">Transaction Type</th>
                       <th className="px-3 py-2">Transaction Method</th>
                       <th className="px-3 py-2">Details</th>
-                      <th className="px-3 py-2">Customer Name</th>
+                      <th className="px-3 py-2">Party / Category</th>
                       <th className="px-3 py-2 text-right">Qty</th>
                       <th className="px-3 py-2 text-right">Buy Price</th>
                       <th className="px-3 py-2 text-right">Sell Price</th>
@@ -1660,8 +1762,8 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                       <tr key={`modal-${row.id}`} className={`border-b ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
                         <td className="px-3 py-2 whitespace-nowrap">{new Date(row.date).toLocaleString()}</td>
                         <td className="px-3 py-2">
-                          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
-                            {row.transactionType === 'return' ? 'Return' : 'Sale'}
+                          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : row.transactionType === 'expense' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                            {row.transactionType === 'return' ? 'Return' : row.transactionType === 'expense' ? 'Expense' : 'Sale'}
                           </span>
                         </td>
                         <td className="px-3 py-2">{String(row.paymentMethod || 'Unknown').toLowerCase()}</td>
@@ -1687,7 +1789,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
               {renderGrossProfitPagination(
                 grossProfitModalPage,
                 grossProfitModalTotalPages,
-                filteredGrossProfitRows.length,
+                grossProfitModalRows.length,
                 () => setGrossProfitModalPage((page) => Math.max(1, page - 1)),
                 () => setGrossProfitModalPage((page) => Math.min(grossProfitModalTotalPages, page + 1)),
               )}
