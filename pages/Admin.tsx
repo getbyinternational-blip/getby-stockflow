@@ -1410,7 +1410,9 @@ const displayProductCategory = (value: unknown): string => {
       sellPrice: hasCombos ? cleanOptionalNumber(editingProduct?.sellPrice, 0) : cleanOptionalNumber(formData.sellPrice, 0),
       totalPurchase: cleanOptionalNumber(effectiveTotalPurchase, 0),
       totalSold: cleanOptionalNumber(effectiveTotalSold, 0),
-      stock: editingProduct ? totalComboStock : 0,
+      stock: editingProduct
+        ? (hasCombos ? totalComboStock : cleanOptionalNumber(formData.stock, 0))
+        : 0,
       variants: hasCombos ? (formData.variants || []) : [],
       colors: hasCombos ? (formData.colors || []) : [],
       stockByVariantColor: hasCombos

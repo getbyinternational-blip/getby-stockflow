@@ -44,11 +44,15 @@ function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: bo
 export default function Transactions() {
   const { requestAdminOverride } = useRoleSession();
   const COLORED_ROWS_STORAGE_KEY = 'stockflow.transactions.colored_rows';
-  const getTransactionReference = (tx: Transaction) => tx.type === 'sale'
-    ? (tx.invoiceNo || tx.id.slice(-6))
-    : tx.type === 'return'
-      ? (tx.creditNoteNo || tx.id.slice(-6))
-      : (tx.receiptNo || tx.id.slice(-6));
+  const isPurchaseOrderVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('purchase-order-');
+  const getTransactionReference = (tx: Transaction) => {
+    if (isPurchaseOrderVirtualTransaction(tx)) return tx.receiptNo || tx.billRef || tx.sourceRef || tx.id.slice(-6);
+    return tx.type === 'sale'
+      ? (tx.invoiceNo || tx.id.slice(-6))
+      : tx.type === 'return'
+        ? (tx.creditNoteNo || tx.id.slice(-6))
+        : (tx.receiptNo || tx.id.slice(-6));
+  };
   const isUpfrontVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('upfront-');
   const isSupplierPaymentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('supplier-payment-');
   const isExpenseVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('expense-');
@@ -64,6 +68,7 @@ export default function Transactions() {
   const isNonInvoiceVirtualTransaction = (tx?: Transaction | null) => !!tx && (
     isExpenseVirtualTransaction(tx)
     || isCashAdjustmentVirtualTransaction(tx)
+    || isPurchaseOrderVirtualTransaction(tx)
     || isSupplierPaymentVirtualTransaction(tx)
     || isManualCashbookVirtualTransaction(tx)
     || isDeleteCompensationVirtualTransaction(tx)
@@ -76,6 +81,7 @@ export default function Transactions() {
     if (isManualCashOutVirtualTransaction(tx)) return 'Manual Cash Out Entry';
     if (isManualCashInVirtualTransaction(tx)) return 'Manual Cash In Entry';
     if (isDeleteCompensationVirtualTransaction(tx)) return 'Delete Compensation Entry';
+    if (isPurchaseOrderVirtualTransaction(tx)) return 'Purchase Entry';
     if (isSupplierPaymentVirtualTransaction(tx)) return 'Supplier Payment Entry';
     if (isCustomOrderPaymentRow(tx)) return 'Custom Order Payment Receipt';
     if (isCustomOrderReceivableRow(tx)) return 'Custom Order Receipt';
@@ -180,6 +186,63 @@ export default function Transactions() {
         sourceTransactionDate: selectedDate || undefined,
       } as Transaction;
     }), [supplierPayments]);
+  const virtualPurchaseOrderTransactions = useMemo<Transaction[]>(() => (purchaseOrders || [])
+    .filter((order) => order && order.status !== 'cancelled')
+    .map((order) => {
+      const selectedDate = order.effectiveAt || order.orderDate || order.createdAt || new Date().toISOString();
+      const date = Number.isFinite(new Date(selectedDate).getTime()) ? new Date(selectedDate).toISOString() : new Date().toISOString();
+      const directCashPaid = Array.isArray(order.paymentHistory)
+        ? order.paymentHistory.reduce((sum, payment: any) => {
+            if (payment?.supplierPaymentId) return sum;
+            return String(payment?.method || '').trim().toLowerCase() === 'cash'
+              ? sum + Math.max(0, Number(payment.amount || 0))
+              : sum;
+          }, 0)
+        : 0;
+      const directOnlinePaid = Array.isArray(order.paymentHistory)
+        ? order.paymentHistory.reduce((sum, payment: any) => {
+            if (payment?.supplierPaymentId) return sum;
+            const method = String(payment?.method || '').trim().toLowerCase();
+            return method === 'online' || method === 'bank'
+              ? sum + Math.max(0, Number(payment.amount || 0))
+              : sum;
+          }, 0)
+        : 0;
+      const remainingAmount = Math.max(0, Number(order.remainingAmount || 0));
+      const paymentMethod: Transaction['paymentMethod'] = remainingAmount > 0
+        ? 'Credit'
+        : directCashPaid > 0 && directOnlinePaid > 0
+          ? 'Mixed'
+          : directOnlinePaid > 0
+            ? 'Online'
+            : 'Cash';
+      const items: CartItem[] = (order.lines || []).map((line) => ({
+        id: String(line.productId || line.id || ''),
+        name: line.productName || 'Purchase',
+        image: line.image || '',
+        quantity: Math.max(0, Number(line.quantity || 0)),
+        sellPrice: Math.max(0, Number(line.unitCost || 0)),
+        buyPrice: Math.max(0, Number(line.unitCost || 0)),
+        selectedVariant: line.variant || '',
+        selectedColor: line.color || '',
+        category: line.category || '',
+      } as CartItem));
+      return {
+        id: `purchase-order-${order.id}`,
+        type: 'payment',
+        date,
+        total: Math.max(0, Number(order.totalAmount || 0)),
+        items,
+        customerId: order.partyId || '',
+        customerName: order.partyName || 'Supplier',
+        paymentMethod,
+        receiptNo: order.billNumber || undefined,
+        billRef: order.billNumber || undefined,
+        sourceRef: order.id,
+        notes: order.partyName || 'Supplier',
+        sourceTransactionDate: selectedDate,
+      } as Transaction;
+    }), [purchaseOrders]);
   const virtualExpenseTransactions = useMemo<Transaction[]>(() => (expenses || []).map((expense) => {
     const effectiveDate = expense.effectiveAt || expense.createdAt || new Date().toISOString();
     return {
@@ -328,10 +391,11 @@ export default function Transactions() {
       ...virtualCashAdjustmentTransactions,
       ...virtualManualCashbookTransactions,
       ...virtualDeleteCompensationTransactions,
+      ...virtualPurchaseOrderTransactions,
       ...virtualUpfrontOrderTransactions,
       ...virtualSupplierPaymentTransactions,
     ],
-    [transactions, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualManualCashbookTransactions, virtualDeleteCompensationTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
+    [transactions, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualManualCashbookTransactions, virtualDeleteCompensationTransactions, virtualPurchaseOrderTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
   );
 
   const formatRoleLabel = (role?: string) => {
@@ -671,6 +735,7 @@ export default function Transactions() {
     if (isCashAdjustmentVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
     if (isManualCashbookVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
     if (isDeleteCompensationVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
+    if (isPurchaseOrderVirtualTransaction(tx)) return tx.paymentMethod || 'Credit';
     if (tx.id.startsWith('upfront-')) return 'Advance';
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     if (txType !== 'sale' && txType !== 'historical_reference') return tx.paymentMethod || 'Cash';
@@ -697,6 +762,15 @@ export default function Transactions() {
     }
     if (isDeleteCompensationVirtualTransaction(tx)) {
       return { typeLabel: 'DELETE REFUND', typeTone: 'cash out', isSale, isReturn, isPayment } as const;
+    }
+    if (isPurchaseOrderVirtualTransaction(tx)) {
+      return {
+        typeLabel: 'PURCHASE',
+        typeTone: getDisplayPaymentMethod(tx) === 'Credit' ? 'credit due' : 'cash out',
+        isSale,
+        isReturn,
+        isPayment,
+      } as const;
     }
     if (isCashWithdrawalVirtualTransaction(tx)) {
       return { typeLabel: 'CASH WITHDRAWAL', typeTone: 'cash out', isSale, isReturn, isPayment } as const;
@@ -751,6 +825,7 @@ export default function Transactions() {
 
     if (isExpenseVirtualTransaction(tx)) return 'bg-red-100/80 hover:bg-red-50/60';
     if (isDeleteCompensationVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
+    if (isPurchaseOrderVirtualTransaction(tx)) return 'bg-amber-100/80 hover:bg-amber-50/60';
     if (isCashWithdrawalVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
     if (isCashAdditionVirtualTransaction(tx)) return 'bg-teal-100/80 hover:bg-teal-50/60';
     if (isManualCashOutVirtualTransaction(tx)) return 'bg-rose-100/80 hover:bg-rose-50/60';
@@ -778,23 +853,30 @@ export default function Transactions() {
     const isSale = txTypeUi.isSale;
     const isReturn = txTypeUi.isReturn;
     const isPayment = txTypeUi.isPayment;
+    const isPurchase = isPurchaseOrderVirtualTransaction(tx);
     const isCreditSale = isCreditTransaction(tx);
     const itemCount = normalizeTransactionItems(tx.items).reduce((acc, item) => acc + item.quantity, 0);
-    const rowToneClass = isCreditSale
+    const rowToneClass = isPurchase
+      ? 'text-amber-800'
+      : isCreditSale
       ? 'text-amber-900'
       : isSale
       ? 'text-emerald-800'
       : isReturn
         ? 'text-rose-800'
         : 'text-blue-800';
-    const rowMutedToneClass = isCreditSale
+    const rowMutedToneClass = isPurchase
+      ? 'text-amber-700'
+      : isCreditSale
       ? 'text-amber-800'
       : isSale
       ? 'text-emerald-700'
       : isReturn
         ? 'text-rose-700'
         : 'text-blue-700';
-    const rowSubtleToneClass = isCreditSale
+    const rowSubtleToneClass = isPurchase
+      ? 'text-amber-600'
+      : isCreditSale
       ? 'text-amber-700'
       : isSale
       ? 'text-emerald-600'
@@ -1501,6 +1583,10 @@ export default function Transactions() {
 
           if (isManualCashInVirtualTransaction(tx)) {
               totalCashIn += amount;
+              return;
+          }
+
+          if (isPurchaseOrderVirtualTransaction(tx)) {
               return;
           }
 
