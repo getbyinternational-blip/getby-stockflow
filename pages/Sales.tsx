@@ -9,7 +9,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Product, CartItem, Transaction, Customer, UpfrontOrder, TAX_OPTIONS, resolveTaxOption } from '../types';
 import { formatItemNameWithVariant, getAvailableStockForCombination, getProductStockRows, getResolvedBuyPriceForCombination, getResolvedSellPriceForCombination, NO_COLOR, NO_VARIANT, productHasCombinationStock } from '../services/productVariants';
 import { getStockBucketKey } from '../services/stockBuckets';
-import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft } from '../services/storage';
+import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft, fulfillUpfrontOrderAsSale } from '../services/storage';
 import { generateReceiptPDF, generateReceiptPDFDataUrl, printReceipt } from '../services/pdf';
 import { shareTransactionInvoiceViaWhatsApp } from '../services/whatsappShare';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
@@ -476,9 +476,17 @@ export default function Sales() {
   const [selectedReturnTxId, setSelectedReturnTxId] = useState<string | null>(null);
   const [returnQtyByLine, setReturnQtyByLine] = useState<Record<string, number>>({});
   const [isReturnPopupOpen, setIsReturnPopupOpen] = useState(false);
+  const [isAdvanceOrdersOpen, setIsAdvanceOrdersOpen] = useState(false);
+  const [selectedAdvanceOrderId, setSelectedAdvanceOrderId] = useState<string | null>(null);
+  const [advanceSearch, setAdvanceSearch] = useState('');
+  const [advanceCollectNowInput, setAdvanceCollectNowInput] = useState('');
+  const [advanceCollectMethod, setAdvanceCollectMethod] = useState<'Cash' | 'Online'>('Cash');
+  const [advanceOrderError, setAdvanceOrderError] = useState<string | null>(null);
+  const [advanceSubmitting, setAdvanceSubmitting] = useState(false);
   useEscapeLayer(variantPicker.open, () => setVariantPicker({ open: false, product: null, rows: [] }), { priority: 80 });
   useEscapeLayer(bulkModal.isOpen, () => setBulkModal({ isOpen: false, product: null }), { priority: 80 });
   useEscapeLayer(isReturnPopupOpen, () => setIsReturnPopupOpen(false), { priority: 90 });
+  useEscapeLayer(isAdvanceOrdersOpen, () => setIsAdvanceOrdersOpen(false), { priority: 90 });
   useEscapeLayer(isTaxModalOpen, () => setIsTaxModalOpen(false), { priority: 100 });
   useEscapeLayer(isCustomerModalOpen, () => { setIsCustomerModalOpen(false); }, { priority: 100 });
   const [returnSubmitError, setReturnSubmitError] = useState<string | null>(null);
@@ -1418,6 +1426,35 @@ export default function Sales() {
   const safeCustomers = Array.isArray(customers) ? customers : [];
   const safeTransactions = Array.isArray(transactions) ? transactions : [];
   const safeUpfrontOrders = Array.isArray(upfrontOrders) ? upfrontOrders : [];
+  const pendingAdvanceOrders = useMemo(() => {
+    const q = advanceSearch.trim().toLowerCase();
+    return safeUpfrontOrders
+      .filter((order) => !order.fulfilledAt)
+      .filter((order) => {
+        if (!q) return true;
+        const customer = safeCustomers.find((entry) => entry.id === order.customerId);
+        const haystack = [
+          order.productName,
+          customer?.name,
+          customer?.phone,
+          order.id,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(q);
+      })
+      .sort((a, b) => new Date(b.effectiveAt || b.date || b.createdAt || 0).getTime() - new Date(a.effectiveAt || a.date || a.createdAt || 0).getTime());
+  }, [advanceSearch, safeCustomers, safeUpfrontOrders]);
+  const selectedAdvanceOrder = useMemo(
+    () => pendingAdvanceOrders.find((order) => order.id === selectedAdvanceOrderId) || null,
+    [pendingAdvanceOrders, selectedAdvanceOrderId]
+  );
+  const selectedAdvanceOrderCustomer = useMemo(
+    () => selectedAdvanceOrder ? safeCustomers.find((entry) => entry.id === selectedAdvanceOrder.customerId) || null : null,
+    [selectedAdvanceOrder, safeCustomers]
+  );
+  const selectedAdvanceOrderRemaining = Math.max(0, Number(selectedAdvanceOrder?.remainingAmount || 0));
   const getCustomerCanonicalBalanceView = (customer: Customer | null) =>
     getCanonicalCustomerBalanceView(customer, safeCustomers, safeTransactions, safeUpfrontOrders);
   const selectedCustomerBalanceView = useMemo(() => {
@@ -1859,6 +1896,47 @@ export default function Sales() {
     setIsReturnPopupOpen(true);
   };
 
+  const openAdvanceOrdersPopup = () => {
+    setAdvanceOrderError(null);
+    setAdvanceSearch('');
+    setSelectedAdvanceOrderId(null);
+    setAdvanceCollectNowInput('');
+    setAdvanceCollectMethod('Cash');
+    setIsAdvanceOrdersOpen(true);
+  };
+
+  const handleAdvanceOrderReceived = () => {
+    if (!selectedAdvanceOrder) {
+      setAdvanceOrderError('Select an advance order first.');
+      return;
+    }
+    const collectNowAmount = Math.max(0, Number(advanceCollectNowInput || 0));
+    if (collectNowAmount > selectedAdvanceOrderRemaining + 0.0001) {
+      setAdvanceOrderError(`Received amount cannot be more than ${formatMoneyWhole(selectedAdvanceOrderRemaining)}.`);
+      return;
+    }
+    setAdvanceSubmitting(true);
+    setAdvanceOrderError(null);
+    try {
+      const nextState = fulfillUpfrontOrderAsSale(selectedAdvanceOrder.id, {
+        amountReceivedNow: collectNowAmount,
+        paymentMethod: advanceCollectMethod,
+        fulfilledAt: new Date().toISOString(),
+      });
+      setProducts(nextState.products || []);
+      setCustomers(nextState.customers || []);
+      setTransactions(nextState.transactions || []);
+      setUpfrontOrders(nextState.upfrontOrders || []);
+      setIsAdvanceOrdersOpen(false);
+      setSelectedAdvanceOrderId(null);
+      setAdvanceCollectNowInput('');
+    } catch (error) {
+      setAdvanceOrderError(getFriendlyErrorMessage(error, 'sales.advance_order_received'));
+    } finally {
+      setAdvanceSubmitting(false);
+    }
+  };
+
   const createReturnFromSelectedTransaction = () => {
     if (!selectedReturnTx || !returnDraftTransaction || returnPreview.total <= 0 || selectedReturnQty <= 0) {
       setReturnSubmitError('Unable to create return safely. Use preview details and adjust quantities.');
@@ -1914,6 +1992,7 @@ export default function Sales() {
             <div className="flex items-center gap-2">
               <Button size="sm" variant={!isReturnMode ? 'default' : 'outline'} onClick={() => { setIsReturnMode(false); setActiveCartItems(() => []); }}>Sales</Button>
               <Button size="sm" variant={isReturnMode ? 'default' : 'outline'} className={isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''} onClick={() => { setIsReturnMode(true); setActiveCartItems(() => []); }}>Return</Button>
+              <Button size="sm" variant="outline" onClick={openAdvanceOrdersPopup}>Advance</Button>
               {!isReturnMode && (
                 <div className="flex items-center gap-2 rounded-md border bg-background px-2 py-1">
                   <Label className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
@@ -2426,6 +2505,135 @@ export default function Sales() {
             </Button>
             </div>
           </div>
+        </div>
+      )}
+
+      {isAdvanceOrdersOpen && (
+        <div className="fixed inset-0 bg-black/70 z-[90] flex items-center justify-center p-4" onClick={() => setIsAdvanceOrdersOpen(false)}>
+          <Card className="w-full max-w-5xl max-h-[90vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <CardHeader className="border-b py-3 flex flex-row items-center justify-between gap-2">
+              <CardTitle className="text-[17px] font-semibold min-w-0">Advance Orders</CardTitle>
+              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setIsAdvanceOrdersOpen(false)}><X className="w-4 h-4" /></Button>
+            </CardHeader>
+            <CardContent className="p-3 space-y-3 overflow-y-auto max-h-[calc(90vh-138px)]">
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1.6fr)_minmax(320px,0.9fr)]">
+                <div className="space-y-3">
+                  <Input
+                    placeholder="Search customer, phone, product, or order id"
+                    value={advanceSearch}
+                    onChange={(e) => setAdvanceSearch(e.target.value)}
+                  />
+                  <div className="rounded-lg border overflow-hidden">
+                    <div className="flex items-center justify-between border-b bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                      <span>{pendingAdvanceOrders.length} order(s)</span>
+                      <span>Select one</span>
+                    </div>
+                    <div className="max-h-[52vh] overflow-y-auto divide-y">
+                      {pendingAdvanceOrders.map((order) => {
+                        const customer = safeCustomers.find((entry) => entry.id === order.customerId);
+                        const selected = selectedAdvanceOrderId === order.id;
+                        const canReceive = Boolean(order.productId && products.some((product) => product.id === order.productId));
+                        return (
+                          <button
+                            key={order.id}
+                            type="button"
+                            className={`w-full px-3 py-3 text-left transition-colors ${selected ? 'bg-primary/5' : 'bg-white hover:bg-muted/30'}`}
+                            onClick={() => {
+                              setSelectedAdvanceOrderId(order.id);
+                              setAdvanceCollectNowInput(String(Math.max(0, Number(order.remainingAmount || 0))));
+                              setAdvanceOrderError(canReceive ? null : 'This order has no active inventory product link, so it cannot be received from POS yet.');
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="font-semibold truncate">{order.productName}</div>
+                                <div className="text-sm text-muted-foreground truncate">{customer?.name || 'Unknown customer'}{customer?.phone ? ` • ${customer.phone}` : ''}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {new Date(order.effectiveAt || order.date || order.createdAt || new Date().toISOString()).toLocaleDateString()} • Ref {order.id.slice(-6)}
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-right text-sm">
+                                <div className="font-semibold">{formatMoneyWhole(Math.max(0, Number(order.totalCost || 0)))}</div>
+                                <div className="text-emerald-700">Adv {formatMoneyWhole(Math.max(0, Number(order.advancePaid || 0)))}</div>
+                                <div className="text-orange-700">Due {formatMoneyWhole(Math.max(0, Number(order.remainingAmount || 0)))}</div>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                      {pendingAdvanceOrders.length === 0 && (
+                        <div className="px-3 py-8 text-center text-sm text-muted-foreground">No advance orders found.</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="rounded-lg border p-3 space-y-3 bg-muted/10">
+                    <div>
+                      <div className="text-xs font-bold uppercase text-muted-foreground">Selected order</div>
+                      <div className="mt-1 text-base font-semibold">{selectedAdvanceOrder?.productName || 'Choose an order'}</div>
+                      <div className="text-sm text-muted-foreground">{selectedAdvanceOrderCustomer?.name || 'Customer will show here'}{selectedAdvanceOrderCustomer?.phone ? ` • ${selectedAdvanceOrderCustomer.phone}` : ''}</div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-md border bg-white p-2">
+                        <div className="text-[10px] font-bold uppercase text-muted-foreground">Total</div>
+                        <div className="mt-1 font-semibold">{formatMoneyWhole(Math.max(0, Number(selectedAdvanceOrder?.totalCost || 0)))}</div>
+                      </div>
+                      <div className="rounded-md border bg-white p-2">
+                        <div className="text-[10px] font-bold uppercase text-muted-foreground">Advance</div>
+                        <div className="mt-1 font-semibold text-emerald-700">{formatMoneyWhole(Math.max(0, Number(selectedAdvanceOrder?.advancePaid || 0)))}</div>
+                      </div>
+                      <div className="rounded-md border bg-white p-2">
+                        <div className="text-[10px] font-bold uppercase text-muted-foreground">Due</div>
+                        <div className="mt-1 font-semibold text-orange-700">{formatMoneyWhole(selectedAdvanceOrderRemaining)}</div>
+                      </div>
+                    </div>
+                    {selectedAdvanceOrder && selectedAdvanceOrderRemaining > 0 && (
+                      <>
+                        <div className="space-y-1.5">
+                          <Label className="text-[11px] font-bold uppercase text-muted-foreground">Amount received now</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={advanceCollectNowInput}
+                            onChange={(e) => {
+                              setAdvanceCollectNowInput(e.target.value);
+                              setAdvanceOrderError(null);
+                            }}
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Button type="button" variant={advanceCollectMethod === 'Cash' ? 'default' : 'outline'} onClick={() => setAdvanceCollectMethod('Cash')}>Cash</Button>
+                          <Button type="button" variant={advanceCollectMethod === 'Online' ? 'default' : 'outline'} onClick={() => setAdvanceCollectMethod('Online')}>Online</Button>
+                        </div>
+                        <Button type="button" variant="outline" onClick={() => setAdvanceCollectNowInput(String(selectedAdvanceOrderRemaining))}>
+                          Full Due
+                        </Button>
+                      </>
+                    )}
+                    <div className="rounded-md border bg-white p-3 text-sm">
+                      <div className="font-semibold">When you confirm:</div>
+                      <div className="mt-2 text-muted-foreground space-y-1">
+                        <div>• Sale will be saved</div>
+                        <div>• Profit will show in finance</div>
+                        <div>• Payment will show in transactions and cashbook</div>
+                        <div>• This advance order will move out of the pending list</div>
+                      </div>
+                    </div>
+                    {advanceOrderError && <div className="text-destructive text-[12px] bg-destructive/10 p-2 rounded border border-destructive/20">{advanceOrderError}</div>}
+                    <Button
+                      className="w-full h-11 text-base font-bold"
+                      disabled={!selectedAdvanceOrder || advanceSubmitting}
+                      onClick={handleAdvanceOrderReceived}
+                    >
+                      {advanceSubmitting ? 'Saving...' : 'Order Received'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 

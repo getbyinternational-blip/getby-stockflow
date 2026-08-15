@@ -322,6 +322,9 @@ export interface UpfrontOrder {
   initialAdvancePaid?: number;
   createdAt?: string;
   updatedAt?: string;
+  fulfilledAt?: string;
+  convertedSaleTransactionId?: string;
+  convertedPaymentTransactionIds?: string[];
   paymentHistory?: Array<{
     id: string;
     paidAt: string;

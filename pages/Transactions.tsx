@@ -312,7 +312,9 @@ export default function Transactions() {
       sourceTransactionDate: effectiveDate,
     } as Transaction;
   }), [deleteCompensations]);
-  const virtualUpfrontOrderTransactions = useMemo<Transaction[]>(() => upfrontOrders.flatMap((order) => {
+  const virtualUpfrontOrderTransactions = useMemo<Transaction[]>(() => upfrontOrders
+    .filter((order) => !order.fulfilledAt)
+    .flatMap((order) => {
     const customerName = customers.find(c => c.id === order.customerId)?.name || 'Customer';
     const baseItem: CartItem = {
       id: `upfront-item-${order.id}`,

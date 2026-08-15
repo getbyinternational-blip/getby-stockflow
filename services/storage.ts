@@ -6047,6 +6047,8 @@ export const getUpfrontOrderCurrentDueImpact = (order?: Partial<UpfrontOrder> | 
   getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? getUpfrontOrderRemainingAmount(order) : 0
 );
 
+const isUpfrontOrderFulfilled = (order?: Partial<UpfrontOrder> | null): boolean => Boolean(order?.fulfilledAt);
+
 export const buildReceivableOnlyRepairAdvanceEntries = (order?: Partial<UpfrontOrder> | null): NonNullable<UpfrontOrder['paymentHistory']> => {
   const totalAmount = getUpfrontOrderTotalAmount(order);
   const advancePaid = getUpfrontOrderAdvancePaidAmount(order);
@@ -6107,6 +6109,7 @@ export const buildUpfrontOrderLedgerEffects = (
   const effects: UpfrontOrderLedgerEffect[] = [];
 
   safeOrders.forEach((order) => {
+    if (isUpfrontOrderFulfilled(order)) return;
     const orderDate = order.effectiveAt || order.date || order.createdAt || order.updatedAt || new Date(0).toISOString();
     const customerName = (order as any).customerName || customerMap.get(order.customerId) || 'Unknown Customer';
     const productName = String(order.productName || 'Custom Order').trim() || 'Custom Order';
@@ -10130,6 +10133,180 @@ export const processTransaction = (transaction: Transaction): AppState => {
   emitDataOpStatus({ phase: DATA_OP_PHASES.SUCCESS, op: OPERATION_TYPES.PROCESS_TRANSACTION, entity: 'transaction', message: 'Transaction saved locally.', transactionId: effectiveTransaction.id });
   emitBehaviorStateChange({ type: effectiveTransaction.type === 'payment' ? 'payment_recorded' : 'order_created', entityId: effectiveTransaction.id, to: 'local_saved', metadata: { transactionType: effectiveTransaction.type, paymentMethod: effectiveTransaction.paymentMethod, total: effectiveTransaction.total } });
   return fallbackState;
+};
+
+export const fulfillUpfrontOrderAsSale = (
+  orderId: string,
+  options?: {
+    amountReceivedNow?: number;
+    paymentMethod?: 'Cash' | 'Online';
+    fulfilledAt?: string;
+    note?: string;
+  }
+): AppState => {
+  const data = loadData();
+  const order = (data.upfrontOrders || []).find((item) => item.id === orderId);
+  if (!order) {
+    failValidation('UPFRONT_ORDER_NOT_FOUND', 'Advance order not found.', { orderId });
+  }
+  if (isUpfrontOrderFulfilled(order)) {
+    failValidation('UPFRONT_ORDER_ALREADY_FULFILLED', 'Advance order is already received.', { orderId });
+  }
+
+  const linkedProduct = order.productId ? (data.products || []).find((product) => product.id === order.productId) : null;
+  if (!linkedProduct) {
+    failValidation('PRODUCT_NOT_FOUND', 'Advance order cannot be received because its product link is missing.', {
+      orderId,
+      productId: order.productId,
+    });
+  }
+
+  const totalAmount = getUpfrontOrderTotalAmount(order);
+  if (!(totalAmount > 0)) {
+    failValidation('INVALID_UPFRONT_ORDER_TOTAL', 'Advance order total must be greater than zero.', { orderId, totalAmount });
+  }
+
+  const amountReceivedNow = Math.max(0, Number(options?.amountReceivedNow || 0));
+  const priorHistory = Array.isArray(order.paymentHistory) ? order.paymentHistory.filter((payment) => !payment?.receivableOnlyRepair) : [];
+  const priorPaidAmount = priorHistory.reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+  const remainingBeforeFulfillment = Math.max(0, Number(order.remainingAmount ?? (totalAmount - priorPaidAmount)));
+  if (amountReceivedNow > remainingBeforeFulfillment + MONEY_EPSILON) {
+    failValidation('UPFRONT_PAYMENT_EXCEEDS_REMAINING', 'Received amount exceeds remaining advance-order due.', {
+      orderId,
+      amountReceivedNow,
+      remainingBeforeFulfillment,
+    });
+  }
+
+  const quantity = Math.max(0, Number(order.totalPieces || order.quantity || 0));
+  if (!(quantity > 0)) {
+    failValidation('INVALID_UPFRONT_ORDER_QUANTITY', 'Advance order quantity must be greater than zero.', { orderId, quantity });
+  }
+
+  const fulfilledAt = options?.fulfilledAt || new Date().toISOString();
+  const unitSellPrice = quantity > 0
+    ? Number((totalAmount / quantity).toFixed(2))
+    : Math.max(0, Number(order.customerPricePerPiece ?? order.cartonPriceCustomer ?? linkedProduct.sellPrice ?? 0));
+  const saleItem: CartItem = {
+    ...linkedProduct,
+    quantity,
+    selectedVariant: order.selectedVariant,
+    selectedColor: order.selectedColor,
+    sellPrice: unitSellPrice,
+    buyPrice: Math.max(0, Number(order.pricePerPiece ?? linkedProduct.buyPrice ?? 0)),
+  };
+
+  const saleTxId = `upfront-sale-${order.id}-${Date.now()}`;
+  const saleTx: Transaction = {
+    id: saleTxId,
+    items: [saleItem],
+    total: totalAmount,
+    subtotal: totalAmount,
+    discount: 0,
+    tax: 0,
+    taxRate: 0,
+    taxLabel: '0%',
+    date: fulfilledAt,
+    type: 'sale',
+    customerId: order.customerId,
+    customerName: data.customers.find((customer) => customer.id === order.customerId)?.name,
+    customerPhone: data.customers.find((customer) => customer.id === order.customerId)?.phone,
+    paymentMethod: 'Credit',
+    saleSettlement: {
+      cashPaid: 0,
+      onlinePaid: 0,
+      creditDue: totalAmount,
+    },
+    notes: `Advance order received • ${order.productName} • Ref ${order.id}${options?.note ? ` • ${options.note}` : ''}`,
+  };
+
+  const convertedPaymentTransactionIds: string[] = [];
+  const fulfilledOrder: UpfrontOrder = sanitizeUpfrontOrderForPersist({
+    ...order,
+    fulfilledAt,
+    convertedSaleTransactionId: saleTxId,
+    convertedPaymentTransactionIds: [],
+    status: 'cleared',
+    remainingAmount: 0,
+    updatedAt: new Date().toISOString(),
+  });
+  const nextUpfrontOrders = (data.upfrontOrders || []).map((item) => item.id === orderId ? fulfilledOrder : item);
+  const nextCustomers = applyCanonicalCustomerBalanceSnapshots(data.customers, data.transactions, nextUpfrontOrders, [order.customerId]);
+  const stagedState: AppState = { ...data, upfrontOrders: nextUpfrontOrders, customers: nextCustomers };
+
+  memoryState = { ...memoryState, upfrontOrders: nextUpfrontOrders, customers: nextCustomers };
+  emitLocalStorageUpdate();
+  void saveData(stagedState, { reason: 'fulfillUpfrontOrderAsSale_stage', auditOperation: 'UPDATE' });
+
+  let nextState = processTransaction(saleTx);
+
+  const paymentEntries = [...priorHistory];
+  if (amountReceivedNow > 0) {
+    paymentEntries.push({
+      id: `upfront-pay-${order.id}-final-${Date.now()}`,
+      paidAt: fulfilledAt,
+      effectiveAt: fulfilledAt,
+      amount: amountReceivedNow,
+      method: options?.paymentMethod || 'Cash',
+      note: options?.note || 'Collected on order received',
+      kind: 'additional_payment',
+      remainingAfterPayment: Math.max(0, Number((remainingBeforeFulfillment - amountReceivedNow).toFixed(2))),
+      advancePaidAfterPayment: Math.max(0, Number((priorPaidAmount + amountReceivedNow).toFixed(2))),
+    });
+  }
+
+  paymentEntries
+    .filter((payment) => Math.max(0, Number(payment.amount || 0)) > 0)
+    .forEach((payment, index) => {
+      const paymentMethod = String(payment.method || '').trim().toLowerCase().includes('online') ? 'Online' : 'Cash';
+      const paymentTxId = `upfront-payment-${order.id}-${index}-${Date.now()}`;
+      const paymentTx: Transaction = {
+        id: paymentTxId,
+        items: [],
+        total: Math.max(0, Number(payment.amount || 0)),
+        subtotal: Math.max(0, Number(payment.amount || 0)),
+        discount: 0,
+        tax: 0,
+        taxRate: 0,
+        taxLabel: '0%',
+        date: payment.effectiveAt || payment.paidAt || fulfilledAt,
+        type: 'payment',
+        customerId: order.customerId,
+        customerName: nextState.customers.find((customer) => customer.id === order.customerId)?.name,
+        customerPhone: nextState.customers.find((customer) => customer.id === order.customerId)?.phone,
+        paymentMethod,
+        notes: `${index < priorHistory.length ? 'Advance received before order delivery' : 'Collected when order received'} • ${order.productName} • Ref ${order.id}`,
+      };
+      nextState = processTransaction(paymentTx);
+      convertedPaymentTransactionIds.push(paymentTxId);
+    });
+
+  const finalOrders = (nextState.upfrontOrders || nextUpfrontOrders).map((item) => (
+    item.id === orderId
+      ? sanitizeUpfrontOrderForPersist({
+          ...item,
+          fulfilledAt,
+          convertedSaleTransactionId: saleTxId,
+          convertedPaymentTransactionIds,
+          status: 'cleared',
+          remainingAmount: 0,
+          updatedAt: new Date().toISOString(),
+        })
+      : item
+  ));
+  const finalCustomers = applyCanonicalCustomerBalanceSnapshots(nextState.customers, nextState.transactions, finalOrders, [order.customerId]);
+  const finalState: AppState = { ...nextState, upfrontOrders: finalOrders, customers: finalCustomers };
+  memoryState = { ...memoryState, upfrontOrders: finalOrders, customers: finalCustomers };
+  emitLocalStorageUpdate();
+  void saveData(finalState, { reason: 'fulfillUpfrontOrderAsSale_finalize', auditOperation: 'UPDATE' });
+  void writeAuditEvent('UPDATE', {
+    reason: 'fulfillUpfrontOrderAsSale',
+    orderId,
+    saleTransactionId: saleTxId,
+    convertedPaymentTransactionIds,
+    amountReceivedNow: Number(amountReceivedNow.toFixed(2)),
+  });
+  return finalState;
 };
 
 
