@@ -794,18 +794,10 @@ export default function Cashbook() {
     }
   };
 
-  const filteredDailyRows = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return allLedgerRows.filter((r) => {
-      const t = new Date(r.date).getTime();
-      if (effectiveFrom && t < new Date(`${effectiveFrom}T00:00:00`).getTime()) return false;
-      if (effectiveTo && t > new Date(`${effectiveTo}T23:59:59`).getTime()) return false;
-      if (!query) return true;
-      return `${r.description} ${r.reference} ${r.party}`.toLowerCase().includes(query);
-    });
-  }, [allLedgerRows, effectiveFrom, effectiveTo, search]);
-
   const dailyBreakdownRows = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const startTime = effectiveFrom ? new Date(`${effectiveFrom}T00:00:00`).getTime() : Number.NEGATIVE_INFINITY;
+    const endTime = effectiveTo ? new Date(`${effectiveTo}T23:59:59`).getTime() : Number.POSITIVE_INFINITY;
     const chrono = [...allLedgerRows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     const dayMap = new Map<string, {
       dayKey: string;
@@ -827,6 +819,16 @@ export default function Cashbook() {
     let runningCash = 0;
 
     chrono.forEach((row) => {
+      const rowTime = new Date(row.date).getTime();
+      if (!Number.isFinite(rowTime)) return;
+      if (rowTime < startTime) {
+        runningCash += row.cashIn - row.cashOut;
+        return;
+      }
+      if (rowTime > endTime) {
+        return;
+      }
+
       const dayKey = getLocalDayKey(row.date);
       if (!dayKey) return;
       let bucket = dayMap.get(dayKey);
@@ -874,13 +876,14 @@ export default function Cashbook() {
       bucket.closingCash = runningCash;
     });
 
-    const visibleDayKeys = new Set(filteredDailyRows.map((row) => getLocalDayKey(row.date)).filter(Boolean));
+    const matchesDailyQuery = (row: Row) => `${row.description} ${row.reference} ${row.party}`.toLowerCase().includes(query);
+
     return Array.from(dayMap.values())
-      .filter((bucket) => visibleDayKeys.has(bucket.dayKey))
+      .filter((day) => !query || day.rows.some(matchesDailyQuery))
       .sort((a, b) => sort === 'newest'
         ? new Date(`${b.dayKey}T00:00:00`).getTime() - new Date(`${a.dayKey}T00:00:00`).getTime()
         : new Date(`${a.dayKey}T00:00:00`).getTime() - new Date(`${b.dayKey}T00:00:00`).getTime());
-  }, [allLedgerRows, filteredDailyRows, sort]);
+  }, [allLedgerRows, effectiveFrom, effectiveTo, search, sort]);
 
   const selectedDailyBreakdown = useMemo(
     () => selectedDailyBreakdownKey
@@ -888,7 +891,6 @@ export default function Cashbook() {
       : null,
     [dailyBreakdownRows, selectedDailyBreakdownKey],
   );
-
   const openDailyBreakdownModal = (dayKey: string, trigger: HTMLButtonElement | null) => {
     dailyBreakdownTriggerRef.current = trigger;
     setSelectedDailyBreakdownKey(dayKey);

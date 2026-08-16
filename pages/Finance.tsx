@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
 import { appendRepairHistoryEntry, buildUpfrontOrderLedgerEffects, getCanonicalCustomerBalanceSnapshot, getCanonicalReturnAllocation, loadData, safeFinancePersistState, processTransaction, getSaleSettlementBreakdown, saveExpenseToSubcollection, saveExpenseActivityToSubcollection, deleteExpenseFromSubcollection, isExpenseStoredInSubcollection, refreshDeletedTransactionsFromCloud, refreshExpenseActivitiesFromCloud } from '../services/storage';
 import { financeLog } from '../services/financeLogger';
-import { AppState, CartItem, CashAdjustment, CashSession, Customer, DeleteCompensationRecord, DeletedTransactionRecord, Expense as CanonicalExpense, ExpenseActivity, ManualCashbookEntry, PurchaseOrder, RepairHistoryEntry, Transaction, UpdatedTransactionRecord, UpfrontOrder } from '../types';
+import { AppState, CartItem, CashAdjustment, CashSession, CashSource, Customer, DeleteCompensationRecord, DeletedTransactionRecord, Expense as CanonicalExpense, ExpenseActivity, ManualCashbookEntry, PurchaseOrder, RepairHistoryEntry, Transaction, UpdatedTransactionRecord, UpfrontOrder } from '../types';
 import { AlertCircle, DollarSign, Wallet, ReceiptIndianRupee, BarChart3, Lock, Unlock } from 'lucide-react';
 import { getCurrentUser } from '../services/auth';
 import { formatINRPrecise, formatINRWhole } from '../services/numberFormat';
@@ -220,6 +220,15 @@ const getSupplierPaymentMethodForDrawer = (rawMethod: unknown): 'cash' | 'non_ca
 const getSupplierPaymentTimestamp = (payment: any): number => {
   const at = new Date(payment?.paidAt || payment?.paymentDate || payment?.date || payment?.createdAt).getTime();
   return Number.isFinite(at) ? at : Number.NaN;
+};
+const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Shift Drawer';
+const withCashSourceLabel = (text: string, rawSource: unknown) => `${text} - ${formatCashSourceLabel(rawSource)}`;
+const shouldReduceReserveFromSource = (rawSource: unknown) => {
+  const normalized = String(rawSource || '').trim().toLowerCase();
+  if (normalized === 'drawer') return false;
+  if (normalized === 'reserve') return true;
+  return true;
 };
 const financeShiftDiag = (tag: string, payload: Record<string, unknown>) => {
   if (!FINANCE_DIAGNOSTIC_DEBUG_ENABLED) return;
@@ -687,7 +696,7 @@ const buildShiftCashMovementBreakdown = (
     const at = new Date(entry.createdAt).getTime();
     if (!Number.isFinite(at) || at < start || at > end) return;
     if (entry.type === 'cash_addition') pushRow({ id: `adj-in-${entry.id}`, date: entry.createdAt, type: 'Cash Addition', direction: 'in', name: 'Manual', ref: entry.id.slice(-6), description: entry.note || 'Cash addition', amount: Math.max(0, Number(entry.amount) || 0), source: 'cashAdditions' });
-    if (entry.type === 'cash_withdrawal') pushRow({ id: `adj-out-${entry.id}`, date: entry.createdAt, type: 'Cash Withdrawal', direction: 'out', name: 'Manual', ref: entry.id.slice(-6), description: entry.note || 'Cash withdrawal', amount: Math.max(0, Number(entry.amount) || 0), source: 'cashWithdrawals' });
+    if (entry.type === 'cash_withdrawal') pushRow({ id: `adj-out-${entry.id}`, date: entry.createdAt, type: 'Cash Withdrawal', direction: 'out', name: 'Manual', ref: entry.id.slice(-6), description: withCashSourceLabel(entry.note || 'Cash withdrawal', entry.cashSource), amount: Math.max(0, Number(entry.amount) || 0), source: 'cashWithdrawals' });
   });
   (((state as any).manualCashbookEntries || []) as ManualCashbookEntry[])
     .filter((entry) => !entry?.isDeleted)
@@ -701,7 +710,7 @@ const buildShiftCashMovementBreakdown = (
         direction: entry.type === 'cash_out' ? 'out' : 'in',
         name: 'Cash Drawer',
         ref: entry.id.slice(-6),
-        description: entry.details || (entry.type === 'cash_out' ? 'Manual cash out' : 'Manual cash in'),
+        description: entry.type === 'cash_out' ? withCashSourceLabel(entry.details || 'Manual cash out', entry.cashSource) : (entry.details || 'Manual cash in'),
         amount: Math.max(0, Number(entry.amount || 0)),
         source: 'manualCashbookEntries',
       });
@@ -709,7 +718,7 @@ const buildShiftCashMovementBreakdown = (
   (state.expenses || []).forEach((e) => {
     const at = new Date(getExpenseEffectiveDate(e)).getTime();
     if (!Number.isFinite(at) || at < start || at > end) return;
-    pushRow({ id: `exp-${e.id}`, date: getExpenseEffectiveDate(e), type: 'Expense', direction: 'out', name: e.title, ref: e.id.slice(-6), description: e.note || 'Expense', amount: Math.max(0, Number(e.amount) || 0), source: 'expenses' });
+    pushRow({ id: `exp-${e.id}`, date: getExpenseEffectiveDate(e), type: 'Expense', direction: 'out', name: e.title, ref: e.id.slice(-6), description: withCashSourceLabel(e.note || 'Expense', e.cashSource), amount: Math.max(0, Number(e.amount) || 0), source: 'expenses' });
   });
   (state.deleteCompensations || []).forEach((d) => {
     const at = new Date(d.createdAt).getTime();
@@ -721,7 +730,7 @@ const buildShiftCashMovementBreakdown = (
     const at = getSupplierPaymentTimestamp(p);
     const normalizedMethod = getSupplierPaymentMethodForDrawer(p.method);
     if (!Number.isFinite(at) || at < start || at > end || p.deletedAt || normalizedMethod !== 'cash') return;
-    pushRow({ id: `sp-${p.id}`, date: p.paidAt || p.paymentDate || p.date || p.createdAt, type: 'Party Payment', direction: 'out', name: p.partyName || 'Supplier', ref: p.voucherNo || p.id.slice(-6), description: p.note || 'Cash supplier payment', amount: Math.max(0, Number(p.amount) || 0), source: 'supplierPayments' });
+    pushRow({ id: `sp-${p.id}`, date: p.paidAt || p.paymentDate || p.date || p.createdAt, type: 'Party Payment', direction: 'out', name: p.partyName || 'Supplier', ref: p.voucherNo || p.id.slice(-6), description: withCashSourceLabel(p.note || 'Cash supplier payment', p.cashSource), amount: Math.max(0, Number(p.amount) || 0), source: 'supplierPayments' });
   });
   const legacySupplierMap = new Map<string, { date: string; party: string; note: string; amount: number }>();
   (state.purchaseOrders || []).forEach((o) => (o.paymentHistory || []).forEach((ph: any) => {
@@ -914,7 +923,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [editingOpeningBalance, setEditingOpeningBalance] = useState(false);
   const [openingBalanceEditValue, setOpeningBalanceEditValue] = useState('');
   const [closingBalance, setClosingBalance] = useState('');
-  const [closingReserveAmount, setClosingReserveAmount] = useState('');
+  const [closingBalanceManuallySet, setClosingBalanceManuallySet] = useState(false);
   const [activeReserveAmount, setActiveReserveAmount] = useState('');
   const [cashHistoryRange, setCashHistoryRange] = useState<'today' | '7d' | '30d' | 'all'>('today');
   const [closingCounts, setClosingCounts] = useState<Record<number, number>>(() => buildEmptyCounts());
@@ -933,6 +942,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('General');
   const [expenseNote, setExpenseNote] = useState('');
+  const [expenseCashSource, setExpenseCashSource] = useState<CashSource>('drawer');
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [expenseFinancialDate, setExpenseFinancialDate] = useState(toDateTimeLocalNow());
   const [expenseRepairReason, setExpenseRepairReason] = useState('');
@@ -952,6 +962,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [cashAddNote, setCashAddNote] = useState('');
   const [cashWithdrawAmount, setCashWithdrawAmount] = useState('');
   const [cashWithdrawNote, setCashWithdrawNote] = useState('');
+  const [withdrawalCashSource, setWithdrawalCashSource] = useState<CashSource>('drawer');
   const [editingWithdrawalId, setEditingWithdrawalId] = useState<string | null>(null);
   const [withdrawalFinancialDate, setWithdrawalFinancialDate] = useState(toDateTimeLocalNow());
   const [withdrawalRepairReason, setWithdrawalRepairReason] = useState('');
@@ -1349,26 +1360,50 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const savedAt = openSession.reservedCashSavedAt || openSession.startTime;
     const savedAtMs = new Date(savedAt).getTime();
     if (!Number.isFinite(savedAtMs)) return 0;
+    const inWindow = (iso?: string) => {
+      const at = new Date(iso || '').getTime();
+      return Number.isFinite(at) && at >= savedAtMs;
+    };
+    const reserveExpenses = expenses
+      .filter((expense) => inWindow(getExpenseEffectiveDate(expense)) && shouldReduceReserveFromSource((expense as Expense).cashSource))
+      .reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+    const reserveSupplierPayments = ((data.supplierPayments || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; paidAt?: string; paymentDate?: string; date?: string; createdAt?: string; deletedAt?: string }>)
+      .filter((payment) => !payment.deletedAt)
+      .filter((payment) => getSupplierPaymentMethodForDrawer(payment.method) === 'cash')
+      .filter((payment) => inWindow(payment.paidAt || payment.paymentDate || payment.date || payment.createdAt))
+      .filter((payment) => shouldReduceReserveFromSource(payment.cashSource))
+      .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+    const reserveWithdrawals = cashAdjustments
+      .filter((entry) => entry.type === 'cash_withdrawal')
+      .filter((entry) => inWindow(entry.effectiveAt || entry.createdAt))
+      .filter((entry) => shouldReduceReserveFromSource(entry.cashSource))
+      .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
+    const reserveManualCashOut = (data.manualCashbookEntries || [])
+      .filter((entry) => !entry?.isDeleted && entry.type === 'cash_out')
+      .filter((entry) => inWindow(entry.date || entry.createdAt))
+      .filter((entry) => shouldReduceReserveFromSource(entry.cashSource))
+      .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
     const reserveWindowTotals = getSessionCashTotals(
       data.transactions,
-      expenses,
-      cashAdjustments,
+      [],
+      [],
       data.deleteCompensations || [],
       data.deletedTransactions || [],
-      data.purchaseOrders || [],
-      data.manualCashbookEntries || [],
+      [],
+      [],
       savedAt,
       undefined,
       openSession.id,
       upfrontOrders,
-      data.supplierPayments || [],
+      [],
     );
     return roundMoney(
       (reserveWindowTotals.cashRefunds || 0)
       + (reserveWindowTotals.deleteCompensationRefunds || 0)
-      + (reserveWindowTotals.supplierCashPayments || 0)
-      + (reserveWindowTotals.expenses ?? reserveWindowTotals.expenseTotal ?? 0)
-      + (reserveWindowTotals.cashWithdrawals || 0),
+      + reserveSupplierPayments
+      + reserveExpenses
+      + reserveWithdrawals
+      + reserveManualCashOut,
     );
   }, [
     openSession,
@@ -1376,7 +1411,6 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     data.transactions,
     data.deleteCompensations,
     data.deletedTransactions,
-    data.purchaseOrders,
     data.manualCashbookEntries,
     data.supplierPayments,
     expenses,
@@ -1391,15 +1425,23 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     () => roundMoney(Math.max(0, currentShiftTotalCash - activeCashInHand)),
     [currentShiftTotalCash, activeCashInHand],
   );
+  const activeReserveInputMax = useMemo(
+    () => roundMoney(Math.max(0, currentShiftTotalCash)),
+    [currentShiftTotalCash],
+  );
+  const closingReserveValue = useMemo(
+    () => (openSession ? activeCashInHand : 0),
+    [openSession, activeCashInHand],
+  );
+  const autoCarryForwardValue = useMemo(
+    () => roundMoney(Math.max(0, expectedClosingForOpenSession - closingReserveValue)),
+    [expectedClosingForOpenSession, closingReserveValue],
+  );
   const submittedClosingValue = useMemo(() => {
     if (!openSession) return 0;
-    const raw = closingBalance.trim() ? Number(closingBalance) : closingCountTotal;
+    const raw = closingBalance.trim() ? Number(closingBalance) : autoCarryForwardValue;
     return Number.isFinite(raw) && raw >= 0 ? raw : 0;
-  }, [openSession, closingBalance, closingCountTotal]);
-  const closingReserveValue = useMemo(() => {
-    const raw = closingReserveAmount.trim() ? Number(closingReserveAmount) : 0;
-    return Number.isFinite(raw) && raw >= 0 ? raw : 0;
-  }, [closingReserveAmount]);
+  }, [openSession, closingBalance, autoCarryForwardValue]);
   const countedClosingValue = useMemo(
     () => roundMoney(submittedClosingValue + closingReserveValue),
     [submittedClosingValue, closingReserveValue],
@@ -1447,16 +1489,20 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const closingVariance = openSession ? (countedClosingValue - expectedClosingForOpenSession) : 0;
 
   useEffect(() => {
-    if (!openSession) return;
-    setClosingBalance((prev) => prev.trim() ? prev : expectedClosingForOpenSession.toFixed(2));
-  }, [openSession?.id, expectedClosingForOpenSession]);
+    if (!openSession) {
+      setClosingBalanceManuallySet(false);
+      return;
+    }
+    if (closingBalanceManuallySet && closingBalance.trim()) return;
+    setClosingBalance(autoCarryForwardValue.toFixed(2));
+  }, [openSession?.id, autoCarryForwardValue, closingBalanceManuallySet, closingBalance, openSession]);
   useEffect(() => {
     if (!openSession) {
       setActiveReserveAmount('');
       return;
     }
-    setActiveReserveAmount(activeReserveBase > 0 ? activeReserveBase.toFixed(2) : '');
-  }, [openSession?.id, openSession?.reservedCashOnHand, activeReserveBase]);
+    setActiveReserveAmount(activeCashInHand.toFixed(2));
+  }, [openSession?.id, openSession?.reservedCashOnHand, activeCashInHand]);
   const buildLayerFinanceBreakdown = (rows: CashbookRow[]) => {
     const grossSales = roundMoney(rows.reduce((sum, row) => sum + row.grossSales, 0));
     const salesReturns = roundMoney(rows.reduce((sum, row) => sum + row.salesReturn, 0));
@@ -1603,7 +1649,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           eventType: 'supplier_payment',
           isSynthetic: true,
           customer: supplierPayment.partyName || 'Supplier',
-          notes: supplierPayment.note || `${normalizedMethod === 'cash' ? 'Cash' : 'Online'} supplier payment`,
+          notes: normalizedMethod === 'cash'
+            ? withCashSourceLabel(supplierPayment.note || 'Cash supplier payment', supplierPayment.cashSource)
+            : (supplierPayment.note || 'Online supplier payment'),
           grossSales: 0,
           salesReturn: 0,
           netSales: 0,
@@ -1620,7 +1668,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           grossProfitEffect: 0,
           expense: 0,
           netProfitEffect: 0,
-          effectSummary: normalizedMethod === 'cash' ? 'Supplier cash payment' : 'Supplier online payment',
+          effectSummary: normalizedMethod === 'cash' ? withCashSourceLabel('Supplier cash payment', supplierPayment.cashSource) : 'Supplier online payment',
         });
         return;
       }
@@ -1637,7 +1685,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           eventType: 'cash_adjustment',
           isSynthetic: true,
           customer: cashAdjustment.paidTo || 'Cash Drawer',
-          notes: cashAdjustment.note || cashAdjustment.title || (isWithdrawal ? 'Cash withdrawal' : 'Cash addition'),
+          notes: isWithdrawal
+            ? withCashSourceLabel(cashAdjustment.note || cashAdjustment.title || 'Cash withdrawal', cashAdjustment.cashSource)
+            : (cashAdjustment.note || cashAdjustment.title || 'Cash addition'),
           grossSales: 0,
           salesReturn: 0,
           netSales: 0,
@@ -1654,7 +1704,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           grossProfitEffect: 0,
           expense: 0,
           netProfitEffect: 0,
-          effectSummary: isWithdrawal ? 'Cash withdrawal' : 'Cash addition',
+          effectSummary: isWithdrawal ? withCashSourceLabel('Cash withdrawal', cashAdjustment.cashSource) : 'Cash addition',
         });
         return;
       }
@@ -1891,7 +1941,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           eventType: 'transaction',
           isSynthetic: false,
           customer: '—',
-          notes: `${expense.title} (${expense.category})`,
+          notes: withCashSourceLabel(`${expense.title} (${expense.category})`, expense.cashSource),
           grossSales: 0,
           salesReturn: 0,
           netSales: 0,
@@ -1908,7 +1958,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
           grossProfitEffect: 0,
           expense: expense.amount,
           netProfitEffect: -expense.amount,
-          effectSummary: 'Expense cash out',
+          effectSummary: withCashSourceLabel('Expense cash out', expense.cashSource),
         });
         return;
       }
@@ -2644,7 +2694,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
     await persistState({ cashSessions: updated });
     setClosingBalance('');
-    setClosingReserveAmount('');
+    setClosingBalanceManuallySet(false);
     resetClosingCounts();
     setOpeningUnlocked(false);
     setUnlockPinInput('');
@@ -2737,6 +2787,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   };
 
   const applyCountedTotalToClosing = () => {
+    setClosingBalanceManuallySet(true);
     setClosingBalance(Math.max(0, closingCountTotal - closingReserveValue).toFixed(2));
   };
 
@@ -2744,17 +2795,6 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     setClosingCounts(buildEmptyCounts());
   };
 
-  const handleClosingReserveAmountChange = (rawValue: string) => {
-    const sanitizedValue = rawValue.replace(/[^\d.]/g, '');
-    const nextReserveRaw = sanitizedValue.trim() ? Number(sanitizedValue) : 0;
-    const nextReserveValue = Number.isFinite(nextReserveRaw) && nextReserveRaw >= 0 ? nextReserveRaw : 0;
-    setClosingBalance(prev => {
-      const prevClosingRaw = prev.trim() ? Number(prev) : expectedClosingForOpenSession;
-      const prevClosingValue = Number.isFinite(prevClosingRaw) && prevClosingRaw >= 0 ? prevClosingRaw : 0;
-      return Math.max(0, roundMoney(prevClosingValue + closingReserveValue - nextReserveValue)).toFixed(2);
-    });
-    setClosingReserveAmount(sanitizedValue);
-  };
   const saveActiveReserveAmount = async () => {
     if (!openSession) return setErrors('No open cash session found.');
     const nextReserveRaw = activeReserveAmount.trim() ? Number(activeReserveAmount) : 0;
@@ -2772,6 +2812,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       };
     });
     await persistState({ cashSessions: updatedSessions });
+    setClosingBalanceManuallySet(false);
+    setClosingBalance(Math.max(0, roundMoney(currentShiftTotalCash - nextReserve)).toFixed(2));
+    setActiveReserveAmount(nextReserve.toFixed(2));
   };
 
   const handleManagerUnlock = () => {
@@ -2839,6 +2882,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     setEditingWithdrawalId(null);
     setCashWithdrawAmount('');
     setCashWithdrawNote('');
+    setWithdrawalCashSource('drawer');
     setWithdrawalFinancialDate(toDateTimeLocalNow());
     setWithdrawalRepairReason('');
     setWithdrawalMethod('Cash');
@@ -2936,6 +2980,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     setExpenseAmount('');
     setExpenseCategory('General');
     setExpenseNote('');
+    setExpenseCashSource('drawer');
     setEditingExpenseId(null);
     setExpenseFinancialDate(toDateTimeLocalNow());
     setExpenseRepairReason('');
@@ -2954,6 +2999,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       amount,
       category: expenseCategory.trim(),
       note: expenseNote.trim() || undefined,
+      paymentMethod: 'Cash',
+      cashSource: expenseCashSource,
       effectiveAt: financialDate || new Date().toISOString(),
       createdAt: financialDate || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2976,9 +3023,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       return;
     }
     financeLog.expense('CREATE', { amount, category: expense.category, affectsCash: true });
-    financeLog.cash('OUTFLOW', { txId: expense.id, amount, reason: expense.title, paymentMode: 'Cash', source: 'expense' });
+    financeLog.cash('OUTFLOW', { txId: expense.id, amount, reason: `${expense.title} (${formatCashSourceLabel(expense.cashSource)})`, paymentMode: 'Cash', source: 'expense' });
 
-    const activity = createExpenseActivity('add_expense', `Added ${expense.title} (${formatINR(expense.amount)}) in ${expense.category}`);
+    const activity = createExpenseActivity('add_expense', `Added ${expense.title} (${formatINR(expense.amount)}) in ${expense.category} - ${formatCashSourceLabel(expense.cashSource)}`);
     const optimisticState = {
       ...data,
       expenses: [expense, ...expenses],
@@ -3013,6 +3060,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       id: `cash-adj-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
       type,
       amount,
+      cashSource: type === 'cash_withdrawal' ? withdrawalCashSource : undefined,
       note: rawNote.trim() || undefined,
       createdAt: new Date().toISOString(),
       sessionId: openSession?.id,
@@ -3020,13 +3068,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     financeLog.cash(type === 'cash_addition' ? 'INFLOW' : 'OUTFLOW', {
       txId: entry.id,
       amount: entry.amount,
-      reason: entry.note || (type === 'cash_addition' ? 'Manual cash addition' : 'Manual cash withdrawal'),
+      reason: entry.note || (type === 'cash_addition' ? 'Manual cash addition' : `Manual cash withdrawal (${formatCashSourceLabel(entry.cashSource)})`),
       paymentMode: 'Cash',
       source: 'manual_cash_adjustment',
     });
     const activity = createExpenseActivity(
       type,
-      `${type === 'cash_addition' ? 'Cash Added' : 'Cash Withdrawn'} (${formatINR(entry.amount)})${entry.note ? ` • ${entry.note}` : ''}`
+      `${type === 'cash_addition' ? 'Cash Added' : 'Cash Withdrawn'} (${formatINR(entry.amount)})${type === 'cash_withdrawal' ? ` - ${formatCashSourceLabel(entry.cashSource)}` : ''}${entry.note ? ` • ${entry.note}` : ''}`
     );
     await persistState({ cashAdjustments: [entry, ...(data.cashAdjustments || [])] });
     try {
@@ -3035,12 +3083,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       console.error('[finance.cashAdjustment] Failed to save activity subcollection doc', error);
     }
     if (type === 'cash_addition') { setCashAddAmount(''); setCashAddNote(''); }
-    else { setCashWithdrawAmount(''); setCashWithdrawNote(''); }
+    else { setCashWithdrawAmount(''); setCashWithdrawNote(''); setWithdrawalCashSource('drawer'); }
   };
   const startEditWithdrawalRepair = (entry: CashAdjustment) => {
     setEditingWithdrawalId(entry.id);
     setCashWithdrawAmount(String(entry.amount || ''));
     setCashWithdrawNote(entry.note || '');
+    setWithdrawalCashSource(normalizeCashSource(entry.cashSource));
     setWithdrawalFinancialDate(toDateTimeLocalValue(entry.effectiveAt || entry.createdAt));
     setWithdrawalRepairReason('');
     setWithdrawalMethod(String(entry.method || 'Cash'));
@@ -3059,6 +3108,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     setEditingWithdrawalId(entry.id);
     setCashWithdrawAmount(String(entry.amount || ''));
     setCashWithdrawNote(entry.note || '');
+    setWithdrawalCashSource(normalizeCashSource(entry.cashSource));
     setWithdrawalFinancialDate(toDateTimeLocalValue(entry.effectiveAt || entry.createdAt));
     setWithdrawalRepairReason('');
     setWithdrawalMethod(String(entry.method || 'Cash'));
@@ -3098,6 +3148,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       type: 'cash_withdrawal',
       amount: nextAmount,
       method: withdrawalMethod.trim() || 'Cash',
+      cashSource: withdrawalCashSource,
       title: withdrawalTitle.trim() || 'Manual Cash Withdrawal',
       note: cashWithdrawNote.trim() || undefined,
       paidTo: withdrawalPaidTo.trim() || undefined,
@@ -3199,6 +3250,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     setExpenseAmount(String(expense.amount));
     setExpenseCategory(expense.category);
     setExpenseNote(expense.note || '');
+    setExpenseCashSource(normalizeCashSource(expense.cashSource));
     setExpenseFinancialDate(toDateTimeLocalValue(expense.effectiveAt || expense.createdAt));
     setExpenseRepairReason('');
     setErrors(null);
@@ -3210,6 +3262,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     setExpenseAmount(String(expense.amount));
     setExpenseCategory(expense.category);
     setExpenseNote(expense.note || '');
+    setExpenseCashSource(normalizeCashSource(expense.cashSource));
     setExpenseFinancialDate(toDateTimeLocalValue(expense.effectiveAt || expense.createdAt));
     setErrors('Enter repair reason, then confirm delete preview.');
   };
@@ -3229,7 +3282,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         await saveExpenseActivityToSubcollection(activity);
       } else if (expenseRepairDraft.nextExpense) {
         const action: ExpenseActivity['action'] = expenseRepairDraft.kind === 'edit_expense' ? 'add_expense' : 'add_expense';
-        const activity = createExpenseActivity(action, `${expenseRepairDraft.kind === 'edit_expense' ? 'Edited' : 'Added'} ${expenseRepairDraft.nextExpense.title} (${formatINR(expenseRepairDraft.nextExpense.amount)}) in ${expenseRepairDraft.nextExpense.category}`);
+        const activity = createExpenseActivity(action, `${expenseRepairDraft.kind === 'edit_expense' ? 'Edited' : 'Added'} ${expenseRepairDraft.nextExpense.title} (${formatINR(expenseRepairDraft.nextExpense.amount)}) in ${expenseRepairDraft.nextExpense.category} - ${formatCashSourceLabel(expenseRepairDraft.nextExpense.cashSource)}`);
         await saveExpenseToSubcollection(expenseRepairDraft.nextExpense);
         await saveExpenseActivityToSubcollection(activity);
       }
@@ -3344,7 +3397,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <div className="text-[11px] text-slate-400">{expense.id}</div>
                         </td>
                         <td className="p-3 text-right font-semibold">{formatINR(expense.amount)}</td>
-                        <td className="p-3 text-slate-500">{(expense as Expense & { paymentMethod?: string }).paymentMethod || '—'}</td>
+                        <td className="p-3 text-slate-500">{`${(expense as Expense & { paymentMethod?: string }).paymentMethod || 'Cash'} • ${formatCashSourceLabel(expense.cashSource)}`}</td>
                         <td className="p-3 text-slate-600">{expense.effectiveAt ? new Date(expense.effectiveAt).toLocaleString() : '—'}</td>
                         <td className="p-3 text-xs text-slate-500">
                           {expenseHistory[0] ? `${expenseHistory[0].repairKind.replace(/_/g, ' ')} · ${expenseHistory[0].reason}` : '—'}
@@ -3419,6 +3472,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                   <div>
                     <Label>Financial Date</Label>
                     <Input type="datetime-local" value={expenseFinancialDate} onChange={e => setExpenseFinancialDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <Label>Reduce From</Label>
+                    <select className="h-10 w-full rounded-md border px-3 text-sm" value={expenseCashSource} onChange={e => setExpenseCashSource(e.target.value as CashSource)}>
+                      <option value="drawer">Shift Drawer</option>
+                      <option value="reserve">Reserve Cash</option>
+                    </select>
                   </div>
                   <div>
                     <Label>Repair Reason</Label>
@@ -3525,7 +3585,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <td className="p-3 text-slate-600">
                           <div className="max-w-[240px] whitespace-normal break-words">{entry.note || '—'}</div>
                         </td>
-                        <td className="p-3 text-slate-600">{entry.method || 'Cash'}</td>
+                        <td className="p-3 text-slate-600">{`${entry.method || 'Cash'} • ${formatCashSourceLabel(entry.cashSource)}`}</td>
                         <td className="p-3 text-slate-600">{entry.paidTo || '—'}</td>
                         <td className="p-3 text-slate-600">{entry.reference || '—'}</td>
                         <td className="p-3 text-right font-semibold">{formatINR(entry.amount)}</td>
@@ -3586,6 +3646,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                 <div className="space-y-1">
                   <Label>Method</Label>
                   <Input value={withdrawalMethod} onChange={(e) => setWithdrawalMethod(e.target.value)} placeholder="Cash" />
+                </div>
+                <div className="space-y-1">
+                  <Label>Reduce From</Label>
+                  <select className="h-10 w-full rounded-md border px-3 text-sm" value={withdrawalCashSource} onChange={(e) => setWithdrawalCashSource(e.target.value as CashSource)}>
+                    <option value="drawer">Shift Drawer</option>
+                    <option value="reserve">Reserve Cash</option>
+                  </select>
                 </div>
                 <div className="space-y-1">
                   <Label>Details / Title</Label>
@@ -4194,20 +4261,33 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       </div>
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
                         <div>
-                          <Label>Save Reserved Cash</Label>
+                          <Label>Permanent Reserve Cash</Label>
                           <Input
                             type="number"
                             min="0"
+                            max={activeReserveInputMax}
                             value={activeReserveAmount}
-                            onChange={(e) => setActiveReserveAmount(e.target.value.replace(/[^\d.]/g, ''))}
+                            onChange={(e) => {
+                              const sanitized = e.target.value.replace(/[^\d.]/g, '');
+                              if (!sanitized.trim()) {
+                                setActiveReserveAmount('');
+                                return;
+                              }
+                              const parsed = Number(sanitized);
+                              if (!Number.isFinite(parsed)) {
+                                setActiveReserveAmount(sanitized);
+                                return;
+                              }
+                              setActiveReserveAmount(Math.min(activeReserveInputMax, Math.max(0, parsed)).toFixed(2));
+                            }}
                             placeholder="0.00"
                           />
-                          <p className="mt-1 text-xs text-slate-500">
-                            Reserved cash is kept aside. Usable cash updates after subtracting it from shift cash.
-                          </p>
+                          {/* <p className="mt-1 text-xs text-slate-500">
+                            Saved reserve stays here permanently, cannot exceed current shift cash, and usable cash updates automatically.
+                          </p> */}
                         </div>
                         <div className="flex gap-2">
-                          <Button type="button" variant="outline" onClick={() => setActiveReserveAmount(activeReserveBase > 0 ? activeReserveBase.toFixed(2) : '')}>Reset</Button>
+                          <Button type="button" variant="outline" onClick={() => setActiveReserveAmount(activeCashInHand.toFixed(2))}>Reset</Button>
                           <Button type="button" onClick={() => void saveActiveReserveAmount()}>Save Reserved Cash</Button>
                         </div>
                       </div>
@@ -4316,16 +4396,27 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
                         <Label>Split Counted Closing Cash</Label>
                         <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                          Counted cash total = next shift opening cash + reserved cash
+                          Counted cash total = next shift opening cash + reserved cash saved above
                         </div>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           <div>
                             <Label className="mb-2 block">Next Shift Opening Cash</Label>
-                            <Input type="number" min="0" value={closingBalance} onChange={e => setClosingBalance(e.target.value)} placeholder="Cash to carry forward into next shift" />
+                            <Input
+                              type="number"
+                              min="0"
+                              value={closingBalance}
+                              onChange={e => {
+                                setClosingBalanceManuallySet(true);
+                                setClosingBalance(e.target.value);
+                              }}
+                              placeholder="Cash to carry forward into next shift"
+                            />
                           </div>
                           <div>
-                            <Label className="mb-2 block">Keep Aside / Reserve Cash</Label>
-                            <Input type="number" min="0" value={closingReserveAmount} onChange={e => handleClosingReserveAmountChange(e.target.value)} placeholder="0.00" />
+                            <Label className="mb-2 block">Reserve Cash</Label>
+                            <div className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-700">
+                              Managed from Save Reserved Cash above
+                            </div>
                           </div>
                         </div>
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -4888,6 +4979,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       <Label>Note</Label>
                       <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional note or vendor detail" />
                     </div>
+                    <div className="space-y-1.5">
+                      <Label>Reduce From</Label>
+                      <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={expenseCashSource} onChange={e => setExpenseCashSource(e.target.value as CashSource)}>
+                        <option value="drawer">Shift Drawer</option>
+                        <option value="reserve">Reserve Cash</option>
+                      </select>
+                    </div>
 
                     {repairMode && (
                       <>
@@ -5191,6 +5289,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <Label>Note</Label>
                           <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional" />
                         </div>
+                        <div className="space-y-1">
+                          <Label>Reduce From</Label>
+                          <select className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300" value={expenseCashSource} onChange={e => setExpenseCashSource(e.target.value as CashSource)}>
+                            <option value="drawer">Shift Drawer</option>
+                            <option value="reserve">Reserve Cash</option>
+                          </select>
+                        </div>
 
                         {repairMode && (
                           <>
@@ -5217,6 +5322,10 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <div className="text-xs text-amber-800">Current available: {formatINR(openSession ? (openSession.openingBalance + dailyCashTotals.systemCashTotal) : dailyCashTotals.systemCashTotal)}</div>
                           <Input value={cashWithdrawAmount} onChange={e => setCashWithdrawAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="Amount" inputMode="decimal" />
                           <Input value={cashWithdrawNote} onChange={e => setCashWithdrawNote(e.target.value)} placeholder="Reason / note (optional)" />
+                          <select className="w-full h-10 rounded-xl border border-amber-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-300" value={withdrawalCashSource} onChange={e => setWithdrawalCashSource(e.target.value as CashSource)}>
+                            <option value="drawer">Shift Drawer</option>
+                            <option value="reserve">Reserve Cash</option>
+                          </select>
                           <Button variant="outline" className="w-full" onClick={() => addCashAdjustment('cash_withdrawal')} disabled={!(Number(cashWithdrawAmount) > 0)}>Withdraw Cash</Button>
                         </div>
                         )}

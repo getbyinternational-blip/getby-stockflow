@@ -8656,7 +8656,7 @@ export const updatePurchaseOrder = async (order: PurchaseOrder): Promise<Purchas
   return normalizedOrder;
 };
 
-export const recordPurchaseOrderPayment = async (orderId: string, amount: number, method: 'cash' | 'online' = 'cash', note?: string): Promise<PurchaseOrder> => {
+export const recordPurchaseOrderPayment = async (orderId: string, amount: number, method: 'cash' | 'online' = 'cash', note?: string, cashSource?: 'drawer' | 'reserve'): Promise<PurchaseOrder> => {
   const data = loadData();
   const order = (data.purchaseOrders || []).find(o => o.id === orderId);
   if (!order) failValidation('PURCHASE_ORDER_NOT_FOUND', 'Purchase order not found.', { orderId });
@@ -8672,6 +8672,7 @@ export const recordPurchaseOrderPayment = async (orderId: string, amount: number
     paidAt: new Date().toISOString(),
     amount: Number(safeAmount.toFixed(2)),
     method,
+    cashSource: method === 'cash' ? cashSource : undefined,
     note: note?.trim() || undefined,
   };
   const updatedOrder: PurchaseOrder = {
@@ -8692,6 +8693,7 @@ const allocateSupplierPaymentAcrossOrders = (
   method: 'cash' | 'online',
   note?: string,
   paidAt?: string,
+  cashSource?: 'drawer' | 'reserve',
 ) => {
   const relatedIds = new Set((partyIds || []).map((value) => String(value || '').trim()).filter(Boolean));
   let remaining = Math.max(0, Number(amount) || 0);
@@ -8707,7 +8709,7 @@ const allocateSupplierPaymentAcrossOrders = (
     const orderRemaining = Math.max(0, Number((orderTotal - paidSoFar).toFixed(2)));
     if (orderRemaining <= 0) return;
     const allocation = Math.min(remaining, orderRemaining);
-    const paymentEntry = { id: `pop-${paymentId}-${order.id}`, paidAt: paidAt || new Date().toISOString(), amount: Number(allocation.toFixed(2)), method, note, supplierPaymentId: paymentId } as any;
+    const paymentEntry = { id: `pop-${paymentId}-${order.id}`, paidAt: paidAt || new Date().toISOString(), amount: Number(allocation.toFixed(2)), method, cashSource: method === 'cash' ? cashSource : undefined, note, supplierPaymentId: paymentId } as any;
     order.paymentHistory = [...(order.paymentHistory || []), paymentEntry];
     order.totalPaid = Number((paidSoFar + allocation).toFixed(2));
     order.remainingAmount = Math.max(0, Number((orderTotal - (order.totalPaid || 0)).toFixed(2)));
@@ -8776,7 +8778,7 @@ export const createSupplierPayment = async (payload: Omit<SupplierPaymentLedgerE
     .reduce((sum, order) => sum + Math.max(0, Number(order.remainingAmount || 0)), 0);
   const payableApplied = Number(Math.min(amount, Math.max(0, actualOpenPayable)).toFixed(2));
   const partyCreditCreated = Number(Math.max(0, amount - payableApplied).toFixed(2));
-  const { nextOrders, allocations } = allocateSupplierPaymentAcrossOrders(data.purchaseOrders || [], relatedPartyIds, paymentId, payableApplied, payload.method, payload.note, payload.paidAt || now);
+  const { nextOrders, allocations } = allocateSupplierPaymentAcrossOrders(data.purchaseOrders || [], relatedPartyIds, paymentId, payableApplied, payload.method, payload.note, payload.paidAt || now, payload.cashSource);
   let voucherNo = payload.voucherNo;
   if (!voucherNo) {
     const allocated = allocateSupplierPaymentVoucherNumber(data);
@@ -8888,7 +8890,7 @@ export const applyPartyCreditToPurchaseOrder = async (orderId: string, creditAmo
   };
 };
 
-export const updateSupplierPayment = async (paymentId: string, updates: Partial<Pick<SupplierPaymentLedgerEntry, 'amount' | 'method' | 'note' | 'paidAt'>>) => {
+export const updateSupplierPayment = async (paymentId: string, updates: Partial<Pick<SupplierPaymentLedgerEntry, 'amount' | 'method' | 'note' | 'paidAt' | 'cashSource'>>) => {
   const data = loadData();
   const existing = (data.supplierPayments || []).find((item) => item.id === paymentId && !item.deletedAt);
   if (!existing) throw new Error('Supplier payment not found.');
@@ -8931,7 +8933,7 @@ export const updateSupplierPayment = async (paymentId: string, updates: Partial<
     payableApplied: paymentAppliedToPayable,
     updatedAt: new Date().toISOString()
   };
-  const { nextOrders, allocations } = allocateSupplierPaymentAcrossOrders(strippedOrders, relatedPartyIds, paymentId, paymentAppliedToPayable, nextEntry.method, nextEntry.note, nextEntry.paidAt);
+  const { nextOrders, allocations } = allocateSupplierPaymentAcrossOrders(strippedOrders, relatedPartyIds, paymentId, paymentAppliedToPayable, nextEntry.method, nextEntry.note, nextEntry.paidAt, nextEntry.cashSource);
   nextEntry.allocations = allocations;
   const nextSupplierPayments = (data.supplierPayments || []).map((item) => item.id === paymentId ? nextEntry : item);
   const nextPartyCreditLedger = (data.partyCreditLedger || []).filter((entry) => !linkedCredits.some((linked) => linked.id === entry.id));

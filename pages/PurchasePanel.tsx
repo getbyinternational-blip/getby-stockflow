@@ -1,7 +1,7 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
-import { PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
+import { CashSource, PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
 import { appendRepairHistoryEntry, applyConfirmedPurchasePartyOrderOnlyMerge, applyMissingProductPurchaseHistoryRowsSafePatches, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, deleteSupplierPayment, editInventoryPurchaseHistoryEntry, getPurchaseOrders, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, searchPurchaseOrdersRuntime, updatePurchaseOrder, updatePurchaseParty, updateSupplierPayment, ApplyMissingProductPurchaseHistorySafeRestoreResult, MissingProductPurchaseHistoryDryRunResult, PurchaseOrderRuntimeSearchResult } from '../services/storage';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadPurchaseData, downloadPurchaseTemplate, importPurchaseFromFile } from '../services/importExcel';
@@ -71,6 +71,8 @@ const parseAccountingNumber = (value: string) => {
 };
 const formatNumber = (value: number, digits = 2) => value.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const formatLedgerNumber = (value: number) => value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Shift Drawer';
 const EMPTY_DASH = '\u2014';
 const DISPLAY_SEPARATOR = '-';
 const formatDisplayText = (value: unknown, fallback = EMPTY_DASH) => sanitizeDisplayText(value, fallback);
@@ -660,6 +662,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [billDate, setBillDate] = useState('.');
   const [gstPercent, setGstPercent] = useState<number | '.'>('.');
   const [initialPaidAmount, setInitialPaidAmount] = useState<number | '.'>('.');
+  const [initialPaidCashSource, setInitialPaidCashSource] = useState<CashSource>('drawer');
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [pricingEntries, setPricingEntries] = useState<Record<string, DraftLine>>({});
 
@@ -688,6 +691,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [editingSupplierPaymentId, setEditingSupplierPaymentId] = useState<string | null>(null);
   const [partialPaymentAmount, setPartialPaymentAmount] = useState<number | '.'>('.');
   const [partialPaymentMethod, setPartialPaymentMethod] = useState<'cash' | 'online'>('cash');
+  const [partialPaymentCashSource, setPartialPaymentCashSource] = useState<CashSource>('drawer');
   const [partialPaymentNote, setPartialPaymentNote] = useState('.');
   const [partyPaymentDate, setPartyPaymentDate] = useState('.');
   const [partyPaymentError, setPartyPaymentError] = useState<string | null>(null);
@@ -1054,6 +1058,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setBillDate('.');
     setGstPercent('.');
     setInitialPaidAmount('.');
+    setInitialPaidCashSource('drawer');
     setEditingOrderId(null);
     setPricingEntries({});
     setPurchaseRepairFinancialDate(toDateTimeLocalNow());
@@ -1304,6 +1309,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         paidAt: now,
         amount: Number(initialPaid.toFixed(2)),
         method: 'cash',
+        cashSource: initialPaidCashSource,
         note: editingOrderId ? 'Adjusted on order edit' : 'Initial payment during order create',
       }] : [],
       receivedQuantity: 0,
@@ -1515,6 +1521,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setEditingSupplierPaymentId(payment.id);
     setPartialPaymentAmount(payment.amount);
     setPartialPaymentMethod(payment.method);
+    setPartialPaymentCashSource(normalizeCashSource(payment.cashSource));
     setPartialPaymentNote(payment.note || '.');
     setPartyPaymentDate(toDateTimeLocalValue(payment.effectiveAt || payment.paidAt || payment.createdAt));
     setPartyPaymentError(null);
@@ -2184,6 +2191,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setPaymentTargetParty(party);
     setPartialPaymentAmount('.');
     setPartialPaymentMethod('cash');
+    setPartialPaymentCashSource('drawer');
     setPartialPaymentNote('.');
     setPartyPaymentDate(repairMode ? toDateTimeLocalNow() : new Date().toISOString().slice(0, 10));
     setPartyPaymentError(null);
@@ -2223,6 +2231,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         partyName: paymentTargetParty.name,
         amount,
         method: partialPaymentMethod,
+        cashSource: partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined,
         note: partialPaymentNote.trim() || undefined,
         paidAt: financialDate,
         effectiveAt: financialDate,
@@ -2260,6 +2269,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       partyName: paymentTargetParty.name,
       amount,
       method: partialPaymentMethod,
+      cashSource: partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined,
       note: partialPaymentNote.trim() || undefined,
       paidAt: financialDate,
       effectiveAt: financialDate,
@@ -2553,6 +2563,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setPaymentTargetOrder(order);
     setPartialPaymentAmount('.');
     setPartialPaymentMethod('cash');
+    setPartialPaymentCashSource('drawer');
     setPartialPaymentNote('.');
     setShowPaymentPopup(true);
   };
@@ -2562,7 +2573,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     const amount = Math.max(0, Number(partialPaymentAmount) || 0);
     const remaining = Math.max(0, Number(paymentTargetOrder.remainingAmount ?? (paymentTargetOrder.totalAmount - (paymentTargetOrder.totalPaid || 0))) || 0);
     if (amount <= 0 || amount > remaining) return;
-    await recordPurchaseOrderPayment(paymentTargetOrder.id, amount, partialPaymentMethod, partialPaymentNote);
+    await recordPurchaseOrderPayment(paymentTargetOrder.id, amount, partialPaymentMethod, partialPaymentNote, partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined);
     setShowPaymentPopup(false);
     setPaymentTargetOrder(null);
     refresh();
@@ -3559,7 +3570,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         {selectedRepairPayments.map((payment) => (
                           <div key={payment.id} className={`grid gap-2 px-2 py-3 [content-visibility:auto] [contain-intrinsic-size:56px] ${repairMode ? 'grid-cols-[100px_1fr_100px_110px]' : 'grid-cols-[100px_1fr_100px]'}`}>
                             <div className="self-center text-left">{new Date(payment.effectiveAt || payment.paidAt || payment.createdAt).toLocaleDateString('en-GB')}</div>
-                            <div className="self-center text-left">{(payment.method || 'cash').toUpperCase()}</div>
+                            <div className="self-center text-left">{`${(payment.method || 'cash').toUpperCase()}${payment.method === 'cash' ? ` - ${formatCashSourceLabel(payment.cashSource)}` : ''}`}</div>
                             <div className="self-center text-left font-medium">{formatLedgerNumber(Number(payment.amount || 0))}</div>
                             {repairMode && (
                               <div className="self-center">
@@ -4511,6 +4522,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   <div><Label>GST %</Label><Input type="number" value={gstPercent} onChange={e => setGstPercent(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="e.g. 18" /></div>
                   <div><Label>Initial Paid Amount</Label><Input type="number" value={initialPaidAmount} onChange={e => setInitialPaidAmount(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="e.g. 1000" /></div>
                   <div>
+                    <Label>Cash Paid From</Label>
+                    <select className="h-10 w-full rounded-md border px-3 text-sm" value={initialPaidCashSource} onChange={e => setInitialPaidCashSource(e.target.value as CashSource)}>
+                      <option value="drawer">Shift Drawer</option>
+                      <option value="reserve">Reserve Cash</option>
+                    </select>
+                  </div>
+                  <div>
                     <Label>Apply Party Credit</Label>
                     <Input
                       type="number"
@@ -4760,6 +4778,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           </div>
           <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '.' ? '.' : Number(e.target.value))} /></div>
           <div><Label>Method</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentMethod} onChange={e => setPartialPaymentMethod(e.target.value as 'cash' | 'online')}><option value="cash">Cash</option><option value="online">Online</option></select></div>
+          {partialPaymentMethod === 'cash' && (
+            <div><Label>Cash Paid From</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}><option value="drawer">Shift Drawer</option><option value="reserve">Reserve Cash</option></select></div>
+          )}
           <div><Label>{repairMode ? 'Financial Date' : 'Date'}</Label><Input type={repairMode ? 'datetime-local' : 'date'} value={partyPaymentDate} onChange={e => setPartyPaymentDate(e.target.value)} /></div>
           <div><Label>Note</Label><Input value={partialPaymentNote} onChange={e => setPartialPaymentNote(e.target.value)} placeholder="Optional note" /></div>
           {repairMode && <div><Label>Repair Reason</Label><Input value={purchaseRepairReason} onChange={(e) => setPurchaseRepairReason(e.target.value)} placeholder="Required reason for this repair" /></div>}
@@ -4779,6 +4800,15 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <option value="online">Online</option>
             </select>
           </div>
+          {partialPaymentMethod === 'cash' && (
+            <div>
+              <Label>Cash Paid From</Label>
+              <select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}>
+                <option value="drawer">Shift Drawer</option>
+                <option value="reserve">Reserve Cash</option>
+              </select>
+            </div>
+          )}
           <div><Label>Note</Label><Input value={partialPaymentNote} onChange={e => setPartialPaymentNote(e.target.value)} placeholder="Optional note" /></div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setShowPaymentPopup(false)}>Cancel</Button>

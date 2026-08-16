@@ -390,12 +390,16 @@ export interface CashSession {
   status: 'open' | 'closed';
 }
 
+export type CashSource = 'drawer' | 'reserve';
+
 export interface Expense {
   id: string;
   title: string;
   amount: number;
   category: string;
   note?: string;
+  paymentMethod?: 'Cash' | 'Online' | string;
+  cashSource?: CashSource;
   effectiveAt?: string;
   createdAt: string;
   updatedAt?: string;
@@ -694,6 +698,7 @@ export interface PurchaseOrder {
     paidAt: string;
     amount: number;
     method?: 'cash' | 'online' | 'party_credit';
+    cashSource?: CashSource;
     note?: string;
     supplierPaymentId?: string;
     creditLedgerEntryId?: string;
@@ -738,6 +743,7 @@ export interface SupplierPaymentLedgerEntry {
   partyName: string;
   amount: number;
   method: 'cash' | 'online';
+  cashSource?: CashSource;
   paidAt: string;
   effectiveAt?: string;
   note?: string;
@@ -761,6 +767,7 @@ export interface CashAdjustment {
   type: 'cash_addition' | 'cash_withdrawal';
   amount: number;
   method?: string;
+  cashSource?: CashSource;
   title?: string;
   note?: string;
   paidTo?: string;
@@ -865,6 +872,7 @@ export interface ManualCashbookEntry {
   amount: number;
   details: string;
   paymentMethod: 'Cash';
+  cashSource?: CashSource;
   createdAt: string;
   updatedAt?: string;
   isDeleted?: boolean;
