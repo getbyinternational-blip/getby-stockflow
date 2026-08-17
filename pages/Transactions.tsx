@@ -20,7 +20,7 @@ import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useRoleSession } from '../src/auth/roleSession';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
-import { formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
@@ -104,7 +104,7 @@ export default function Transactions() {
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
   const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>([]);
-  const [filterType, setFilterType] = useState('7days');
+  const [filterType, setFilterType] = useState('today');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -1994,7 +1994,7 @@ export default function Transactions() {
                     <tbody className="divide-y">
                       {paginatedDeletedTransactions.map(record => (
                         <tr key={record.id} className="hover:bg-muted/30 transition-colors">
-                          <td className="px-4 py-3">{new Date(record.deletedAt).toLocaleString()}</td>
+                          <td className="px-4 py-3">{formatDateTimeDisplay(record.deletedAt)}</td>
                           <td className="px-4 py-3 uppercase font-semibold text-xs">{record.type}</td>
                           <td className="px-4 py-3">{record.customerName || 'Walk-in'}</td>
                           <td className="px-4 py-3">{record.paymentMethod || 'N/A'}</td>
@@ -2070,7 +2070,7 @@ export default function Transactions() {
                                             />
                                         </td>
                                         <td className="px-4 py-3">
-                                            <div className={`font-semibold ${rowToneClass}`}>{new Date(tx.date).toLocaleDateString()}</div>
+                                            <div className={`font-semibold ${rowToneClass}`}>{formatDateDisplay(tx.date)}</div>
                                             <div className={`text-[10px] font-mono ${rowSubtleToneClass}`}>#{getTransactionReference(tx)}</div>
                                         </td>
                                         <td className="px-4 py-3">
@@ -2155,7 +2155,7 @@ export default function Transactions() {
                                     <div className="p-4 space-y-3">
                                         <div className="flex justify-between items-center">
                                             <Badge variant="outline" className="font-mono text-[9px] bg-muted/30 border-none">#{getTransactionReference(tx)}</Badge>
-                                            <span className="text-[10px] text-muted-foreground font-medium">{new Date(tx.date).toLocaleDateString()}</span>
+                                            <span className="text-[10px] text-muted-foreground font-medium">{formatDateDisplay(tx.date)}</span>
                                         </div>
                                         
                                         <div className="flex justify-between items-end">
@@ -2212,7 +2212,7 @@ export default function Transactions() {
                                         </div>
                                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                                             <Calendar className="w-3 h-3" />
-                                            {new Date(tx.date).toLocaleDateString()}
+                                            {formatDateDisplay(tx.date)}
                                         </div>
                                     </div>
                                     <div className="text-right">
@@ -2301,7 +2301,7 @@ export default function Transactions() {
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Date</p>
                                   <p className="font-medium flex items-center gap-1.5">
                                      <Calendar className="w-3.5 h-3.5 text-primary" />
-                                     {new Date(selectedTx.date).toLocaleString()}
+                                     {formatDateTimeDisplay(selectedTx.date)}
                                   </p>
                               </div>
                               <div>
@@ -2452,7 +2452,7 @@ export default function Transactions() {
                     <Badge variant="destructive">{Math.abs(selectedDeletedTx.amount || 0).toLocaleString()}</Badge>
                     <span className="text-muted-foreground">{selectedDeletedTx.customerName || 'Walk-in'}</span>
                     <span className="text-muted-foreground">|</span>
-                    <span className="text-muted-foreground">{new Date(selectedDeletedTx.deletedAt).toLocaleString()}</span>
+                    <span className="text-muted-foreground">{formatDateTimeDisplay(selectedDeletedTx.deletedAt)}</span>
                   </div>
                 </div>
                 <Button variant="ghost" size="icon" onClick={() => setSelectedDeletedTx(null)}>
@@ -2467,7 +2467,7 @@ export default function Transactions() {
                   <div><span className="text-muted-foreground">Type:</span> {selectedDeletedTx.type.toUpperCase()}</div>
                   <div><span className="text-muted-foreground">Payment method:</span> {selectedDeletedTx.paymentMethod || 'N/A'}</div>
                   <div><span className="text-muted-foreground">Customer:</span> {selectedDeletedTx.customerName || 'Walk-in'}</div>
-                  <div><span className="text-muted-foreground">Original transaction date:</span> {new Date(selectedDeletedTx.originalTransaction.date).toLocaleString()}</div>
+                  <div><span className="text-muted-foreground">Original transaction date:</span> {formatDateTimeDisplay(selectedDeletedTx.originalTransaction.date)}</div>
                   <div><span className="text-muted-foreground">Deleted by:</span> {formatDeletedByName(selectedDeletedTx)}</div>
                   <div><span className="text-muted-foreground">Role:</span> {formatRoleLabel(selectedDeletedTx.deletedByRole)}</div>
                 </div>
@@ -2509,7 +2509,7 @@ export default function Transactions() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                   <div><span className="text-muted-foreground">Transaction ID:</span> {selectedDeletedTx.originalTransactionId}</div>
                   <div><span className="text-muted-foreground">Type:</span> {selectedDeletedTx.originalTransaction.type.toUpperCase()}</div>
-                  <div><span className="text-muted-foreground">Date:</span> {new Date(selectedDeletedTx.originalTransaction.date).toLocaleString()}</div>
+                  <div><span className="text-muted-foreground">Date:</span> {formatDateTimeDisplay(selectedDeletedTx.originalTransaction.date)}</div>
                   <div><span className="text-muted-foreground">Customer:</span> {selectedDeletedTx.originalTransaction.customerName || 'Walk-in'}</div>
                   <div><span className="text-muted-foreground">Payment method:</span> {selectedDeletedTx.originalTransaction.paymentMethod || 'N/A'}</div>
                   <div><span className="text-muted-foreground">Total:</span> {formatMoneyWhole(Math.abs(selectedDeletedTx.originalTransaction.total || 0))}</div>

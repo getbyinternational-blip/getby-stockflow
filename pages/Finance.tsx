@@ -16,6 +16,7 @@ import { useRoleSession } from '../src/auth/roleSession';
 import { can, getCurrentRole } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { auth } from '../services/firebase';
+import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 type Expense = CanonicalExpense;
 
@@ -901,7 +902,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       return null;
     };
     const parsed = normalize(pick);
-    return parsed ? parsed.toLocaleDateString() : 'Date not available';
+    return parsed ? formatDateDisplay(parsed) : 'Date not available';
   };
 
   const [data, setData] = useState<AppState>(loadData());
@@ -2876,7 +2877,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const formatDateTimeCell = (value?: string) => {
     if (!value) return '—';
     const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString();
+    return Number.isNaN(parsed.getTime()) ? '—' : formatDateTimeDisplay(parsed);
   };
   const resetWithdrawalRepairForm = () => {
     setEditingWithdrawalId(null);
@@ -3398,7 +3399,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         </td>
                         <td className="p-3 text-right font-semibold">{formatINR(expense.amount)}</td>
                         <td className="p-3 text-slate-500">{`${(expense as Expense & { paymentMethod?: string }).paymentMethod || 'Cash'} • ${formatCashSourceLabel(expense.cashSource)}`}</td>
-                        <td className="p-3 text-slate-600">{expense.effectiveAt ? new Date(expense.effectiveAt).toLocaleString() : '—'}</td>
+                        <td className="p-3 text-slate-600">{expense.effectiveAt ? formatDateTimeDisplay(expense.effectiveAt) : '—'}</td>
                         <td className="p-3 text-xs text-slate-500">
                           {expenseHistory[0] ? `${expenseHistory[0].repairKind.replace(/_/g, ' ')} · ${expenseHistory[0].reason}` : '—'}
                         </td>
@@ -3511,7 +3512,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
                   <div className="mt-1 font-semibold text-slate-900">{expenseRepairOperationLabel(expenseRepairDraft.kind)}</div>
                   <div className="mt-1 text-xs text-slate-600">{expenseRepairDraft.reason}</div>
-                  <div className="mt-1 text-xs text-slate-600">{new Date(expenseRepairDraft.financialDate).toLocaleString()}</div>
+                  <div className="mt-1 text-xs text-slate-600">{formatDateTimeDisplay(expenseRepairDraft.financialDate)}</div>
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div className="rounded-2xl border border-slate-200 p-3"><div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Before</div><div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.beforeExpenseTotal)}</div></div>
@@ -3575,7 +3576,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     const created = entry.createdAt ? new Date(entry.createdAt) : null;
                     return (
                       <tr key={entry.id} className="border-t align-top">
-                        <td className="p-3 text-slate-600">{created && !Number.isNaN(created.getTime()) ? created.toLocaleDateString() : '—'}</td>
+                        <td className="p-3 text-slate-600">{created && !Number.isNaN(created.getTime()) ? formatDateDisplay(created) : '—'}</td>
                         <td className="p-3 text-slate-600">{created && !Number.isNaN(created.getTime()) ? created.toLocaleTimeString() : '—'}</td>
                         <td className="p-3">Cash Withdrawal</td>
                         <td className="p-3">
@@ -3616,7 +3617,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                 {withdrawalRepairHistory.map((entry) => (
                   <div key={entry.id} className="rounded-xl border border-slate-200 px-3 py-2">
                     <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                    <div>{entry.reason} • {new Date(entry.createdAt).toLocaleString()}</div>
+                    <div>{entry.reason} • {formatDateTimeDisplay(entry.createdAt)}</div>
                   </div>
                 ))}
                 {withdrawalRepairHistory.length === 0 && <div>No repair history yet.</div>}
@@ -3700,7 +3701,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
                   <div className="mt-1 font-semibold text-slate-900">{withdrawalRepairDraft.kind === 'delete_cash_withdrawal' ? 'Delete Withdrawal' : withdrawalRepairDraft.kind === 'add_cash_withdrawal' ? 'Add Withdrawal' : 'Edit Withdrawal'}</div>
                   <div className="mt-1 text-xs text-slate-600">{withdrawalRepairDraft.reason}</div>
-                  <div className="mt-1 text-xs text-slate-600">{new Date(withdrawalRepairDraft.financialDate).toLocaleString()}</div>
+                  <div className="mt-1 text-xs text-slate-600">{formatDateTimeDisplay(withdrawalRepairDraft.financialDate)}</div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-white p-3">
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -4152,7 +4153,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <tbody>
                       {paginatedCashbookRows.map(row => (
                         <tr key={row.id} className="border-t">
-                          <td className="p-2 whitespace-nowrap">{new Date(row.date).toLocaleString()}</td>
+                          <td className="p-2 whitespace-nowrap">{formatDateTimeDisplay(row.date)}</td>
                           <td className="p-2 font-medium whitespace-nowrap">#{row.billNo}</td>
                           <td className="p-2 uppercase">{row.type}</td>
                           <td className="p-2">
@@ -4457,7 +4458,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       <div className="min-w-0">
                         <div className="text-base font-semibold text-slate-900">Closing Balance Breakdown</div>
                         <div className="mt-1 text-sm text-slate-600">
-                          Shift window: <span className="font-medium text-slate-700">{new Date(openSession.startTime).toLocaleString()} to {openSession.endTime ? new Date(openSession.endTime).toLocaleString() : 'In progress'}</span>
+                          Shift window: <span className="font-medium text-slate-700">{formatDateTimeDisplay(openSession.startTime)} to {openSession.endTime ? formatDateTimeDisplay(openSession.endTime) : 'In progress'}</span>
                         </div>
                       </div>
                       <Button type="button" variant="outline" size="sm" onClick={() => setIsCurrentClosingBreakdownOpen(false)}>Close</Button>
@@ -4527,7 +4528,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                               <tr><td className="p-4 text-center text-muted-foreground" colSpan={11}>No supporting transactions found for this shift.</td></tr>
                             ) : currentClosingBreakdownDisplayRows.map(({ row, typeLabel, description, items, extraItemCount }) => (
                               <tr key={row.id} className="border-t align-top">
-                                <td className="p-2 whitespace-nowrap">{new Date(row.date).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td>
+                                <td className="p-2 whitespace-nowrap">{formatDateTimeDisplay(row.date)}</td>
                                 <td className="p-2 font-medium text-slate-900">{typeLabel}</td>
                                 <td className="p-2">{row.customer}</td>
                                 <td className="p-2 min-w-[280px]">
@@ -4598,7 +4599,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <CardContent className="space-y-3">
                       <p className="text-xs text-muted-foreground">This only corrects the counted closing amount. It does not change transactions or cash movements.</p>
                       <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div><span className="text-muted-foreground">Shift</span><div>{new Date(editingClosingSession.startTime).toLocaleString()}</div></div>
+                        <div><span className="text-muted-foreground">Shift</span><div>{formatDateTimeDisplay(editingClosingSession.startTime)}</div></div>
                         <div><span className="text-muted-foreground">Opening</span><div>{formatINR(editingClosingSession.openingBalance)}</div></div>
                         <div><span className="text-muted-foreground">Expected</span><div>{formatINR(expectedClosing)}</div></div>
                         <div><span className="text-muted-foreground">Current closing</span><div>{formatINR(editingClosingSession.closingBalance ?? 0)}</div></div>
@@ -4670,10 +4671,10 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
                             <span>Starting date </span>
-                            <span className="font-medium text-slate-700">{new Date(session.startTime).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                            <span className="font-medium text-slate-700">{formatDateTimeDisplay(session.startTime)}</span>
                             <span>{' • '}</span>
                             <span>{session.endTime ? 'Closing date ' : 'Not closed'}</span>
-                            {session.endTime ? <span className="font-medium text-slate-700">{new Date(session.endTime).toLocaleString([], { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span> : null}
+                            {session.endTime ? <span className="font-medium text-slate-700">{formatDateTimeDisplay(session.endTime)}</span> : null}
                             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${statusClass}`}>{statusLabel}</span>
                           </div>
                         </div>
@@ -4717,7 +4718,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           </div>
                         </div>
                         {session.closingEditedAt && (
-                          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">Closing edited {new Date(session.closingEditedAt).toLocaleString()}{session.closingEditNote ? ` • ${session.closingEditNote}` : ''}</div>
+                          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">Closing edited {formatDateTimeDisplay(session.closingEditedAt)}{session.closingEditNote ? ` • ${session.closingEditNote}` : ''}</div>
                         )}
                       </div>
 
@@ -4797,10 +4798,10 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <div className="text-base font-semibold text-slate-900">{isSameDay(activeHistorySession.startTime, todayKey) ? 'Today' : new Date(activeHistorySession.startTime).toLocaleDateString()}</div>
+                            <div className="text-base font-semibold text-slate-900">{isSameDay(activeHistorySession.startTime, todayKey) ? 'Today' : formatDateDisplay(activeHistorySession.startTime)}</div>
                             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${statusClass}`}>{statusLabel}</span>
                           </div>
-                          <div className="mt-1 text-sm text-slate-600">{activeHistorySession.status === 'open' ? 'Started: ' : 'Shift: '}<span className="font-medium text-slate-700">{new Date(activeHistorySession.startTime).toLocaleString()} → {activeHistorySession.endTime ? new Date(activeHistorySession.endTime).toLocaleString() : 'In progress'}</span></div>
+                          <div className="mt-1 text-sm text-slate-600">{activeHistorySession.status === 'open' ? 'Started: ' : 'Shift: '}<span className="font-medium text-slate-700">{formatDateTimeDisplay(activeHistorySession.startTime)} → {activeHistorySession.endTime ? formatDateTimeDisplay(activeHistorySession.endTime) : 'In progress'}</span></div>
                           <div className="mt-2">
                             <div className={`text-sm font-semibold ${activeHistorySession.status === 'open' ? 'text-slate-900' : isMatch ? 'text-emerald-700' : isShort ? 'text-rose-700' : 'text-slate-900'}`}>
                               {activeHistorySession.status === 'open' ? 'Session is ongoing' : isMatch ? 'Cash matched' : isShort ? `Short by ${formatINR(Math.abs(difference))}` : `Over by ${formatINR(difference)}`}
@@ -4863,7 +4864,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
                             <div>
                               <div className="text-sm font-semibold text-slate-900">Sales</div>
-                              <div className="mt-0.5 text-xs text-slate-500">({new Date(activeHistorySession.startTime).toLocaleDateString()})</div>
+                              <div className="mt-0.5 text-xs text-slate-500">({formatDateDisplay(activeHistorySession.startTime)})</div>
                             </div>
                             <Pill tone="amber">{formatINR(salesTotal)}</Pill>
                           </div>
@@ -4885,7 +4886,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
                             <div>
                               <div className="text-sm font-semibold text-slate-900">Expense</div>
-                              <div className="mt-0.5 text-xs text-slate-500">({new Date(activeHistorySession.startTime).toLocaleDateString()})</div>
+                              <div className="mt-0.5 text-xs text-slate-500">({formatDateDisplay(activeHistorySession.startTime)})</div>
                             </div>
                             <Pill tone="neutral">{formatINR(expenseTotal)}</Pill>
                           </div>
@@ -4923,7 +4924,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <CardContent className="space-y-3">
                       <p className="text-xs text-rose-700">This removes the shift record from history. It does not delete sales, expenses, payments, purchases, or cash movements.</p>
                       <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div><span className="text-muted-foreground">Shift</span><div>{new Date(deletingSession.startTime).toLocaleString()}</div></div>
+                        <div><span className="text-muted-foreground">Shift</span><div>{formatDateTimeDisplay(deletingSession.startTime)}</div></div>
                         <div><span className="text-muted-foreground">Opening</span><div>{formatINR(deletingSession.openingBalance)}</div></div>
                         <div><span className="text-muted-foreground">Expected closing</span><div>{formatINR(expectedClosing)}</div></div>
                         <div><span className="text-muted-foreground">Counted closing</span><div>{formatINR(countedClosing)}</div></div>
@@ -5140,7 +5141,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <div key={expense.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/70">
                             <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
                               <div className="shrink-0">
-                                <div className="text-base font-semibold text-slate-900">{new Date(getExpenseEffectiveDate(expense)).toLocaleDateString()}</div>
+                                <div className="text-base font-semibold text-slate-900">{formatDateDisplay(getExpenseEffectiveDate(expense))}</div>
                                 <div className="text-sm text-slate-600">{new Date(getExpenseEffectiveDate(expense)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
                               </div>
                               <div className="min-w-0 flex-1">
@@ -5162,7 +5163,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
                   <div className="border-t border-slate-200 px-6 py-4 text-sm text-slate-600">
                     <span className="font-medium text-slate-900">Latest activity:</span>{' '}
-                    {expenseActivities[0] ? `${expenseActivities[0].message} | ${new Date(expenseActivities[0].createdAt).toLocaleString()}` : 'No recent activity'}
+                    {expenseActivities[0] ? `${expenseActivities[0].message} | ${formatDateTimeDisplay(expenseActivities[0].createdAt)}` : 'No recent activity'}
                   </div>
 
                   {repairMode && (
@@ -5172,7 +5173,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 8).map((entry) => (
                           <div key={entry.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
                             <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                            <div className="mt-1 text-xs text-slate-500">{entry.entityName} | {entry.reason} | {new Date(entry.createdAt).toLocaleString()}</div>
+                            <div className="mt-1 text-xs text-slate-500">{entry.entityName} | {entry.reason} | {formatDateTimeDisplay(entry.createdAt)}</div>
                           </div>
                         ))}
                         {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').length === 0 && (
@@ -5427,7 +5428,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
                     <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500">
                       <span>Activity log: </span>
-                      {expenseActivities[0] ? `${expenseActivities[0].message} • ${new Date(expenseActivities[0].createdAt).toLocaleString()}` : 'No recent activity'}
+                      {expenseActivities[0] ? `${expenseActivities[0].message} • ${formatDateTimeDisplay(expenseActivities[0].createdAt)}` : 'No recent activity'}
                     </div>
                     {repairMode && (
                       <div className="border-t border-slate-200 px-4 py-3">
@@ -5436,7 +5437,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 8).map((entry) => (
                             <div key={entry.id} className="rounded-xl border border-slate-200 px-3 py-2">
                               <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                              <div>{entry.entityName} • {entry.reason} • {new Date(entry.createdAt).toLocaleString()}</div>
+                              <div>{entry.entityName} • {entry.reason} • {formatDateTimeDisplay(entry.createdAt)}</div>
                             </div>
                           ))}
                           {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').length === 0 && <div>No repair history yet.</div>}
@@ -5458,7 +5459,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                 <div key={customer.id} className="border rounded-lg p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                   <div>
                     <p className="font-semibold">{customer.name}</p>
-                    <p className="text-sm text-muted-foreground">Last Visit: {new Date(customer.lastVisit).toLocaleDateString()}</p>
+                    <p className="text-sm text-muted-foreground">Last Visit: {formatDateDisplay(customer.lastVisit)}</p>
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-red-700">Due: {formatINRSummary(canonicalCustomerBalanceById.get(customer.id)?.currentDue || 0)}</p>
@@ -5595,7 +5596,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
                   <div className="mt-1 font-semibold text-slate-900">{expenseRepairOperationLabel(expenseRepairDraft.kind)}</div>
                   <div className="mt-1 text-xs text-slate-600">{expenseRepairDraft.reason}</div>
-                  <div className="mt-1 text-xs text-slate-600">{new Date(expenseRepairDraft.financialDate).toLocaleString()}</div>
+                  <div className="mt-1 text-xs text-slate-600">{formatDateTimeDisplay(expenseRepairDraft.financialDate)}</div>
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div className="rounded-2xl border border-slate-200 p-3">

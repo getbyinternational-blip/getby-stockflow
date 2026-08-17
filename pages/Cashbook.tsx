@@ -7,6 +7,7 @@ import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { BanknoteArrowDown, BanknoteArrowUp, ChevronDown, CreditCard, Receipt, ShoppingCart, Store, Truck, Wallet, X } from 'lucide-react';
 import { ResolvedCostSource, resolveTransactionItemCost } from '../services/costResolution';
+import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -1367,13 +1368,11 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                       <div className="font-semibold">{formatDayLabel(day.dayKey)}</div>
                       <div className="text-xs text-muted-foreground">{day.rows.length} entries</div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
-                      <div className="rounded border bg-slate-50 px-2 py-1"><div className="text-muted-foreground">Opening Cash</div><div className="font-semibold">{fmt(day.openingCash)}</div></div>
+                    <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
                       <div className="rounded border bg-emerald-50 px-2 py-1"><div className="text-muted-foreground">Cash In</div><div className="font-semibold">{fmt(day.cashIn)}</div></div>
                       <div className="rounded border bg-rose-50 px-2 py-1"><div className="text-muted-foreground">Cash Out</div><div className="font-semibold">{fmt(day.cashOut)}</div></div>
                       <div className="rounded border bg-blue-50 px-2 py-1"><div className="text-muted-foreground">Online In</div><div className="font-semibold">{fmt(day.onlineIn)}</div></div>
                       <div className="rounded border bg-orange-50 px-2 py-1"><div className="text-muted-foreground">Online Out</div><div className="font-semibold">{fmt(day.onlineOut)}</div></div>
-                      <div className="rounded border bg-slate-100 px-2 py-1"><div className="text-muted-foreground">Closing Cash</div><div className="font-semibold">{fmt(day.closingCash)}</div></div>
                     </div>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4 xl:grid-cols-6">
@@ -1427,9 +1426,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 xl:grid-cols-8">
-                <div className="rounded-xl border bg-slate-50 px-3 py-2"><div className="text-slate-500">Opening Cash</div><div className="text-sm font-semibold text-slate-900">{fmt(selectedDailyBreakdown.openingCash)}</div></div>
-                <div className="rounded-xl border bg-slate-100 px-3 py-2"><div className="text-slate-500">Closing Cash</div><div className="text-sm font-semibold text-slate-900">{fmt(selectedDailyBreakdown.closingCash)}</div></div>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-6">
                 <div className="rounded-xl border bg-emerald-50 px-3 py-2"><div className="text-emerald-700">Cash In</div><div className="text-sm font-semibold text-emerald-800">{fmt(selectedDailyBreakdown.cashIn)}</div></div>
                 <div className="rounded-xl border bg-rose-50 px-3 py-2"><div className="text-rose-700">Cash Out</div><div className="text-sm font-semibold text-rose-800">{fmt(selectedDailyBreakdown.cashOut)}</div></div>
                 <div className="rounded-xl border bg-blue-50 px-3 py-2"><div className="text-blue-700">Online In</div><div className="text-sm font-semibold text-blue-800">{fmt(selectedDailyBreakdown.onlineIn)}</div></div>
@@ -1523,7 +1520,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
           <tbody className="bg-white">
             {visibleDisplayRows.map(({ row: r, items, extraItemCount, fallbackLabel }, index) => (
               <tr key={r.id} className={`border-b border-slate-100 align-top ${getLedgerRowToneClass(r.type)}`}>
-                <td className="px-3 py-3 whitespace-nowrap text-slate-700">{new Date(r.date).toLocaleString()}</td>
+                <td className="px-3 py-3 whitespace-nowrap text-slate-700">{formatDateTimeDisplay(r.date)}</td>
                 <td className="px-3 py-3">
                   <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
                     {({sale:'Sale',credit:'Credit Sale',payment:'Payment',return:'Return',deleted_sale:'Deleted Sale',deleted_refund:'Deleted Refund',purchase:'Purchase',supplier_payment:'Supplier Payment',expense:'Expense',adjustment:'Adjustment',manual_cash_in:'Manual Cash In',manual_cash_out:'Manual Cash Out',custom_order_receivable:'Custom Order',custom_order_payment:'Custom Order Payment'} as Record<string,string>)[r.type] || r.type}
@@ -1652,7 +1649,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
               <tbody>
                 {pagedGrossProfitRows.map((row, index) => (
                   <tr key={row.id} className={`border-b ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
-                    <td className="px-3 py-2 whitespace-nowrap">{new Date(row.date).toLocaleDateString()}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{formatDateDisplay(row.date)}</td>
                     <td className="px-3 py-2">
                       <div className="font-medium text-slate-900">{row.invoiceRef}</div>
                       <div className="text-[11px] text-slate-500">{row.transactionId}</div>
@@ -1762,7 +1759,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                   <tbody>
                     {pagedGrossProfitModalRows.map((row, index) => (
                       <tr key={`modal-${row.id}`} className={`border-b ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
-                        <td className="px-3 py-2 whitespace-nowrap">{new Date(row.date).toLocaleString()}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{formatDateTimeDisplay(row.date)}</td>
                         <td className="px-3 py-2">
                           <span className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium ${row.transactionType === 'return' ? 'border-rose-200 bg-rose-50 text-rose-700' : row.transactionType === 'expense' ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
                             {row.transactionType === 'return' ? 'Return' : row.transactionType === 'expense' ? 'Expense' : 'Sale'}

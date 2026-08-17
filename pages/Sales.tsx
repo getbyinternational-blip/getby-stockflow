@@ -26,6 +26,7 @@ import { normalizeTransactionItems } from '../utils/transactionItems';
 import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
+import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 const toMoneyCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100);
 const fromMoneyCents = (value: number) => value / 100;
@@ -196,7 +197,7 @@ const parsePickerDateValue = (value: string) => {
 
 const formatPickerDisplayValue = (value: string) => {
   const parsed = parsePickerDateValue(value);
-  return parsed ? parsed.toLocaleDateString() : 'mm/dd/yyyy';
+  return parsed ? formatDateDisplay(parsed) : 'dd-mm-yyyy';
 };
 
 const PosDatePicker: React.FC<{
@@ -2054,7 +2055,7 @@ export default function Sales() {
                   const totalQty = normalizeTransactionItems(tx.items).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
                   return (
                     <div key={tx.id} className="w-full rounded-lg border bg-card px-2.5 py-2 grid gap-2 md:grid-cols-[110px_160px_minmax(0,1fr)_90px_110px_110px] items-center box-border">
-                      <div className="text-xs text-muted-foreground">{new Date(tx.date).toLocaleDateString()}</div>
+                      <div className="text-xs text-muted-foreground">{formatDateDisplay(tx.date)}</div>
                       <div className="text-xs font-semibold truncate">#{tx.id}</div>
                       <div className="font-semibold text-xs truncate">{tx.customerName || 'Walk-in customer'}</div>
                       <div className="text-xs font-semibold">Qty {totalQty}</div>
@@ -2549,7 +2550,7 @@ export default function Sales() {
                                 <div className="font-semibold truncate">{order.productName}</div>
                                 <div className="text-sm text-muted-foreground truncate">{customer?.name || 'Unknown customer'}{customer?.phone ? ` • ${customer.phone}` : ''}</div>
                                 <div className="mt-1 text-xs text-muted-foreground">
-                                  {new Date(order.effectiveAt || order.date || order.createdAt || new Date().toISOString()).toLocaleDateString()} • Ref {order.id.slice(-6)}
+                                  {formatDateDisplay(order.effectiveAt || order.date || order.createdAt || new Date().toISOString())} • Ref {order.id.slice(-6)}
                                 </div>
                               </div>
                               <div className="shrink-0 text-right text-sm">
@@ -2642,7 +2643,7 @@ export default function Sales() {
           <Card className="w-full max-w-5xl max-h-[90vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <CardHeader className="border-b py-3 flex flex-row items-center justify-between gap-2">
               <CardTitle className="text-[17px] font-semibold min-w-0">
-                #{selectedReturnTx.id} | {new Date(selectedReturnTx.date).toLocaleString()} | {selectedReturnTx.customerName || 'Walk-in customer'}
+                #{selectedReturnTx.id} | {formatDateTimeDisplay(selectedReturnTx.date)} | {selectedReturnTx.customerName || 'Walk-in customer'}
               </CardTitle>
               <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setIsReturnPopupOpen(false)}><X className="w-4 h-4" /></Button>
             </CardHeader>
@@ -2799,7 +2800,7 @@ export default function Sales() {
                 {prefilledTransactionDateTimeIso && (
                   <div className="rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-[11px] text-blue-800">
                     <div className="font-semibold">
-                      Prefilled from customer action: {new Date(prefilledTransactionDateTimeIso).toLocaleString()}
+                      Prefilled from customer action: {formatDateTimeDisplay(prefilledTransactionDateTimeIso)}
                     </div>
                     <div className="text-[10px] text-blue-700">
                       Changing the transaction date here will clear the prefilled exact time.

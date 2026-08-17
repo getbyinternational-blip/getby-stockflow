@@ -22,6 +22,7 @@ import { useRoleSession } from '../src/auth/roleSession';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { auth } from '../services/firebase';
 import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, classifyPurchasePartyReference, normalizePurchasePartyNameForMatch, type PurchasePartyReferenceStatus } from '../services/purchasePartyIdentity';
+import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 type PurchaseTab = 'orders' | 'parties';
 type WizardStep = 'source' | 'product' | 'variants' | 'pricing' | 'review' | 'newProduct';
@@ -535,7 +536,7 @@ function PurchaseHistoryCards({
           <div key={row.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="font-semibold text-slate-900">{productName}</div>
-              <div className="text-slate-500">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
+              <div className="text-slate-500">{row.date ? formatDateTimeDisplay(row.date) : 'Unknown date'}</div>
             </div>
             {row.productName && row.productName !== productName && (
               <div className="mt-1 text-[11px] text-amber-700">Order product name: <span className="font-medium">{row.productName}</span></div>
@@ -577,7 +578,7 @@ function LegacyAuditHistoryCards({ productName, rows }: { productName: string; r
         <div key={row.id} className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="font-semibold text-slate-900">{productName}</div>
-            <div className="text-slate-500">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
+            <div className="text-slate-500">{row.date ? formatDateTimeDisplay(row.date) : 'Unknown date'}</div>
           </div>
           <div className="mt-2 rounded-xl border border-amber-200 bg-white px-3 py-2 text-[11px] text-amber-900">
             Legacy-only history row -- not part of canonical purchase ledger.
@@ -2780,7 +2781,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                               const thumbnail = getPurchaseOrderThumbnail(order);
                               return (
                                 <tr key={order.id} className="border-t align-top">
-                                  <td className="p-3 text-slate-600">{new Date(order.effectiveAt || order.orderDate || order.createdAt).toLocaleString()}</td>
+                                  <td className="p-3 text-slate-600">{formatDateTimeDisplay(order.effectiveAt || order.orderDate || order.createdAt)}</td>
                                   <td className="p-3">
                                     <div className="font-semibold text-slate-900">{order.billNumber || order.id}</div>
                                     <div className="text-[11px] text-slate-400">{order.id}</div>
@@ -2847,7 +2848,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                               const creditCreated = Number(payment.partyCreditCreated || 0);
                               return (
                                 <tr key={payment.id} className="border-t align-top">
-                                  <td className="p-3 text-slate-600">{new Date(payment.effectiveAt || payment.paidAt || payment.createdAt).toLocaleString()}</td>
+                                  <td className="p-3 text-slate-600">{formatDateTimeDisplay(payment.effectiveAt || payment.paidAt || payment.createdAt)}</td>
                                   <td className="p-3">
                                     <div className="font-semibold text-slate-900">{payment.voucherNo || payment.id}</div>
                                     <div className="text-[11px] text-slate-400">{payment.id}</div>
@@ -2896,7 +2897,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       <tbody>
                         {partyLedgerRows.map((row, idx) => (
                           <tr key={`${row.reference}-${idx}`} className="border-t">
-                            <td className="p-2">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : '\u2014'}</td>
+                            <td className="p-2">{row.date ? formatDateDisplay(row.date) : '\u2014'}</td>
                             <td className="p-2">{{ purchase: 'Purchase', supplier_payment: 'Payment', credit_used: 'Credit Applied', legacy_payment: 'Payment', edit_credit: 'Adjustment', reversal: 'Adjustment' }[row.type] || row.type || '\u2014'}</td>
                             <td className="p-2">{row.reference || '\u2014'}</td>
                             <td className="p-2">{row.description || '\u2014'}</td>
@@ -2919,7 +2920,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   {purchaseRepairHistoryEntries.map((entry) => (
                     <div key={entry.id} className="rounded-2xl border px-4 py-3">
                       <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                      <div className="text-xs text-slate-500">{new Date(entry.createdAt).toLocaleString()} {'\u00B7'} {entry.adminEmail || 'Unknown'} {'\u00B7'} {entry.reason}</div>
+                      <div className="text-xs text-slate-500">{formatDateTimeDisplay(entry.createdAt)} {'\u00B7'} {entry.adminEmail || 'Unknown'} {'\u00B7'} {entry.reason}</div>
                     </div>
                   ))}
                 </div>
@@ -3033,7 +3034,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                             <div className="mt-2 space-y-1 text-slate-600">
                               <div>GST: <span className="font-medium text-slate-900">{party.gst || '\u2014'}</span></div>
                               <div>Phone: <span className="font-medium text-slate-900">{party.phone || '\u2014'}</span></div>
-                              <div>Created: <span className="font-medium text-slate-900">{party.createdAt ? new Date(party.createdAt).toLocaleString() : '\u2014'}</span></div>
+                              <div>Created: <span className="font-medium text-slate-900">{party.createdAt ? formatDateTimeDisplay(party.createdAt) : '\u2014'}</span></div>
                               <div>isDeleted: <span className="font-medium text-slate-900">{party.isDeleted ? 'true' : 'false'}</span></div>
                               <div>mergedIntoPartyId: <span className="font-medium text-slate-900">{party.mergedIntoPartyId || '\u2014'}</span></div>
                             </div>
@@ -3144,20 +3145,20 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       <div className="mt-4 grid gap-3 md:grid-cols-3">
                         <div className="rounded-xl border p-3 text-xs text-slate-600">
                           <div className="font-semibold text-slate-900">Purchase Orders</div>
-                          <div className="mt-2">Earliest: <span className="font-medium text-slate-900">{group.earliestOrderAt ? new Date(group.earliestOrderAt).toLocaleString() : '\u2014'}</span></div>
-                          <div>Latest: <span className="font-medium text-slate-900">{group.latestOrderAt ? new Date(group.latestOrderAt).toLocaleString() : '\u2014'}</span></div>
+                          <div className="mt-2">Earliest: <span className="font-medium text-slate-900">{group.earliestOrderAt ? formatDateTimeDisplay(group.earliestOrderAt) : '\u2014'}</span></div>
+                          <div>Latest: <span className="font-medium text-slate-900">{group.latestOrderAt ? formatDateTimeDisplay(group.latestOrderAt) : '\u2014'}</span></div>
                           <div className="mt-2 font-mono text-[11px] text-slate-500 break-all">{group.relatedPurchaseOrderIds.join(', ') || '\u2014'}</div>
                         </div>
                         <div className="rounded-xl border p-3 text-xs text-slate-600">
                           <div className="font-semibold text-slate-900">Supplier Payments</div>
-                          <div className="mt-2">Earliest: <span className="font-medium text-slate-900">{group.earliestPaymentAt ? new Date(group.earliestPaymentAt).toLocaleString() : '\u2014'}</span></div>
-                          <div>Latest: <span className="font-medium text-slate-900">{group.latestPaymentAt ? new Date(group.latestPaymentAt).toLocaleString() : '\u2014'}</span></div>
+                          <div className="mt-2">Earliest: <span className="font-medium text-slate-900">{group.earliestPaymentAt ? formatDateTimeDisplay(group.earliestPaymentAt) : '\u2014'}</span></div>
+                          <div>Latest: <span className="font-medium text-slate-900">{group.latestPaymentAt ? formatDateTimeDisplay(group.latestPaymentAt) : '\u2014'}</span></div>
                           <div className="mt-2 font-mono text-[11px] text-slate-500 break-all">{group.relatedSupplierPaymentIds.join(', ') || '\u2014'}</div>
                         </div>
                         <div className="rounded-xl border p-3 text-xs text-slate-600">
                           <div className="font-semibold text-slate-900">Party Credit</div>
-                          <div className="mt-2">Earliest: <span className="font-medium text-slate-900">{group.earliestCreditAt ? new Date(group.earliestCreditAt).toLocaleString() : '\u2014'}</span></div>
-                          <div>Latest: <span className="font-medium text-slate-900">{group.latestCreditAt ? new Date(group.latestCreditAt).toLocaleString() : '\u2014'}</span></div>
+                          <div className="mt-2">Earliest: <span className="font-medium text-slate-900">{group.earliestCreditAt ? formatDateTimeDisplay(group.earliestCreditAt) : '\u2014'}</span></div>
+                          <div>Latest: <span className="font-medium text-slate-900">{group.latestCreditAt ? formatDateTimeDisplay(group.latestCreditAt) : '\u2014'}</span></div>
                           <div className="mt-2 font-mono text-[11px] text-slate-500 break-all">{group.relatedPartyCreditIds.join(', ') || '\u2014'}</div>
                         </div>
                       </div>
@@ -3515,7 +3516,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           const dueAmount = Math.max(0, Number(order.remainingAmount ?? ((Number(order.totalAmount || 0)) - (Number(order.totalPaid || 0)))));
                           return (
                             <div key={order.id} className="grid grid-cols-[96px_minmax(220px,1fr)_72px_72px_72px_72px] gap-2 px-2 py-3 [content-visibility:auto] [contain-intrinsic-size:96px]">
-                              <div className="self-center">{new Date(order.effectiveAt || order.orderDate || order.createdAt).toLocaleDateString('en-GB')}</div>
+                              <div className="self-center">{formatDateDisplay(order.effectiveAt || order.orderDate || order.createdAt)}</div>
                               <div className="space-y-2">
                                 {order.lines.map((line) => (
                                   <div key={line.id} className="flex items-center gap-2">
@@ -3569,7 +3570,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                       <div className="min-w-[360px] divide-y text-xs">
                         {selectedRepairPayments.map((payment) => (
                           <div key={payment.id} className={`grid gap-2 px-2 py-3 [content-visibility:auto] [contain-intrinsic-size:56px] ${repairMode ? 'grid-cols-[100px_1fr_100px_110px]' : 'grid-cols-[100px_1fr_100px]'}`}>
-                            <div className="self-center text-left">{new Date(payment.effectiveAt || payment.paidAt || payment.createdAt).toLocaleDateString('en-GB')}</div>
+                            <div className="self-center text-left">{formatDateDisplay(payment.effectiveAt || payment.paidAt || payment.createdAt)}</div>
                             <div className="self-center text-left">{`${(payment.method || 'cash').toUpperCase()}${payment.method === 'cash' ? ` - ${formatCashSourceLabel(payment.cashSource)}` : ''}`}</div>
                             <div className="self-center text-left font-medium">{formatLedgerNumber(Number(payment.amount || 0))}</div>
                             {repairMode && (
@@ -3742,7 +3743,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                 <tbody>
                   {paginatedPurchaseDiagnosticRows.map((row) => (
                     <tr key={row.rowId} className="border-t align-top">
-                      <td className="p-2 whitespace-nowrap">{row.orderDate ? new Date(row.orderDate).toLocaleString() : '--'}</td>
+                      <td className="p-2 whitespace-nowrap">{row.orderDate ? formatDateTimeDisplay(row.orderDate) : '--'}</td>
                       <td className="p-2">
                         <div className="font-medium">{row.orderId}</div>
                         <div className="text-[10px] text-muted-foreground">Status: {row.orderStatus}</div>
@@ -3948,7 +3949,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <SummaryCard label="Unsafe Patches" value={`${repairDryRunResult.unsafeCount}`} />
               <SummaryCard label="Total Amount" value={formatCurrency(repairDryRunResult.totalAmountRepresented)} />
               <SummaryCard label="Products Affected" value={`${repairDryRunResult.productsAffected}`} />
-              <SummaryCard label="Generated" value={new Date(repairDryRunResult.generatedAt).toLocaleString()} />
+              <SummaryCard label="Generated" value={formatDateTimeDisplay(repairDryRunResult.generatedAt)} />
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={downloadRepairDryRunJson}>Download Dry-run JSON</Button>
@@ -4031,7 +4032,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           <div>{patch.partyName}</div>
                           <div className="font-mono text-[10px] text-muted-foreground">{patch.partyId}</div>
                         </td>
-                        <td className="p-2">{patch.date ? new Date(patch.date).toLocaleString() : '--'}</td>
+                        <td className="p-2">{patch.date ? formatDateTimeDisplay(patch.date) : '--'}</td>
                         <td className="p-2 text-right">{formatNumber(patch.quantity, 0)}</td>
                         <td className="p-2 text-right">{formatCurrency(patch.unitPrice)}</td>
                         <td className="p-2 text-right">{formatCurrency(patch.totalAmount)}</td>
@@ -4096,7 +4097,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
               <SummaryCard label="Verdict" value={purchaseRuntimeSearchResult.verdict} />
               <SummaryCard label="Candidates" value={`${purchaseRuntimeSearchResult.candidateCount}`} />
-              <SummaryCard label="Generated" value={new Date(purchaseRuntimeSearchResult.generatedAt).toLocaleString()} />
+              <SummaryCard label="Generated" value={formatDateTimeDisplay(purchaseRuntimeSearchResult.generatedAt)} />
               <SummaryCard label="Order ID" value={purchaseRuntimeSearchResult.criteria.purchaseOrderId || 'Not provided'} />
             </div>
             <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
@@ -4159,7 +4160,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           <div className="mt-1 text-[10px] text-muted-foreground">Root: {candidate.sameOrderAppearsInRootFallback ? 'yes' : 'no'} • Sub: {candidate.sameOrderAppearsInSubcollection ? 'yes' : 'no'}</div>
                         </td>
                         <td className="p-2">
-                          <div>Primary: {candidate.date ? new Date(candidate.date).toLocaleString() : '--'}</div>
+                          <div>Primary: {candidate.date ? formatDateTimeDisplay(candidate.date) : '--'}</div>
                           <div className="text-[10px] text-muted-foreground">orderDate: {candidate.orderDate || '--'}</div>
                           <div className="text-[10px] text-muted-foreground">createdAt: {candidate.createdAt || '--'}</div>
                           <div className="text-[10px] text-muted-foreground">updatedAt: {candidate.updatedAt || '--'}</div>

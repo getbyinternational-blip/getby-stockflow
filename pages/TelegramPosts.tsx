@@ -25,6 +25,7 @@ import {
   TelegramPostMode,
   TelegramSchedulerProduct,
 } from '../types';
+import { formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 const DEFAULT_TEMPLATE = `New arrival: {product_name}
 
@@ -59,7 +60,7 @@ const formatDateTime = (value?: string) => {
   if (!value) return 'Not yet';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Not yet';
-  return date.toLocaleString();
+  return formatDateTimeDisplay(date);
 };
 
 const getProductImageUrl = (product?: Product | null) => {

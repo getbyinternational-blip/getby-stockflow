@@ -18,6 +18,7 @@ import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { formatCurrency, formatCurrencyWhole, sanitizeDisplayText } from '../services/numberFormat';
 import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, resolveCanonicalPurchasePartyForDraft, resolvePurchasePartyIdentity } from '../services/purchasePartyIdentity';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
+import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 
 const STORAGE_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_STORAGE_LOGS || 'false').toLowerCase() === 'true';
 import {
@@ -1024,7 +1025,7 @@ const displayProductCategory = (value: unknown): string => {
               <div className="font-semibold">{productName}</div>
               {isReviewRow && <Badge variant="outline">Needs Link Review</Badge>}
             </div>
-            <div className="text-muted-foreground">{new Date(h.date).toLocaleString()}</div>
+            <div className="text-muted-foreground">{formatDateTimeDisplay(h.date)}</div>
           </div>
           {h.productName && h.productName !== productName && (
             <div className="text-[11px] text-amber-700">
@@ -1119,7 +1120,7 @@ const displayProductCategory = (value: unknown): string => {
               <div className="min-w-0 flex-1 space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="text-sm font-semibold text-slate-950">
-                    {row.date ? new Date(row.date).toLocaleString() : 'Unknown date'} • {partyName}
+                    {row.date ? formatDateTimeDisplay(row.date) : 'Unknown date'} • {partyName}
                   </div>
                   {row.reviewReason && (
                     <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
@@ -1235,7 +1236,7 @@ const displayProductCategory = (value: unknown): string => {
                 <div className="font-semibold">{productName}</div>
                 <Badge variant="outline">Legacy-only history row</Badge>
               </div>
-              <div className="text-muted-foreground">{row.date ? new Date(row.date).toLocaleString() : 'Unknown date'}</div>
+              <div className="text-muted-foreground">{row.date ? formatDateTimeDisplay(row.date) : 'Unknown date'}</div>
             </div>
             <div className="rounded border border-amber-200 bg-white px-2 py-1 text-[11px] text-amber-900">
               Legacy-only history row -- not part of canonical purchase ledger.
@@ -4018,7 +4019,7 @@ useEffect(() => {
                   const unit = Math.max(0, Number(p.lostDamageUnitCost || p.buyPrice || 0));
                   return (
                     <tr key={p.id} className="border-t">
-                      <td className="p-3"><div className="flex items-center gap-2"><div className="h-10 w-10 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{p.image ? <img src={p.image} alt={getProductName(p)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div><div><div className="font-medium">{getProductName(p)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(p)}</div></div></div></td><td className="p-3">{getProductBarcode(p)}</td><td className="p-3">{p.stock}</td><td className="p-3">{qty}</td><td className="p-3">{unit.toFixed(2)}</td><td className="p-3">{(qty * unit).toFixed(2)}</td><td className="p-3">{p.lostDamageUpdatedAt ? new Date(p.lostDamageUpdatedAt).toLocaleString() : '-'}</td>
+                      <td className="p-3"><div className="flex items-center gap-2"><div className="h-10 w-10 rounded-md overflow-hidden border bg-muted/20 flex items-center justify-center">{p.image ? <img src={p.image} alt={getProductName(p)} className="h-full w-full object-cover"  loading="lazy"  decoding="async" /> : <Package className="w-4 h-4 text-muted-foreground" />}</div><div><div className="font-medium">{getProductName(p)}</div><div className="text-xs text-muted-foreground">{getProductBarcode(p)}</div></div></div></td><td className="p-3">{getProductBarcode(p)}</td><td className="p-3">{p.stock}</td><td className="p-3">{qty}</td><td className="p-3">{unit.toFixed(2)}</td><td className="p-3">{(qty * unit).toFixed(2)}</td><td className="p-3">{p.lostDamageUpdatedAt ? formatDateTimeDisplay(p.lostDamageUpdatedAt) : '-'}</td>
                       <td className="p-3"><Button size="sm" variant="outline" onClick={() => openLostDamageModal(p)}>Edit</Button></td>
                     </tr>
                   );
@@ -4619,7 +4620,7 @@ useEffect(() => {
                             {(stockSourceHistoryView === 'active' ? stockSourcePurchaseHistoryRows : stockSourcePurchaseHistoryRecycleRows).map((row) => (
                               <tr key={`${stockSourceHistoryView}-${row.id}`} className="border-b last:border-b-0 align-top">
                                 <td className="px-4 py-3 whitespace-nowrap">
-                                  {row.date ? new Date(row.date).toLocaleDateString() : '-'}
+                                  {row.date ? formatDateDisplay(row.date) : '-'}
                                 </td>
                                 <td className="px-4 py-3">{row.partyName || 'No party'}</td>
                                 <td className="px-4 py-3 text-right">{row.quantity}</td>
@@ -4954,7 +4955,7 @@ useEffect(() => {
           <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto">
             <CardHeader className="flex flex-row items-center justify-between"><CardTitle>Product Details - {viewingProduct.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setViewingProduct(null); setViewingProductAuditMode(false); }}><X className="w-4 h-4"/></Button></CardHeader>
             <CardContent className="space-y-3">
-              <div className="text-sm">Created: {viewingProduct.createdAt ? new Date(viewingProduct.createdAt).toLocaleString() : 'N/A'}</div>
+              <div className="text-sm">Created: {viewingProduct.createdAt ? formatDateTimeDisplay(viewingProduct.createdAt) : 'N/A'}</div>
               {viewingVariantDetails.hasVariantRows ? (
                 <>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
