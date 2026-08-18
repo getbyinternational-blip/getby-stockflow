@@ -1,7 +1,11 @@
 const getBaseUrl = () => {
-  const WHATSAPP_SERVER_URL = String(import.meta.env.VITE_WHATSAPP_SERVER_URL || '').trim().replace(/\/$/, '');
+  const WHATSAPP_SERVER_URL = String(
+    import.meta.env.VITE_WHATSAPP_SERVER_URL
+    || import.meta.env.VITE_META_WHATSAPP_SERVER_URL
+    || ''
+  ).trim().replace(/\/$/, '');
   if (!WHATSAPP_SERVER_URL) {
-    throw new Error('WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL in Vercel Project Settings → Environment Variables, then redeploy.');
+    throw new Error('WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL or VITE_META_WHATSAPP_SERVER_URL in Vercel Project Settings, then redeploy.');
   }
   return WHATSAPP_SERVER_URL;
 };

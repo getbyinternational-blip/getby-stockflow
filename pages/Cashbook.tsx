@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { loadData, getSaleSettlementBreakdown, getCanonicalCustomerBalanceSnapshot, buildUpfrontOrderLedgerEffects, createManualCashbookEntry, refreshDeletedTransactionsFromCloud } from '../services/storage';
-import { CashAdjustment, Expense, ManualCashbookEntry, Product, PurchaseOrder, Transaction, UpfrontOrder } from '../types';
+import { AppState, CashAdjustment, CashSession, CashSource, Expense, ManualCashbookEntry, Product, PurchaseOrder, Transaction, UpfrontOrder } from '../types';
 import { formatCurrency } from '../services/numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
@@ -11,9 +11,12 @@ import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateForma
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
+const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
 
 type Row = {
   id: string; date: string; type: LedgerType; description: string; reference: string; party: string; payment: PayType;
+  cashSource?: CashSource;
   cashIn: number; cashOut: number; bankIn: number; bankOut: number;
   receivableIncrease: number; receivableDecrease: number; payableIncrease: number; payableDecrease: number;
   storeCreditIncrease: number; storeCreditDecrease: number;
@@ -128,6 +131,63 @@ const getSupplierPaymentMethod = (method: unknown): 'cash' | 'online' => {
   const normalized = String(method || '').toLowerCase();
   return normalized === 'online' || normalized === 'bank' ? 'online' : 'cash';
 };
+const isInCashSourceWindow = (iso: unknown, start: number, end = Number.POSITIVE_INFINITY) => {
+  const at = new Date(String(iso || '')).getTime();
+  return Number.isFinite(at) && at >= start && at <= end;
+};
+const shouldUseReserveCash = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve';
+const getCashbookCashSourceAvailability = (state: AppState) => {
+  const openSession = (state.cashSessions || []).find((session: CashSession) => session.status === 'open');
+  if (!openSession) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const start = new Date(openSession.startTime).getTime();
+  if (!Number.isFinite(start)) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
+  const cashFromTransactions = (state.transactions || []).reduce((sum, tx) => {
+    if (!isInCashSourceWindow((tx as any).financialDate || tx.date, start, end)) return sum;
+    const amount = Math.max(0, Number(tx.total || 0));
+    const type = String((tx as any).type || '').toLowerCase();
+    if (type === 'sale' || type === 'historical_reference') return sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0));
+    if (type === 'payment' && tx.paymentMethod === 'Cash') return sum + amount;
+    if ((type === 'return' || type === 'customer_cash_out') && tx.paymentMethod === 'Cash') return sum - amount;
+    return sum;
+  }, 0);
+  const expenses = (state.expenses || [])
+    .filter((expense) => isInCashSourceWindow(expense.effectiveAt || expense.createdAt, start, end))
+    .reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+  const cashAdjustments = (state.cashAdjustments || [])
+    .filter((entry) => isInCashSourceWindow(entry.effectiveAt || entry.createdAt, start, end))
+    .reduce((sum, entry) => sum + (entry.type === 'cash_addition' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const manualCash = (state.manualCashbookEntries || [])
+    .filter((entry) => !entry.isDeleted && isInCashSourceWindow(entry.date || entry.createdAt, start, end))
+    .reduce((sum, entry) => sum + (entry.type === 'cash_in' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const directPurchaseCashOut = (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
+    if (payment?.supplierPaymentId) return inner;
+    if (String(payment?.method || 'cash').toLowerCase() !== 'cash') return inner;
+    if (!isInCashSourceWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, start, end)) return inner;
+    return inner + Math.max(0, Number(payment.amount || 0));
+  }, 0), 0);
+  const supplierCashOut = (state.supplierPayments || [])
+    .filter((payment) => !payment.deletedAt && getSupplierPaymentMethod(payment.method) === 'cash' && isInCashSourceWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, start, end))
+    .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+  const totalCash = Math.max(0, Math.round((Number(openSession.openingBalance || 0) + cashFromTransactions + cashAdjustments + manualCash - expenses - directPurchaseCashOut - supplierCashOut) * 100) / 100);
+  const savedAt = new Date(openSession.reservedCashSavedAt || openSession.startTime).getTime();
+  const reserveBase = Math.max(0, Number(openSession.reservedCashOnHand || 0));
+  const reserveOut = Number.isFinite(savedAt) ? (
+    (state.transactions || []).filter((tx) => {
+      const type = String((tx as any).type || '').trim().toLowerCase();
+      const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
+      const isCashOutTx = (type === 'return' && (returnMode === 'refund_cash' || tx.paymentMethod === 'Cash')) || (type === 'customer_cash_out' && tx.paymentMethod === 'Cash');
+      return isCashOutTx && isInCashSourceWindow((tx as any).financialDate || tx.date, savedAt) && shouldUseReserveCash(tx.cashSource);
+    }).reduce((sum, tx) => sum + Math.max(0, Math.abs(Number(tx.total || 0))), 0)
+    + (state.expenses || []).filter((expense) => isInCashSourceWindow(expense.effectiveAt || expense.createdAt, savedAt) && shouldUseReserveCash(expense.cashSource)).reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0)
+    + (state.cashAdjustments || []).filter((entry) => entry.type === 'cash_withdrawal' && isInCashSourceWindow(entry.effectiveAt || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.manualCashbookEntries || []).filter((entry) => !entry.isDeleted && entry.type === 'cash_out' && isInCashSourceWindow(entry.date || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).filter((payment: any) => !payment?.supplierPaymentId && String(payment?.method || 'cash').toLowerCase() === 'cash' && isInCashSourceWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((inner: number, payment: any) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0)
+    + (state.supplierPayments || []).filter((payment) => !payment.deletedAt && getSupplierPaymentMethod(payment.method) === 'cash' && isInCashSourceWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0)
+  ) : 0;
+  const reserveCash = Math.max(0, Math.min(totalCash, Math.round((reserveBase - reserveOut) * 100) / 100));
+  return { activeCash: Math.max(0, Math.round((totalCash - reserveCash) * 100) / 100), reserveCash, totalCash };
+};
 function FilterSelect({
   value,
   onChange,
@@ -152,6 +212,7 @@ function FilterSelect({
     </div>
   );
 }
+
 const getCashbookMoney = (tx: any, candidates: string[]) => candidates.map((k) => toNum(tx?.[k])).find((v) => v > 0) || 0;
 
 const getCashbookSaleBreakdown = (tx: Transaction, txAny: any) => {
@@ -277,7 +338,7 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
   }
   if (normalizedType === 'return') {
     const r = getCashbookReturnBreakdown(txAny);
-    return { id: `tx-${tx.id}`, date, type: 'return', description: `Return/Refund #${reference} - ${getTransactionProductSummary(txAny)} - ${party}`, reference, party, payment: r.payment, itemPreviews: getCashbookItemPreviews(txAny),
+    return { id: `tx-${tx.id}`, date, type: 'return', description: `Return/Refund #${reference} - ${getTransactionProductSummary(txAny)} - ${party}${r.payment === 'cash' ? ` - ${formatCashSourceLabel(tx.cashSource)}` : ''}`, reference, party, payment: r.payment, cashSource: r.payment === 'cash' ? normalizeCashSource(tx.cashSource) : undefined, itemPreviews: getCashbookItemPreviews(txAny),
     cashIn: 0, cashOut: r.cashOut, bankIn: 0, bankOut: r.bankOut,
     receivableIncrease: 0, receivableDecrease: r.receivableDecrease, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: r.storeCreditIncrease, storeCreditDecrease: 0 };
   }
@@ -291,7 +352,7 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
     const storeCreditUsed = Math.max(0, toNum(txAny?.storeCreditUsed));
     const explicitReceivableIncrease = toNum(txAny?.receivableIncrease);
     const receivableIncrease = Math.max(0, explicitReceivableIncrease > 0 ? explicitReceivableIncrease : (amount - storeCreditUsed));
-    return { id: `tx-${tx.id}`, date, type: 'adjustment', description: `Customer Advance/Cash Out #${reference} - ${party}`, reference, party, payment, cashIn: 0, cashOut: payment === 'cash' ? amount : 0, bankIn: 0, bankOut: payment === 'online' ? amount : 0, receivableIncrease, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: storeCreditUsed };
+    return { id: `tx-${tx.id}`, date, type: 'adjustment', description: `Customer Advance/Cash Out #${reference} - ${party}${payment === 'cash' ? ` - ${formatCashSourceLabel(tx.cashSource)}` : ''}`, reference, party, payment, cashSource: payment === 'cash' ? normalizeCashSource(tx.cashSource) : undefined, cashIn: 0, cashOut: payment === 'cash' ? amount : 0, bankIn: 0, bankOut: payment === 'online' ? amount : 0, receivableIncrease, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: storeCreditUsed };
   }
   return { id: `tx-${tx.id}`, date, type: 'adjustment', description: `Transaction #${reference} - ${party}`, reference, party, payment: 'na', cashIn: 0, cashOut: 0, bankIn: 0, bankOut: 0, receivableIncrease: 0, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
 };
@@ -314,11 +375,7 @@ export default function Cashbook() {
   const [grossProfitPage, setGrossProfitPage] = useState(1);
   const [grossProfitModalPage, setGrossProfitModalPage] = useState(1);
   const [isAddCashOpen, setIsAddCashOpen] = useState(false);
-  const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
   const [manualType, setManualType] = useState<'cash_in' | 'cash_out'>('cash_in');
-  const [manualAmount, setManualAmount] = useState('');
-  const [manualDetails, setManualDetails] = useState('');
-  const [manualError, setManualError] = useState<string | null>(null);
   const dailyBreakdownModalRef = React.useRef<HTMLDivElement | null>(null);
   const dailyBreakdownCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const dailyBreakdownTriggerRef = React.useRef<HTMLButtonElement | null>(null);
@@ -330,7 +387,6 @@ export default function Cashbook() {
       dailyBreakdownTriggerRef.current?.focus();
     }, 0);
   }
-  useEscapeLayer(isAddCashOpen, () => setIsAddCashOpen(false), { priority: 100 });
   useEscapeLayer(Boolean(selectedDailyBreakdownKey), closeDailyBreakdownModal, { priority: 110 });
   useEscapeLayer(isGrossProfitModalOpen, () => setIsGrossProfitModalOpen(false), { priority: 115 });
 
@@ -403,35 +459,38 @@ export default function Cashbook() {
   }, [datePreset, from, to]);
   const effectiveFrom = effectiveDateRange.from;
   const effectiveTo = effectiveDateRange.to;
+  const cashSourceAvailability = useMemo(() => getCashbookCashSourceAvailability(data as AppState), [data]);
 
   const openManualCashModal = (type: 'cash_in' | 'cash_out') => {
-    setManualError(null);
-    setManualDate(new Date().toISOString().slice(0, 10));
     setManualType(type);
     setIsAddCashOpen(true);
   };
 
-  const handleSaveManualEntry = async () => {
-    const amount = Number(manualAmount);
-    if (!manualDate) { setManualError('Date is required.'); return; }
-    if (!Number.isFinite(amount) || amount <= 0) { setManualError('Amount must be greater than 0.'); return; }
-    if (manualType === 'cash_out' && amount > Math.max(0, Number(kpi.cash || 0))) {
-      setManualError('Cash out cannot exceed available cash.');
-      return;
+  const handleSaveManualEntry = async ({ amount, details, manualDate, cashSource }: { amount: number; details: string; manualDate: string; cashSource?: CashSource; }) => {
+    if (!manualDate) throw new Error('Date is required.');
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0.');
+    if (manualType === 'cash_out') {
+      const selectedSource = normalizeCashSource(cashSource);
+      const available = selectedSource === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash;
+      if (amount > available) {
+        throw new Error(`${formatCashSourceLabel(selectedSource)} cannot cover this cash out.`);
+      }
     }
-    setManualError(null);
+    const now = new Date();
+    const todayLocalKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const entryDateIso = manualDate === todayLocalKey
+      ? now.toISOString()
+      : new Date(`${manualDate}T12:00:00`).toISOString();
     await createManualCashbookEntry({
-      date: new Date(`${manualDate}T00:00:00`).toISOString(),
+      date: entryDateIso,
       type: manualType,
       amount,
-      details: manualDetails.trim(),
+      details: details.trim(),
+      cashSource: manualType === 'cash_out' ? cashSource : undefined,
       isDeleted: false,
     });
     setIsAddCashOpen(false);
-    setManualAmount('');
-    setManualDetails('');
     setManualType('cash_in');
-    setManualDate(new Date().toISOString().slice(0, 10));
     setReloadKey((k) => k + 1);
   };
 
@@ -451,15 +510,16 @@ export default function Cashbook() {
           id: `sp-${sp.id}`,
           date: sp.paidAt || sp.createdAt,
           type: 'supplier_payment',
-          description: `${sp.partyName || 'Supplier'}${overpaymentText}`,
+          description: `${sp.partyName || 'Supplier'}${!isOnline ? ` - ${formatCashSourceLabel(sp.cashSource)}` : ''}${overpaymentText}`,
           reference: sp.voucherNo || sp.id,
           party: sp.partyName || 'Supplier',
           payment: paymentMethod,
+          cashSource: isOnline ? undefined : normalizeCashSource(sp.cashSource),
           cashIn: 0, cashOut: isOnline ? 0 : amount, bankIn: 0, bankOut: isOnline ? amount : 0,
           receivableIncrease: 0, receivableDecrease: 0, payableIncrease: 0, payableDecrease: payableApplied, storeCreditIncrease: partyCreditCreated, storeCreditDecrease: 0,
         };
       });
-    const legacyMap = new Map<string, { date: string; party: string; method: 'cash' | 'online'; note: string; amount: number; allocations: number }>();
+    const legacyMap = new Map<string, { date: string; party: string; method: 'cash' | 'online'; cashSource?: CashSource; note: string; amount: number; allocations: number }>();
     safePurchaseOrders.forEach((po) => {
       asArray<any>((po as any).paymentHistory).forEach((p) => {
         if ((p as any).supplierPaymentId) return;
@@ -470,8 +530,9 @@ export default function Cashbook() {
         if (!Number.isFinite(at)) return;
         const bucket = new Date(Math.floor(at / 60000) * 60000).toISOString().slice(0, 16);
         const note = String(p.note || '').trim().toLowerCase().replace(/\s+/g, ' ');
-        const key = `${po.partyId}|${method}|${note}|${bucket}`;
-        const ex = legacyMap.get(key) || { date: p.paidAt, party: po.partyName || 'Supplier', method, note, amount: 0, allocations: 0 };
+        const cashSource = method === 'cash' ? normalizeCashSource(p.cashSource) : undefined;
+        const key = `${po.partyId}|${method}|${cashSource || 'none'}|${note}|${bucket}`;
+        const ex = legacyMap.get(key) || { date: p.paidAt, party: po.partyName || 'Supplier', method, cashSource, note, amount: 0, allocations: 0 };
         ex.amount = Number((ex.amount + amount).toFixed(2));
         ex.allocations += 1;
         legacyMap.set(key, ex);
@@ -483,10 +544,11 @@ export default function Cashbook() {
         id: `legacy-sp-${key}`,
         date: g.date,
         type: 'supplier_payment',
-        description: `${g.party}${g.allocations > 1 ? ` - allocated across ${g.allocations} POs` : ''}`,
+        description: `${g.party}${g.method === 'cash' ? ` - ${formatCashSourceLabel(g.cashSource)}` : ''}${g.allocations > 1 ? ` - allocated across ${g.allocations} POs` : ''}`,
         reference: key,
         party: g.party,
         payment: g.method === 'online' ? 'online' : 'cash',
+        cashSource: g.method === 'cash' ? normalizeCashSource(g.cashSource) : undefined,
         cashIn: 0, cashOut: g.method === 'cash' ? g.amount : 0, bankIn: 0, bankOut: g.method === 'online' ? g.amount : 0,
         receivableIncrease: 0, receivableDecrease: 0, payableIncrease: 0, payableDecrease: g.amount, storeCreditIncrease: 0, storeCreditDecrease: 0,
       });
@@ -501,19 +563,22 @@ export default function Cashbook() {
         cashIn: 0, cashOut: 0, bankIn: 0, bankOut: 0, receivableIncrease: 0, receivableDecrease: 0, payableIncrease: Math.max(0, Number(po.totalAmount || 0)), payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
       return [base];
     });
-    const expenseRows: Row[] = safeExpenses.map((e) => ({ id: `exp-${e.id}`, date: e.createdAt, type: 'expense', description: `Expense - ${e.title}`, reference: e.id, party: e.category || '-', payment: 'cash',
+    const expenseRows: Row[] = safeExpenses.map((e) => ({ id: `exp-${e.id}`, date: e.createdAt, type: 'expense', description: `Expense - ${e.title} - ${formatCashSourceLabel(e.cashSource)}`, reference: e.id, party: e.category || '-', payment: 'cash', cashSource: normalizeCashSource(e.cashSource),
       cashIn: 0, cashOut: Math.abs(e.amount || 0), bankIn: 0, bankOut: 0, receivableIncrease: 0, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 }));
-    const adjRows: Row[] = safeCashAdjustments.map((a) => ({ id: `adj-${a.id}`, date: a.createdAt, type: 'adjustment', description: a.type === 'cash_addition' ? `Manual Cash Added - ${a.note || ''}` : `Manual Cash Withdrawn - ${a.note || ''}`,
-      reference: a.id, party: '-', payment: 'cash', cashIn: a.type === 'cash_addition' ? a.amount : 0, cashOut: a.type === 'cash_withdrawal' ? a.amount : 0, bankIn: 0, bankOut: 0,
+    const adjRows: Row[] = safeCashAdjustments.map((a) => ({ id: `adj-${a.id}`, date: a.createdAt, type: 'adjustment', description: a.type === 'cash_addition' ? `Manual Cash Added - ${a.note || ''}` : `Manual Cash Withdrawn - ${formatCashSourceLabel(a.cashSource)}${a.note ? ` - ${a.note}` : ''}`,
+      reference: a.id, party: '-', payment: 'cash', cashSource: a.type === 'cash_withdrawal' ? normalizeCashSource(a.cashSource) : undefined, cashIn: a.type === 'cash_addition' ? a.amount : 0, cashOut: a.type === 'cash_withdrawal' ? a.amount : 0, bankIn: 0, bankOut: 0,
       receivableIncrease: 0, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 }));
     const manualRows: Row[] = safeManualCashbookEntries.map((entry) => ({
       id: `mce-${entry.id}`,
       date: entry.date || entry.createdAt,
       type: entry.type === 'cash_in' ? 'manual_cash_in' : 'manual_cash_out',
-      description: entry.details?.trim() || (entry.type === 'cash_in' ? 'Manual Cash In' : 'Manual Cash Out'),
+      description: entry.type === 'cash_out'
+        ? `${entry.details?.trim() || 'Manual Cash Out'} - ${formatCashSourceLabel(entry.cashSource)}`
+        : (entry.details?.trim() || 'Manual Cash In'),
       reference: entry.id,
       party: '-',
       payment: 'cash',
+      cashSource: entry.type === 'cash_out' ? normalizeCashSource(entry.cashSource) : undefined,
       cashIn: entry.type === 'cash_in' ? Math.max(0, Number(entry.amount || 0)) : 0,
       cashOut: entry.type === 'cash_out' ? Math.max(0, Number(entry.amount || 0)) : 0,
       bankIn: 0,
@@ -713,7 +778,6 @@ export default function Cashbook() {
 
     return { cash, bank, receivable: canonicalSnapshotError ? 0 : ledgerReceivableKpi, payable: ledgerPayableKpi, ledgerCalculationError: canonicalSnapshotError };
   }, [currentWindowRows, safeCustomers, safeTransactions, safePurchaseOrders]);
-  const availableCashForManualOut = useMemo(() => Math.max(0, Number(kpi.cash || 0)), [kpi.cash]);
   const productImageById = useMemo(
     () => new Map(asArray<Product>((data as any).products).map((product: any) => [String(product.id), String(product.thumbnailImage || product.image || '')])),
     [data],
@@ -1468,9 +1532,12 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                                 <div className="truncate text-slate-400">Ref: {row.reference || row.id}</div>
                               </div>
                               <div className="flex items-start md:justify-center">
-                                <span className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-medium capitalize ${getDailyPaymentBadgeClass(row.payment)}`}>
-                                  {row.payment === 'na' ? '-' : row.payment}
-                                </span>
+                                <div className="text-center">
+                                  <span className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-medium capitalize ${getDailyPaymentBadgeClass(row.payment)}`}>
+                                    {row.payment === 'na' ? '-' : row.payment}
+                                  </span>
+                                  {row.cashSource ? <div className="mt-1 text-[11px] text-slate-400">{formatCashSourceLabel(row.cashSource)}</div> : null}
+                                </div>
                               </div>
                               <div className="text-right text-sm font-semibold text-slate-900">{fmt(amount)}</div>
                             </div>
@@ -1546,7 +1613,10 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                     <div className="text-sm font-medium text-slate-900">{r.description || fallbackLabel}</div>
                   )}
                 </td>
-                <td className="px-3 py-3 whitespace-nowrap uppercase text-xs font-semibold text-slate-500">{r.payment === 'na' ? '-' : r.payment}</td>
+                <td className="px-3 py-3 whitespace-nowrap text-xs font-semibold text-slate-500">
+                  <div className="uppercase">{r.payment === 'na' ? '-' : r.payment}</div>
+                  {r.cashSource ? <div className="mt-1 normal-case text-[11px] text-slate-400">{formatCashSourceLabel(r.cashSource)}</div> : null}
+                </td>
                 <td className="px-3 py-3 text-right font-semibold text-slate-900">{fmt(getCashbookRowAmount(r))}</td>
                 <td className="px-3 py-3 text-right font-medium text-emerald-700">{r.cashIn ? fmt(r.cashIn) : '-'}</td>
                 <td className="px-3 py-3 text-right font-medium text-rose-600">{r.cashOut ? fmt(r.cashOut) : '-'}</td>
@@ -1805,29 +1875,107 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       </div>
     )}
     {isAddCashOpen && (
-      <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg border shadow-lg w-full max-w-md p-4 space-y-3">
-          <h2 className="text-lg font-semibold">{manualType === 'cash_in' ? 'Add Cash In' : 'Add Cash Out'}</h2>
-          {manualType === 'cash_out' && (
-            <div className="text-xs text-muted-foreground">Available cash: {fmt(availableCashForManualOut)}</div>
-          )}
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Amount</label>
-            <input type="number" min="0" step="0.01" value={manualAmount} onChange={(e) => setManualAmount(e.target.value)} className="border rounded px-2 h-9 w-full" />
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Details / note</label>
-            <textarea value={manualDetails} onChange={(e) => setManualDetails(e.target.value)} className="border rounded px-2 py-2 w-full min-h-[80px]" placeholder="Optional details" />
-          </div>
-          {manualError && <div className="text-xs text-red-600">{manualError}</div>}
-          <div className="flex justify-end gap-2">
-            <button className="border rounded px-3 h-9" onClick={() => setIsAddCashOpen(false)}>Cancel</button>
-            <button className="border rounded px-3 h-9 bg-slate-900 text-white" onClick={handleSaveManualEntry}>
-              {manualType === 'cash_in' ? 'Save Cash In' : 'Save Cash Out'}
-            </button>
-          </div>
-        </div>
-      </div>
+      <ManualCashEntryModal
+        type={manualType}
+        cashSourceAvailability={cashSourceAvailability}
+        onClose={() => setIsAddCashOpen(false)}
+        onSave={handleSaveManualEntry}
+      />
     )}
   </div>;
+}
+
+type ManualCashEntryModalProps = {
+  type: 'cash_in' | 'cash_out';
+  cashSourceAvailability: { activeCash: number; reserveCash: number; totalCash: number };
+  onClose: () => void;
+  onSave: (payload: { amount: number; details: string; manualDate: string; cashSource?: CashSource; }) => Promise<void>;
+};
+
+function ManualCashEntryModal({ type, cashSourceAvailability, onClose, onSave }: ManualCashEntryModalProps) {
+  const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
+  const [manualAmount, setManualAmount] = useState('');
+  const [manualDetails, setManualDetails] = useState('');
+  const [manualCashSource, setManualCashSource] = useState<CashSource>('drawer');
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEscapeLayer(true, onClose, { priority: 100 });
+
+  useEffect(() => {
+    setManualDate(new Date().toISOString().slice(0, 10));
+    setManualAmount('');
+    setManualDetails('');
+    setManualCashSource('drawer');
+    setManualError(null);
+    setIsSaving(false);
+  }, [type]);
+
+  const handleSave = async () => {
+    try {
+      setIsSaving(true);
+      setManualError(null);
+      await onSave({
+        amount: Number(manualAmount),
+        details: manualDetails,
+        manualDate,
+        cashSource: type === 'cash_out' ? manualCashSource : undefined,
+      });
+    } catch (error) {
+      setManualError(error instanceof Error ? error.message : 'Unable to save cash entry.');
+      setIsSaving(false);
+    }
+  };
+  const selectedSourceAvailable = manualCashSource === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md space-y-3 rounded-lg border bg-white p-4 shadow-lg">
+        <h2 className="text-lg font-semibold">{type === 'cash_in' ? 'Add Cash In' : 'Add Cash Out'}</h2>
+        {type === 'cash_out' && (
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Utilize From</label>
+            <select
+              value={manualCashSource}
+              onChange={(e) => setManualCashSource(e.target.value as CashSource)}
+              className="h-9 w-full rounded border px-2 text-sm"
+            >
+              <option value="drawer">Active Cash</option>
+              <option value="reserve">Reserve Cash</option>
+            </select>
+            <div className="text-xs text-muted-foreground">
+              Available in {formatCashSourceLabel(manualCashSource)}: {fmt(selectedSourceAvailable)}
+            </div>
+          </div>
+        )}
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Amount</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={manualAmount}
+            onChange={(e) => setManualAmount(e.target.value)}
+            className="h-9 w-full rounded border px-2"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Details / note</label>
+          <textarea
+            value={manualDetails}
+            onChange={(e) => setManualDetails(e.target.value)}
+            className="min-h-[80px] w-full rounded border px-2 py-2"
+            placeholder="Optional details"
+          />
+        </div>
+        {manualError && <div className="text-xs text-red-600">{manualError}</div>}
+        <div className="flex justify-end gap-2">
+          <button className="h-9 rounded border px-3" onClick={onClose} disabled={isSaving}>Cancel</button>
+          <button className="h-9 rounded border bg-slate-900 px-3 text-white disabled:opacity-60" onClick={() => void handleSave()} disabled={isSaving}>
+            {isSaving ? 'Saving...' : (type === 'cash_in' ? 'Save Cash In' : 'Save Cash Out')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

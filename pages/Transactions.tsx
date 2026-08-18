@@ -63,6 +63,21 @@ export default function Transactions() {
   const isCashAdditionVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('cash-adjustment-') && String((tx as any)?.notes || '').toLowerCase().includes('cash addition');
   const isManualCashOutVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('manual-cashbook-') && String((tx as any)?.type || '').toLowerCase() === 'manual_cash_out';
   const isManualCashInVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('manual-cashbook-') && String((tx as any)?.type || '').toLowerCase() === 'manual_cash_in';
+  const normalizeCashSource = (rawSource: unknown) => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+  const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
+  const getCashSourceLabelFromPayments = (payments: Array<{ cashSource?: unknown }>) => {
+    const sources = [...new Set(payments.map((payment) => normalizeCashSource(payment.cashSource)))];
+    if (sources.length === 0) return null;
+    if (sources.length > 1) return 'Mixed Cash Sources';
+    return formatCashSourceLabel(sources[0]);
+  };
+  const getTransactionCashSourceLabel = (tx: Transaction) => {
+    const source = (tx as any).cashSource;
+    if (source) return formatCashSourceLabel(source);
+    const notes = String(tx.notes || '');
+    const match = notes.match(/Source:\s*([^|]+)/i);
+    return match?.[1]?.trim() || null;
+  };
   const isCustomOrderPaymentRow = (tx?: Transaction | null) => !!tx && isUpfrontVirtualTransaction(tx) && String(tx.notes || '').toLowerCase().includes('order payment');
   const isCustomOrderReceivableRow = (tx?: Transaction | null) => !!tx && isUpfrontVirtualTransaction(tx) && !isCustomOrderPaymentRow(tx);
   const isNonInvoiceVirtualTransaction = (tx?: Transaction | null) => !!tx && (
@@ -181,8 +196,9 @@ export default function Transactions() {
         customerId: payment.partyId || '',
         customerName: payment.partyName || 'Supplier',
         paymentMethod: method,
+        cashSource: method === 'Cash' ? payment.cashSource : undefined,
         receiptNo: payment.voucherNo || undefined,
-        notes: `Supplier Payment - ${payment.partyName || 'Supplier'} - ${method.toLowerCase()}${payableReduced > 0 ? ` | Payable reduced ${formatMoneyWhole(payableReduced)}` : ''}${partyCreditAdded > 0 ? ` | Party credit added ${formatMoneyWhole(partyCreditAdded)}` : ''}${payment.note ? ` | Note: ${payment.note}` : ''}`,
+        notes: `Supplier Payment - ${payment.partyName || 'Supplier'} - ${method.toLowerCase()}${method === 'Cash' ? ` | Source: ${formatCashSourceLabel(payment.cashSource)}` : ''}${payableReduced > 0 ? ` | Payable reduced ${formatMoneyWhole(payableReduced)}` : ''}${partyCreditAdded > 0 ? ` | Party credit added ${formatMoneyWhole(partyCreditAdded)}` : ''}${payment.note ? ` | Note: ${payment.note}` : ''}`,
         sourceTransactionDate: selectedDate || undefined,
       } as Transaction;
     }), [supplierPayments]);
@@ -208,6 +224,10 @@ export default function Transactions() {
               : sum;
           }, 0)
         : 0;
+      const directCashPayments = Array.isArray(order.paymentHistory)
+        ? order.paymentHistory.filter((payment: any) => !payment?.supplierPaymentId && String(payment?.method || '').trim().toLowerCase() === 'cash')
+        : [];
+      const cashSourceLabel = getCashSourceLabelFromPayments(directCashPayments);
       const remainingAmount = Math.max(0, Number(order.remainingAmount || 0));
       const paymentMethod: Transaction['paymentMethod'] = remainingAmount > 0
         ? 'Credit'
@@ -236,10 +256,11 @@ export default function Transactions() {
         customerId: order.partyId || '',
         customerName: order.partyName || 'Supplier',
         paymentMethod,
+        cashSource: directCashPayments.length > 0 && cashSourceLabel !== 'Mixed Cash Sources' ? normalizeCashSource(directCashPayments[0]?.cashSource) : undefined,
         receiptNo: order.billNumber || undefined,
         billRef: order.billNumber || undefined,
         sourceRef: order.id,
-        notes: order.partyName || 'Supplier',
+        notes: `${order.partyName || 'Supplier'}${cashSourceLabel ? ` | Source: ${cashSourceLabel}` : ''}`,
         sourceTransactionDate: selectedDate,
       } as Transaction;
     }), [purchaseOrders]);
@@ -254,8 +275,9 @@ export default function Transactions() {
       customerId: '',
       customerName: expense.category || 'Expense',
       paymentMethod: 'Cash',
+      cashSource: expense.cashSource,
       receiptNo: expense.id.slice(-6),
-      notes: `Expense - ${expense.title}${expense.note ? ` | Note: ${expense.note}` : ''}`,
+      notes: `Expense - ${expense.title} | Source: ${formatCashSourceLabel(expense.cashSource)}${expense.note ? ` | Note: ${expense.note}` : ''}`,
       sourceTransactionDate: effectiveDate,
     } as Transaction;
   }), [expenses]);
@@ -272,8 +294,9 @@ export default function Transactions() {
       customerId: '',
       customerName: isWithdrawal ? (entry.paidTo || 'Cash Drawer') : 'Cash Drawer',
       paymentMethod: entry.method || 'Cash',
+      cashSource: isWithdrawal ? entry.cashSource : undefined,
       receiptNo: entry.reference || entry.id.slice(-6),
-      notes: `${baseLabel}${entry.title ? ` - ${entry.title}` : ''}${entry.note ? ` | Note: ${entry.note}` : ''}${entry.paidTo ? ` | Paid To: ${entry.paidTo}` : ''}${entry.reference ? ` | Ref: ${entry.reference}` : ''}`,
+      notes: `${baseLabel}${isWithdrawal ? ` | Source: ${formatCashSourceLabel(entry.cashSource)}` : ''}${entry.title ? ` - ${entry.title}` : ''}${entry.note ? ` | Note: ${entry.note}` : ''}${entry.paidTo ? ` | Paid To: ${entry.paidTo}` : ''}${entry.reference ? ` | Ref: ${entry.reference}` : ''}`,
       sourceTransactionDate: effectiveDate,
     } as Transaction;
   }), [cashAdjustments]);
@@ -291,8 +314,9 @@ export default function Transactions() {
         customerId: '',
         customerName: 'Cash Drawer',
         paymentMethod: 'Cash',
+        cashSource: isCashOut ? entry.cashSource : undefined,
         receiptNo: entry.id.slice(-6),
-        notes: `${isCashOut ? 'Manual Cash Out' : 'Manual Cash In'}${entry.details ? ` | ${entry.details}` : ''}`,
+        notes: `${isCashOut ? 'Manual Cash Out' : 'Manual Cash In'}${isCashOut ? ` | Source: ${formatCashSourceLabel(entry.cashSource)}` : ''}${entry.details ? ` | ${entry.details}` : ''}`,
         sourceTransactionDate: effectiveDate,
       } as Transaction;
     }), [manualCashbookEntries]);
@@ -2126,6 +2150,9 @@ export default function Transactions() {
                                         )}
                                         <td className="px-4 py-3">
                                             <span className={`text-xs font-semibold ${rowMutedToneClass}`}>{getDisplayPaymentMethod(tx)}</span>
+                                            {getTransactionCashSourceLabel(tx) && (
+                                              <div className={`text-[10px] font-medium ${rowSubtleToneClass}`}>{getTransactionCashSourceLabel(tx)}</div>
+                                            )}
                                         </td>
                                         <td className={`px-4 py-3 text-right font-bold ${amountClass}`}>
                                             <div>{formatMoneyWhole(Math.abs(tx.total))}</div>
@@ -2187,6 +2214,9 @@ export default function Transactions() {
                                                     {badgeLabel}
                                                 </Badge>
                                                 <p className="text-[9px] text-muted-foreground font-bold">{getDisplayPaymentMethod(tx)}</p>
+                                                {getTransactionCashSourceLabel(tx) && (
+                                                    <p className="text-[9px] text-muted-foreground font-medium">{getTransactionCashSourceLabel(tx)}</p>
+                                                )}
                                             </div>
                                         </div>
                                         
@@ -2251,6 +2281,7 @@ export default function Transactions() {
                                         </div>
                                         <div className="text-[10px] font-medium text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded">
                                             {getDisplayPaymentMethod(tx)}
+                                            {getTransactionCashSourceLabel(tx) ? ` - ${getTransactionCashSourceLabel(tx)}` : ''}
                                         </div>
                                     </div>
                                 </div>
@@ -2337,6 +2368,12 @@ export default function Transactions() {
                                       {getDisplayPaymentMethod(selectedTx)}
                                   </p>
                               </div>
+                              {getTransactionCashSourceLabel(selectedTx) && (
+                                <div className="col-span-2 border-t pt-2 mt-1">
+                                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Cash Source</p>
+                                  <p className="font-medium text-slate-900">{getTransactionCashSourceLabel(selectedTx)}</p>
+                                </div>
+                              )}
                               {isUpfrontVirtualTransaction(selectedTx) && (
                                 <div className="col-span-2 rounded-lg border bg-blue-50 p-2">
                                   {(() => {

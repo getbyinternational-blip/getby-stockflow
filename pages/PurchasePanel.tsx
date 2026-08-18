@@ -1,8 +1,8 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
-import { CashSource, PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
-import { appendRepairHistoryEntry, applyConfirmedPurchasePartyOrderOnlyMerge, applyMissingProductPurchaseHistoryRowsSafePatches, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, deleteSupplierPayment, editInventoryPurchaseHistoryEntry, getPurchaseOrders, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, searchPurchaseOrdersRuntime, updatePurchaseOrder, updatePurchaseParty, updateSupplierPayment, ApplyMissingProductPurchaseHistorySafeRestoreResult, MissingProductPurchaseHistoryDryRunResult, PurchaseOrderRuntimeSearchResult } from '../services/storage';
+import { AppState, CashSource, PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
+import { appendRepairHistoryEntry, applyConfirmedPurchasePartyOrderOnlyMerge, applyMissingProductPurchaseHistoryRowsSafePatches, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, deleteSupplierPayment, editInventoryPurchaseHistoryEntry, getPurchaseOrders, getSaleSettlementBreakdown, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, searchPurchaseOrdersRuntime, updatePurchaseOrder, updatePurchaseParty, updateSupplierPayment, ApplyMissingProductPurchaseHistorySafeRestoreResult, MissingProductPurchaseHistoryDryRunResult, PurchaseOrderRuntimeSearchResult } from '../services/storage';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadPurchaseData, downloadPurchaseTemplate, importPurchaseFromFile } from '../services/importExcel';
 import { getProductStockRows, NO_COLOR, NO_VARIANT } from '../services/productVariants';
@@ -73,7 +73,64 @@ const parseAccountingNumber = (value: string) => {
 const formatNumber = (value: number, digits = 2) => value.toLocaleString('en-IN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const formatLedgerNumber = (value: number) => value.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
-const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Shift Drawer';
+const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
+const isInWindow = (iso: unknown, start: number, end = Number.POSITIVE_INFINITY) => {
+  const at = new Date(String(iso || '')).getTime();
+  return Number.isFinite(at) && at >= start && at <= end;
+};
+const shouldUseReserveCash = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve';
+const getPurchaseCashSourceAvailability = (state: AppState) => {
+  const openSession = (state.cashSessions || []).find((session) => session.status === 'open');
+  if (!openSession) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const start = new Date(openSession.startTime).getTime();
+  if (!Number.isFinite(start)) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
+  const cashFromTransactions = (state.transactions || []).reduce((sum, tx) => {
+    if (!isInWindow((tx as any).financialDate || tx.date, start, end)) return sum;
+    const amount = Math.max(0, Number(tx.total || 0));
+    const type = String((tx as any).type || '').toLowerCase();
+    if (type === 'sale' || type === 'historical_reference') return sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0));
+    if (type === 'payment' && tx.paymentMethod === 'Cash') return sum + amount;
+    if ((type === 'return' || type === 'customer_cash_out') && tx.paymentMethod === 'Cash') return sum - amount;
+    return sum;
+  }, 0);
+  const expenseOut = (state.expenses || [])
+    .filter((expense) => isInWindow(expense.effectiveAt || expense.createdAt, start, end))
+    .reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+  const cashAdjustments = (state.cashAdjustments || [])
+    .filter((entry) => isInWindow(entry.effectiveAt || entry.createdAt, start, end))
+    .reduce((sum, entry) => sum + (entry.type === 'cash_addition' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const manualCash = (state.manualCashbookEntries || [])
+    .filter((entry) => !entry.isDeleted && isInWindow(entry.date || entry.createdAt, start, end))
+    .reduce((sum, entry) => sum + (entry.type === 'cash_in' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const purchaseCashOut = (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
+    if (payment?.supplierPaymentId) return inner;
+    if (String(payment?.method || 'cash').toLowerCase() !== 'cash') return inner;
+    if (!isInWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, start, end)) return inner;
+    return inner + Math.max(0, Number(payment.amount || 0));
+  }, 0), 0);
+  const supplierCashOut = (state.supplierPayments || [])
+    .filter((payment) => !payment.deletedAt && payment.method === 'cash' && isInWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, start, end))
+    .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+  const totalCash = Math.max(0, Math.round((Number(openSession.openingBalance || 0) + cashFromTransactions + cashAdjustments + manualCash - expenseOut - purchaseCashOut - supplierCashOut) * 100) / 100);
+  const savedAt = new Date(openSession.reservedCashSavedAt || openSession.startTime).getTime();
+  const reserveBase = Math.max(0, Number(openSession.reservedCashOnHand || 0));
+  const reserveOut = Number.isFinite(savedAt) ? (
+    (state.transactions || []).filter((tx) => {
+      const type = String((tx as any).type || '').trim().toLowerCase();
+      const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
+      const isCashOutTx = (type === 'return' && (returnMode === 'refund_cash' || tx.paymentMethod === 'Cash')) || (type === 'customer_cash_out' && tx.paymentMethod === 'Cash');
+      return isCashOutTx && isInWindow((tx as any).financialDate || tx.date, savedAt) && shouldUseReserveCash(tx.cashSource);
+    }).reduce((sum, tx) => sum + Math.max(0, Math.abs(Number(tx.total || 0))), 0)
+    + (state.expenses || []).filter((expense) => isInWindow(expense.effectiveAt || expense.createdAt, savedAt) && shouldUseReserveCash(expense.cashSource)).reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0)
+    + (state.cashAdjustments || []).filter((entry) => entry.type === 'cash_withdrawal' && isInWindow(entry.effectiveAt || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.manualCashbookEntries || []).filter((entry) => !entry.isDeleted && entry.type === 'cash_out' && isInWindow(entry.date || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).filter((payment: any) => !payment?.supplierPaymentId && String(payment?.method || 'cash').toLowerCase() === 'cash' && isInWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((inner: number, payment: any) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0)
+    + (state.supplierPayments || []).filter((payment) => !payment.deletedAt && payment.method === 'cash' && isInWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0)
+  ) : 0;
+  const reserveCash = Math.max(0, Math.min(totalCash, Math.round((reserveBase - reserveOut) * 100) / 100));
+  return { activeCash: Math.max(0, Math.round((totalCash - reserveCash) * 100) / 100), reserveCash, totalCash };
+};
 const EMPTY_DASH = '\u2014';
 const DISPLAY_SEPARATOR = '-';
 const formatDisplayText = (value: unknown, fallback = EMPTY_DASH) => sanitizeDisplayText(value, fallback);
@@ -920,6 +977,10 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const dataSnapshot = useMemo(() => loadData(), [orders, parties]);
   const supplierPayments = useMemo(() => dataSnapshot.supplierPayments || [], [dataSnapshot]);
   const partyCreditLedger = useMemo(() => dataSnapshot.partyCreditLedger || [], [dataSnapshot]);
+  const cashSourceAvailability = useMemo(() => getPurchaseCashSourceAvailability(dataSnapshot), [dataSnapshot]);
+  const getAvailableCashBySource = (source: CashSource) => (
+    normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+  );
   const duplicatePartyCheckReport = useMemo(() => buildPurchasePartyDuplicateCheckReport(
     parties,
     {
@@ -1272,6 +1333,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     const gstRate = gstPercent === '.' ? 0 : Math.max(0, Number(gstPercent) || 0);
     const gstAmount = Number(((taxableAmount * gstRate) / 100).toFixed(2));
     const initialPaid = Math.max(0, Number(initialPaidAmount) || 0);
+    if (initialPaid > 0 && initialPaid > getAvailableCashBySource(initialPaidCashSource)) {
+      throw new Error(`${formatCashSourceLabel(initialPaidCashSource)} cannot cover this initial purchase payment.`);
+    }
     const latestData = loadData();
     const relatedIds = getRelatedPartyIdSet(party.id);
     const latestAvailablePartyCredit = (latestData.partyCreditLedger || [])
@@ -1598,6 +1662,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             partyName: purchaseRepairDraft.nextPayment.partyName,
             amount: purchaseRepairDraft.nextPayment.amount,
             method: purchaseRepairDraft.nextPayment.method,
+            cashSource: purchaseRepairDraft.nextPayment.method === 'cash' ? purchaseRepairDraft.nextPayment.cashSource : undefined,
             note: purchaseRepairDraft.nextPayment.note,
             paidAt: purchaseRepairDraft.nextPayment.paidAt,
             effectiveAt: purchaseRepairDraft.nextPayment.effectiveAt,
@@ -1609,6 +1674,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           await updateSupplierPayment(purchaseRepairDraft.targetPaymentId, {
             amount: purchaseRepairDraft.nextPayment.amount,
             method: purchaseRepairDraft.nextPayment.method,
+            cashSource: purchaseRepairDraft.nextPayment.method === 'cash' ? purchaseRepairDraft.nextPayment.cashSource : undefined,
             note: purchaseRepairDraft.nextPayment.note,
             paidAt: purchaseRepairDraft.nextPayment.paidAt,
           });
@@ -2212,6 +2278,10 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       setPartyPaymentError('Please enter a valid financial date and time.');
       return;
     }
+    if (partialPaymentMethod === 'cash' && amount > getAvailableCashBySource(partialPaymentCashSource)) {
+      setPartyPaymentError(`${formatCashSourceLabel(partialPaymentCashSource)} cannot cover this supplier payment.`);
+      return;
+    }
     if (repairMode) {
       if (!purchaseRepairReason.trim()) {
         setPartyPaymentError('Repair reason is required.');
@@ -2279,6 +2349,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     });
     setShowPartyPaymentPopup(false);
     setPaymentTargetParty(null);
+    setPartyPaymentError(null);
     refresh();
   };
 
@@ -2566,6 +2637,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     setPartialPaymentMethod('cash');
     setPartialPaymentCashSource('drawer');
     setPartialPaymentNote('.');
+    setPartyPaymentError(null);
     setShowPaymentPopup(true);
   };
 
@@ -2573,10 +2645,18 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     if (!paymentTargetOrder) return;
     const amount = Math.max(0, Number(partialPaymentAmount) || 0);
     const remaining = Math.max(0, Number(paymentTargetOrder.remainingAmount ?? (paymentTargetOrder.totalAmount - (paymentTargetOrder.totalPaid || 0))) || 0);
-    if (amount <= 0 || amount > remaining) return;
+    if (amount <= 0 || amount > remaining) {
+      setPartyPaymentError('Please enter a valid amount within the remaining payable.');
+      return;
+    }
+    if (partialPaymentMethod === 'cash' && amount > getAvailableCashBySource(partialPaymentCashSource)) {
+      setPartyPaymentError(`${formatCashSourceLabel(partialPaymentCashSource)} cannot cover this purchase payment.`);
+      return;
+    }
     await recordPurchaseOrderPayment(paymentTargetOrder.id, amount, partialPaymentMethod, partialPaymentNote, partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined);
     setShowPaymentPopup(false);
     setPaymentTargetOrder(null);
+    setPartyPaymentError(null);
     refresh();
   };
 
@@ -4525,9 +4605,10 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   <div>
                     <Label>Cash Paid From</Label>
                     <select className="h-10 w-full rounded-md border px-3 text-sm" value={initialPaidCashSource} onChange={e => setInitialPaidCashSource(e.target.value as CashSource)}>
-                      <option value="drawer">Shift Drawer</option>
+                      <option value="drawer">Active Cash</option>
                       <option value="reserve">Reserve Cash</option>
                     </select>
+                    <div className="mt-1 text-xs text-slate-500">Available: {formatCurrency(getAvailableCashBySource(initialPaidCashSource))}</div>
                   </div>
                   <div>
                     <Label>Apply Party Credit</Label>
@@ -4780,7 +4861,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '.' ? '.' : Number(e.target.value))} /></div>
           <div><Label>Method</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentMethod} onChange={e => setPartialPaymentMethod(e.target.value as 'cash' | 'online')}><option value="cash">Cash</option><option value="online">Online</option></select></div>
           {partialPaymentMethod === 'cash' && (
-            <div><Label>Cash Paid From</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}><option value="drawer">Shift Drawer</option><option value="reserve">Reserve Cash</option></select></div>
+            <div><Label>Cash Paid From</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}><option value="drawer">Active Cash</option><option value="reserve">Reserve Cash</option></select><div className="mt-1 text-xs text-slate-500">Available: {formatCurrency(getAvailableCashBySource(partialPaymentCashSource))}</div></div>
           )}
           <div><Label>{repairMode ? 'Financial Date' : 'Date'}</Label><Input type={repairMode ? 'datetime-local' : 'date'} value={partyPaymentDate} onChange={e => setPartyPaymentDate(e.target.value)} /></div>
           <div><Label>Note</Label><Input value={partialPaymentNote} onChange={e => setPartialPaymentNote(e.target.value)} placeholder="Optional note" /></div>
@@ -4805,12 +4886,14 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
             <div>
               <Label>Cash Paid From</Label>
               <select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}>
-                <option value="drawer">Shift Drawer</option>
+                <option value="drawer">Active Cash</option>
                 <option value="reserve">Reserve Cash</option>
               </select>
+              <div className="mt-1 text-xs text-slate-500">Available: {formatCurrency(getAvailableCashBySource(partialPaymentCashSource))}</div>
             </div>
           )}
           <div><Label>Note</Label><Input value={partialPaymentNote} onChange={e => setPartialPaymentNote(e.target.value)} placeholder="Optional note" /></div>
+          {partyPaymentError && <div className="text-xs text-red-600">{partyPaymentError}</div>}
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setShowPaymentPopup(false)}>Cancel</Button>
             <Button onClick={submitPartialPayment}>Save Payment</Button>

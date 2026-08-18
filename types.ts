@@ -121,6 +121,7 @@ export interface Transaction {
   taxRate?: number;
   taxLabel?: string;
   paymentMethod?: 'Cash' | 'Credit' | 'Online' | 'Mixed';
+  cashSource?: CashSource;
   source?: 'live' | 'historical_import';
   isHistorical?: boolean;
   legacyRef?: string;

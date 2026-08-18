@@ -6,10 +6,10 @@ import autoTable from 'jspdf-autotable';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower, safeText } from '../utils/productText';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Product, CartItem, Transaction, Customer, UpfrontOrder, TAX_OPTIONS, resolveTaxOption } from '../types';
+import { AppState, CashSession, CashSource, Product, CartItem, Transaction, Customer, UpfrontOrder, TAX_OPTIONS, resolveTaxOption } from '../types';
 import { formatItemNameWithVariant, getAvailableStockForCombination, getProductStockRows, getResolvedBuyPriceForCombination, getResolvedSellPriceForCombination, NO_COLOR, NO_VARIANT, productHasCombinationStock } from '../services/productVariants';
 import { getStockBucketKey } from '../services/stockBuckets';
-import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft, fulfillUpfrontOrderAsSale } from '../services/storage';
+import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft, fulfillUpfrontOrderAsSale, getSaleSettlementBreakdown } from '../services/storage';
 import { generateReceiptPDF, generateReceiptPDFDataUrl, printReceipt } from '../services/pdf';
 import { shareTransactionInvoiceViaWhatsApp } from '../services/whatsappShare';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
@@ -33,6 +33,59 @@ const fromMoneyCents = (value: number) => value / 100;
 const safeNumber = (value: unknown, fallback = 0): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
+const isInCashSourceWindow = (iso: unknown, start: number, end = Number.POSITIVE_INFINITY) => {
+  const at = new Date(String(iso || '')).getTime();
+  return Number.isFinite(at) && at >= start && at <= end;
+};
+const shouldUseReserveCash = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve';
+const getSupplierPaymentMethodForCashSource = (method: unknown) => {
+  const normalized = String(method || '').trim().toLowerCase();
+  return normalized === 'online' || normalized === 'bank' ? 'online' : 'cash';
+};
+const getSalesCashSourceAvailability = (state: AppState) => {
+  const openSession = (state.cashSessions || []).find((session: CashSession) => session.status === 'open');
+  if (!openSession) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const start = new Date(openSession.startTime).getTime();
+  if (!Number.isFinite(start)) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
+  const cashFromTransactions = (state.transactions || []).reduce((sum, tx) => {
+    if (!isInCashSourceWindow((tx as any).financialDate || tx.date, start, end)) return sum;
+    const amount = Math.max(0, Number(tx.total || 0));
+    const type = String((tx as any).type || '').toLowerCase();
+    if (type === 'sale' || type === 'historical_reference') return sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0));
+    if (type === 'payment' && tx.paymentMethod === 'Cash') return sum + amount;
+    if ((type === 'return' || type === 'customer_cash_out') && tx.paymentMethod === 'Cash') return sum - amount;
+    return sum;
+  }, 0);
+  const expenses = (state.expenses || []).filter((expense) => isInCashSourceWindow(expense.effectiveAt || expense.createdAt, start, end)).reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+  const cashAdjustments = (state.cashAdjustments || []).filter((entry) => isInCashSourceWindow(entry.effectiveAt || entry.createdAt, start, end)).reduce((sum, entry) => sum + (entry.type === 'cash_addition' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const manualCash = (state.manualCashbookEntries || []).filter((entry) => !entry.isDeleted && isInCashSourceWindow(entry.date || entry.createdAt, start, end)).reduce((sum, entry) => sum + (entry.type === 'cash_in' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const purchaseCashOut = (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
+    if (payment?.supplierPaymentId || String(payment?.method || 'cash').toLowerCase() !== 'cash') return inner;
+    if (!isInCashSourceWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, start, end)) return inner;
+    return inner + Math.max(0, Number(payment.amount || 0));
+  }, 0), 0);
+  const supplierCashOut = (state.supplierPayments || []).filter((payment) => !payment.deletedAt && getSupplierPaymentMethodForCashSource(payment.method) === 'cash' && isInCashSourceWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, start, end)).reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+  const totalCash = Math.max(0, Math.round((Number(openSession.openingBalance || 0) + cashFromTransactions + cashAdjustments + manualCash - expenses - purchaseCashOut - supplierCashOut) * 100) / 100);
+  const savedAt = new Date(openSession.reservedCashSavedAt || openSession.startTime).getTime();
+  const reserveBase = Math.max(0, Number(openSession.reservedCashOnHand || 0));
+  const reserveOut = Number.isFinite(savedAt) ? (
+    (state.transactions || []).filter((tx) => {
+      const type = String((tx as any).type || '').toLowerCase();
+      const isCashOutTx = (type === 'return' && ((tx as any).returnHandlingMode === 'refund_cash' || tx.paymentMethod === 'Cash')) || (type === 'customer_cash_out' && tx.paymentMethod === 'Cash');
+      return isCashOutTx && isInCashSourceWindow((tx as any).financialDate || tx.date, savedAt) && shouldUseReserveCash(tx.cashSource);
+    }).reduce((sum, tx) => sum + Math.max(0, Math.abs(Number(tx.total || 0))), 0)
+    + (state.expenses || []).filter((expense) => isInCashSourceWindow(expense.effectiveAt || expense.createdAt, savedAt) && shouldUseReserveCash(expense.cashSource)).reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0)
+    + (state.cashAdjustments || []).filter((entry) => entry.type === 'cash_withdrawal' && isInCashSourceWindow(entry.effectiveAt || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.manualCashbookEntries || []).filter((entry) => !entry.isDeleted && entry.type === 'cash_out' && isInCashSourceWindow(entry.date || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).filter((payment: any) => !payment?.supplierPaymentId && String(payment?.method || 'cash').toLowerCase() === 'cash' && isInCashSourceWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((inner: number, payment: any) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0)
+    + (state.supplierPayments || []).filter((payment) => !payment.deletedAt && getSupplierPaymentMethodForCashSource(payment.method) === 'cash' && isInCashSourceWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0)
+  ) : 0;
+  const reserveCash = Math.max(0, Math.min(totalCash, Math.round((reserveBase - reserveOut) * 100) / 100));
+  return { activeCash: Math.max(0, Math.round((totalCash - reserveCash) * 100) / 100), reserveCash, totalCash };
 };
 const INVOICE_SEND_DEBUG_PREFIX = '[INVOICE_SEND_DEBUG]';
 const isInvoiceSendDebugEnabled = () => {
@@ -458,6 +511,7 @@ export default function Sales() {
   const [onlineManuallyEdited, setOnlineManuallyEdited] = useState(false);
   const [allCreditMode, setAllCreditMode] = useState(false);
   const [returnHandlingMode, setReturnHandlingMode] = useState<ReturnHandlingMode>('refund_cash');
+  const [returnCashSource, setReturnCashSource] = useState<CashSource>('drawer');
   const [transactionCashDetails, setTransactionCashDetails] = useState<{ cashReceived: number; changeReturned: number } | null>(null);
   const [receiptPrintToast, setReceiptPrintToast] = useState<{ tone: 'info' | 'error'; message: string } | null>(null);
   
@@ -1246,6 +1300,16 @@ export default function Sales() {
             if (hasCredit) return 'Credit';
             return 'Cash';
           })();
+      if (isReturnMode && returnHandlingMode === 'refund_cash') {
+        const freshAvailability = getSalesCashSourceAvailability(loadData());
+        const selectedSource = normalizeCashSource(returnCashSource);
+        const available = selectedSource === 'reserve' ? freshAvailability.reserveCash : freshAvailability.activeCash;
+        const refundAmount = Math.max(0, Math.abs(Number(total || 0)));
+        if (refundAmount > available) {
+          setCheckoutError(`${formatCashSourceLabel(selectedSource)} cannot cover this cash refund.`);
+          return;
+        }
+      }
       let currentCashDetails: { cashReceived: number; changeReturned: number } | null = null;
       if (!isReturnMode && cashPaid > 0) {
           currentCashDetails = {
@@ -1267,6 +1331,7 @@ export default function Sales() {
           gstNumber: isReturnMode ? undefined : (invoiceGstNumber.trim() || finalCustomer?.gstNumber),
           gstApplied: isReturnMode ? false : isGstApplied,
           returnHandlingMode: isReturnMode ? returnHandlingMode : undefined,
+          cashSource: isReturnMode && returnHandlingMode === 'refund_cash' ? returnCashSource : undefined,
           saleSettlement: isReturnMode ? undefined : {
             cashPaid: settlementCashPaid,
             onlinePaid: settlementOnlinePaid,
@@ -1301,6 +1366,7 @@ export default function Sales() {
         setCashReceivedDirty(false);
         setCashManuallyEdited(false);
         setReturnHandlingMode('refund_cash');
+        setReturnCashSource('drawer');
         setUseStoreCreditApplied(false);
         setStoreOverpaymentAsCredit(false);
         setSelectedTransactionDate('');
@@ -1427,6 +1493,10 @@ export default function Sales() {
   const safeCustomers = Array.isArray(customers) ? customers : [];
   const safeTransactions = Array.isArray(transactions) ? transactions : [];
   const safeUpfrontOrders = Array.isArray(upfrontOrders) ? upfrontOrders : [];
+  const cashSourceAvailability = useMemo(() => getSalesCashSourceAvailability(loadData()), [transactions, products, customers]);
+  const getAvailableCashBySource = (source: CashSource) => (
+    normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+  );
   const pendingAdvanceOrders = useMemo(() => {
     const q = advanceSearch.trim().toLowerCase();
     return safeUpfrontOrders
@@ -1894,6 +1964,7 @@ export default function Sales() {
     setReturnQtyByLine({});
     setReturnSubmitError(null);
     setMixedReturnChoice('refund_paid_method');
+    setReturnCashSource('drawer');
     setIsReturnPopupOpen(true);
   };
 
@@ -1943,6 +2014,16 @@ export default function Sales() {
       setReturnSubmitError('Unable to create return safely. Use preview details and adjust quantities.');
       return;
     }
+    if (resolvedReturnMode === 'refund_cash') {
+      const freshAvailability = getSalesCashSourceAvailability(loadData());
+      const selectedSource = normalizeCashSource(returnCashSource);
+      const available = selectedSource === 'reserve' ? freshAvailability.reserveCash : freshAvailability.activeCash;
+      const refundAmount = Math.max(0, Number(returnPreview.cashRefund || 0));
+      if (refundAmount > available) {
+        setReturnSubmitError(`${formatCashSourceLabel(selectedSource)} cannot cover this cash refund.`);
+        return;
+      }
+    }
     const tx: Transaction = {
       ...returnDraftTransaction,
       id: Date.now().toString(),
@@ -1958,6 +2039,7 @@ export default function Sales() {
       customerName: selectedReturnTx.customerName,
       paymentMethod: resolvedReturnMode === 'refund_online' ? 'Online' : resolvedReturnMode === 'reduce_due' || resolvedReturnMode === 'store_credit' ? 'Credit' : 'Cash',
       returnHandlingMode: resolvedReturnMode,
+      cashSource: resolvedReturnMode === 'refund_cash' ? returnCashSource : undefined,
       sourceTransactionId: selectedReturnTx.id,
       sourceTransactionDate: selectedReturnTx.date,
       notes: `Return against sale bill ${selectedReturnTx.id}`,
@@ -1971,6 +2053,7 @@ export default function Sales() {
       setReturnQtyByLine({});
       setSelectedReturnTxId(null);
       setReturnSubmitError(null);
+      setReturnCashSource('drawer');
     } catch (error) {
       setReturnSubmitError(getFriendlyErrorMessage(error, 'sales.return_transaction'));
     }
@@ -2733,6 +2816,22 @@ export default function Sales() {
                       <div className="rounded border bg-white p-2 flex justify-between"><span>Estimated Cash Outflow</span><span className="font-semibold">{formatMoneyPrecise(returnPreview.cashRefund)}</span></div>
                       <div className="rounded border bg-white p-2 flex justify-between"><span>Estimated Online Outflow</span><span className="font-semibold">{formatMoneyPrecise(returnPreview.onlineRefund)}</span></div>
                       <div className="rounded border bg-white p-2 flex justify-between"><span>Store Credit to be Created</span><span className="font-semibold">{formatMoneyPrecise(returnPreview.storeCreditCreated)}</span></div>
+                      {resolvedReturnMode === 'refund_cash' && returnPreview.cashRefund > 0 && (
+                        <div className="rounded border bg-white p-2 space-y-1">
+                          <Label className="text-[11px] font-bold uppercase text-muted-foreground">Refund From</Label>
+                          <select
+                            className="h-9 w-full rounded-md border px-2 text-sm"
+                            value={returnCashSource}
+                            onChange={(e) => setReturnCashSource(e.target.value as CashSource)}
+                          >
+                            <option value="drawer">Active Cash</option>
+                            <option value="reserve">Reserve Cash</option>
+                          </select>
+                          <div className="text-[11px] text-muted-foreground">
+                            Available in {formatCashSourceLabel(returnCashSource)}: {formatMoneyPrecise(getAvailableCashBySource(returnCashSource))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="rounded-md border p-2.5 text-[14px] space-y-1.5">
@@ -3028,8 +3127,24 @@ export default function Sales() {
                       <Button size="sm" variant={returnHandlingMode === 'refund_online' ? 'default' : 'outline'} onClick={() => setReturnHandlingMode('refund_online')}>Refund Online</Button>
                       <Button size="sm" variant={returnHandlingMode === 'store_credit' ? 'default' : 'outline'} onClick={() => setReturnHandlingMode('store_credit')}>Store Credit</Button>
                     </div>
+                    {returnHandlingMode === 'refund_cash' && (
+                      <div className="space-y-1 rounded-md border bg-white p-2">
+                        <Label className="text-[11px] font-bold uppercase text-muted-foreground">Refund From</Label>
+                        <select
+                          className="h-9 w-full rounded-md border px-2 text-sm"
+                          value={returnCashSource}
+                          onChange={(e) => setReturnCashSource(e.target.value as CashSource)}
+                        >
+                          <option value="drawer">Active Cash</option>
+                          <option value="reserve">Reserve Cash</option>
+                        </select>
+                        <div className="text-[11px] text-muted-foreground">
+                          Available in {formatCashSourceLabel(returnCashSource)}: {formatMoneyPrecise(getAvailableCashBySource(returnCashSource))}
+                        </div>
+                      </div>
+                    )}
                     <p className="text-[11px] text-muted-foreground">
-                      {returnHandlingMode === 'refund_cash' && <span className={getPaymentStatusColorClass('refund').replace('bg-red-50 border-red-200 ', '')}>Cash outflow from drawer.</span>}
+                      {returnHandlingMode === 'refund_cash' && <span className={getPaymentStatusColorClass('refund').replace('bg-red-50 border-red-200 ', '')}>Cash outflow from {formatCashSourceLabel(returnCashSource)}.</span>}
                       {returnHandlingMode === 'refund_online' && 'Online/bank refund (no drawer cash impact).'}
                       {returnHandlingMode === 'reduce_due' && 'Apply against customer due (customer required).'}
                       {returnHandlingMode === 'store_credit' && 'Convert to customer store credit (customer required).'}

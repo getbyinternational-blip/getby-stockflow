@@ -21,6 +21,8 @@ import {
   DeleteCompensationRecord,
   UpdatedTransactionRecord,
   CashAdjustment,
+  CashSession,
+  CashSource,
   Expense,
   ExpenseActivity,
   UpfrontOrderLedgerEffect,
@@ -7094,6 +7096,7 @@ export const createManualCashbookEntry = async (
     amount,
     details: String(payload.details || '').trim(),
     paymentMethod: 'Cash',
+    cashSource: payload.type === 'cash_out' ? (payload.cashSource === 'reserve' ? 'reserve' : 'drawer') : undefined,
     createdAt: now,
     updatedAt: now,
     isDeleted: Boolean(payload.isDeleted),
@@ -8667,12 +8670,12 @@ export const recordPurchaseOrderPayment = async (orderId: string, amount: number
   const remaining = Math.max(0, Number((totalAmount - paidSoFar).toFixed(2)));
   if (safeAmount > remaining + 0.0001) failValidation('PURCHASE_ORDER_INVALID_STATE', 'Payment exceeds remaining amount.', { orderId, amount: safeAmount, remaining });
 
-  const payment = {
+  const payment: NonNullable<PurchaseOrder['paymentHistory']>[number] = {
     id: `pop-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
     paidAt: new Date().toISOString(),
     amount: Number(safeAmount.toFixed(2)),
     method,
-    cashSource: method === 'cash' ? cashSource : undefined,
+    cashSource: method === 'cash' ? ((cashSource === 'reserve' ? 'reserve' : 'drawer') as CashSource) : undefined,
     note: note?.trim() || undefined,
   };
   const updatedOrder: PurchaseOrder = {
@@ -8709,7 +8712,7 @@ const allocateSupplierPaymentAcrossOrders = (
     const orderRemaining = Math.max(0, Number((orderTotal - paidSoFar).toFixed(2)));
     if (orderRemaining <= 0) return;
     const allocation = Math.min(remaining, orderRemaining);
-    const paymentEntry = { id: `pop-${paymentId}-${order.id}`, paidAt: paidAt || new Date().toISOString(), amount: Number(allocation.toFixed(2)), method, cashSource: method === 'cash' ? cashSource : undefined, note, supplierPaymentId: paymentId } as any;
+    const paymentEntry = { id: `pop-${paymentId}-${order.id}`, paidAt: paidAt || new Date().toISOString(), amount: Number(allocation.toFixed(2)), method, cashSource: method === 'cash' ? (cashSource === 'reserve' ? 'reserve' : 'drawer') : undefined, note, supplierPaymentId: paymentId } as any;
     order.paymentHistory = [...(order.paymentHistory || []), paymentEntry];
     order.totalPaid = Number((paidSoFar + allocation).toFixed(2));
     order.remainingAmount = Math.max(0, Number((orderTotal - (order.totalPaid || 0)).toFixed(2)));
@@ -8785,7 +8788,7 @@ export const createSupplierPayment = async (payload: Omit<SupplierPaymentLedgerE
     data = allocated.state;
     voucherNo = allocated.voucherNo;
   }
-  const payment: SupplierPaymentLedgerEntry = { ...payload, partyId: resolvedPartyId, partyName: resolvedPartyName, id: paymentId, voucherNo, amount: Number(amount.toFixed(2)), paidAt: payload.paidAt || now, createdAt: now, updatedAt: now, allocations, paymentAppliedToPayable: Number(payableApplied.toFixed(2)), partyCreditCreated: Number(partyCreditCreated.toFixed(2)) };
+  const payment: SupplierPaymentLedgerEntry = { ...payload, partyId: resolvedPartyId, partyName: resolvedPartyName, id: paymentId, voucherNo, amount: Number(amount.toFixed(2)), cashSource: payload.method === 'cash' ? (payload.cashSource === 'reserve' ? 'reserve' : 'drawer') : undefined, paidAt: payload.paidAt || now, createdAt: now, updatedAt: now, allocations, paymentAppliedToPayable: Number(payableApplied.toFixed(2)), partyCreditCreated: Number(partyCreditCreated.toFixed(2)) };
   const nextPartyCredits = [...(data.partyCreditLedger || [])];
   if (partyCreditCreated > 0) {
     const creditEntry: PartyCreditLedgerEntry = {
@@ -8928,6 +8931,7 @@ export const updateSupplierPayment = async (paymentId: string, updates: Partial<
     partyId: resolvedPartyId,
     partyName: resolvedPartyName,
     amount: nextAmount,
+    cashSource: (updates.method ?? existing.method) === 'cash' ? ((updates.cashSource ?? existing.cashSource) === 'reserve' ? 'reserve' : 'drawer') : undefined,
     paymentAppliedToPayable,
     partyCreditCreated,
     payableApplied: paymentAppliedToPayable,
@@ -9871,6 +9875,17 @@ export const processTransaction = (transaction: Transaction): AppState => {
     data = allocated.state;
     effectiveTransaction = { ...effectiveTransaction, receiptNo: allocated.receiptNo };
   }
+  const effectiveTypeForCashSource = String((effectiveTransaction as any).type || '').trim().toLowerCase();
+  const returnModeForCashSource = String((effectiveTransaction as any).returnHandlingMode || '').trim().toLowerCase();
+  const shouldPersistCashSource = (
+    effectiveTypeForCashSource === 'return' && (returnModeForCashSource === 'refund_cash' || effectiveTransaction.paymentMethod === 'Cash')
+  ) || (
+    effectiveTypeForCashSource === 'customer_cash_out' && effectiveTransaction.paymentMethod === 'Cash'
+  );
+  effectiveTransaction = {
+    ...effectiveTransaction,
+    cashSource: shouldPersistCashSource ? (effectiveTransaction.cashSource === 'reserve' ? 'reserve' : 'drawer') : undefined,
+  };
 
   const newTransactions = [effectiveTransaction, ...data.transactions];
   let newProducts = [...data.products];

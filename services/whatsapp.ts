@@ -30,7 +30,11 @@ export const getWhatsAppServerUrl = (): string => {
   const override = getOverrideUrl();
   const hasOverride = override.length > 0;
   const usingOverride = hasOverride && /^https?:\/\//i.test(override);
-  const rawEnv = (import.meta.env.VITE_WHATSAPP_SERVER_URL || '').trim();
+  const rawEnv = (
+    import.meta.env.VITE_WHATSAPP_SERVER_URL
+    || import.meta.env.VITE_META_WHATSAPP_SERVER_URL
+    || ''
+  ).trim();
 
   let resolvedBaseUrl = '';
   let usingFallback = false;
@@ -56,7 +60,7 @@ export const getWhatsAppServerUrl = (): string => {
         dev: import.meta.env.DEV,
       });
     }
-    throw new Error('VITE_WHATSAPP_SERVER_URL is not configured for this deployment.');
+    throw new Error('VITE_WHATSAPP_SERVER_URL or VITE_META_WHATSAPP_SERVER_URL is not configured for this deployment.');
   }
 
   if (isWhatsAppEnvDebugEnabled()) {
