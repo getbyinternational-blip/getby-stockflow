@@ -935,6 +935,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] = useState(false);
   const [unlockPinInput, setUnlockPinInput] = useState('');
   const [openingUnlocked, setOpeningUnlocked] = useState(false);
+  const [isReserveLedgerOpen, setIsReserveLedgerOpen] = useState(false);
   const [activeHistoryDetailSessionId, setActiveHistoryDetailSessionId] = useState<string | null>(null);
   const [editingClosingSessionId, setEditingClosingSessionId] = useState<string | null>(null);
   const [editingClosingAmount, setEditingClosingAmount] = useState('');
@@ -1005,6 +1006,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   useEscapeLayer(Boolean(deletingSessionId), () => setDeletingSessionId(null), { priority: 100 });
   useEscapeLayer(isExpectedClosingBreakdownOpen, () => setIsExpectedClosingBreakdownOpen(false), { priority: 100 });
   useEscapeLayer(isCurrentClosingBreakdownOpen, () => setIsCurrentClosingBreakdownOpen(false), { priority: 101 });
+  useEscapeLayer(isReserveLedgerOpen, () => setIsReserveLedgerOpen(false), { priority: 102 });
   useEscapeLayer(Boolean(expenseRepairDraft), () => {
     setExpenseRepairDraft(null);
     setExpenseRepairPreview(null);
@@ -1352,12 +1354,29 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     [expectedClosingForOpenSession],
   );
   const activeReserveBase = useMemo(
-    () => (openSession ? getSessionReservedCash(openSession) : 0),
-    [openSession],
+    () => {
+      if (!openSession) return 0;
+      const currentSessionReserve = getSessionReservedCash(openSession);
+      if (currentSessionReserve > 0) return currentSessionReserve;
+      return latestCarryForwardSession ? getSessionReservedCash(latestCarryForwardSession) : 0;
+    },
+    [openSession, latestCarryForwardSession],
   );
+  const activeReserveSavedAt = useMemo(() => {
+    if (!openSession) return null;
+    if (openSession.reservedCashSavedAt) return openSession.reservedCashSavedAt;
+    const priorReserve = latestCarryForwardSession ? getSessionReservedCash(latestCarryForwardSession) : 0;
+    if (priorReserve > 0) {
+      return latestCarryForwardSession?.reservedCashSavedAt
+        || latestCarryForwardSession?.endTime
+        || latestCarryForwardSession?.startTime
+        || openSession.startTime;
+    }
+    return openSession.startTime;
+  }, [openSession, latestCarryForwardSession]);
   const activeReserveOutflowSinceSave = useMemo(() => {
     if (!openSession || activeReserveBase <= 0) return 0;
-    const savedAt = openSession.reservedCashSavedAt || openSession.startTime;
+    const savedAt = activeReserveSavedAt || openSession.startTime;
     const savedAtMs = new Date(savedAt).getTime();
     if (!Number.isFinite(savedAtMs)) return 0;
     const inWindow = (iso?: string) => {
@@ -1386,7 +1405,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       .reduce((sum, order) => sum + ((order.paymentHistory || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; paidAt?: string; supplierPaymentId?: string }>)
         .filter((payment) => !payment.supplierPaymentId)
         .filter((payment) => String(payment.method || 'cash').trim().toLowerCase() === 'cash')
-        .filter((payment) => inWindow(payment.paidAt))
+        .filter((payment) => {
+          const effectiveAt = [payment.paidAt, order.updatedAt, order.effectiveAt, order.orderDate, order.createdAt]
+            .map((value) => new Date(value || '').getTime())
+            .filter(Number.isFinite)
+            .sort((a, b) => b - a)[0];
+          return inWindow(Number.isFinite(effectiveAt) ? new Date(effectiveAt).toISOString() : undefined);
+        })
         .filter((payment) => shouldReduceReserveFromSource(payment.cashSource))
         .reduce((inner, payment) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0);
     const reserveWithdrawals = cashAdjustments
@@ -1410,6 +1435,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   }, [
     openSession,
     activeReserveBase,
+    activeReserveSavedAt,
     data.transactions,
     data.manualCashbookEntries,
     data.purchaseOrders,
@@ -1445,9 +1471,21 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     () => (openSession ? reserveDraftValue : 0),
     [openSession, reserveDraftValue],
   );
+  const liveRemainingReserveCash = useMemo(
+    () => (openSession ? roundMoney(Math.max(0, activeReserveBase - activeReserveOutflowSinceSave)) : 0),
+    [openSession, activeReserveBase, activeReserveOutflowSinceSave],
+  );
   const displayedUsableCash = useMemo(
     () => roundMoney(Math.max(0, currentShiftTotalCash - displayedReservedCash)),
     [currentShiftTotalCash, displayedReservedCash],
+  );
+  const reserveAfterSavePreview = useMemo(
+    () => (openSession ? reserveDraftValue : 0),
+    [openSession, reserveDraftValue],
+  );
+  const usableAfterSavePreview = useMemo(
+    () => roundMoney(Math.max(0, currentShiftTotalCash - reserveAfterSavePreview)),
+    [currentShiftTotalCash, reserveAfterSavePreview],
   );
   const getAvailableCashBySource = (source: CashSource) => (
     normalizeCashSource(source) === 'reserve' ? activeCashInHand : currentOperationalCash
@@ -1473,6 +1511,111 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     () => roundMoney(Math.max(0, submittedClosingValue)),
     [submittedClosingValue],
   );
+  const reserveLedgerRows = useMemo(() => {
+    if (!openSession || activeReserveBase <= 0) return [] as Array<{ id: string; date: string; type: string; details: string; amount: number }>;
+    const savedAtMs = new Date(activeReserveSavedAt || openSession.startTime).getTime();
+    if (!Number.isFinite(savedAtMs)) return [] as Array<{ id: string; date: string; type: string; details: string; amount: number }>;
+    const inWindow = (iso?: string) => {
+      const at = new Date(iso || '').getTime();
+      return Number.isFinite(at) && at >= savedAtMs;
+    };
+    const rows: Array<{ id: string; date: string; type: string; details: string; amount: number }> = [];
+
+    (data.transactions || []).forEach((tx) => {
+      const type = String((tx as any).type || '').trim().toLowerCase();
+      const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
+      const isCashReturn = type === 'return' && (returnMode === 'refund_cash' || (tx as any).paymentMethod === 'Cash');
+      const isCustomerCashOut = type === 'customer_cash_out' && (tx as any).paymentMethod === 'Cash';
+      if (!(isCashReturn || isCustomerCashOut)) return;
+      if (!inWindow((tx as any).financialDate || tx.date) || !shouldReduceReserveFromSource((tx as any).cashSource)) return;
+      rows.push({
+        id: `reserve-tx-${tx.id}`,
+        date: (tx as any).financialDate || tx.date,
+        type: isCashReturn ? 'Return Refund' : 'Customer Cash Out',
+        details: `${(tx as any).customerName || 'Customer'} • ${(tx as any).id || ''}`.trim(),
+        amount: Math.max(0, Math.abs(Number((tx as any).total || 0))),
+      });
+    });
+
+    ((data.supplierPayments || []) as Array<{ id?: string; amount?: unknown; method?: unknown; cashSource?: unknown; partyName?: string; paidAt?: string; paymentDate?: string; date?: string; createdAt?: string; deletedAt?: string }>).forEach((payment) => {
+      if (payment.deletedAt) return;
+      if (getSupplierPaymentMethodForDrawer(payment.method) !== 'cash') return;
+      if (!inWindow(payment.paidAt || payment.paymentDate || payment.date || payment.createdAt) || !shouldReduceReserveFromSource(payment.cashSource)) return;
+      rows.push({
+        id: `reserve-supplier-${payment.id || Math.random()}`,
+        date: payment.paidAt || payment.paymentDate || payment.date || payment.createdAt || '',
+        type: 'Supplier Payment',
+        details: payment.partyName || 'Supplier',
+        amount: Math.max(0, Number(payment.amount || 0)),
+      });
+    });
+
+    (data.purchaseOrders || []).forEach((order) => {
+      ((order.paymentHistory || []) as Array<{ id?: string; amount?: unknown; method?: unknown; cashSource?: unknown; paidAt?: string; supplierPaymentId?: string; note?: string }>).forEach((payment) => {
+        if (payment.supplierPaymentId) return;
+        if (String(payment.method || 'cash').trim().toLowerCase() !== 'cash') return;
+        const effectiveAt = [payment.paidAt, order.updatedAt, order.effectiveAt, order.orderDate, order.createdAt]
+          .map((value) => new Date(value || '').getTime())
+          .filter(Number.isFinite)
+          .sort((a, b) => b - a)[0];
+        if (!inWindow(Number.isFinite(effectiveAt) ? new Date(effectiveAt).toISOString() : undefined) || !shouldReduceReserveFromSource(payment.cashSource)) return;
+        rows.push({
+          id: `reserve-purchase-${payment.id || order.id}`,
+          date: Number.isFinite(effectiveAt) ? new Date(effectiveAt).toISOString() : (payment.paidAt || order.updatedAt || order.effectiveAt || order.orderDate || order.createdAt),
+          type: 'Purchase Payment',
+          details: `${order.partyName || 'Supplier'}${payment.note ? ` • ${payment.note}` : ''}`,
+          amount: Math.max(0, Number(payment.amount || 0)),
+        });
+      });
+    });
+
+    cashAdjustments.forEach((entry) => {
+      if (entry.type !== 'cash_withdrawal') return;
+      if (!inWindow(entry.effectiveAt || entry.createdAt) || !shouldReduceReserveFromSource(entry.cashSource)) return;
+      rows.push({
+        id: `reserve-withdrawal-${entry.id}`,
+        date: entry.effectiveAt || entry.createdAt,
+        type: 'Cash Withdrawal',
+        details: entry.note || entry.title || entry.reference || 'Manual withdrawal',
+        amount: Math.max(0, Number(entry.amount || 0)),
+      });
+    });
+
+    (data.manualCashbookEntries || []).forEach((entry) => {
+      if (entry?.isDeleted || entry.type !== 'cash_out') return;
+      if (!inWindow(entry.date || entry.createdAt) || !shouldReduceReserveFromSource(entry.cashSource)) return;
+      rows.push({
+        id: `reserve-manual-${entry.id}`,
+        date: entry.date || entry.createdAt,
+        type: 'Manual Cash Out',
+        details: entry.details || 'Manual cash out',
+        amount: Math.max(0, Number(entry.amount || 0)),
+      });
+    });
+
+    expenses.forEach((expense) => {
+      if (!inWindow(getExpenseEffectiveDate(expense)) || !shouldReduceReserveFromSource((expense as Expense).cashSource)) return;
+      rows.push({
+        id: `reserve-expense-${expense.id}`,
+        date: getExpenseEffectiveDate(expense),
+        type: 'Expense',
+        details: `${expense.title}${expense.category ? ` • ${expense.category}` : ''}`,
+        amount: Math.max(0, Number(expense.amount || 0)),
+      });
+    });
+
+    return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [
+    openSession,
+    activeReserveBase,
+    activeReserveSavedAt,
+    data.transactions,
+    data.supplierPayments,
+    data.purchaseOrders,
+    data.manualCashbookEntries,
+    expenses,
+    cashAdjustments,
+  ]);
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
     const cashAtSale = dailyCashTotals.cashSales || 0;
@@ -4405,7 +4548,23 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <StatCard label="Current Shift Cash" value={formatINRSummary(currentShiftTotalCash)} tone="good" />
-                        <StatCard label="Reserved Cash" value={formatINRSummary(displayedReservedCash)} tone={displayedReservedCash > 0 ? 'good' : 'neutral'} />
+                        <button
+                          type="button"
+                          className="text-left"
+                          onClick={() => {
+                            if (!openSession) return;
+                            setIsReserveLedgerOpen(true);
+                          }}
+                          disabled={!openSession}
+                        >
+                          <StatCard
+                            label="Reserved Cash"
+                            value={formatINRSummary(liveRemainingReserveCash)}
+                            tone={liveRemainingReserveCash > 0 ? 'good' : 'neutral'}
+                            interactive={!!openSession}
+                            hint={openSession ? 'Click to view reserve ledger' : undefined}
+                          />
+                        </button>
                         <StatCard label="Usable Cash" value={formatINRSummary(displayedUsableCash)} tone={displayedUsableCash > 0 ? 'good' : 'neutral'} />
                       </div>
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
@@ -4445,20 +4604,23 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                           <Button type="button" onClick={() => void saveActiveReserveAmount()}>Save Reserved Cash</Button>
                         </div>
                       </div>
+                      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        Preview after save: Reserve {formatINRSummary(liveRemainingReserveCash)} to {formatINRSummary(reserveAfterSavePreview)} • Usable {formatINRSummary(currentOperationalCash)} to {formatINRSummary(usableAfterSavePreview)}
+                      </div>
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <div className="text-[11px] font-medium text-slate-500">Reserve change</div>
-                          <div className={`mt-1 text-sm font-semibold ${reserveDraftDelta > 0 ? 'text-emerald-700' : reserveDraftDelta < 0 ? 'text-blue-700' : 'text-slate-700'}`}>
-                            {reserveDraftDelta > 0 ? '+' : ''}{formatINRSummary(reserveDraftDelta)}
+                          <div className="text-[11px] font-medium text-slate-500">Reserve utilized</div>
+                          <div className={`mt-1 text-sm font-semibold ${activeReserveOutflowSinceSave > 0 ? 'text-rose-700' : 'text-slate-700'}`}>
+                            {formatINRSummary(activeReserveOutflowSinceSave)}
                           </div>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="text-[11px] font-medium text-slate-500">Saved reserve</div>
+                          <div className="mt-1 text-sm font-semibold text-slate-900">{formatINRSummary(activeReserveBase)}</div>
                         </div>
                         <div className="rounded-lg border border-slate-200 bg-white p-3">
                           <div className="text-[11px] font-medium text-slate-500">Usable after reserve</div>
                           <div className="mt-1 text-sm font-semibold text-slate-900">{formatINRSummary(displayedUsableCash)}</div>
-                        </div>
-                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <div className="text-[11px] font-medium text-slate-500">Next shift opening after reserve</div>
-                          <div className="mt-1 text-sm font-semibold text-slate-900">{formatINRSummary(autoCarryForwardValue)}</div>
                         </div>
                       </div>
                     </div>
@@ -4593,7 +4755,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           <div className="rounded-lg border border-slate-200 bg-white p-3 text-s text-slate-600">
                             Reserved cash 
-                            <div className="mt-1 text-s font-semibold text-slate-900">{formatINR(closingReserveValue)}</div>
+                            <div className="mt-1 text-s font-semibold text-slate-900">{formatINR(liveRemainingReserveCash)}</div>
+                            {activeReserveOutflowSinceSave > 0 ? (
+                              <div className="mt-1 text-xs text-slate-500">
+                                Saved {formatINRSummary(activeReserveBase)} • Utilized {formatINRSummary(activeReserveOutflowSinceSave)}
+                              </div>
+                            ) : null}
                           </div>
                           <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700">
                             Next shift opening cash
@@ -4740,6 +4907,90 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
               </div>
             )}
 
+
+            {isReserveLedgerOpen && openSession && (
+              <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" role="dialog" aria-modal="true" onClick={() => setIsReserveLedgerOpen(false)}>
+                <Card className="w-full max-w-5xl max-h-[90vh] overflow-auto" onClick={event => event.stopPropagation()}>
+                  <CardHeader className="flex flex-row items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>Reserve Cash Ledger</CardTitle>
+                      <p className="mt-1 text-sm text-slate-600">
+                        Saved {activeReserveSavedAt ? formatDateTimeDisplay(activeReserveSavedAt) : 'during this shift'} • {reserveLedgerRows.length} utilization entr{reserveLedgerRows.length === 1 ? 'y' : 'ies'}
+                      </p>
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setIsReserveLedgerOpen(false)}>Close</Button>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {(() => {
+                      const chronologicalRows = [...reserveLedgerRows].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+                      let runningReserve = activeReserveBase;
+                      const ledgerRows = chronologicalRows.map((row) => {
+                        runningReserve = Math.max(0, roundMoney(runningReserve - row.amount));
+                        return {
+                          ...row,
+                          balanceAfter: runningReserve,
+                        };
+                      }).reverse();
+                      const ledgerRowsWithOpening = [
+                        ...ledgerRows,
+                        {
+                          id: 'reserve-opening',
+                          date: activeReserveSavedAt || openSession.startTime,
+                          type: 'Reserve Saved',
+                          details: 'Opening saved reserve',
+                          amount: 0,
+                          balanceAfter: activeReserveBase,
+                        },
+                      ];
+                      return (
+                        <>
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                              <div className="text-[11px] font-medium text-slate-500">Saved reserve</div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">{formatINRSummary(activeReserveBase)}</div>
+                            </div>
+                            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                              <div className="text-[11px] font-medium text-rose-700">Reserve utilized</div>
+                              <div className="mt-1 text-sm font-semibold text-rose-900">{formatINRSummary(activeReserveOutflowSinceSave)}</div>
+                            </div>
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                              <div className="text-[11px] font-medium text-emerald-700">Reserve right now</div>
+                              <div className="mt-1 text-sm font-semibold text-emerald-900">{formatINRSummary(liveRemainingReserveCash)}</div>
+                            </div>
+                            <div className="rounded-lg border border-slate-200 bg-white p-3">
+                              <div className="text-[11px] font-medium text-slate-500">Usable cash now</div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">{formatINRSummary(currentOperationalCash)}</div>
+                            </div>
+                          </div>
+                          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                              <div className="col-span-3">Date</div>
+                              <div className="col-span-2">Entry</div>
+                              <div className="col-span-3">Details</div>
+                              <div className="col-span-2 text-right">Outflow</div>
+                              <div className="col-span-2 text-right">Reserve Left</div>
+                            </div>
+                            <div className="max-h-[420px] overflow-auto divide-y divide-slate-200">
+                              {!ledgerRowsWithOpening.length ? (
+                                <div className="p-6 text-sm text-slate-500">No reserve cash has been utilized yet.</div>
+                              ) : ledgerRowsWithOpening.map((row) => (
+                                <div key={row.id} className="grid grid-cols-12 gap-2 px-4 py-3 text-sm">
+                                  <div className="col-span-3 text-slate-600">{formatDateTimeDisplay(row.date)}</div>
+                                  <div className="col-span-2 font-medium text-slate-900">{row.type}</div>
+                                  <div className="col-span-3 text-slate-600">{row.details}</div>
+                                  <div className="col-span-2 text-right font-semibold text-rose-700">{row.amount > 0 ? formatINRSummary(row.amount) : '—'}</div>
+                                  <div className="col-span-2 text-right font-semibold text-slate-900">{formatINRSummary(row.balanceAfter)}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
 
             {isOpeningUnlockModalOpen && (
               <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">

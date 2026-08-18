@@ -22,6 +22,7 @@ type Row = {
   storeCreditIncrease: number; storeCreditDecrease: number;
   itemPreviews?: Array<{ id: string; name: string; quantity: number; image?: string; meta?: string }>;
 };
+const PURCHASE_EDITOR_SETTLEMENT_NOTE = 'settlement updated from purchase editor';
 type GrossProfitRow = {
   id: string;
   date: string;
@@ -525,11 +526,13 @@ export default function Cashbook() {
         if ((p as any).supplierPaymentId) return;
         const amount = Math.max(0, Number(p.amount || 0));
         if (amount <= 0) return;
+        const normalizedNote = String(p.note || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        if (normalizedNote.includes(PURCHASE_EDITOR_SETTLEMENT_NOTE)) return;
         const method = (p.method === 'online' ? 'online' : 'cash') as 'cash' | 'online';
         const at = new Date(p.paidAt).getTime();
         if (!Number.isFinite(at)) return;
         const bucket = new Date(Math.floor(at / 60000) * 60000).toISOString().slice(0, 16);
-        const note = String(p.note || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const note = normalizedNote;
         const cashSource = method === 'cash' ? normalizeCashSource(p.cashSource) : undefined;
         const key = `${po.partyId}|${method}|${cashSource || 'none'}|${note}|${bucket}`;
         const ex = legacyMap.get(key) || { date: p.paidAt, party: po.partyName || 'Supplier', method, cashSource, note, amount: 0, allocations: 0 };
@@ -559,8 +562,33 @@ export default function Cashbook() {
   const rows = useMemo(() => {
     const txRows = safeTransactions.map((tx) => normalizeTransactionForCashbook(tx, customerMap));
     const purchaseRows: Row[] = safePurchaseOrders.flatMap((po) => {
-      const base: Row = { id: `po-${po.id}`, date: po.orderDate || po.createdAt, type: 'purchase', description: `Purchase #${po.id.slice(-6)} - ${getPurchaseOrderProductSummary(po)} - ${po.partyName}`, reference: po.billNumber || po.id, party: po.partyName, payment: 'credit', itemPreviews: getPurchaseOrderItemPreviews(po),
-        cashIn: 0, cashOut: 0, bankIn: 0, bankOut: 0, receivableIncrease: 0, receivableDecrease: 0, payableIncrease: Math.max(0, Number(po.totalAmount || 0)), payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
+      const directPayments = asArray<any>((po as any).paymentHistory).filter((payment) => !(payment as any)?.supplierPaymentId);
+      const directCashPaid = directPayments
+        .filter((payment) => String(payment?.method || 'cash').toLowerCase() === 'cash')
+        .reduce((sum, payment) => sum + Math.max(0, Number(payment?.amount || 0)), 0);
+      const directOnlinePaid = directPayments
+        .filter((payment) => String(payment?.method || '').toLowerCase() === 'online')
+        .reduce((sum, payment) => sum + Math.max(0, Number(payment?.amount || 0)), 0);
+      const hasEditorSettlementRewrite = directPayments.some((payment) =>
+        String(payment?.note || '').trim().toLowerCase().replace(/\s+/g, ' ').includes(PURCHASE_EDITOR_SETTLEMENT_NOTE)
+      );
+      const remainingPayable = Math.max(0, Number(po.remainingAmount || 0));
+      const payment: PayType = directCashPaid > 0 && directOnlinePaid > 0
+        ? 'mixed'
+        : directCashPaid > 0
+          ? 'cash'
+          : directOnlinePaid > 0
+            ? 'online'
+            : remainingPayable > 0
+              ? 'credit'
+              : 'na';
+      const purchaseDescription = hasEditorSettlementRewrite
+        ? `Purchase Edited #${po.id.slice(-6)} - ${getPurchaseOrderProductSummary(po)} - ${po.partyName}`
+        : `Purchase #${po.id.slice(-6)} - ${getPurchaseOrderProductSummary(po)} - ${po.partyName}`;
+      const primaryCashSource = directPayments.find((payment) => String(payment?.method || 'cash').toLowerCase() === 'cash')?.cashSource;
+      const base: Row = { id: `po-${po.id}`, date: po.updatedAt || po.orderDate || po.createdAt, type: 'purchase', description: purchaseDescription, reference: po.billNumber || po.id, party: po.partyName, payment, itemPreviews: getPurchaseOrderItemPreviews(po),
+        cashSource: directCashPaid > 0 ? normalizeCashSource(primaryCashSource) : undefined,
+        cashIn: 0, cashOut: directCashPaid, bankIn: 0, bankOut: directOnlinePaid, receivableIncrease: 0, receivableDecrease: 0, payableIncrease: remainingPayable, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
       return [base];
     });
     const expenseRows: Row[] = safeExpenses.map((e) => ({ id: `exp-${e.id}`, date: e.createdAt, type: 'expense', description: `Expense - ${e.title} - ${formatCashSourceLabel(e.cashSource)}`, reference: e.id, party: e.category || '-', payment: 'cash', cashSource: normalizeCashSource(e.cashSource),

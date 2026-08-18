@@ -260,6 +260,8 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [purchaseEditTarget, setPurchaseEditTarget] = useState<{ productId: string; historyId: string } | null>(null);
   const [purchaseEditQuantity, setPurchaseEditQuantity] = useState('');
   const [purchaseEditUnitPrice, setPurchaseEditUnitPrice] = useState('');
+  const [purchaseEditSettlementMethod, setPurchaseEditSettlementMethod] = useState<'cash' | 'credit'>('credit');
+  const [purchaseEditCashSource, setPurchaseEditCashSource] = useState<CashSource>('drawer');
   const [purchaseEditError, setPurchaseEditError] = useState<string | null>(null);
   const [addingLedgerHistoryId, setAddingLedgerHistoryId] = useState<string | null>(null);
   const [selectedPhotoProduct, setSelectedPhotoProduct] = useState<Product | null>(null);
@@ -276,7 +278,11 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   useEscapeLayer(Boolean(openActionMenuProductId), () => setOpenActionMenuProductId(null), { priority: 70 });
   useEscapeLayer(Boolean(previewImage), () => setPreviewImage(null), { priority: 200 });
   useEscapeLayer(Boolean(barcodePreview), () => setBarcodePreview(null), { priority: 150 });
-  useEscapeLayer(Boolean(purchaseEditTarget), () => setPurchaseEditTarget(null), { priority: 130 });
+  useEscapeLayer(Boolean(purchaseEditTarget), () => {
+    setPurchaseEditTarget(null);
+    setPurchaseEditSettlementMethod('credit');
+    setPurchaseEditCashSource('drawer');
+  }, { priority: 130 });
   useEscapeLayer(Boolean(pendingPurchaseReverse), () => setPendingPurchaseReverse(null), { priority: 120 });
   useEscapeLayer(Boolean(pendingDeleteProductId), () => setPendingDeleteProductId(null), { priority: 120 });
   useEscapeLayer(isBatchDeleteConfirmOpen, () => setIsBatchDeleteConfirmOpen(false), { priority: 120 });
@@ -821,9 +827,16 @@ const displayProductCategory = (value: unknown): string => {
         return;
       }
     }
+    const linkedOrder = purchaseOrders.find((order) => order.id === entry.purchaseOrderId);
+    const directCashPayments = ((linkedOrder?.paymentHistory || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; supplierPaymentId?: string; creditLedgerEntryId?: string }>)
+      .filter((payment) => !payment.supplierPaymentId && !payment.creditLedgerEntryId)
+      .filter((payment) => String(payment.method || '').trim().toLowerCase() === 'cash');
+    const hasDirectCashCoverage = directCashPayments.reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0) > 0;
     setPurchaseEditTarget({ productId: purchaseTarget.id, historyId });
     setPurchaseEditQuantity(String(toNonNegativeNumber(entry.quantity)));
     setPurchaseEditUnitPrice(String(toNonNegativeNumber(entry.unitPrice)));
+    setPurchaseEditSettlementMethod(hasDirectCashCoverage ? 'cash' : 'credit');
+    setPurchaseEditCashSource(normalizeAdminCashSource(directCashPayments[0]?.cashSource));
     setPurchaseEditError(null);
   };
   const openEditStockSourcePurchaseHistoryEntry = (historyId: string) => {
@@ -841,10 +854,17 @@ const displayProductCategory = (value: unknown): string => {
         return;
       }
     }
+    const linkedOrder = purchaseOrders.find((order) => order.id === entry.purchaseOrderId);
+    const directCashPayments = ((linkedOrder?.paymentHistory || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; supplierPaymentId?: string; creditLedgerEntryId?: string }>)
+      .filter((payment) => !payment.supplierPaymentId && !payment.creditLedgerEntryId)
+      .filter((payment) => String(payment.method || '').trim().toLowerCase() === 'cash');
+    const hasDirectCashCoverage = directCashPayments.reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0) > 0;
     setStockSourceError(null);
     setPurchaseEditTarget({ productId: stockSourceProduct.id, historyId });
     setPurchaseEditQuantity(String(toNonNegativeNumber(entry.quantity)));
     setPurchaseEditUnitPrice(String(toNonNegativeNumber(entry.unitPrice)));
+    setPurchaseEditSettlementMethod(hasDirectCashCoverage ? 'cash' : 'credit');
+    setPurchaseEditCashSource(normalizeAdminCashSource(directCashPayments[0]?.cashSource));
     setPurchaseEditError(null);
   };
 
@@ -853,7 +873,17 @@ const displayProductCategory = (value: unknown): string => {
     try {
       const quantity = Number(purchaseEditQuantity);
       const unitPrice = Number(purchaseEditUnitPrice);
-      const updatedProducts = await editInventoryPurchaseHistoryEntry(purchaseEditTarget.productId, purchaseEditTarget.historyId, { quantity, unitPrice });
+      const nextTotal = roundAdminMoney(Math.max(0, quantity) * Math.max(0, unitPrice));
+      if (purchaseEditSettlementMethod === 'cash' && nextTotal > getStockSourceAvailableCashBySource(purchaseEditCashSource)) {
+        setPurchaseEditError(`${formatAdminCashSourceLabel(purchaseEditCashSource)} has only ${formatCurrencyWhole(getStockSourceAvailableCashBySource(purchaseEditCashSource))} available for this edit.`);
+        return;
+      }
+      const updatedProducts = await editInventoryPurchaseHistoryEntry(purchaseEditTarget.productId, purchaseEditTarget.historyId, {
+        quantity,
+        unitPrice,
+        settlementMethod: purchaseEditSettlementMethod,
+        cashSource: purchaseEditSettlementMethod === 'cash' ? purchaseEditCashSource : undefined,
+      });
       refreshData();
       const nextTarget = updatedProducts.find((item) => item.id === purchaseEditTarget.productId) || null;
       setPurchaseTarget(nextTarget);
@@ -861,6 +891,8 @@ const displayProductCategory = (value: unknown): string => {
       setPurchaseEditTarget(null);
       setPurchaseEditQuantity('');
       setPurchaseEditUnitPrice('');
+      setPurchaseEditSettlementMethod('credit');
+      setPurchaseEditCashSource('drawer');
       setPurchaseEditError(null);
       setNotice({ type: 'success', message: 'Purchase entry updated.' });
     } catch (error) {
@@ -1703,9 +1735,27 @@ const displayProductCategory = (value: unknown): string => {
     const cashSessions = Array.isArray(snapshot.cashSessions) ? snapshot.cashSessions : [];
     const openSession = cashSessions.find((session) => session.status === 'open');
     if (!openSession) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+    const latestReserveSession = [...cashSessions]
+      .filter((session) => session.status === 'closed')
+      .filter((session) => Math.max(0, Number(session.reservedCashOnHand || 0)) > 0)
+      .sort((a, b) => {
+        const aTime = new Date(a.endTime || a.startTime || '').getTime();
+        const bTime = new Date(b.endTime || b.startTime || '').getTime();
+        return bTime - aTime;
+      })[0];
     const totalCash = Math.max(0, roundAdminMoney(currentShiftPreviewBase.currentSystemCash));
-    const savedAtMs = new Date(openSession.reservedCashSavedAt || openSession.startTime).getTime();
-    const reserveBase = Math.max(0, Number(openSession.reservedCashOnHand || 0));
+    const reserveBase = Math.max(
+      0,
+      Number(openSession.reservedCashOnHand || 0) > 0
+        ? Number(openSession.reservedCashOnHand || 0)
+        : Number(latestReserveSession?.reservedCashOnHand || 0),
+    );
+    const reserveSavedAt = openSession.reservedCashSavedAt
+      || latestReserveSession?.reservedCashSavedAt
+      || latestReserveSession?.endTime
+      || latestReserveSession?.startTime
+      || openSession.startTime;
+    const savedAtMs = new Date(reserveSavedAt).getTime();
     if (!Number.isFinite(savedAtMs) || reserveBase <= 0) {
       return { activeCash: totalCash, reserveCash: 0, totalCash };
     }
@@ -1737,7 +1787,13 @@ const displayProductCategory = (value: unknown): string => {
       .reduce((sum, order) => sum + ((order.paymentHistory || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; paidAt?: string; supplierPaymentId?: string }>)
         .filter((payment) => !payment.supplierPaymentId)
         .filter((payment) => String(payment.method || 'cash').trim().toLowerCase() === 'cash')
-        .filter((payment) => inReserveWindow(payment.paidAt))
+        .filter((payment) => {
+          const effectiveAt = [payment.paidAt, order.updatedAt, order.effectiveAt, order.orderDate, order.createdAt]
+            .map((value) => new Date(value || '').getTime())
+            .filter(Number.isFinite)
+            .sort((a, b) => b - a)[0];
+          return inReserveWindow(Number.isFinite(effectiveAt) ? new Date(effectiveAt).toISOString() : undefined);
+        })
         .filter((payment) => shouldAdminUseReserveCash(payment.cashSource))
         .reduce((inner, payment) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0);
     const reserveSupplierPayments = (snapshot.supplierPayments || [])
@@ -1745,7 +1801,7 @@ const displayProductCategory = (value: unknown): string => {
       .filter((payment: any) => inReserveWindow(payment?.effectiveAt || payment?.paidAt || payment?.createdAt))
       .filter((payment: any) => shouldAdminUseReserveCash(payment?.cashSource))
       .reduce((sum: number, payment: any) => sum + Math.max(0, Number(payment?.amount || 0)), 0);
-    const reserveCash = Math.max(0, Math.min(totalCash, roundAdminMoney(
+    const reserveCash = Math.max(0, roundAdminMoney(
       reserveBase
       - reserveTransactionCashOut
       - reserveExpenses
@@ -1753,9 +1809,9 @@ const displayProductCategory = (value: unknown): string => {
       - reserveManualCashOut
       - reserveDirectPurchasePayments
       - reserveSupplierPayments,
-    )));
+    ));
     return {
-      activeCash: Math.max(0, roundAdminMoney(totalCash - reserveCash)),
+      activeCash: Math.max(0, roundAdminMoney(totalCash)),
       reserveCash,
       totalCash,
     };
@@ -1773,11 +1829,12 @@ const displayProductCategory = (value: unknown): string => {
     const rawCashPaid = Math.max(0, Number(stockSourceCashPaid || 0) || 0);
     const rawOnlinePaid = Math.max(0, Number(stockSourceOnlinePaid || 0) || 0);
     const rawPaid = Math.max(0, Number(stockSourcePaidAmount || 0) || 0);
+    const selectedCashAvailable = roundAdminMoney(getStockSourceAvailableCashBySource(stockSourceCashSource));
     const useDefaultCashSettlement = stockSourcePurchaseOnly && stockSourceMode === 'purchase'
       && !stockSourceSettlementTouched
       && !String(stockSourceCashPaid || '').trim()
       && !String(stockSourceOnlinePaid || '').trim();
-    const cashPaid = stockSourceMode === 'purchase'
+    const requestedCashPaid = stockSourceMode === 'purchase'
       ? stockSourcePurchaseOnly
         ? useDefaultCashSettlement
           ? totalAmount
@@ -1787,6 +1844,9 @@ const displayProductCategory = (value: unknown): string => {
           : stockSourcePaymentMethod === 'partial' && stockSourcePartialPaidVia === 'cash'
             ? Math.min(totalAmount, rawPaid)
             : 0
+      : 0;
+    const cashPaid = stockSourceMode === 'purchase'
+      ? roundAdminMoney(Math.min(requestedCashPaid, selectedCashAvailable))
       : 0;
     const onlinePaid = stockSourceMode === 'purchase'
       ? stockSourcePurchaseOnly
@@ -1813,6 +1873,8 @@ const displayProductCategory = (value: unknown): string => {
       qty,
       unitCost,
       totalAmount,
+      selectedCashAvailable,
+      requestedCashPaid: roundAdminMoney(requestedCashPaid),
       cashPaid: roundAdminMoney(cashPaid),
       onlinePaid: roundAdminMoney(onlinePaid),
       effectivePaid,
@@ -1834,6 +1896,7 @@ const displayProductCategory = (value: unknown): string => {
     stockSourcePaidAmount,
     stockSourcePaymentMethod,
     stockSourcePartialPaidVia,
+    stockSourceCashSource,
     stockSourceCashPaid,
     stockSourceOnlinePaid,
     stockSourceSettlementTouched,
@@ -2000,8 +2063,10 @@ const displayProductCategory = (value: unknown): string => {
     const quantity = stockSourceComputed.qty;
     const unitCost = stockSourceComputed.unitCost;
     const totalAmount = stockSourceComputed.totalAmount;
+    const requestedCashPaidAmount = stockSourceComputed.requestedCashPaid;
     const paidAmount = stockSourceComputed.effectivePaid;
     const cashPaidAmount = stockSourceComputed.cashPaid;
+    const selectedCashAvailable = stockSourceComputed.selectedCashAvailable;
     const onlinePaidAmount = stockSourceComputed.onlinePaid;
     const remainingAmount = stockSourceComputed.remainingPayable;
     const sellPriceRaw = String(stockSourceSellPrice ?? '').trim();
@@ -2018,8 +2083,8 @@ const displayProductCategory = (value: unknown): string => {
       setStockSourceError('Purchase party is required.');
       return;
     }
-    if (cashPaidAmount > 0 && cashPaidAmount > getStockSourceAvailableCashBySource(stockSourceCashSource)) {
-      setStockSourceError(`${formatAdminCashSourceLabel(stockSourceCashSource)} cannot cover this cash payment.`);
+    if (requestedCashPaidAmount > 0 && requestedCashPaidAmount > selectedCashAvailable) {
+      setStockSourceError(`${formatAdminCashSourceLabel(stockSourceCashSource)} has only ${formatCurrencyWhole(selectedCashAvailable)} available. Reduce cash paid, switch source, or use bank/credit before saving.`);
       return;
     }
 
@@ -4526,6 +4591,11 @@ useEffect(() => {
                                 <div className="text-[11px] text-slate-500">
                                   Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(stockSourceCashSource))}
                                 </div>
+                                {stockSourceComputed.requestedCashPaid > stockSourceComputed.cashPaid ? (
+                                  <div className="text-[11px] text-amber-700">
+                                    Only {formatCurrencyWhole(stockSourceComputed.cashPaid)} can be used from {formatAdminCashSourceLabel(stockSourceCashSource)} right now. The rest stays in due.
+                                  </div>
+                                ) : null}
                               </div>
                               <div className="space-y-1">
                                 <Label className="text-[11px] font-bold uppercase text-muted-foreground">Online/Bank Paid</Label>
@@ -4545,7 +4615,7 @@ useEffect(() => {
                               <div className="space-y-1">
                                 <Label className="text-[11px] font-bold uppercase text-muted-foreground">Credit Due</Label>
                                 <div className="flex items-center gap-1">
-                                  <Input value={stockSourceComputed.remainingPayable} readOnly className="bg-white font-semibold" />
+                                  <Input value="" readOnly placeholder="Auto from unpaid balance" className="bg-white font-semibold" />
                                   <Button
                                     type="button"
                                     variant="outline"
@@ -4615,6 +4685,11 @@ useEffect(() => {
                                   <div className="text-[11px] text-slate-500">
                                     Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(stockSourceCashSource))}
                                   </div>
+                                  {stockSourceComputed.requestedCashPaid > stockSourceComputed.cashPaid ? (
+                                    <div className="text-[11px] text-amber-700">
+                                      Only {formatCurrencyWhole(stockSourceComputed.cashPaid)} can be used from {formatAdminCashSourceLabel(stockSourceCashSource)} right now. The rest stays in due.
+                                    </div>
+                                  ) : null}
                                 </div>
                               )}
                             </>
@@ -4643,6 +4718,11 @@ useEffect(() => {
                               <div className="text-[11px] text-slate-500">
                                 Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(stockSourceCashSource))}
                               </div>
+                              {stockSourceComputed.requestedCashPaid > stockSourceComputed.cashPaid ? (
+                                <div className="text-[11px] text-amber-700">
+                                  Only {formatCurrencyWhole(stockSourceComputed.cashPaid)} can be used from {formatAdminCashSourceLabel(stockSourceCashSource)} right now. The rest stays in due.
+                                </div>
+                              ) : null}
                             </div>
                           )}
                         </div>
@@ -5461,39 +5541,134 @@ useEffect(() => {
         const newUnit = toNonNegativeNumber(purchaseEditUnitPrice);
         const newTotal = Number((newQty * newUnit).toFixed(2));
         const stockDelta = Number((newQty - oldQty).toFixed(2));
-        const coveredPaid = toNonNegativeNumber((linkedOrder?.paymentHistory || []).reduce((sum: number, payment: any) => sum + Math.max(0, Number(payment.amount || 0)), 0));
-        const estimatedRemaining = Math.max(0, Number((newTotal - coveredPaid).toFixed(2)));
-        const estimatedOverpaymentCredit = Math.max(0, Number((coveredPaid - newTotal).toFixed(2)));
+        const editableDirectPayments = ((linkedOrder?.paymentHistory || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; supplierPaymentId?: string; creditLedgerEntryId?: string }>)
+          .filter((payment) => !payment.supplierPaymentId && !payment.creditLedgerEntryId);
+        const unsupportedSettlementEntries = editableDirectPayments.some((payment) => {
+          const method = String(payment.method || '').trim().toLowerCase();
+          return method !== 'cash';
+        }) || ((linkedOrder?.paymentHistory || []) as Array<{ creditLedgerEntryId?: string }>).some((payment) => payment.creditLedgerEntryId);
+        const coveredPaid = toNonNegativeNumber(((linkedOrder?.paymentHistory || []) as Array<{ amount?: unknown }>).reduce((sum: number, payment: any) => sum + Math.max(0, Number(payment.amount || 0)), 0));
+        const nextCoveredPaid = purchaseEditSettlementMethod === 'cash' ? newTotal : 0;
+        const estimatedRemaining = Math.max(0, Number((newTotal - nextCoveredPaid).toFixed(2)));
+        const estimatedOverpaymentCredit = Math.max(0, Number((nextCoveredPaid - newTotal).toFixed(2)));
+        const currentReserveCash = Math.max(0, roundAdminMoney(getStockSourceAvailableCashBySource('reserve')));
+        const reserveUsageForEdit = purchaseEditSettlementMethod === 'cash' && normalizeAdminCashSource(purchaseEditCashSource) === 'reserve'
+          ? newTotal
+          : 0;
+        const reserveCashAfterSave = roundAdminMoney(currentReserveCash - reserveUsageForEdit);
+        const reserveCashShortfall = Math.max(0, roundAdminMoney(reserveUsageForEdit - currentReserveCash));
         return (
           <div className="fixed inset-0 z-[130] bg-black/50 flex items-center justify-center p-4">
             <Card className="w-full max-w-lg">
               <CardHeader><CardTitle>Edit Purchase Entry</CardTitle></CardHeader>
               <CardContent className="space-y-3 text-sm">
                 <div>Product: <span className="font-medium">{targetProduct?.name || '—'}</span></div>
-                <div>Party: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || '—'}</span></div>
-                <div>Purchase order: <span className="font-medium">{linkedOrder?.billNumber || linkedOrder?.id || targetHistory?.purchaseOrderId || '—'}</span></div>
-                <div className="grid grid-cols-2 gap-2 text-xs rounded border p-2">
-                  <div>Old quantity: {oldQty}</div>
-                  <div>Old unit price: {oldUnitPrice.toFixed(2)}</div>
-                  <div>Old total: {oldTotal.toFixed(2)}</div>
-                  <div>Covered amount: {coveredPaid.toFixed(2)}</div>
+                <div>Supplier: <span className="font-medium">{linkedOrder?.partyName || targetHistory?.partyName || '—'}</span></div>
+                <div className="grid grid-cols-2 gap-2 text-xs rounded border p-3 bg-white">
+                  <div>
+                    <div className="text-slate-500">Old qty</div>
+                    <div className="font-semibold text-slate-900">{oldQty}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Old rate</div>
+                    <div className="font-semibold text-slate-900">{oldUnitPrice.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Old total</div>
+                    <div className="font-semibold text-slate-900">{oldTotal.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500">Paid already</div>
+                    <div className="font-semibold text-slate-900">{coveredPaid.toFixed(2)}</div>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div><Label>Quantity</Label><Input type="number" min="0" value={purchaseEditQuantity} onChange={(e) => setPurchaseEditQuantity(e.target.value)} /></div>
-                  <div><Label>Unit Price</Label><Input type="number" min="0" value={purchaseEditUnitPrice} onChange={(e) => setPurchaseEditUnitPrice(e.target.value)} /></div>
+                  <div><Label>Rate</Label><Input type="number" min="0" value={purchaseEditUnitPrice} onChange={(e) => setPurchaseEditUnitPrice(e.target.value)} /></div>
                 </div>
-                <div className="rounded border p-2 text-xs">
-                  <div className="font-medium">payable impact</div>
-                  <div>New total: {newTotal.toFixed(2)}</div>
-                  <div>Difference: {(newTotal - oldTotal).toFixed(2)}</div>
-                  <div>stock delta: {stockDelta >= 0 ? '+' : ''}{stockDelta}</div>
-                  <div>Estimated remaining payable after edit: {estimatedRemaining.toFixed(2)}</div>
-                  {estimatedOverpaymentCredit > 0 && <div>Overpayment will become Our Credit: {estimatedOverpaymentCredit.toFixed(2)}</div>}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label>Payment Type</Label>
+                    <select
+                      className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                      value={purchaseEditSettlementMethod}
+                      onChange={(e) => setPurchaseEditSettlementMethod(e.target.value as 'cash' | 'credit')}
+                      disabled={unsupportedSettlementEntries}
+                    >
+                      <option value="credit">Credit</option>
+                      <option value="cash">Cash</option>
+                    </select>
+                  </div>
+                  <div>
+                    <Label>Use money from</Label>
+                    <select
+                      className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                      value={purchaseEditCashSource}
+                      onChange={(e) => setPurchaseEditCashSource(normalizeAdminCashSource(e.target.value))}
+                      disabled={purchaseEditSettlementMethod !== 'cash' || unsupportedSettlementEntries}
+                    >
+                      <option value="drawer">Active Cash</option>
+                      <option value="reserve">Reserve Cash</option>
+                    </select>
+                  </div>
                 </div>
-                {purchaseEditError && <div className="text-xs text-red-600">{purchaseEditError}</div>}
+                {purchaseEditSettlementMethod === 'cash' && !unsupportedSettlementEntries ? (
+                  <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                    Money available here: {formatCurrencyWhole(getStockSourceAvailableCashBySource(purchaseEditCashSource))}
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-md border bg-white p-3">
+                    <div className="text-xs text-slate-500">Current Reserve Cash</div>
+                    <div className="text-base font-semibold text-slate-900">{formatCurrencyWhole(currentReserveCash)}</div>
+                  </div>
+                  <div className="rounded-md border bg-white p-3">
+                    <div className="text-xs text-slate-500">Reserve Cash After Save</div>
+                    <div className={`text-base font-semibold ${reserveCashAfterSave < 0 ? 'text-red-600' : 'text-slate-900'}`}>
+                      {reserveCashAfterSave < 0 ? `-${formatCurrencyWhole(Math.abs(reserveCashAfterSave))}` : formatCurrencyWhole(reserveCashAfterSave)}
+                    </div>
+                    {reserveCashShortfall > 0 && (
+                      <div className="mt-1 text-xs text-red-600">
+                        Short by {formatCurrencyWhole(reserveCashShortfall)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {unsupportedSettlementEntries ? (
+                  <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    Payment type cannot be changed here for this purchase.
+                  </div>
+                ) : null}
+                <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
+                  <div className="text-sm font-semibold text-slate-900">After saving</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-md bg-white p-2">
+                      <div className="text-xs text-slate-500">New total</div>
+                      <div className="text-base font-semibold text-slate-900">{newTotal.toFixed(2)}</div>
+                    </div>
+                    <div className="rounded-md bg-white p-2">
+                      <div className="text-xs text-slate-500">Stock</div>
+                      <div className="text-base font-semibold text-slate-900">{stockDelta >= 0 ? '+' : ''}{stockDelta}</div>
+                    </div>
+                    <div className="rounded-md bg-white p-2">
+                      <div className="text-xs text-slate-500">Payment</div>
+                      <div className="text-base font-semibold text-slate-900">{purchaseEditSettlementMethod === 'cash' ? `Cash from ${formatAdminCashSourceLabel(purchaseEditCashSource)}` : 'Credit'}</div>
+                    </div>
+                    <div className="rounded-md bg-white p-2">
+                      <div className="text-xs text-slate-500">Left to pay</div>
+                      <div className="text-base font-semibold text-slate-900">{estimatedRemaining.toFixed(2)}</div>
+                    </div>
+                  </div>
+                  {estimatedOverpaymentCredit > 0 && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      Extra paid amount: {estimatedOverpaymentCredit.toFixed(2)}
+                    </div>
+                  )}
+                </div>
+                {purchaseEditError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{purchaseEditError}</div>}
                 <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => { setPurchaseEditTarget(null); setPurchaseEditError(null); }}>Cancel</Button>
-                  <Button onClick={() => void confirmEditPurchaseHistoryEntry()}>Save</Button>
+                  <Button variant="outline" onClick={() => { setPurchaseEditTarget(null); setPurchaseEditSettlementMethod('credit'); setPurchaseEditCashSource('drawer'); setPurchaseEditError(null); }}>Cancel</Button>
+                  <Button onClick={() => void confirmEditPurchaseHistoryEntry()}>Save Change</Button>
                 </div>
               </CardContent>
             </Card>

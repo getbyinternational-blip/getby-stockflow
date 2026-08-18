@@ -8761,6 +8761,89 @@ const stripSupplierPaymentAllocations = (orders: PurchaseOrder[], supplierPaymen
   return { ...order, paymentHistory: nextHistory, totalPaid, remainingAmount: Math.max(0, Number((totalAmount - totalPaid).toFixed(2))), updatedAt: new Date().toISOString() };
 });
 
+const rebuildSupplierPaymentStateForParty = (
+  orders: PurchaseOrder[],
+  supplierPayments: SupplierPaymentLedgerEntry[],
+  partyCreditLedger: PartyCreditLedgerEntry[],
+  relatedPartyIds: string[],
+) => {
+  const relatedPartyIdSet = new Set((relatedPartyIds || []).map((value) => String(value || '').trim()).filter(Boolean));
+  const affectedPayments = (supplierPayments || [])
+    .filter((payment) => !payment.deletedAt && relatedPartyIdSet.has(String(payment.partyId || '').trim()))
+    .sort((a, b) => new Date(a.paidAt || a.createdAt || 0).getTime() - new Date(b.paidAt || b.createdAt || 0).getTime());
+  const affectedPaymentIds = new Set(affectedPayments.map((payment) => payment.id));
+  const linkedCreditsByPaymentId = new Map<string, PartyCreditLedgerEntry[]>();
+  (partyCreditLedger || []).forEach((entry) => {
+    const paymentId = String(entry.sourcePaymentId || '').trim();
+    if (!paymentId || !affectedPaymentIds.has(paymentId)) return;
+    const list = linkedCreditsByPaymentId.get(paymentId) || [];
+    list.push(entry);
+    linkedCreditsByPaymentId.set(paymentId, list);
+  });
+
+  let nextOrders = [...orders];
+  affectedPayments.forEach((payment) => {
+    nextOrders = stripSupplierPaymentAllocations(nextOrders, payment.id);
+  });
+
+  const unaffectedCredits = (partyCreditLedger || []).filter((entry) => !affectedPaymentIds.has(String(entry.sourcePaymentId || '').trim()));
+  const nextCredits = [...unaffectedCredits];
+  const updatedPayments = (supplierPayments || []).map((payment) => ({ ...payment }));
+  const updatedPaymentsById = new Map(updatedPayments.map((payment) => [payment.id, payment]));
+
+  affectedPayments.forEach((payment) => {
+    const payableBefore = nextOrders
+      .filter((order) => relatedPartyIdSet.has(String(order.partyId || '').trim()) && order.status !== 'cancelled')
+      .reduce((sum, order) => sum + Math.max(0, Number(order.remainingAmount || 0)), 0);
+    const paymentAmount = Number(Math.max(0, Number(payment.amount || 0)).toFixed(2));
+    const paymentAppliedToPayable = Number(Math.max(0, Math.min(paymentAmount, payableBefore)).toFixed(2));
+    const partyCreditCreated = Number(Math.max(0, paymentAmount - paymentAppliedToPayable).toFixed(2));
+    const allocationResult = allocateSupplierPaymentAcrossOrders(
+      nextOrders,
+      relatedPartyIds,
+      payment.id,
+      paymentAppliedToPayable,
+      payment.method,
+      payment.note,
+      payment.paidAt || payment.createdAt,
+      payment.cashSource,
+    );
+    nextOrders = allocationResult.nextOrders;
+    const nextPayment = updatedPaymentsById.get(payment.id);
+    if (nextPayment) {
+      nextPayment.allocations = allocationResult.allocations;
+      nextPayment.paymentAppliedToPayable = paymentAppliedToPayable;
+      nextPayment.partyCreditCreated = partyCreditCreated;
+      nextPayment.updatedAt = new Date().toISOString();
+    }
+    if (partyCreditCreated > 0) {
+      const existingLinkedCredit = (linkedCreditsByPaymentId.get(payment.id) || [])[0];
+      nextCredits.unshift({
+        id: existingLinkedCredit?.id || `pcl-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+        partyId: payment.partyId,
+        partyName: payment.partyName,
+        amountCreated: partyCreditCreated,
+        remainingAmount: partyCreditCreated,
+        sourcePaymentId: payment.id,
+        sourceVoucherNo: payment.voucherNo,
+        method: payment.method,
+        paidAt: payment.paidAt,
+        note: payment.note,
+        type: 'supplier_overpayment',
+        usageHistory: [],
+        createdAt: existingLinkedCredit?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  return {
+    nextOrders,
+    nextSupplierPayments: updatedPayments,
+    nextPartyCreditLedger: nextCredits,
+  };
+};
+
 export const createSupplierPayment = async (payload: Omit<SupplierPaymentLedgerEntry, 'id' | 'createdAt' | 'updatedAt' | 'allocations'> & { payableApplied?: number; partyCreditCreated?: number }) => {
   let data = ensureDocumentSeriesDefaults(loadData());
   const now = new Date().toISOString();
@@ -9302,9 +9385,10 @@ export const deleteLegacySupplierPaymentGroup = async (allocations: Array<{ orde
 export const editInventoryPurchaseHistoryEntry = async (
   productId: string,
   purchaseHistoryId: string,
-  patch: { quantity: number; unitPrice: number; nextBuyPrice?: number }
+  patch: { quantity: number; unitPrice: number; nextBuyPrice?: number; settlementMethod?: 'cash' | 'credit'; cashSource?: CashSource }
 ): Promise<Product[]> => {
   const data = loadData();
+  const now = new Date().toISOString();
   const products = [...(data.products || [])];
   const productIndex = products.findIndex((p) => p.id === productId);
   if (productIndex < 0) failValidation('PRODUCT_NOT_FOUND', 'Product not found.', { productId });
@@ -9314,7 +9398,7 @@ export const editInventoryPurchaseHistoryEntry = async (
   if (historyIndex < 0) failValidation('PURCHASE_ORDER_NOT_FOUND', 'Purchase history entry not found.', { productId, purchaseHistoryId });
   const history = (product.purchaseHistory || [])[historyIndex];
 
-  const orders = [...(data.purchaseOrders || [])];
+  let orders = [...(data.purchaseOrders || [])];
   const orderIndex = history.purchaseOrderId ? orders.findIndex((o) => o.id === history.purchaseOrderId) : -1;
   const order = orderIndex >= 0 ? orders[orderIndex] : null;
   const shouldTracePurchaseEdit = shouldTraceDevFlag('TRACE_PURCHASE_EDIT');
@@ -9337,6 +9421,8 @@ export const editInventoryPurchaseHistoryEntry = async (
   let nextOrder: PurchaseOrder | null = null;
   let overpaidAmount = 0;
   let coveredAmount = 0;
+  const requestedSettlementMethod = patch.settlementMethod === 'cash' ? 'cash' : 'credit';
+  const requestedCashSource = patch.cashSource === 'reserve' ? 'reserve' : 'drawer';
   if (order) {
     const lines = Array.isArray(order.lines) ? [...order.lines] : [];
     let targetLineIndex = -1;
@@ -9369,7 +9455,30 @@ export const editInventoryPurchaseHistoryEntry = async (
 
     const totalQuantity = lines.reduce((sum, l) => sum + Math.max(0, Number(l.quantity || 0)), 0);
     const totalAmount = Number(lines.reduce((sum, l) => sum + Math.max(0, Number(l.totalCost || 0)), 0).toFixed(2));
-    const paymentHistory = Array.isArray(order.paymentHistory) ? [...order.paymentHistory] : [];
+    const existingPaymentHistory = Array.isArray(order.paymentHistory) ? [...order.paymentHistory] : [];
+    const unsupportedSettlementEntries = existingPaymentHistory.some((payment: any) => {
+      const method = String(payment?.method || '').trim().toLowerCase();
+      return Boolean(payment?.creditLedgerEntryId || (method && method !== 'cash' && !payment?.supplierPaymentId));
+    });
+    if (unsupportedSettlementEntries && patch.settlementMethod) {
+      failValidation('PURCHASE_ORDER_INVALID_STATE', 'This purchase has linked or non-cash settlement entries and cannot switch between cash and credit from this editor.', {
+        purchaseOrderId: order.id,
+        purchaseHistoryId,
+      });
+    }
+    let paymentHistory = existingPaymentHistory;
+    if (!unsupportedSettlementEntries) {
+      paymentHistory = requestedSettlementMethod === 'cash'
+        ? [{
+            id: `pop-edit-cash-${Date.now()}`,
+            paidAt: now,
+            amount: totalAmount,
+            method: 'cash' as const,
+            cashSource: requestedCashSource,
+            note: 'Settlement updated from purchase editor',
+          }]
+        : [];
+    }
     coveredAmount = Number(paymentHistory.reduce((sum, payment: any) => sum + Math.max(0, Number(payment.amount || 0)), 0).toFixed(2));
     const remainingAmount = Math.max(0, Number((totalAmount - coveredAmount).toFixed(2)));
     overpaidAmount = Math.max(0, Number((coveredAmount - totalAmount).toFixed(2)));
@@ -9386,7 +9495,6 @@ export const editInventoryPurchaseHistoryEntry = async (
     };
   }
 
-  const now = new Date().toISOString();
   const nextBuyPrice = Number((requestedNextBuyPrice ?? newUnitPrice).toFixed(2));
   const nextHistory = [...(product.purchaseHistory || [])];
   nextHistory[historyIndex] = {
@@ -9395,6 +9503,11 @@ export const editInventoryPurchaseHistoryEntry = async (
     unitPrice: newUnitPrice,
     nextBuyPrice,
     date: history.date || now,
+    paymentMethod: requestedSettlementMethod,
+    cashSource: requestedSettlementMethod === 'cash' ? requestedCashSource : undefined,
+    paidAmount: nextOrder ? Number(nextOrder.totalPaid || 0) : (requestedSettlementMethod === 'cash' ? Number((newQty * newUnitPrice).toFixed(2)) : 0),
+    totalPaid: nextOrder ? Number(nextOrder.totalPaid || 0) : (requestedSettlementMethod === 'cash' ? Number((newQty * newUnitPrice).toFixed(2)) : 0),
+    remainingAmount: nextOrder ? Number(nextOrder.remainingAmount || 0) : (requestedSettlementMethod === 'credit' ? Number((newQty * newUnitPrice).toFixed(2)) : 0),
     notes: `${history.notes || ''}${history.notes ? ' | ' : ''}Edited purchase entry`,
   } as any;
 
@@ -9423,7 +9536,8 @@ export const editInventoryPurchaseHistoryEntry = async (
 
   const editCreditId = nextOrder ? `pce-edit-${nextOrder.id}` : '';
   const existingCredits = Array.isArray((data as any).partyCreditLedger) ? ([...(data as any).partyCreditLedger] as PartyCreditLedgerEntry[]) : [];
-  const nextPartyCreditLedger = nextOrder ? existingCredits.filter((entry) => entry.id !== editCreditId) : existingCredits;
+  let nextPartyCreditLedger = nextOrder ? existingCredits.filter((entry) => entry.id !== editCreditId) : existingCredits;
+  let nextSupplierPayments = [...(data.supplierPayments || [])];
   let editCreditEntry: PartyCreditLedgerEntry | null = null;
   if (nextOrder && overpaidAmount > 0) {
     editCreditEntry = {
@@ -9447,6 +9561,30 @@ export const editInventoryPurchaseHistoryEntry = async (
   if (nextOrder && orderIndex >= 0) {
     orders[orderIndex] = nextOrder;
   }
+  if (nextOrder) {
+    const relatedPartyIds = getRelatedPurchasePartyIdsForStorage(data, nextOrder.partyId);
+    const rebuild = rebuildSupplierPaymentStateForParty(orders, data.supplierPayments || [], nextPartyCreditLedger, relatedPartyIds);
+    orders = rebuild.nextOrders;
+    nextSupplierPayments = rebuild.nextSupplierPayments;
+    nextPartyCreditLedger = rebuild.nextPartyCreditLedger;
+    const rebuiltOrder = orders.find((item) => item.id === nextOrder?.id) || nextOrder;
+    nextOrder = rebuiltOrder;
+    nextHistory[historyIndex] = {
+      ...nextHistory[historyIndex],
+      paymentMethod: Math.max(0, Number(rebuiltOrder.totalPaid || 0)) > 0
+        ? ((rebuiltOrder.paymentHistory || []).some((payment: any) => String(payment?.method || '').trim().toLowerCase() === 'cash') ? 'cash' : 'credit')
+        : 'credit',
+      cashSource: ((rebuiltOrder.paymentHistory || []).find((payment: any) => String(payment?.method || '').trim().toLowerCase() === 'cash' && !payment?.supplierPaymentId)?.cashSource === 'reserve' ? 'reserve' : ((rebuiltOrder.paymentHistory || []).find((payment: any) => String(payment?.method || '').trim().toLowerCase() === 'cash' && !payment?.supplierPaymentId) ? 'drawer' : undefined)),
+      paidAmount: Number(rebuiltOrder.totalPaid || 0),
+      totalPaid: Number(rebuiltOrder.totalPaid || 0),
+      remainingAmount: Number(rebuiltOrder.remainingAmount || 0),
+    } as any;
+    products[productIndex] = {
+      ...nextProduct,
+      purchaseHistory: nextHistory,
+    };
+  }
+  const finalProduct = products[productIndex];
   const forensicSnapshot = {
     purchaseOrderId: nextOrder?.id || history.purchaseOrderId || null,
     purchaseHistoryId,
@@ -9470,33 +9608,57 @@ export const editInventoryPurchaseHistoryEntry = async (
       purchaseOrdersCountBefore: (data.purchaseOrders || []).length,
       purchaseOrdersCountAfter: orders.length,
       productPurchaseHistoryCountBefore: (product.purchaseHistory || []).length,
-      productPurchaseHistoryCountAfter: (nextProduct.purchaseHistory || []).length,
+      productPurchaseHistoryCountAfter: (finalProduct.purchaseHistory || []).length,
       editedOrderFoundAfterPrepare: orders.some((item) => item.id === order.id),
-      editedHistoryFoundAfterPrepare: (nextProduct.purchaseHistory || []).some((item) => item.id === purchaseHistoryId),
+      editedHistoryFoundAfterPrepare: (finalProduct.purchaseHistory || []).some((item) => item.id === purchaseHistoryId),
       usesSaveDataRootPipeline: !db,
     });
   }
   if (db) {
     const user = await assertCloudWriteReady('editInventoryPurchaseHistoryEntry');
-    const productRef = doc(db!, 'stores', user.uid, 'products', nextProduct.id);
-    const orderRef = nextOrder ? doc(db!, 'stores', user.uid, 'purchaseOrders', nextOrder.id) : null;
-    const creditRef = nextOrder ? doc(db!, 'stores', user.uid, 'partyCreditLedger', editCreditId) : null;
+    const productRef = doc(db!, 'stores', user.uid, 'products', finalProduct.id);
+    const relatedPartyIds = nextOrder ? getRelatedPurchasePartyIdsForStorage(data, nextOrder.partyId) : [];
+    const relatedPartyIdSet = new Set(relatedPartyIds.map((value) => String(value || '').trim()).filter(Boolean));
+    const affectedOrders = nextOrder
+      ? orders.filter((item) => relatedPartyIdSet.has(String(item.partyId || '').trim()))
+      : (nextOrder ? [nextOrder] : []);
+    const affectedSupplierPayments = nextOrder
+      ? nextSupplierPayments.filter((payment) => relatedPartyIdSet.has(String(payment.partyId || '').trim()))
+      : [];
+    const affectedSupplierPaymentIds = new Set(affectedSupplierPayments.map((payment) => payment.id));
+    const persistedAffectedCredits = nextPartyCreditLedger.filter((entry) => {
+      const sourcePaymentId = String(entry.sourcePaymentId || '').trim();
+      return entry.id === editCreditId || (sourcePaymentId && affectedSupplierPaymentIds.has(sourcePaymentId));
+    });
+    const persistedAffectedCreditIds = new Set(persistedAffectedCredits.map((entry) => entry.id));
+    const staleCreditIds = existingCredits
+      .filter((entry) => {
+        const sourcePaymentId = String(entry.sourcePaymentId || '').trim();
+        return entry.id === editCreditId || (sourcePaymentId && affectedSupplierPaymentIds.has(sourcePaymentId));
+      })
+      .map((entry) => entry.id)
+      .filter((id) => !persistedAffectedCreditIds.has(id));
 
     await runFirestoreTransaction(db!, async (firestoreTx) => {
-      firestoreTx.set(productRef, sanitizeData(nextProduct), { merge: true });
-      if (orderRef && nextOrder) firestoreTx.set(orderRef, sanitizeData(nextOrder), { merge: true });
-      if (creditRef) {
-        if (editCreditEntry) firestoreTx.set(creditRef, sanitizeData(editCreditEntry), { merge: true });
-        else firestoreTx.delete(creditRef);
-      }
+      firestoreTx.set(productRef, sanitizeData(finalProduct), { merge: true });
+      affectedOrders.forEach((item) => {
+        firestoreTx.set(doc(db!, 'stores', user.uid, 'purchaseOrders', item.id), sanitizeData(item), { merge: true });
+      });
+      affectedSupplierPayments.forEach((payment) => {
+        firestoreTx.set(doc(db!, 'stores', user.uid, 'supplierPayments', payment.id), sanitizeData(payment), { merge: true });
+      });
+      persistedAffectedCredits.forEach((entry) => {
+        firestoreTx.set(doc(db!, 'stores', user.uid, 'partyCreditLedger', entry.id), sanitizeData(entry), { merge: true });
+      });
+      staleCreditIds.forEach((creditId) => {
+        firestoreTx.delete(doc(db!, 'stores', user.uid, 'partyCreditLedger', creditId));
+      });
     });
 
     const persistedProductSnap = await getDoc(productRef);
-    const persistedOrderSnap = orderRef ? await getDoc(orderRef) : null;
-    const persistedCreditSnap = creditRef ? await getDoc(creditRef) : null;
+    const persistedOrderSnap = nextOrder ? await getDoc(doc(db!, 'stores', user.uid, 'purchaseOrders', nextOrder.id)) : null;
     const persistedProduct = persistedProductSnap.exists() ? ({ ...(persistedProductSnap.data() as Product), id: persistedProductSnap.id }) : null;
     const persistedOrder = persistedOrderSnap?.exists() ? ({ ...(persistedOrderSnap.data() as PurchaseOrder), id: persistedOrderSnap.id }) : null;
-    const persistedCredit = persistedCreditSnap?.exists() ? ({ ...(persistedCreditSnap.data() as PartyCreditLedgerEntry), id: persistedCreditSnap.id }) : null;
     const persistedHistory = (persistedProduct?.purchaseHistory || []).find((item) => item.id === purchaseHistoryId);
     const persistedPartyLinkOk = nextOrder ? persistedOrder?.partyId === nextOrder.partyId && String(persistedOrder?.partyName || '') === String(nextOrder.partyName || '') : true;
     const persistedAmountOk = nextOrder ? Math.abs(Number(persistedOrder?.totalAmount || 0) - Number(nextOrder.totalAmount || 0)) < 0.01 : true;
@@ -9505,22 +9667,29 @@ export const editInventoryPurchaseHistoryEntry = async (
       && Math.abs(Number(persistedHistory.quantity || 0) - newQty) < 0.0001
       && Math.abs(Number(persistedHistory.unitPrice || 0) - newUnitPrice) < 0.0001
     );
-    const persistedCreditOk = editCreditEntry
-      ? Boolean(persistedCredit && Math.abs(Number(persistedCredit.remainingAmount || 0) - overpaidAmount) < 0.01)
-      : !persistedCredit;
-    if (!persistedProduct || !persistedHistoryOk || !persistedPartyLinkOk || !persistedAmountOk || !persistedCreditOk || (nextOrder && !persistedOrder)) {
+    if (!persistedProduct || !persistedHistoryOk || !persistedPartyLinkOk || !persistedAmountOk || (nextOrder && !persistedOrder)) {
       throw new Error(`Purchase edit verification failed after cloud save for order ${nextOrder?.id || purchaseHistoryId}. Please refresh and contact support before retrying.`);
     }
 
     subcollectionProductsCache = mergeProductsForTransition([], [persistedProduct, ...subcollectionProductsCache.filter((item) => item.id !== persistedProduct.id)]);
-    if (persistedOrder) {
-      subcollectionPurchaseOrdersCache = [persistedOrder, ...subcollectionPurchaseOrdersCache.filter((item) => item.id !== persistedOrder.id)];
-    }
-    if (nextOrder) {
-      subcollectionPartyCreditLedgerCache = editCreditEntry
-        ? [persistedCredit as PartyCreditLedgerEntry, ...subcollectionPartyCreditLedgerCache.filter((item) => item.id !== editCreditId)]
-        : subcollectionPartyCreditLedgerCache.filter((item) => item.id !== editCreditId);
-    }
+    const affectedOrderIds = new Set(affectedOrders.map((item) => item.id));
+    subcollectionPurchaseOrdersCache = [
+      ...affectedOrders,
+      ...subcollectionPurchaseOrdersCache.filter((item) => !affectedOrderIds.has(item.id)),
+    ];
+    const affectedSupplierPaymentIdsCache = new Set(affectedSupplierPayments.map((item) => item.id));
+    subcollectionSupplierPaymentsCache = [
+      ...affectedSupplierPayments,
+      ...subcollectionSupplierPaymentsCache.filter((item) => !affectedSupplierPaymentIdsCache.has(item.id)),
+    ];
+    const affectedCreditIdsCache = new Set([
+      ...persistedAffectedCredits.map((entry) => entry.id),
+      ...staleCreditIds,
+    ]);
+    subcollectionPartyCreditLedgerCache = [
+      ...persistedAffectedCredits,
+      ...subcollectionPartyCreditLedgerCache.filter((item) => !affectedCreditIdsCache.has(item.id)),
+    ];
     applyMergedProductsToMemory(user.uid, 'editInventoryPurchaseHistoryEntry_cloud_commit');
     applyMergedPurchaseHydrationToMemory(user.uid, 'editInventoryPurchaseHistoryEntry_cloud_commit');
     await writeAuditEvent('UPDATE', {
@@ -9529,7 +9698,8 @@ export const editInventoryPurchaseHistoryEntry = async (
       overpaidAmount: Number(overpaidAmount.toFixed(2)),
       productPersisted: true,
       purchaseOrderPersisted: true,
-      partyCreditPersisted: editCreditEntry ? true : false,
+      partyCreditPersisted: true,
+      supplierPaymentsPersisted: affectedSupplierPayments.length,
     });
     if (shouldTracePurchaseEdit) {
       const afterSaveData = loadData();
@@ -9551,7 +9721,7 @@ export const editInventoryPurchaseHistoryEntry = async (
     }
     return loadData().products || [];
   }
-  await saveData({ ...data, products, purchaseOrders: orders, partyCreditLedger: nextPartyCreditLedger }, { throwOnError: true, reason: 'editInventoryPurchaseHistoryEntry', auditOperation: 'UPDATE' });
+  await saveData({ ...data, products, purchaseOrders: orders, supplierPayments: nextSupplierPayments, partyCreditLedger: nextPartyCreditLedger }, { throwOnError: true, reason: 'editInventoryPurchaseHistoryEntry', auditOperation: 'UPDATE' });
   if (shouldTracePurchaseEdit) {
     const afterSaveData = loadData();
     const persistedOrder = (afterSaveData.purchaseOrders || []).find((item) => item.id === order.id);

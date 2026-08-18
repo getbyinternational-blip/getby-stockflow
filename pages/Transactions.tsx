@@ -41,6 +41,18 @@ function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: bo
   );
 }
 
+type TransactionKpiKey =
+  | 'totalRevenue'
+  | 'totalCash'
+  | 'totalCredit'
+  | 'totalOnline'
+  | 'totalCombined'
+  | 'totalPurchaseCash'
+  | 'totalPurchaseCredit'
+  | 'cashReceivedOnCreditDue'
+  | 'totalCashIn'
+  | 'totalCashOut';
+
 export default function Transactions() {
   const { requestAdminOverride } = useRoleSession();
   const COLORED_ROWS_STORAGE_KEY = 'stockflow.transactions.colored_rows';
@@ -124,6 +136,7 @@ export default function Transactions() {
   const [customEnd, setCustomEnd] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+  const [selectedKpiKey, setSelectedKpiKey] = useState<TransactionKpiKey | null>(null);
   const [viewMode, setViewMode] = useState<'default' | 'list' | 'list-details' | 'medium'>('list-details');
   const [useColoredTransactionRows, setUseColoredTransactionRows] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -166,6 +179,7 @@ export default function Transactions() {
   useEscapeLayer(Boolean(deleteTargetTx), () => setDeleteTargetTx(null), { priority: 120 });
   useEscapeLayer(Boolean(selectedDeletedTx), () => setSelectedDeletedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
+  useEscapeLayer(Boolean(selectedKpiKey), () => setSelectedKpiKey(null), { priority: 110 });
   useEscapeLayer(Boolean(editingTx), () => setEditingTx(null), { priority: 110 });
   useEscapeLayer(isInvoiceOptionsOpen, () => { setIsInvoiceOptionsOpen(false); setTxToExport(null); }, { priority: 110 });
   useEscapeLayer(isEditingCustomerPickerOpen, () => setIsEditingCustomerPickerOpen(false), { priority: 115 });
@@ -1463,6 +1477,11 @@ export default function Transactions() {
       paymentMethod: editingTxPaymentMethod,
     } as Transaction;
   }, [editingTx, customers, editingCustomerId, editingTxNotes, editingTxDate, editingItems, editingCashPaid, editingOnlinePaid, editingCreditDue, editingReturnMode, editingAmount, editingTxPaymentMethod]);
+  const editingCustomerBalanceAfterSave = useMemo(() => {
+    if (!editingTx || !editingDraftTransaction || !editingCustomer) return null;
+    const nextTransactions = [editingDraftTransaction, ...transactions.filter(tx => tx.id !== editingTx.id)];
+    return getCanonicalCustomerBalanceResult(editingCustomer, nextTransactions, upfrontOrders);
+  }, [editingTx, editingDraftTransaction, editingCustomer, transactions, upfrontOrders]);
   const editingAuditPreview = useMemo(() => {
     if (!editingTx || !editingDraftTransaction) return null;
     try {
@@ -1705,6 +1724,134 @@ export default function Transactions() {
       };
   }, [filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments]);
 
+  const transactionKpiCards = useMemo(() => ([
+      { key: 'totalRevenue' as const, label: 'Total Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/70', labelClass: 'text-blue-700/80', valueClass: 'text-blue-950' },
+      { key: 'totalCash' as const, label: 'Total Cash', value: transactionKpis.totalCash, cardClass: 'border-green-200 bg-green-50/70', labelClass: 'text-green-700/80', valueClass: 'text-green-950' },
+      { key: 'totalCredit' as const, label: 'Credit', value: transactionKpis.totalCredit, cardClass: 'border-amber-200 bg-amber-50/80', labelClass: 'text-amber-700/80', valueClass: 'text-amber-950' },
+      { key: 'totalOnline' as const, label: 'Online', value: transactionKpis.totalOnline, cardClass: 'border-purple-200 bg-purple-50/70', labelClass: 'text-purple-700/80', valueClass: 'text-purple-950' },
+      { key: 'totalCombined' as const, label: 'Cash + Credit + Online', value: transactionKpis.totalCombined, cardClass: 'border-indigo-200 bg-indigo-50/70', labelClass: 'text-indigo-700/80', valueClass: 'text-indigo-950' },
+      { key: 'totalPurchaseCash' as const, label: 'Total Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-red-200 bg-red-50/70', labelClass: 'text-red-700/80', valueClass: 'text-red-950' },
+      { key: 'totalPurchaseCredit' as const, label: 'Total Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/80', labelClass: 'text-orange-700/80', valueClass: 'text-orange-950' },
+      { key: 'cashReceivedOnCreditDue' as const, label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-teal-200 bg-teal-50/80', labelClass: 'text-teal-700/80', valueClass: 'text-teal-950' },
+      { key: 'totalCashIn' as const, label: 'Total Cash In', value: transactionKpis.totalCashIn, cardClass: 'border-emerald-200 bg-emerald-50/70', labelClass: 'text-emerald-700/80', valueClass: 'text-emerald-950' },
+      { key: 'totalCashOut' as const, label: 'Total Cash Out', value: transactionKpis.totalCashOut, cardClass: 'border-rose-200 bg-rose-50/70', labelClass: 'text-rose-700/80', valueClass: 'text-rose-950' },
+  ]), [transactionKpis]);
+
+  const selectedKpiCard = useMemo(
+    () => transactionKpiCards.find((card) => card.key === selectedKpiKey) || null,
+    [transactionKpiCards, selectedKpiKey],
+  );
+
+  const selectedKpiRows = useMemo(() => {
+    if (!selectedKpiKey) return [] as Array<{ id: string; date: string; type: string; name: string; method: string; amount: number; cashSource: string | null; tx: Transaction | null }>;
+
+    if (selectedKpiKey === 'totalPurchaseCash') {
+      const purchaseRows = filteredPurchaseOrders.flatMap((order) =>
+        Array.isArray(order.paymentHistory)
+          ? order.paymentHistory
+              .filter((payment) => String(payment?.method || '').trim().toLowerCase() === 'cash')
+              .filter((payment) => !payment?.supplierPaymentId)
+              .map((payment, index) => ({
+                id: `purchase-cash-${order.id}-${payment.id || index}`,
+                date: payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt || '',
+                type: 'Purchase Cash',
+                name: order.partyName || 'Supplier',
+                method: 'Cash',
+                amount: Math.max(0, Number(payment.amount || 0)),
+                cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
+                tx: null,
+              }))
+          : []
+      );
+      const supplierRows = filteredCashSupplierPayments.map((payment) => ({
+        id: `supplier-cash-${payment.id}`,
+        date: payment.effectiveAt || payment.paidAt || payment.createdAt || '',
+        type: 'Supplier Payment',
+        name: payment.partyName || 'Supplier',
+        method: 'Cash',
+        amount: Math.max(0, Number(payment.amount || 0)),
+        cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
+        tx: virtualSupplierPaymentTransactions.find((tx) => tx.id === `supplier-payment-${payment.id}`) || null,
+      }));
+      return [...purchaseRows, ...supplierRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
+
+    if (selectedKpiKey === 'totalPurchaseCredit') {
+      return filteredPurchaseOrders
+        .map((order) => ({
+          id: `purchase-credit-${order.id}`,
+          date: order.effectiveAt || order.orderDate || order.createdAt || '',
+          type: 'Purchase Credit',
+          name: order.partyName || 'Supplier',
+          method: 'Credit',
+          amount: Math.max(0, Number(order.remainingAmount || 0)),
+          cashSource: null,
+          tx: virtualPurchaseOrderTransactions.find((tx) => tx.id === `purchase-order-${order.id}`) || null,
+        }))
+        .filter((row) => row.amount > 0)
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
+
+    return filteredTransactions
+      .filter((tx) => {
+        const amount = Math.max(0, Math.abs(Number(tx.total || 0)));
+        if (amount <= 0) return false;
+        const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+        const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
+        const isSaleLike = txType === 'sale' || txType === 'historical_reference';
+        const isSupplierPayment = isSupplierPaymentVirtualTransaction(tx);
+        const isCashInVirtual = isCashAdditionVirtualTransaction(tx) || isManualCashInVirtualTransaction(tx);
+        const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
+        const settlement = isSaleLike ? getSaleSettlementBreakdown(tx) : null;
+
+        switch (selectedKpiKey) {
+          case 'totalRevenue':
+            return isSaleLike;
+          case 'totalCash':
+            return isSaleLike && roundMoney(Math.max(0, Number(settlement?.cashPaid || 0))) > 0;
+          case 'totalCredit':
+            return isSaleLike && roundMoney(Math.max(0, Number(settlement?.creditDue || 0))) > 0;
+          case 'totalOnline':
+            return isSaleLike && roundMoney(Math.max(0, Number(settlement?.onlinePaid || 0))) > 0;
+          case 'totalCombined':
+            return isSaleLike;
+          case 'cashReceivedOnCreditDue':
+            return txType === 'payment' && !isSupplierPayment && paymentMethod === 'cash';
+          case 'totalCashIn':
+            return (isSaleLike && roundMoney(Math.max(0, Number(settlement?.cashPaid || 0))) > 0)
+              || (txType === 'payment' && !isSupplierPayment && paymentMethod === 'cash')
+              || isCashInVirtual;
+          case 'totalCashOut':
+            return isCashOutVirtual
+              || (txType === 'return' && (paymentMethod === 'cash' || String((tx as any).returnHandlingMode || '').trim().toLowerCase() === 'refund_cash'))
+              || (txType === 'customer_cash_out' && paymentMethod === 'cash')
+              || (txType === 'payment' && isSupplierPayment && paymentMethod === 'cash');
+          default:
+            return false;
+        }
+      })
+      .map((tx) => {
+        const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+        const settlement = (txType === 'sale' || txType === 'historical_reference') ? getSaleSettlementBreakdown(tx) : null;
+        let amount = Math.max(0, Math.abs(Number(tx.total || 0)));
+        if (selectedKpiKey === 'totalCash') amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
+        if (selectedKpiKey === 'totalCredit') amount = roundMoney(Math.max(0, Number(settlement?.creditDue || 0)));
+        if (selectedKpiKey === 'totalOnline') amount = roundMoney(Math.max(0, Number(settlement?.onlinePaid || 0)));
+        if (selectedKpiKey === 'totalCashIn' && txType === 'sale') amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
+        return {
+          id: tx.id,
+          date: getTransactionBusinessDate(tx) || tx.date,
+          type: getTransactionTypeUi(tx).typeLabel,
+          name: tx.customerName || 'Walk-in',
+          method: getDisplayPaymentMethod(tx),
+          amount,
+          cashSource: getTransactionCashSourceLabel(tx),
+          tx,
+        };
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [selectedKpiKey, filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments, virtualSupplierPaymentTransactions, virtualPurchaseOrderTransactions]);
+
   const getSaleSettlementText = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) {
       return String(tx.notes || '').replace(/^Expense - /i, '');
@@ -1895,19 +2042,8 @@ export default function Transactions() {
       )}
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-10">
-        {[
-          { label: 'Total Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/70', labelClass: 'text-blue-700/80', valueClass: 'text-blue-950' },
-          { label: 'Total Cash', value: transactionKpis.totalCash, cardClass: 'border-green-200 bg-green-50/70', labelClass: 'text-green-700/80', valueClass: 'text-green-950' },
-          { label: 'Credit', value: transactionKpis.totalCredit, cardClass: 'border-amber-200 bg-amber-50/80', labelClass: 'text-amber-700/80', valueClass: 'text-amber-950' },
-          { label: 'Online', value: transactionKpis.totalOnline, cardClass: 'border-purple-200 bg-purple-50/70', labelClass: 'text-purple-700/80', valueClass: 'text-purple-950' },
-          { label: 'Cash + Credit + Online', value: transactionKpis.totalCombined, cardClass: 'border-indigo-200 bg-indigo-50/70', labelClass: 'text-indigo-700/80', valueClass: 'text-indigo-950' },
-          { label: 'Total Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-red-200 bg-red-50/70', labelClass: 'text-red-700/80', valueClass: 'text-red-950' },
-          { label: 'Total Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/80', labelClass: 'text-orange-700/80', valueClass: 'text-orange-950' },
-          { label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-teal-200 bg-teal-50/80', labelClass: 'text-teal-700/80', valueClass: 'text-teal-950' },
-          { label: 'Total Cash In', value: transactionKpis.totalCashIn, cardClass: 'border-emerald-200 bg-emerald-50/70', labelClass: 'text-emerald-700/80', valueClass: 'text-emerald-950' },
-          { label: 'Total Cash Out', value: transactionKpis.totalCashOut, cardClass: 'border-rose-200 bg-rose-50/70', labelClass: 'text-rose-700/80', valueClass: 'text-rose-950' },
-        ].map(({ label, value, cardClass, labelClass, valueClass }) => (
-          <Card key={label} className={`border shadow-sm ${cardClass}`}>
+        {transactionKpiCards.map(({ key, label, value, cardClass, labelClass, valueClass }) => (
+          <Card key={label} className={`border shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md ${cardClass}`} onClick={() => setSelectedKpiKey(key)}>
             <CardContent className="p-2 lg:p-1.5">
               <p className={`text-[9px] font-semibold uppercase leading-tight tracking-[0.06em] ${labelClass}`} title={label}>
                 {label}
@@ -2493,6 +2629,66 @@ export default function Transactions() {
           </div>
       )}
 
+      {selectedKpiCard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+          <Card className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden shadow-2xl">
+            <CardHeader className={`border-b ${selectedKpiCard.cardClass}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <CardTitle>{selectedKpiCard.label}</CardTitle>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {selectedKpiRows.length} entr{selectedKpiRows.length === 1 ? 'y' : 'ies'} • Total {formatCurrency(selectedKpiCard.value)}
+                  </p>
+                </div>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedKpiKey(null)}>
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="overflow-auto p-0">
+              {selectedKpiRows.length === 0 ? (
+                <div className="p-8 text-center text-sm text-muted-foreground">No rows found for this KPI in the current filter.</div>
+              ) : (
+                <table className="w-full text-sm text-left">
+                  <thead className="sticky top-0 bg-muted/60 text-xs font-bold uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Type</th>
+                      <th className="px-4 py-3">Name</th>
+                      <th className="px-4 py-3">Method</th>
+                      <th className="px-4 py-3">Source</th>
+                      <th className="px-4 py-3 text-right">Amount</th>
+                      <th className="px-4 py-3 text-center">View</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {selectedKpiRows.map((row) => (
+                      <tr key={row.id} className="hover:bg-muted/30">
+                        <td className="px-4 py-3 font-medium">{formatDateDisplay(row.date)}</td>
+                        <td className="px-4 py-3">{row.type}</td>
+                        <td className="px-4 py-3">{row.name}</td>
+                        <td className="px-4 py-3">{row.method}</td>
+                        <td className="px-4 py-3">{row.cashSource || '—'}</td>
+                        <td className="px-4 py-3 text-right font-semibold">{formatMoneyWhole(row.amount)}</td>
+                        <td className="px-4 py-3 text-center">
+                          {row.tx ? (
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedTx(row.tx)}>
+                              <Eye className="w-3.5 h-3.5" />
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {selectedDeletedTx && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
           <Card className="w-full max-w-2xl animate-in zoom-in duration-200 flex flex-col max-h-[90vh] shadow-2xl">
@@ -2994,6 +3190,28 @@ export default function Transactions() {
                       {editingTx.customerId !== editingCustomerId && (
                         <div className="rounded border bg-white p-2 text-[12px]">
                           Customer impact: old customer effect will be removed, and new customer effect will be applied during reconcile.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {editingTx.type === 'sale' && editingCustomer && editingCustomerBalanceAfterSave && (
+                    <div className="rounded-md border p-2.5 space-y-1.5 text-[13px] bg-muted/10">
+                      <div className="font-semibold text-[14px]">Customer Ledger After Save</div>
+                      <div className="rounded border bg-white p-2 flex justify-between">
+                        <span>Current due</span>
+                        <span className="font-semibold">{formatMoneyPrecise(editingCustomerBalance.currentDue)} → {formatMoneyPrecise(editingCustomerBalanceAfterSave.currentDue)}</span>
+                      </div>
+                      <div className="rounded border bg-white p-2 flex justify-between">
+                        <span>Store credit</span>
+                        <span className="font-semibold">{formatMoneyPrecise(editingCustomerBalance.storeCredit)} → {formatMoneyPrecise(editingCustomerBalanceAfterSave.storeCredit)}</span>
+                      </div>
+                      <div className="rounded border bg-white p-2 flex justify-between">
+                        <span>Net receivable</span>
+                        <span className="font-semibold">{formatMoneyPrecise(editingCustomerBalance.netReceivable)} → {formatMoneyPrecise(editingCustomerBalanceAfterSave.netReceivable)}</span>
+                      </div>
+                      {editingCustomerBalanceAfterSave.storeCredit > editingCustomerBalance.storeCredit && (
+                        <div className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[12px] text-emerald-700">
+                          Extra collected amount will stay on the customer ledger as store credit after save.
                         </div>
                       )}
                     </div>
