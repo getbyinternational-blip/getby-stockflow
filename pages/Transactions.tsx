@@ -494,22 +494,10 @@ export default function Transactions() {
   const dateFilteredTransactions = useMemo(() => {
       const now = new Date();
       now.setHours(0,0,0,0); // Start of today
-      const toDayStart = (tx: Transaction) => {
-        if (isSupplierPaymentVirtualTransaction(tx) && tx.sourceTransactionDate) {
-          const rawDay = String(tx.sourceTransactionDate).slice(0, 10);
-          if (/^\d{4}-\d{2}-\d{2}$/.test(rawDay)) {
-            const local = new Date(`${rawDay}T00:00:00`);
-            local.setHours(0, 0, 0, 0);
-            return local;
-          }
-        }
-        const d = new Date(tx.date);
-        d.setHours(0, 0, 0, 0);
-        return d;
-      };
 
       return renderedTransactions.filter(tx => {
-          const txDate = toDayStart(tx);
+          const txDate = getTransactionBusinessDayStart(tx);
+          if (!txDate) return false;
           
           switch(filterType) {
               case 'today':
@@ -935,6 +923,30 @@ export default function Transactions() {
     return `${item.id}__${variant}__${color}__${toSafeMoney(item.sellPrice)}`;
   };
   const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+  function parseBusinessDate(value?: string | number | Date | null) {
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? new Date(value.getTime()) : null;
+    }
+    if (typeof value === 'string') {
+      const rawDay = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (rawDay) {
+        const parsed = new Date(Number(rawDay[1]), Number(rawDay[2]) - 1, Number(rawDay[3]), 12, 0, 0, 0);
+        return Number.isFinite(parsed.getTime()) ? parsed : null;
+      }
+    }
+    const parsed = new Date(value || '');
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+  function getTransactionBusinessDate(tx: Transaction) {
+    return parseBusinessDate(tx.sourceTransactionDate || tx.date);
+  }
+  function getTransactionBusinessDayStart(tx: Transaction) {
+    const parsed = getTransactionBusinessDate(tx);
+    if (!parsed) return null;
+    const normalized = new Date(parsed.getTime());
+    normalized.setHours(0, 0, 0, 0);
+    return normalized;
+  }
   const getDerivedPaymentMethodForSale = (cashPaid: number, onlinePaid: number, creditDue: number): 'Cash' | 'Credit' | 'Online' => {
     if (creditDue > 0) return 'Credit';
     if (onlinePaid > 0 && cashPaid <= 0) return 'Online';
@@ -1594,9 +1606,16 @@ export default function Transactions() {
 
           if (txType === 'sale' || txType === 'historical_reference') {
               const settlement = getSaleSettlementBreakdown(tx);
-              const cashPaid = Math.max(0, Number(settlement.cashPaid || 0));
-              const creditDue = Math.max(0, Number(settlement.creditDue || 0));
-              const onlinePaid = Math.max(0, Number(settlement.onlinePaid || 0));
+              let cashPaid = roundMoney(Math.max(0, Number(settlement.cashPaid || 0)));
+              let creditDue = roundMoney(Math.max(0, Number(settlement.creditDue || 0)));
+              let onlinePaid = roundMoney(Math.max(0, Number(settlement.onlinePaid || 0)));
+              const settlementTotal = roundMoney(cashPaid + creditDue + onlinePaid);
+              const settlementDelta = roundMoney(amount - settlementTotal);
+              if (Math.abs(settlementDelta) >= 0.01) {
+                  if (creditDue > 0) creditDue = roundMoney(Math.max(0, creditDue + settlementDelta));
+                  else if (onlinePaid > 0) onlinePaid = roundMoney(Math.max(0, onlinePaid + settlementDelta));
+                  else cashPaid = roundMoney(Math.max(0, cashPaid + settlementDelta));
+              }
 
               totalRevenue += amount;
               totalCash += cashPaid;
@@ -1649,16 +1668,16 @@ export default function Transactions() {
       );
 
       return {
-          totalRevenue,
-          totalCash,
-          totalCredit,
-          totalOnline,
-          totalCombined: totalCash + totalCredit + totalOnline,
-          totalPurchaseCash,
-          totalPurchaseCredit,
-          cashReceivedOnCreditDue,
-          totalCashIn,
-          totalCashOut,
+          totalRevenue: roundMoney(totalRevenue),
+          totalCash: roundMoney(totalCash),
+          totalCredit: roundMoney(totalCredit),
+          totalOnline: roundMoney(totalOnline),
+          totalCombined: roundMoney(totalCash + totalCredit + totalOnline),
+          totalPurchaseCash: roundMoney(totalPurchaseCash),
+          totalPurchaseCredit: roundMoney(totalPurchaseCredit),
+          cashReceivedOnCreditDue: roundMoney(cashReceivedOnCreditDue),
+          totalCashIn: roundMoney(totalCashIn),
+          totalCashOut: roundMoney(totalCashOut),
       };
   }, [filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments]);
 
@@ -2070,7 +2089,7 @@ export default function Transactions() {
                                             />
                                         </td>
                                         <td className="px-4 py-3">
-                                            <div className={`font-semibold ${rowToneClass}`}>{formatDateDisplay(tx.date)}</div>
+                                            <div className={`font-semibold ${rowToneClass}`}>{formatDateDisplay(getTransactionBusinessDate(tx) || tx.date)}</div>
                                             <div className={`text-[10px] font-mono ${rowSubtleToneClass}`}>#{getTransactionReference(tx)}</div>
                                         </td>
                                         <td className="px-4 py-3">
@@ -2155,7 +2174,7 @@ export default function Transactions() {
                                     <div className="p-4 space-y-3">
                                         <div className="flex justify-between items-center">
                                             <Badge variant="outline" className="font-mono text-[9px] bg-muted/30 border-none">#{getTransactionReference(tx)}</Badge>
-                                            <span className="text-[10px] text-muted-foreground font-medium">{formatDateDisplay(tx.date)}</span>
+                                            <span className="text-[10px] text-muted-foreground font-medium">{formatDateDisplay(getTransactionBusinessDate(tx) || tx.date)}</span>
                                         </div>
                                         
                                         <div className="flex justify-between items-end">
@@ -2212,7 +2231,7 @@ export default function Transactions() {
                                         </div>
                                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                                             <Calendar className="w-3 h-3" />
-                                            {formatDateDisplay(tx.date)}
+                                            {formatDateDisplay(getTransactionBusinessDate(tx) || tx.date)}
                                         </div>
                                     </div>
                                     <div className="text-right">
