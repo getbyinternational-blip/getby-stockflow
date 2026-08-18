@@ -1408,7 +1408,7 @@ const displayProductCategory = (value: unknown): string => {
       telegramKeywords: cleanOptionalText(formData.telegramKeywords) || '',
       ...(cleanOptionalText(formData.hsn) ? { hsn: cleanOptionalText(formData.hsn)! } : {}),
       buyPrice: hasCombos ? cleanOptionalNumber(editingProduct?.buyPrice, 0) : effectiveBuyPrice,
-      sellPrice: hasCombos ? cleanOptionalNumber(editingProduct?.sellPrice, 0) : cleanOptionalNumber(formData.sellPrice, 0),
+      sellPrice: cleanOptionalNumber(formData.sellPrice, 0),
       totalPurchase: cleanOptionalNumber(effectiveTotalPurchase, 0),
       totalSold: cleanOptionalNumber(effectiveTotalSold, 0),
       stock: editingProduct
@@ -4145,6 +4145,17 @@ useEffect(() => {
                           value={formData.piecesPerCarton ?? ''}
                           onChange={e => setFormData({ ...formData, piecesPerCarton: e.target.value })}
                           placeholder="0"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Sell Price</Label>
+                        <Input
+                          type="number"
+                          min="0"
+                          value={formData.sellPrice ?? ''}
+                          onChange={e => setFormData({ ...formData, sellPrice: e.target.value })}
+                          placeholder="0.00"
                         />
                       </div>
 

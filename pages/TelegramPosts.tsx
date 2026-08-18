@@ -330,6 +330,7 @@ export default function TelegramPosts() {
         .filter(Boolean)
     ))
   ), [telegramChannels, telegramCollections, telegramChannelId]);
+  const hasSavedChannel = savedChannels.length > 0;
   const selectedChannelCollections = useMemo(() => (
     telegramCollections
       .filter((collection) => safeText(collection.channelId) === safeText(selectedChannelId))
@@ -475,6 +476,10 @@ export default function TelegramPosts() {
     const channelId = safeText(newChannelId);
     if (!channelId) {
       setNotice({ type: 'error', message: 'Channel ID is required.' });
+      return;
+    }
+    if (hasSavedChannel && !savedChannels.includes(channelId)) {
+      setNotice({ type: 'error', message: 'Only one Telegram channel can be added.' });
       return;
     }
     const nextChannels = Array.from(new Set([...savedChannels, channelId]));
@@ -954,6 +959,7 @@ export default function TelegramPosts() {
     : notice?.type === 'success'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
       : 'border-slate-200 bg-slate-50 text-slate-700';
+  const SHOW_LEGACY_TELEGRAM_LAYOUT = false;
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
@@ -965,10 +971,17 @@ export default function TelegramPosts() {
             <CardTitle className="text-base tracking-wide uppercase text-slate-700">Telegram Channels</CardTitle>
           </div>
           <div className="flex w-full max-w-xl items-center gap-2">
-            <Input value={newChannelId} onChange={(event) => setNewChannelId(event.target.value)} placeholder="@stockflow_offers" />
-            <Button type="button" onClick={() => void addTelegramChannel()}>
-              <Plus className="mr-2 h-4 w-4" /> Add Channel
-            </Button>
+            <Input
+              value={hasSavedChannel ? '' : newChannelId}
+              onChange={(event) => setNewChannelId(event.target.value)}
+              placeholder={hasSavedChannel ? savedChannels[0] : '@stockflow_offers'}
+              disabled={hasSavedChannel}
+            />
+            {!hasSavedChannel && (
+              <Button type="button" onClick={() => void addTelegramChannel()}>
+                <Plus className="mr-2 h-4 w-4" /> Add Channel
+              </Button>
+            )}
           </div>
         </CardHeader>
       </Card>
@@ -1196,10 +1209,17 @@ export default function TelegramPosts() {
             <p className="text-sm text-muted-foreground">Add channels first. Each channel can hold multiple collections, and collection setup opens only inside the popup.</p>
           </div>
           <div className="flex w-full max-w-xl items-center gap-2">
-            <Input value={newChannelId} onChange={(event) => setNewChannelId(event.target.value)} placeholder="@stockflow_offers" />
-            <Button type="button" onClick={() => void addTelegramChannel()}>
-              <Plus className="mr-2 h-4 w-4" /> Add Channel
-            </Button>
+            <Input
+              value={hasSavedChannel ? '' : newChannelId}
+              onChange={(event) => setNewChannelId(event.target.value)}
+              placeholder={hasSavedChannel ? savedChannels[0] : '@stockflow_offers'}
+              disabled={hasSavedChannel}
+            />
+            {!hasSavedChannel && (
+              <Button type="button" onClick={() => void addTelegramChannel()}>
+                <Plus className="mr-2 h-4 w-4" /> Add Channel
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -1667,9 +1687,11 @@ export default function TelegramPosts() {
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
-      {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${noticeClassName}`}>{notice.message}</div>}
+      {SHOW_LEGACY_TELEGRAM_LAYOUT && (
+        <>
+          {notice && <div className={`rounded-lg border px-3 py-2 text-sm ${noticeClassName}`}>{notice.message}</div>}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_380px]">
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_380px]">
         <div className="space-y-6">
           <Card className="shadow-sm">
             <CardHeader>
@@ -2200,7 +2222,9 @@ export default function TelegramPosts() {
             </CardContent>
           </Card>
         </div>
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
