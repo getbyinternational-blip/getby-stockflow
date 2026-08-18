@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import JsBarcode from 'jsbarcode';
 import jsPDF from 'jspdf';
-import { CashSession, Customer, Expense, ManualCashbookEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
+import { AppState, CashSession, CashSource, Customer, Expense, ManualCashbookEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
 import { NO_COLOR, NO_VARIANT, getProductStockRows, productHasCombinationStock } from '../services/productVariants';
 import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, getSaleSettlementBreakdown } from '../services/storage';
 import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge, LightweightLoader } from '../components/ui';
@@ -117,6 +117,9 @@ const getAdminTransactionTimeForSession = (transaction: Transaction) => {
   return Number.NaN;
 };
 const getAdminExpenseEffectiveDate = (expense: Expense & { effectiveAt?: string }) => expense.effectiveAt || expense.createdAt;
+const normalizeAdminCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const formatAdminCashSourceLabel = (rawSource: unknown) => normalizeAdminCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
+const shouldAdminUseReserveCash = (rawSource: unknown) => normalizeAdminCashSource(rawSource) === 'reserve';
 
 export default function Admin() {
   const navigate = useNavigate();
@@ -168,6 +171,7 @@ export default function Admin() {
   const [purchasePartyName, setPurchasePartyName] = useState('');
   const [purchaseCashPaid, setPurchaseCashPaid] = useState('');
   const [purchaseBankPaid, setPurchaseBankPaid] = useState('');
+  const [purchaseCashSource, setPurchaseCashSource] = useState<CashSource>('drawer');
   const [purchasePaymentNote, setPurchasePaymentNote] = useState('');
   const [purchaseModalTab, setPurchaseModalTab] = useState<'add' | 'history'>('add');
   const [purchaseHistoryVariantFilter, setPurchaseHistoryVariantFilter] = useState('all');
@@ -185,6 +189,7 @@ export default function Admin() {
   const [stockSourceNote, setStockSourceNote] = useState('');
   const [stockSourcePaymentMethod, setStockSourcePaymentMethod] = useState<'cash' | 'credit' | 'online' | 'partial'>('cash');
   const [stockSourcePartialPaidVia, setStockSourcePartialPaidVia] = useState<'cash' | 'online'>('cash');
+  const [stockSourceCashSource, setStockSourceCashSource] = useState<CashSource>('drawer');
   const [stockSourcePaidAmount, setStockSourcePaidAmount] = useState('');
   const [stockSourceCashPaid, setStockSourceCashPaid] = useState('');
   const [stockSourceOnlinePaid, setStockSourceOnlinePaid] = useState('');
@@ -285,7 +290,7 @@ useEscapeLayer(Boolean(deletingCategory), () => {
   useEscapeLayer(Boolean(stockSourceProduct), () => {
     resetStockSourceState();
   }, { priority: 111 });
-  useEscapeLayer(Boolean(purchaseTarget), () => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }, { priority: 110 });
+  useEscapeLayer(Boolean(purchaseTarget), () => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); setPurchaseCashSource('drawer'); }, { priority: 110 });
   useEscapeLayer(showAddSupplierPartyModal, () => setShowAddSupplierPartyModal(false), { priority: 116 });
   useEscapeLayer(showSupplierPartyModal, () => setShowSupplierPartyModal(false), { priority: 115 });
   useEscapeLayer(Boolean(viewingProduct), () => {
@@ -1525,6 +1530,7 @@ const displayProductCategory = (value: unknown): string => {
     setStockSourceNote('');
     setStockSourcePaymentMethod('cash');
     setStockSourcePartialPaidVia('cash');
+    setStockSourceCashSource('drawer');
     setStockSourcePaidAmount('');
     setStockSourceCashPaid('');
     setStockSourceOnlinePaid('');
@@ -1692,6 +1698,73 @@ const displayProductCategory = (value: unknown): string => {
       supplierPayable: roundAdminMoney(payableTotal),
     };
   }, [appStateSnapshot]);
+  const stockSourceCashAvailability = useMemo(() => {
+    const snapshot = (appStateSnapshot || loadData()) as AppState;
+    const cashSessions = Array.isArray(snapshot.cashSessions) ? snapshot.cashSessions : [];
+    const openSession = cashSessions.find((session) => session.status === 'open');
+    if (!openSession) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+    const totalCash = Math.max(0, roundAdminMoney(currentShiftPreviewBase.currentSystemCash));
+    const savedAtMs = new Date(openSession.reservedCashSavedAt || openSession.startTime).getTime();
+    const reserveBase = Math.max(0, Number(openSession.reservedCashOnHand || 0));
+    if (!Number.isFinite(savedAtMs) || reserveBase <= 0) {
+      return { activeCash: totalCash, reserveCash: 0, totalCash };
+    }
+    const inReserveWindow = (iso?: string) => {
+      const at = new Date(iso || '').getTime();
+      return Number.isFinite(at) && at >= savedAtMs;
+    };
+    const reserveTransactionCashOut = (snapshot.transactions || [])
+      .filter((tx) => {
+        const txType = getAdminTxType(tx as Transaction);
+        const returnMode = String((tx as any)?.returnHandlingMode || '').trim().toLowerCase();
+        const isCashReturn = txType === 'return' && (returnMode === 'refund_cash' || (tx as Transaction).paymentMethod === 'Cash');
+        const isCustomerCashOut = txType === 'customer_cash_out' && (tx as Transaction).paymentMethod === 'Cash';
+        return (isCashReturn || isCustomerCashOut) && inReserveWindow((tx as Transaction).effectiveAt || (tx as Transaction).date) && shouldAdminUseReserveCash((tx as Transaction).cashSource);
+      })
+      .reduce((sum, tx) => sum + Math.max(0, Math.abs(Number((tx as Transaction).total || 0))), 0);
+    const reserveExpenses = (snapshot.expenses || [])
+      .filter((expense) => inReserveWindow(getAdminExpenseEffectiveDate(expense)) && shouldAdminUseReserveCash((expense as Expense).cashSource))
+      .reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+    const reserveCashAdjustments = (snapshot.cashAdjustments || [])
+      .filter((entry: any) => entry?.type === 'cash_withdrawal')
+      .filter((entry: any) => inReserveWindow(entry?.effectiveAt || entry?.createdAt) && shouldAdminUseReserveCash(entry?.cashSource))
+      .reduce((sum: number, entry: any) => sum + Math.max(0, Number(entry?.amount || 0)), 0);
+    const reserveManualCashOut = (snapshot.manualCashbookEntries || [])
+      .filter((entry: any) => !entry?.isDeleted && entry?.type === 'cash_out')
+      .filter((entry: any) => inReserveWindow(entry?.date || entry?.createdAt) && shouldAdminUseReserveCash(entry?.cashSource))
+      .reduce((sum: number, entry: any) => sum + Math.max(0, Number(entry?.amount || 0)), 0);
+    const reserveDirectPurchasePayments = (snapshot.purchaseOrders || [])
+      .reduce((sum, order) => sum + ((order.paymentHistory || []) as Array<{ amount?: unknown; method?: unknown; cashSource?: unknown; paidAt?: string; supplierPaymentId?: string }>)
+        .filter((payment) => !payment.supplierPaymentId)
+        .filter((payment) => String(payment.method || 'cash').trim().toLowerCase() === 'cash')
+        .filter((payment) => inReserveWindow(payment.paidAt))
+        .filter((payment) => shouldAdminUseReserveCash(payment.cashSource))
+        .reduce((inner, payment) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0);
+    const reserveSupplierPayments = (snapshot.supplierPayments || [])
+      .filter((payment: any) => !payment?.deletedAt && getAdminSupplierPaymentMethodForDrawer(payment?.method) === 'cash')
+      .filter((payment: any) => inReserveWindow(payment?.effectiveAt || payment?.paidAt || payment?.createdAt))
+      .filter((payment: any) => shouldAdminUseReserveCash(payment?.cashSource))
+      .reduce((sum: number, payment: any) => sum + Math.max(0, Number(payment?.amount || 0)), 0);
+    const reserveCash = Math.max(0, Math.min(totalCash, roundAdminMoney(
+      reserveBase
+      - reserveTransactionCashOut
+      - reserveExpenses
+      - reserveCashAdjustments
+      - reserveManualCashOut
+      - reserveDirectPurchasePayments
+      - reserveSupplierPayments,
+    )));
+    return {
+      activeCash: Math.max(0, roundAdminMoney(totalCash - reserveCash)),
+      reserveCash,
+      totalCash,
+    };
+  }, [appStateSnapshot, currentShiftPreviewBase.currentSystemCash]);
+  const getStockSourceAvailableCashBySource = (source: CashSource) => (
+    normalizeAdminCashSource(source) === 'reserve'
+      ? stockSourceCashAvailability.reserveCash
+      : stockSourceCashAvailability.activeCash
+  );
 
   const stockSourceComputed = useMemo(() => {
     const qty = Math.max(0, Number(stockSourceQty || 0) || 0);
@@ -1945,6 +2018,10 @@ const displayProductCategory = (value: unknown): string => {
       setStockSourceError('Purchase party is required.');
       return;
     }
+    if (cashPaidAmount > 0 && cashPaidAmount > getStockSourceAvailableCashBySource(stockSourceCashSource)) {
+      setStockSourceError(`${formatAdminCashSourceLabel(stockSourceCashSource)} cannot cover this cash payment.`);
+      return;
+    }
 
     setStockSourceSubmitting(true);
     try {
@@ -1988,7 +2065,7 @@ const displayProductCategory = (value: unknown): string => {
         remainingAmount,
         paymentHistory: [
           ...(cashPaidAmount > 0
-            ? [{ id: `pop-stock-source-cash-${Date.now()}`, paidAt: now, amount: cashPaidAmount, method: 'cash' as const, note: stockSourceNote.trim() || 'Stock source purchase' }]
+            ? [{ id: `pop-stock-source-cash-${Date.now()}`, paidAt: now, amount: cashPaidAmount, method: 'cash' as const, cashSource: stockSourceCashSource, note: stockSourceNote.trim() || 'Stock source purchase' }]
             : []),
           ...(onlinePaidAmount > 0
             ? [{ id: `pop-stock-source-online-${Date.now()}`, paidAt: now, amount: onlinePaidAmount, method: 'online' as const, note: stockSourceNote.trim() || 'Stock source purchase' }]
@@ -2608,6 +2685,10 @@ const displayProductCategory = (value: unknown): string => {
       setPurchaseError('Payment split exceeds total purchase amount. Please reduce Cash or Bank.');
       return;
     }
+    if (cashPaid > 0 && cashPaid > getStockSourceAvailableCashBySource(purchaseCashSource)) {
+      setPurchaseError(`${formatAdminCashSourceLabel(purchaseCashSource)} cannot cover this cash payment.`);
+      return;
+    }
     if (paidAmount < 0 || !Number.isFinite(paidAmount)) {
       setPurchaseError('Paid amount must be a valid non-negative number.');
       return;
@@ -2685,7 +2766,7 @@ const displayProductCategory = (value: unknown): string => {
       totalPaid: paidAmount,
       remainingAmount: Math.max(0, Number((totalAmount - paidAmount).toFixed(2))),
       paymentHistory: [
-        ...(cashPaid > 0 ? [{ id: `pop-init-cash-${Date.now()}`, paidAt: now, amount: cashPaid, method: 'cash' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
+        ...(cashPaid > 0 ? [{ id: `pop-init-cash-${Date.now()}`, paidAt: now, amount: cashPaid, method: 'cash' as const, cashSource: purchaseCashSource, note: purchasePaymentNote.trim() || reference || undefined }] : []),
         ...(bankPaid > 0 ? [{ id: `pop-init-bank-${Date.now()}`, paidAt: now, amount: bankPaid, method: 'online' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
       ],
       receivedQuantity: qty,
@@ -2771,6 +2852,7 @@ const displayProductCategory = (value: unknown): string => {
           nextBuyPrice,
           purchaseOrderId: orderId,
           paymentMethod: paidAmount > 0 ? (bankPaid > 0 && cashPaid === 0 ? 'online' : 'cash') : 'credit',
+          cashSource: cashPaid > 0 ? purchaseCashSource : undefined,
           paidAmount,
           partyName,
           reference,
@@ -2793,6 +2875,7 @@ const displayProductCategory = (value: unknown): string => {
     setSelectedPurchasePartyId('');
     setPurchaseCashPaid('');
     setPurchaseBankPaid('');
+    setPurchaseCashSource('drawer');
     setPurchasePaymentNote('');
     setSelectedPurchaseVariantKey('');
   };
@@ -4428,6 +4511,23 @@ useEffect(() => {
                                 />
                               </div>
                               <div className="space-y-1">
+                                <Label className="text-[11px] font-bold uppercase text-muted-foreground">Utilize From</Label>
+                                <select
+                                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                                  value={stockSourceCashSource}
+                                  onChange={(e) => {
+                                    setStockSourceCashSource(e.target.value as CashSource);
+                                    setStockSourceError(null);
+                                  }}
+                                >
+                                  <option value="drawer">Active Cash</option>
+                                  <option value="reserve">Reserve Cash</option>
+                                </select>
+                                <div className="text-[11px] text-slate-500">
+                                  Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(stockSourceCashSource))}
+                                </div>
+                              </div>
+                              <div className="space-y-1">
                                 <Label className="text-[11px] font-bold uppercase text-muted-foreground">Online/Bank Paid</Label>
                                 <Input
                                   type="number"
@@ -4498,6 +4598,25 @@ useEffect(() => {
                                   <option value="online">Bank / Online</option>
                                 </select>
                               </div>
+                              {stockSourcePartialPaidVia === 'cash' && (
+                                <div className="space-y-2 md:col-span-2">
+                                  <Label>Utilize From</Label>
+                                  <select
+                                    className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                                    value={stockSourceCashSource}
+                                    onChange={(e) => {
+                                      setStockSourceCashSource(e.target.value as CashSource);
+                                      setStockSourceError(null);
+                                    }}
+                                  >
+                                    <option value="drawer">Active Cash</option>
+                                    <option value="reserve">Reserve Cash</option>
+                                  </select>
+                                  <div className="text-[11px] text-slate-500">
+                                    Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(stockSourceCashSource))}
+                                  </div>
+                                </div>
+                              )}
                             </>
                           )}
                           {stockSourcePaymentMethod !== 'partial' && (
@@ -4505,6 +4624,25 @@ useEffect(() => {
                               {stockSourcePaymentMethod === 'cash' && 'Cash purchase will be treated as fully paid.'}
                               {stockSourcePaymentMethod === 'credit' && 'Credit purchase will create supplier due only.'}
                               {stockSourcePaymentMethod === 'online' && 'Bank / online purchase will not change physical cash.'}
+                            </div>
+                          )}
+                          {stockSourcePaymentMethod === 'cash' && (
+                            <div className="space-y-2 md:col-span-2">
+                              <Label>Utilize From</Label>
+                              <select
+                                className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                                value={stockSourceCashSource}
+                                onChange={(e) => {
+                                  setStockSourceCashSource(e.target.value as CashSource);
+                                  setStockSourceError(null);
+                                }}
+                              >
+                                <option value="drawer">Active Cash</option>
+                                <option value="reserve">Reserve Cash</option>
+                              </select>
+                              <div className="text-[11px] text-slate-500">
+                                Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(stockSourceCashSource))}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -4554,7 +4692,8 @@ useEffect(() => {
                           <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Money</div>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium">
                             <span className={`rounded-full px-3 py-1 ${stockSourceComputed.effectivePaid > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700'}`}>
-                              Cash/Bank {stockSourceComputed.effectivePaid > 0 ? formatCurrencyWhole(stockSourceComputed.effectivePaid) : '—'}
+                              {stockSourceComputed.cashPaid > 0 ? `${formatAdminCashSourceLabel(stockSourceCashSource)} ` : 'Cash/Bank '}
+                              {stockSourceComputed.effectivePaid > 0 ? formatCurrencyWhole(stockSourceComputed.effectivePaid) : '—'}
                             </span>
                             <span className={`rounded-full px-3 py-1 ${stockSourceComputed.remainingPayable > 0 ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'}`}>
                               Due {stockSourceComputed.remainingPayable > 0 ? formatCurrencyWhole(stockSourceComputed.remainingPayable) : '—'}
@@ -4727,7 +4866,7 @@ useEffect(() => {
       {purchaseTarget && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
           <Card className="w-full max-w-6xl max-h-[95vh] overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between"><CardTitle>{purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }}><X className="w-4 h-4"/></Button></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between"><CardTitle>{purchaseTarget.name}</CardTitle><Button variant="ghost" size="sm" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); setPurchaseCashSource('drawer'); }}><X className="w-4 h-4"/></Button></CardHeader>
             <CardContent className="space-y-3 overflow-y-auto max-h-[calc(95vh-84px)]">
               <div className="flex gap-2 border-b pb-2">
                 <Button size="sm" variant={purchaseModalTab === 'add' ? 'default' : 'outline'} onClick={() => setPurchaseModalTab('add')}>Add Purchase</Button>
@@ -4821,7 +4960,24 @@ useEffect(() => {
                 <div className="rounded-lg border p-3 space-y-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Payment Details</div>
                   <div><Label>Total Amount</Label><Input value={purchaseTotalCost.toFixed(2)} readOnly className="bg-muted/30 font-medium" /></div>
-                  <div><Label>Cash</Label><Input type="number" min="0" value={purchaseCashPaid} onChange={(e) => setPurchaseCashPaid(e.target.value)} /></div>
+                  <div className="space-y-1">
+                    <Label>Cash</Label>
+                    <Input type="number" min="0" value={purchaseCashPaid} onChange={(e) => setPurchaseCashPaid(e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Utilize From</Label>
+                    <select
+                      className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                      value={purchaseCashSource}
+                      onChange={(e) => setPurchaseCashSource(normalizeAdminCashSource(e.target.value))}
+                    >
+                      <option value="drawer">Active Cash</option>
+                      <option value="reserve">Reserve Cash</option>
+                    </select>
+                    <div className="text-xs text-muted-foreground">
+                      Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(purchaseCashSource))}
+                    </div>
+                  </div>
                   <div><Label>Bank</Label><Input type="number" min="0" value={purchaseBankPaid} onChange={(e) => setPurchaseBankPaid(e.target.value)} /></div>
                   <div><Label>Remaining Due Before Party Credit</Label><Input value={purchaseRemainingDue.toFixed(2)} readOnly className="bg-muted/30 font-medium" /></div>
                   <div><Label>Payment Note (optional)</Label><Input value={purchasePaymentNote} onChange={(e) => setPurchasePaymentNote(e.target.value)} /></div>
@@ -4830,6 +4986,7 @@ useEffect(() => {
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Paid</div><div className="font-semibold">{purchaseEffectiveCashPaid.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Bank Paid</div><div className="font-semibold">{purchaseEffectiveBankPaid.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Amount Paid</div><div className="font-semibold">{purchaseEffectivePaidAmount.toFixed(2)}</div></div>
+                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Source</div><div className="font-semibold">{formatAdminCashSourceLabel(purchaseCashSource)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Due Before Party Credit</div><div className="font-semibold">{purchaseRemainingDue.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Available</div><div className="font-semibold">{purchaseAvailablePartyCredit.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Applied</div><div className="font-semibold">{purchaseCreditAppliedPreview.toFixed(2)}</div></div>
@@ -4848,7 +5005,7 @@ useEffect(() => {
                   <span className="font-semibold">Total:</span> {purchaseTotalCost.toFixed(2)} • <span className="font-semibold">Paid:</span> {purchaseEffectivePaidAmount.toFixed(2)} • <span className="font-semibold">Due:</span> {purchaseRemainingDue.toFixed(2)}
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); }}>Cancel</Button>
+                  <Button variant="outline" onClick={() => { setPurchaseTarget(null); setShowSupplierPartyModal(false); setShowAddSupplierPartyModal(false); setSupplierPartySearch(''); setPurchaseCashSource('drawer'); }}>Cancel</Button>
                   <Button onClick={handleAddPurchase}>Save Purchase</Button>
                 </div>
               </div>

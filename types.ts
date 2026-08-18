@@ -47,6 +47,7 @@ export interface Product {
     nextBuyPrice: number;
     purchaseOrderId?: string;
     paymentMethod?: 'cash' | 'online' | 'credit';
+    cashSource?: CashSource;
     paidAmount?: number;
     totalPaid?: number;
     remainingAmount?: number;
