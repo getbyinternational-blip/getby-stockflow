@@ -219,7 +219,14 @@ export default function Transactions() {
   const virtualPurchaseOrderTransactions = useMemo<Transaction[]>(() => (purchaseOrders || [])
     .filter((order) => order && order.status !== 'cancelled')
     .map((order) => {
-      const selectedDate = order.effectiveAt || order.orderDate || order.createdAt || new Date().toISOString();
+      const directPayments = Array.isArray(order.paymentHistory)
+        ? order.paymentHistory.filter((payment: any) => !payment?.supplierPaymentId)
+        : [];
+      const latestDirectPaymentDate = directPayments
+        .map((payment: any) => payment?.paidAt || payment?.createdAt || null)
+        .filter((value): value is string => Boolean(value) && Number.isFinite(new Date(value).getTime()))
+        .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
+      const selectedDate = latestDirectPaymentDate || order.effectiveAt || order.orderDate || order.createdAt || new Date().toISOString();
       const date = Number.isFinite(new Date(selectedDate).getTime()) ? new Date(selectedDate).toISOString() : new Date().toISOString();
       const directCashPaid = Array.isArray(order.paymentHistory)
         ? order.paymentHistory.reduce((sum, payment: any) => {
@@ -238,9 +245,8 @@ export default function Transactions() {
               : sum;
           }, 0)
         : 0;
-      const directCashPayments = Array.isArray(order.paymentHistory)
-        ? order.paymentHistory.filter((payment: any) => !payment?.supplierPaymentId && String(payment?.method || '').trim().toLowerCase() === 'cash')
-        : [];
+      const directCashPayments = directPayments
+        .filter((payment: any) => String(payment?.method || '').trim().toLowerCase() === 'cash');
       const cashSourceLabel = getCashSourceLabelFromPayments(directCashPayments);
       const remainingAmount = Math.max(0, Number(order.remainingAmount || 0));
       const paymentMethod: Transaction['paymentMethod'] = remainingAmount > 0
@@ -620,12 +626,20 @@ export default function Transactions() {
     () => new Map<string, Product>(products.map(product => [product.id, product])),
     [products]
   );
+  const sortTransactionsForDisplay = (rows: Transaction[]) => (
+    [...rows].sort((left, right) => {
+      const leftReserve = normalizeCashSource((left as any).cashSource) === 'reserve' || getTransactionCashSourceLabel(left) === 'Reserve Cash';
+      const rightReserve = normalizeCashSource((right as any).cashSource) === 'reserve' || getTransactionCashSourceLabel(right) === 'Reserve Cash';
+      if (leftReserve !== rightReserve) return leftReserve ? -1 : 1;
+      return new Date(right.date).getTime() - new Date(left.date).getTime();
+    })
+  );
 
   const filteredTransactions = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
-    if (!query) return dateFilteredTransactions;
+    if (!query) return sortTransactionsForDisplay(dateFilteredTransactions);
 
-    return dateFilteredTransactions.filter((tx) => {
+    return sortTransactionsForDisplay(dateFilteredTransactions.filter((tx) => {
       const customerPhone = tx.customerId ? (customerPhoneById.get(tx.customerId) || '') : '';
       const baseHaystack = [
         tx.id,
@@ -649,7 +663,7 @@ export default function Transactions() {
         ].join(' ').toLowerCase();
         return itemHaystack.includes(query);
       });
-    });
+    }));
   }, [dateFilteredTransactions, searchTerm, customerPhoneById, productsById]);
 
   const matchesCurrentDateFilter = (rawDate?: string) => {
