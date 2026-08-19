@@ -227,6 +227,7 @@ const getSupplierPaymentTimestamp = (payment: any): number => {
   return Number.isFinite(at) ? at : Number.NaN;
 };
 const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const shouldAffectActiveDrawerFromSource = (rawSource: unknown) => normalizeCashSource(rawSource) !== 'reserve';
 const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
 const withCashSourceLabel = (text: string, rawSource: unknown) => `${text} - ${formatCashSourceLabel(rawSource)}`;
 const shouldReduceReserveFromSource = (rawSource: unknown) => {
@@ -351,11 +352,11 @@ const resolveTransactionTimeForSession = (transaction: Transaction) => {
 const getReturnFinancialEffectsForFinance = (transaction: Transaction) => {
   try {
     const allocation = getCanonicalReturnAllocation(transaction, [], 0);
-    return { affectsCash: allocation.cashRefund > 0 };
+    return { affectsCash: allocation.cashRefund > 0, cashRefund: allocation.cashRefund, onlineRefund: allocation.onlineRefund };
   } catch (error) {
     if ((import.meta as any).env?.DEV) {
     }
-    return { affectsCash: false };
+    return { affectsCash: false, cashRefund: 0, onlineRefund: 0 };
   }
 };
 
@@ -565,12 +566,32 @@ const getSessionCashTotals = (
   const sortedTransactionsAsc = [...transactions].sort((a, b) => resolveTransactionTimeForSession(a) - resolveTransactionTimeForSession(b));
   const scopedReturnIds = new Set<string>(scopedTransactions.filter(t => t.type === 'return').map(t => t.id));
   const returnEffects = accumulateCanonicalReturnEffects(sortedTransactionsAsc, scopedReturnIds);
+  const activeScopedReturnIds = new Set<string>(
+    scopedTransactions
+      .filter((t) => t.type === 'return')
+      .filter((t) => shouldAffectActiveDrawerFromSource((t as any).cashSource))
+      .map((t) => t.id)
+  );
+  const activeReturnEffects = accumulateCanonicalReturnEffects(sortedTransactionsAsc, activeScopedReturnIds);
   const cashRefunds = returnEffects.cashRefunds;
+  const activeCashRefunds = activeReturnEffects.cashRefunds;
   const customerCashOutflow = getCustomerCashOutBreakdown(scopedTransactions);
+  const activeCustomerCashOutflow = scopedTransactions
+    .filter((tx) => tx.type === 'customer_cash_out')
+    .filter((tx) => shouldAffectActiveDrawerFromSource((tx as any).cashSource))
+    .reduce((sum, tx) => {
+      const amount = Math.abs(Number(tx.total || 0));
+      if (!(amount > 0)) return sum;
+      if (tx.paymentMethod === 'Online') return sum;
+      return roundMoney(sum + amount);
+    }, 0);
   const cashCollections = scopedTransactions
     .filter(t => t.type === 'payment' && t.paymentMethod === 'Cash')
     .reduce((sum, t) => sum + Math.abs(t.total), 0);
   const expenseTotal = windowExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const activeExpenseTotal = windowExpenses
+    .filter((e) => shouldAffectActiveDrawerFromSource((e as Expense).cashSource))
+    .reduce((sum, e) => sum + e.amount, 0);
   const deleteCompensationOutflow = (deleteCompensations || [])
     .filter(record => {
       const eventTime = new Date(record.createdAt).getTime();
@@ -600,6 +621,18 @@ const getSessionCashTotals = (
     }
     return included ? (sum + normalizedAmount) : sum;
   }, 0);
+  const activeSupplierCashPaymentsFromLedger = supplierPayments.reduce((sum, payment) => {
+    const rawAmount = (payment as any)?.amount ?? (payment as any)?.total ?? (payment as any)?.paidAmount ?? (payment as any)?.paymentAmount ?? 0;
+    const normalizedAmount = Math.max(0, Number(rawAmount) || 0);
+    const paidAt = getSupplierPaymentTimestamp(payment);
+    const normalizedMethod = getSupplierPaymentMethodForDrawer((payment as any)?.method);
+    const isDeleted = Boolean((payment as any)?.deletedAt || (payment as any)?.isDeleted === true);
+    const isCash = normalizedMethod === 'cash';
+    const isInSession = Number.isFinite(paidAt) && paidAt >= start && paidAt <= end;
+    if (!Number.isFinite(paidAt) || !isInSession || isDeleted || !isCash || normalizedAmount <= 0) return sum;
+    if (!shouldAffectActiveDrawerFromSource((payment as any)?.cashSource)) return sum;
+    return sum + normalizedAmount;
+  }, 0);
   const legacySupplierCashPayments = (purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
     if (payment?.supplierPaymentId) return inner;
     const paidAt = new Date(payment.paidAt).getTime();
@@ -607,7 +640,16 @@ const getSessionCashTotals = (
     if (getSupplierPaymentMethodForDrawer(payment.method) !== 'cash') return inner;
     return inner + Math.max(0, Number(payment.amount) || 0);
   }, 0), 0);
+  const activeLegacySupplierCashPayments = (purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
+    if (payment?.supplierPaymentId) return inner;
+    const paidAt = new Date(payment.paidAt).getTime();
+    if (!Number.isFinite(paidAt) || paidAt < start || paidAt > end) return inner;
+    if (getSupplierPaymentMethodForDrawer(payment.method) !== 'cash') return inner;
+    if (!shouldAffectActiveDrawerFromSource(payment.cashSource)) return inner;
+    return inner + Math.max(0, Number(payment.amount) || 0);
+  }, 0), 0);
   const supplierCashPayments = supplierCashPaymentsFromLedger + legacySupplierCashPayments;
+  const activeSupplierCashPayments = activeSupplierCashPaymentsFromLedger + activeLegacySupplierCashPayments;
   const scopedCashAdjustments = (cashAdjustments || [])
     .filter((entry) => {
       const at = new Date(entry.createdAt).getTime();
@@ -619,6 +661,10 @@ const getSessionCashTotals = (
   const cashWithdrawn = scopedCashAdjustments
     .filter(entry => entry.type === 'cash_withdrawal')
     .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
+  const activeCashWithdrawn = scopedCashAdjustments
+    .filter((entry) => entry.type === 'cash_withdrawal')
+    .filter((entry) => shouldAffectActiveDrawerFromSource(entry.cashSource))
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
   const scopedManualEntries = (manualCashbookEntries || []).filter((entry) => {
     if (entry?.isDeleted) return false;
     const at = new Date(entry.date || entry.createdAt).getTime();
@@ -629,6 +675,10 @@ const getSessionCashTotals = (
     .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
   const manualCashOut = scopedManualEntries
     .filter((entry) => entry.type === 'cash_out')
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
+  const activeManualCashOut = scopedManualEntries
+    .filter((entry) => entry.type === 'cash_out')
+    .filter((entry) => shouldAffectActiveDrawerFromSource(entry.cashSource))
     .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
   // Include custom-order cash receipts in shift/system cash. Online/unknown and legacy-info rows are excluded.
   const customOrderCashIn = buildUpfrontOrderLedgerEffects(upfrontOrders)
@@ -657,7 +707,8 @@ const getSessionCashTotals = (
     expenseTotal,
     manualCashIn,
     manualCashOut,
-    systemCashTotal: cashSales + cashCollections + customOrderCashIn + cashAdded + manualCashIn - cashRefunds - deleteCompensationOutflow - supplierCashPayments - expenseTotal - cashWithdrawn - manualCashOut - customerCashOutflow.cashOutflow
+    systemCashTotal: cashSales + cashCollections + customOrderCashIn + cashAdded + manualCashIn - cashRefunds - deleteCompensationOutflow - supplierCashPayments - expenseTotal - cashWithdrawn - manualCashOut - customerCashOutflow.cashOutflow,
+    activeSystemCashTotal: cashSales + cashCollections + customOrderCashIn + cashAdded + manualCashIn - activeCashRefunds - deleteCompensationOutflow - activeSupplierCashPayments - activeExpenseTotal - activeCashWithdrawn - activeManualCashOut - activeCustomerCashOutflow
   };
   if (FINANCE_SHIFT_RECON_DEBUG_ENABLED) {
   }
@@ -1349,6 +1400,11 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     return { cashAtSale, customerCashCollections, customOrderCashCollections, cashCollections, cashRefunds, deleteCompensationRefunds, supplierCashPayments, expenseCashOutflow, cashWithdrawals, netCashMovementAfterExpenses };
   }, [dailyCashTotals]);
   const expectedClosingForOpenSession = openSession ? (openSession.openingBalance + dailyCashTotals.systemCashTotal) : 0;
+  const activeClosingForOpenSession = openSession ? (openSession.openingBalance + ((dailyCashTotals as typeof dailyCashTotals & { activeSystemCashTotal?: number }).activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)) : 0;
+  const closingBalanceKpiValue = useMemo(
+    () => roundMoney(openSession ? activeClosingForOpenSession : 0),
+    [openSession, activeClosingForOpenSession],
+  );
   const currentShiftTotalCash = useMemo(
     () => roundMoney(Math.max(0, expectedClosingForOpenSession)),
     [expectedClosingForOpenSession],
@@ -4541,7 +4597,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       }}
                       disabled={!openSession}
                     >
-                      <StatCard label="Closing Balance" value={formatINRSummary(openSession ? submittedClosingValue : 0)} tone={openSession ? 'good' : 'neutral'} interactive={!!openSession} hint={openSession ? 'Click to view breakdown' : undefined} />
+                      <StatCard label="Closing Balance" value={formatINRSummary(closingBalanceKpiValue)} tone={!openSession ? 'neutral' : closingBalanceKpiValue < 0 ? 'bad' : 'good'} interactive={!!openSession} hint={openSession ? 'Click to view breakdown' : undefined} />
                     </button>
                   </div>
                   {openSession && (
