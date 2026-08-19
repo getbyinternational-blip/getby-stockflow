@@ -705,11 +705,21 @@ const displayProductCategory = (value: unknown): string => {
     }
     setPendingPurchaseReverse({ productId: purchaseTarget.id, historyId });
   };
+  const getMissingPurchaseHistoryEntryDebugMessage = (
+    productId: string,
+    historyId: string,
+    history: Array<{ id?: string | null }> | undefined | null,
+  ) => {
+    const availableIds = (Array.isArray(history) ? history : [])
+      .map((entry) => String(entry?.id || '').trim())
+      .filter(Boolean);
+    return `Purchase history entry could not be found. Product: ${productId || 'unknown'} | Requested historyId: ${historyId || 'empty'} | Available ids: ${availableIds.length ? availableIds.join(', ') : 'none'}`;
+  };
   const handleDeleteStockSourcePurchaseHistoryEntry = async (historyId: string) => {
     if (!stockSourceProduct) return;
     const entry = (stockSourceProduct.purchaseHistory || []).find((h) => h.id === historyId);
     if (!entry) {
-      setStockSourceError('Purchase history entry could not be found.');
+      setStockSourceError(getMissingPurchaseHistoryEntryDebugMessage(stockSourceProduct.id, historyId, stockSourceProduct.purchaseHistory));
       return;
     }
     const linkedRow = stockSourcePurchaseHistoryRows.find((row) => String(row.legacyHistoryId || '') === String(historyId));
@@ -843,7 +853,7 @@ const displayProductCategory = (value: unknown): string => {
     if (!stockSourceProduct) return;
     const entry = (stockSourceProduct.purchaseHistory || []).find((h) => h.id === historyId);
     if (!entry) {
-      setStockSourceError('Purchase history entry could not be found.');
+      setStockSourceError(getMissingPurchaseHistoryEntryDebugMessage(stockSourceProduct.id, historyId, stockSourceProduct.purchaseHistory));
       return;
     }
     const linkedRow = stockSourcePurchaseHistoryRows.find((row) => String(row.legacyHistoryId || '') === String(historyId));
@@ -904,7 +914,7 @@ const displayProductCategory = (value: unknown): string => {
     if (!purchaseTarget) return;
     const historyEntry = (purchaseTarget.purchaseHistory || []).find((entry) => entry.id === historyId);
     if (!historyEntry) {
-      setNotice({ type: 'error', message: 'Purchase history entry could not be found.' });
+      setNotice({ type: 'error', message: getMissingPurchaseHistoryEntryDebugMessage(purchaseTarget.id, historyId, purchaseTarget.purchaseHistory) });
       return;
     }
 

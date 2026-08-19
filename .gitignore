@@ -36,3 +36,5 @@ migration/phase3f/out/
 
 # Node
 node_modules/
+.vercel
+.env*
