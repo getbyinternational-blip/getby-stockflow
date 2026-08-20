@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { initializeBehaviorTracking } from './services/behaviorLogger';
+import { installLongTaskObserver } from './services/perf';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -9,6 +10,7 @@ if (!rootElement) {
 }
 
 initializeBehaviorTracking();
+installLongTaskObserver();
 
 const root = ReactDOM.createRoot(rootElement);
 root.render(

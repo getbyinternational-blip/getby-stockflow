@@ -46,6 +46,7 @@ import { getFriendlyErrorMessage, logStockFlowError } from './errorMessages';
 import { safeText } from '../utils/productText';
 import { enforceAppStateInvariants, InvariantOverride } from './invariants';
 import { buildPurchasePartyCanonicalView, mergePurchasePartyMasterData, resolveCanonicalPurchasePartyForDraft, resolvePurchasePartyIdentity } from './purchasePartyIdentity';
+import { PERF_ENABLED, perfLog, perfMeasureAsync, perfMeasureSync } from './perf';
 
 let isCloudSynced = false;
 let storeDocumentExists = false;
@@ -125,7 +126,11 @@ const emitCloudSyncStatus = (status: typeof cloudSyncStatus, message?: string) =
 };
 
 const emitLocalStorageUpdate = () => {
-  window.dispatchEvent(new Event(APP_EVENTS.LOCAL_STORAGE_UPDATE));
+  perfMeasureSync('storage.local_storage_update.dispatch', () => {
+    window.dispatchEvent(new Event(APP_EVENTS.LOCAL_STORAGE_UPDATE));
+  }, {
+    event: APP_EVENTS.LOCAL_STORAGE_UPDATE,
+  });
 };
 
 
@@ -514,10 +519,17 @@ const buildMergedUpfrontOrdersHydrationState = () => ({
 });
 
 const applyMergedExpenseHydrationToMemory = () => {
-  const mergedExpenseState = buildMergedExpenseHydrationState();
-  memoryState = { ...memoryState, ...mergedExpenseState };
-  emitLocalStorageUpdate();
-  return mergedExpenseState;
+  return perfMeasureSync('storage.hydration.expenses.apply', () => {
+    const mergedExpenseState = buildMergedExpenseHydrationState();
+    memoryState = { ...memoryState, ...mergedExpenseState };
+    emitLocalStorageUpdate();
+    return mergedExpenseState;
+  }, {
+    subcollectionExpenses: subcollectionExpensesCache.length,
+    legacyExpenses: legacyRootExpensesCache.length,
+    subcollectionExpenseActivities: subcollectionExpenseActivitiesCache.length,
+    legacyExpenseActivities: legacyRootExpenseActivitiesCache.length,
+  });
 };
 
 const buildMergedRepairHistoryHydrationState = () => ({
@@ -527,10 +539,15 @@ const buildMergedRepairHistoryHydrationState = () => ({
 });
 
 const applyMergedRepairHistoryHydrationToMemory = () => {
-  const mergedRepairHistoryState = buildMergedRepairHistoryHydrationState();
-  memoryState = { ...memoryState, ...mergedRepairHistoryState };
-  emitLocalStorageUpdate();
-  return mergedRepairHistoryState;
+  return perfMeasureSync('storage.hydration.repair_history.apply', () => {
+    const mergedRepairHistoryState = buildMergedRepairHistoryHydrationState();
+    memoryState = { ...memoryState, ...mergedRepairHistoryState };
+    emitLocalStorageUpdate();
+    return mergedRepairHistoryState;
+  }, {
+    subcollectionRepairHistoryEntries: subcollectionRepairHistoryEntriesCache.length,
+    legacyRepairHistoryEntries: legacyRootRepairHistoryEntriesCache.length,
+  });
 };
 
 const logEmergencyPurchaseFallbackIfNeeded = (uid: string, source: string) => {
@@ -559,10 +576,19 @@ const buildMergedPurchaseHydrationState = (uid: string, source: string) => {
 };
 
 const applyMergedPurchaseHydrationToMemory = (uid: string, source: string) => {
-  const mergedPurchaseState = buildMergedPurchaseHydrationState(uid, source);
-  memoryState = { ...memoryState, ...mergedPurchaseState };
-  emitLocalStorageUpdate();
-  return mergedPurchaseState;
+  return perfMeasureSync('storage.hydration.purchase.apply', () => {
+    const mergedPurchaseState = buildMergedPurchaseHydrationState(uid, source);
+    memoryState = { ...memoryState, ...mergedPurchaseState };
+    emitLocalStorageUpdate();
+    return mergedPurchaseState;
+  }, {
+    uid,
+    source,
+    purchaseOrdersSubcollection: subcollectionPurchaseOrdersCache.length,
+    purchasePartiesSubcollection: subcollectionPurchasePartiesCache.length,
+    supplierPaymentsSubcollection: subcollectionSupplierPaymentsCache.length,
+    partyCreditLedgerSubcollection: subcollectionPartyCreditLedgerCache.length,
+  });
 };
 
 const getProductAuditSample = (products: Product[] = []) => products.slice(0, 3).map((product) => ({
@@ -586,20 +612,27 @@ const mergeProductsForTransition = (rootProducts: Product[] = [], subcollectionP
 };
 
 const applyMergedProductsToMemory = (uid: string, source: string) => {
-  const mergedProducts = mergeProductsForTransition(legacyRootProductsCache, subcollectionProductsCache);
-  memoryState = { ...memoryState, products: mergedProducts };
-  logStockFlowDataAudit('products.merge', {
+  return perfMeasureSync('storage.hydration.products.apply', () => {
+    const mergedProducts = mergeProductsForTransition(legacyRootProductsCache, subcollectionProductsCache);
+    memoryState = { ...memoryState, products: mergedProducts };
+    logStockFlowDataAudit('products.merge', {
+      uid,
+      source,
+      rootProductsCount: legacyRootProductsCache.length,
+      subcollectionProductsCount: subcollectionProductsCache.length,
+      mergedProductsCount: mergedProducts.length,
+      memoryProductsCount: memoryState.products.length,
+      firstProducts: getProductAuditSample(mergedProducts),
+    });
+    logLoadedState(memoryState);
+    emitLocalStorageUpdate();
+    return mergedProducts;
+  }, {
     uid,
     source,
     rootProductsCount: legacyRootProductsCache.length,
     subcollectionProductsCount: subcollectionProductsCache.length,
-    mergedProductsCount: mergedProducts.length,
-    memoryProductsCount: memoryState.products.length,
-    firstProducts: getProductAuditSample(mergedProducts),
   });
-  logLoadedState(memoryState);
-  emitLocalStorageUpdate();
-  return mergedProducts;
 };
 
 const shouldEmitFinanceSnapshot = (reason: string) => {
@@ -3283,44 +3316,49 @@ const stopCloudSyncForUnverifiedUser = (
 // Start cloud sync only after email verification.
 if (auth) {
   onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      unsubscribeCloudListeners(activeSyncUid, 'logout');
-      resetCloudStateForUser(null, 'logout');
+    perfMeasureSync('storage.auth.onAuthStateChanged', () => {
+      if (!user) {
+        unsubscribeCloudListeners(activeSyncUid, 'logout');
+        resetCloudStateForUser(null, 'logout');
 
-      logStockFlowDataAudit('auth.logout.reset', {
-        uid: null,
-        listenerUnsubscribed: true,
+        logStockFlowDataAudit('auth.logout.reset', {
+          uid: null,
+          listenerUnsubscribed: true,
+        });
+
+        emitCloudSyncStatus(CLOUD_SYNC_STATUSES.IDLE);
+        hasLoggedInitKpiSnapshot = false;
+        emitLocalStorageUpdate();
+        return;
+      }
+
+      logStockFlowDataAudit('auth.user.resolved', {
+        uid: user.uid,
+        emailVerified: user.emailVerified,
       });
 
-      emitCloudSyncStatus(CLOUD_SYNC_STATUSES.IDLE);
-      hasLoggedInitKpiSnapshot = false;
-      emitLocalStorageUpdate();
-      return;
-    }
+      // Registration signs the newly created user in temporarily.
+      // Never start Firestore store listeners for that unverified session.
+      if (!user.emailVerified) {
+        stopCloudSyncForUnverifiedUser(
+          user.uid,
+          'auth_user_email_unverified',
+        );
+        return;
+      }
 
-    logStockFlowDataAudit('auth.user.resolved', {
-      uid: user.uid,
-      emailVerified: user.emailVerified,
+      if (activeSyncUid !== user.uid) {
+        unsubscribeCloudListeners(activeSyncUid, 'auth_user_changed');
+        resetCloudStateForUser(user.uid, 'auth_user_changed');
+      }
+
+      hasInitialSynced = true;
+      emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
+      void syncFromCloud();
+    }, {
+      uid: user?.uid || null,
+      emailVerified: user?.emailVerified ?? null,
     });
-
-    // Registration signs the newly created user in temporarily.
-    // Never start Firestore store listeners for that unverified session.
-    if (!user.emailVerified) {
-      stopCloudSyncForUnverifiedUser(
-        user.uid,
-        'auth_user_email_unverified',
-      );
-      return;
-    }
-
-    if (activeSyncUid !== user.uid) {
-      unsubscribeCloudListeners(activeSyncUid, 'auth_user_changed');
-      resetCloudStateForUser(user.uid, 'auth_user_changed');
-    }
-
-    hasInitialSynced = true;
-    emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
-    void syncFromCloud();
   });
 }
 
@@ -3438,17 +3476,22 @@ async function syncFromCloud(): Promise<void> {
         unsubscribeCloudListeners(user.uid, 'sync_reinitialize');
 
         unsubscribeProductsSnapshot = onSnapshot(getProductsCollectionRef(user.uid), (productsSnap) => {
-            subcollectionProductsCache = productsSnap.docs
-              .map(docItem => ({ ...(docItem.data() as Product), id: docItem.id }))
-              .filter(p => !((p as any).isDeleted));
-            logStockFlowDataAudit('products.subcollection.snapshot', {
+            perfMeasureSync('storage.listener.products_snapshot', () => {
+              subcollectionProductsCache = productsSnap.docs
+                .map(docItem => ({ ...(docItem.data() as Product), id: docItem.id }))
+                .filter(p => !((p as any).isDeleted));
+              logStockFlowDataAudit('products.subcollection.snapshot', {
+                uid: user.uid,
+                rootProductsCount: legacyRootProductsCache.length,
+                subcollectionProductsCount: subcollectionProductsCache.length,
+                memoryProductsCount: memoryState.products.length,
+                firstProducts: getProductAuditSample(subcollectionProductsCache),
+              });
+              applyMergedProductsToMemory(user.uid, 'products_subcollection_listener');
+            }, {
               uid: user.uid,
-              rootProductsCount: legacyRootProductsCache.length,
-              subcollectionProductsCount: subcollectionProductsCache.length,
-              memoryProductsCount: memoryState.products.length,
-              firstProducts: getProductAuditSample(subcollectionProductsCache),
+              docs: productsSnap.docs.length,
             });
-            applyMergedProductsToMemory(user.uid, 'products_subcollection_listener');
         }, (error) => {
             logStockFlowError('products.subcollection.listener_error', error, { uid: user.uid });
             logStockFlowDataAudit('products.subcollection.listener_error', {
@@ -3457,47 +3500,62 @@ async function syncFromCloud(): Promise<void> {
             });
         });
         unsubscribeCustomersSnapshot = onSnapshot(getCustomersCollectionRef(user.uid), (customersSnap) => {
-            const customers = customersSnap.docs
-              .map(docItem => ({ ...(docItem.data() as Customer), id: docItem.id }))
-              .filter(c => !((c as any).isDeleted));
+            perfMeasureSync('storage.listener.customers_snapshot', () => {
+              const customers = customersSnap.docs
+                .map(docItem => ({ ...(docItem.data() as Customer), id: docItem.id }))
+                .filter(c => !((c as any).isDeleted));
 
-            logStorageHydrationDebug('customers_snapshot_received', {
+              logStorageHydrationDebug('customers_snapshot_received', {
+                uid: user.uid,
+                customersCountBefore: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+                customersCountAfter: customers.length,
+                firstFiveCustomers: customers.slice(0, 5).map((customer) => ({
+                  id: customer.id,
+                  name: customer.name,
+                  phone: customer.phone,
+                  storeCredit: customer.storeCredit,
+                })),
+                hasCompletedInitialCloudLoad,
+                syncGeneration: syncRunGeneration,
+              });
+              memoryState = { ...memoryState, customers };
+              logLoadedState(memoryState);
+              emitLocalStorageUpdate();
+            }, {
               uid: user.uid,
-              customersCountBefore: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
-              customersCountAfter: customers.length,
-              firstFiveCustomers: customers.slice(0, 5).map((customer) => ({
-                id: customer.id,
-                name: customer.name,
-                phone: customer.phone,
-                storeCredit: customer.storeCredit,
-              })),
-              hasCompletedInitialCloudLoad,
-              syncGeneration: syncRunGeneration,
+              docs: customersSnap.docs.length,
             });
-            memoryState = { ...memoryState, customers };
-            logLoadedState(memoryState);
-            emitLocalStorageUpdate();
         }, (error) => {
             logStockFlowError('customers.listener_error', error, { uid: user.uid });
         });
         unsubscribeTransactionsSnapshot = onSnapshot(getTransactionsCollectionRef(user.uid), (transactionsSnap) => {
-            const transactions = transactionsSnap.docs
-              .map(docItem => ({ ...(docItem.data() as Transaction), id: docItem.id }))
-              .filter(t => !((t as any).isDeleted));
+            perfMeasureSync('storage.listener.transactions_snapshot', () => {
+              const transactions = transactionsSnap.docs
+                .map(docItem => ({ ...(docItem.data() as Transaction), id: docItem.id }))
+                .filter(t => !((t as any).isDeleted));
 
-            const sortedTransactions = sortTransactionsDesc(transactions);
-            memoryState = { ...memoryState, transactions: sortedTransactions };
-            logLoadedState(memoryState);
-            emitLocalStorageUpdate();
+              const sortedTransactions = sortTransactionsDesc(transactions);
+              memoryState = { ...memoryState, transactions: sortedTransactions };
+              logLoadedState(memoryState);
+              emitLocalStorageUpdate();
+            }, {
+              uid: user.uid,
+              docs: transactionsSnap.docs.length,
+            });
         }, (error) => {
             logStockFlowError('transactions.listener_error', error, { uid: user.uid });
         });
         unsubscribeUpfrontOrdersSnapshot = onSnapshot(getUpfrontOrdersCollectionRef(user.uid), (upfrontOrdersSnap) => {
-            subcollectionUpfrontOrdersCache = upfrontOrdersSnap.docs
-              .map(docItem => sanitizeUpfrontOrderForPersist({ ...(docItem.data() as UpfrontOrder), id: docItem.id }));
-            memoryState = { ...memoryState, ...buildMergedUpfrontOrdersHydrationState() };
-            logLoadedState(memoryState);
-            emitLocalStorageUpdate();
+            perfMeasureSync('storage.listener.upfront_orders_snapshot', () => {
+              subcollectionUpfrontOrdersCache = upfrontOrdersSnap.docs
+                .map(docItem => sanitizeUpfrontOrderForPersist({ ...(docItem.data() as UpfrontOrder), id: docItem.id }));
+              memoryState = { ...memoryState, ...buildMergedUpfrontOrdersHydrationState() };
+              logLoadedState(memoryState);
+              emitLocalStorageUpdate();
+            }, {
+              uid: user.uid,
+              docs: upfrontOrdersSnap.docs.length,
+            });
         }, (error) => {
             logStockFlowError('upfrontOrders.listener_error', error, { uid: user.uid });
         });
@@ -3696,7 +3754,8 @@ async function syncFromCloud(): Promise<void> {
         });
         // expenseActivities are non-critical and are fetched on Finance open or manual refresh.
         unsubscribeSnapshot = onSnapshot(docRef, async (docSnap) => {
-            if (docSnap.exists()) {
+            await perfMeasureAsync('storage.listener.root_snapshot', async () => {
+              if (docSnap.exists()) {
                 storeDocumentExists = true;
                 const cloudData = docSnap.data() as AppState;
                 legacyRootProductsCache = Array.isArray(cloudData.products) ? cloudData.products.filter(p => !((p as any).isDeleted)) : [];
@@ -3817,7 +3876,7 @@ async function syncFromCloud(): Promise<void> {
                   });
                 }
                 emitLocalStorageUpdate();
-            } else {
+              } else {
                 isCloudSynced = true;
                 storeDocumentExists = false;
                 legacyRootProductsCache = [];
@@ -3850,7 +3909,11 @@ async function syncFromCloud(): Promise<void> {
                   attemptedPath: `stores/${user.uid}`,
                   blockedAutoBootstrap: true,
                 });
-            }
+              }
+            }, {
+              uid: user.uid,
+              exists: docSnap.exists(),
+            });
         }, (_error) => {
             logStockFlowError('root.snapshot.listener_error', _error, { uid: user.uid });
             logStockFlowDataAudit('root.snapshot.listener_error', { uid: user.uid, errorMessage: _error instanceof Error ? _error.message : String(_error) });
@@ -4512,48 +4575,66 @@ const syncToCloud = async (data: AppState) => {
 };
 
 export const loadData = (): AppState => {
-  logStorageHydrationDebug('loadData_called', {
-    hasDb: Boolean(db),
-    hasInitialSynced,
-    hasCompletedInitialCloudLoad,
-    isCloudSynced,
-    storeDocumentExists,
-    navigatorOnline: typeof navigator !== 'undefined' ? navigator.onLine : null,
-    memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
-    activeSyncUid,
-    cloudSyncStatus,
-  });
-  if (db && !hasInitialSynced && navigator.onLine) {
-      hasInitialSynced = true;
-      emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
-      logStorageHydrationDebug('loadData_trigger_sync', {
-        reason: 'db_present_and_not_initial_synced',
-        activeSyncUid,
-        memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
-      });
-      syncFromCloud();
-  }
-  if (db && !navigator.onLine) {
-    emitCloudSyncStatus(CLOUD_SYNC_STATUSES.OFFLINE, 'Internet connection required to load live business data.');
-    // strict online-first guard: until we have hydrated once from cloud, do not treat local memory defaults as authoritative
-    if (!hasCompletedInitialCloudLoad) {
-      const bootState = { ...initialData };
-      logLoadedState(bootState);
-      logStorageHydrationDebug('loadData_return_bootState', {
-        reason: 'offline_before_initial_cloud_load',
-        customersCount: Array.isArray(bootState.customers) ? bootState.customers.length : 0,
-      });
-      return bootState;
+  return perfMeasureSync('storage.loadData', () => {
+    logStorageHydrationDebug('loadData_called', {
+      hasDb: Boolean(db),
+      hasInitialSynced,
+      hasCompletedInitialCloudLoad,
+      isCloudSynced,
+      storeDocumentExists,
+      navigatorOnline: typeof navigator !== 'undefined' ? navigator.onLine : null,
+      memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+      activeSyncUid,
+      cloudSyncStatus,
+    });
+    if (db && !hasInitialSynced && navigator.onLine) {
+        hasInitialSynced = true;
+        emitCloudSyncStatus(CLOUD_SYNC_STATUSES.LOADING);
+        logStorageHydrationDebug('loadData_trigger_sync', {
+          reason: 'db_present_and_not_initial_synced',
+          activeSyncUid,
+          memoryCustomersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+        });
+        syncFromCloud();
     }
-  }
-  logLoadedState(memoryState);
-  logStorageHydrationDebug('loadData_return_memoryState', {
-    customersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+    if (db && !navigator.onLine) {
+      emitCloudSyncStatus(CLOUD_SYNC_STATUSES.OFFLINE, 'Internet connection required to load live business data.');
+      // strict online-first guard: until we have hydrated once from cloud, do not treat local memory defaults as authoritative
+      if (!hasCompletedInitialCloudLoad) {
+        const bootState = { ...initialData };
+        logLoadedState(bootState);
+        logStorageHydrationDebug('loadData_return_bootState', {
+          reason: 'offline_before_initial_cloud_load',
+          customersCount: Array.isArray(bootState.customers) ? bootState.customers.length : 0,
+        });
+        perfLog('storage.loadData.return', {
+          source: 'boot_state',
+          customersCount: Array.isArray(bootState.customers) ? bootState.customers.length : 0,
+          transactionsCount: Array.isArray(bootState.transactions) ? bootState.transactions.length : 0,
+        });
+        return bootState;
+      }
+    }
+    logLoadedState(memoryState);
+    logStorageHydrationDebug('loadData_return_memoryState', {
+      customersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+      hasCompletedInitialCloudLoad,
+      isCloudSynced,
+      cloudSyncStatus,
+    });
+    perfLog('storage.loadData.return', {
+      source: 'memory_state',
+      customersCount: Array.isArray(memoryState.customers) ? memoryState.customers.length : 0,
+      transactionsCount: Array.isArray(memoryState.transactions) ? memoryState.transactions.length : 0,
+      purchaseOrdersCount: Array.isArray(memoryState.purchaseOrders) ? memoryState.purchaseOrders.length : 0,
+      purchasePartiesCount: Array.isArray(memoryState.purchaseParties) ? memoryState.purchaseParties.length : 0,
+    });
+    return memoryState;
+  }, {
     hasCompletedInitialCloudLoad,
-    isCloudSynced,
     cloudSyncStatus,
+    activeSyncUid,
   });
-  return memoryState;
 };
 
 export type TransactionPageCursor = { lastId: string; lastDate: string } | null;

@@ -19,6 +19,7 @@ import { formatCurrency, formatCurrencyWhole, sanitizeDisplayText } from '../ser
 import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, resolveCanonicalPurchasePartyForDraft, resolvePurchasePartyIdentity } from '../services/purchasePartyIdentity';
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { createPerfRunId, perfLog, perfMeasureSync } from '../services/perf';
 
 const STORAGE_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_STORAGE_LOGS || 'false').toLowerCase() === 'true';
 import {
@@ -122,6 +123,14 @@ const formatAdminCashSourceLabel = (rawSource: unknown) => normalizeAdminCashSou
 const shouldAdminUseReserveCash = (rawSource: unknown) => normalizeAdminCashSource(rawSource) === 'reserve';
 
 export default function Admin() {
+  const perfRunIdRef = useRef(createPerfRunId('admin'));
+  const renderStartLoggedRef = useRef(false);
+  const firstEffectLoggedRef = useRef(false);
+  const readyLoggedRef = useRef(false);
+  if (!renderStartLoggedRef.current) {
+    renderStartLoggedRef.current = true;
+    perfLog('page.Admin.render.start', { runId: perfRunIdRef.current });
+  }
   const navigate = useNavigate();
   const INVENTORY_PAGE_SIZE = 100;
   const [products, setProducts] = useState<Product[]>([]);
@@ -422,36 +431,46 @@ useEscapeLayer(Boolean(deletingCategory), () => {
   useEscapeLayer(Boolean(lostDamageTarget), () => setLostDamageTarget(null), { priority: 130 });
 
   const refreshData = () => {
-    const data = loadData();
-    setAppStateSnapshot(data);
-    setProducts(data.products);
-    setPurchaseOrders(Array.isArray(data.purchaseOrders) ? data.purchaseOrders : []);
-    setCustomers(Array.isArray(data.customers) ? data.customers : []);
-    setTransactions(Array.isArray(data.transactions) ? data.transactions : []);
-    setUpfrontOrders(Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []);
-    setCategories(data.categories);
-    setStoreName(data.profile.storeName || 'StockFlow');
-    setStoreProfile(data.profile || null);
-    setVariantsMaster(data.variantsMaster || []);
-    setColorsMaster(data.colorsMaster || []);
-    setPurchaseParties(Array.isArray(data.purchaseParties) ? data.purchaseParties : []);
+    perfMeasureSync('page.Admin.refreshData', () => {
+      const data = loadData();
+      setAppStateSnapshot(data);
+      setProducts(data.products);
+      setPurchaseOrders(Array.isArray(data.purchaseOrders) ? data.purchaseOrders : []);
+      setCustomers(Array.isArray(data.customers) ? data.customers : []);
+      setTransactions(Array.isArray(data.transactions) ? data.transactions : []);
+      setUpfrontOrders(Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []);
+      setCategories(data.categories);
+      setStoreName(data.profile.storeName || 'StockFlow');
+      setStoreProfile(data.profile || null);
+      setVariantsMaster(data.variantsMaster || []);
+      setColorsMaster(data.colorsMaster || []);
+      setPurchaseParties(Array.isArray(data.purchaseParties) ? data.purchaseParties : []);
+    }, { runId: perfRunIdRef.current });
   };
-  const purchasePartyCanonicalView = useMemo(() => buildPurchasePartyCanonicalView(
+  const purchasePartyCanonicalView = useMemo(() => perfMeasureSync('page.Admin.derive.purchasePartyCanonicalView', () => buildPurchasePartyCanonicalView(
     purchaseParties,
     {
       purchaseOrders,
       supplierPayments: loadData().supplierPayments || [],
       partyCreditLedger: loadData().partyCreditLedger || [],
     },
-  ), [purchaseOrders, purchaseParties.length]);
-  const purchasePartyDuplicateCheckReport = useMemo(() => buildPurchasePartyDuplicateCheckReport(
+  ), {
+    runId: perfRunIdRef.current,
+    purchaseParties: purchaseParties.length,
+    purchaseOrders: purchaseOrders.length,
+  }), [purchaseOrders, purchaseParties.length]);
+  const purchasePartyDuplicateCheckReport = useMemo(() => perfMeasureSync('page.Admin.derive.purchasePartyDuplicateCheckReport', () => buildPurchasePartyDuplicateCheckReport(
     purchaseParties,
     {
       purchaseOrders,
       supplierPayments: loadData().supplierPayments || [],
       partyCreditLedger: loadData().partyCreditLedger || [],
     },
-  ), [purchaseParties, purchaseOrders]);
+  ), {
+    runId: perfRunIdRef.current,
+    purchaseParties: purchaseParties.length,
+    purchaseOrders: purchaseOrders.length,
+  }), [purchaseParties, purchaseOrders]);
   const orphanStandalonePurchaseParties = useMemo<PurchaseParty[]>(() => purchasePartyDuplicateCheckReport.orphanGroups
     .filter((group) => !group.possibleCanonical?.canonicalPartyId)
     .map((group) => ({
@@ -463,12 +482,17 @@ useEscapeLayer(Boolean(deletingCategory), () => {
       updatedAt: group.latestOrderAt || group.latestPaymentAt || group.latestCreditAt || new Date().toISOString(),
     })), [purchasePartyDuplicateCheckReport]);
   const visiblePurchaseParties = useMemo(
-    () => [...purchasePartyCanonicalView.visibleParties, ...orphanStandalonePurchaseParties]
+    () => perfMeasureSync('page.Admin.derive.visiblePurchaseParties', () => [...purchasePartyCanonicalView.visibleParties, ...orphanStandalonePurchaseParties]
       .sort((a, b) => String(a.name || '.').localeCompare(String(b.name || '.')) || new Date(a.createdAt || '.').getTime() - new Date(b.createdAt || '.').getTime()),
+    {
+      runId: perfRunIdRef.current,
+      visibleParties: purchasePartyCanonicalView.visibleParties.length,
+      orphanParties: orphanStandalonePurchaseParties.length,
+    }),
     [purchasePartyCanonicalView, orphanStandalonePurchaseParties]
   );
   const allPurchaseParties = useMemo(
-    () => {
+    () => perfMeasureSync('page.Admin.derive.allPurchaseParties', () => {
       const byId = new Map<string, PurchaseParty>();
       [...purchaseParties, ...orphanStandalonePurchaseParties]
         .filter((party) => {
@@ -481,7 +505,11 @@ useEscapeLayer(Boolean(deletingCategory), () => {
         });
       return Array.from(byId.values())
         .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || ''), undefined, { sensitivity: 'base' }));
-    },
+    }, {
+      runId: perfRunIdRef.current,
+      purchaseParties: purchaseParties.length,
+      orphanParties: orphanStandalonePurchaseParties.length,
+    }),
     [purchaseParties, orphanStandalonePurchaseParties]
   );
   const getCanonicalPurchasePartySelectionId = (party?: PurchaseParty | null) => {
@@ -511,13 +539,23 @@ useEscapeLayer(Boolean(deletingCategory), () => {
   }, [visiblePurchaseParties, supplierPartySearch]);
 
   useEffect(() => {
+    if (!firstEffectLoggedRef.current) {
+      firstEffectLoggedRef.current = true;
+      perfLog('page.Admin.first_effect.start', { runId: perfRunIdRef.current });
+    }
     refreshData();
 
     // Listen for storage changes (cross-tab sync)
-    const handleStorageChange = () => refreshData();
+    const handleStorageChange = (event: Event) => {
+      perfMeasureSync('page.Admin.storage_event', () => refreshData(), {
+        runId: perfRunIdRef.current,
+        eventType: event.type,
+      });
+    };
     window.addEventListener('storage', handleStorageChange);
     // Listen for local changes (same-tab sync)
     window.addEventListener('local-storage-update', handleStorageChange);
+    perfLog('page.Admin.first_effect.complete', { runId: perfRunIdRef.current });
 
     return () => {
         window.removeEventListener('storage', handleStorageChange);
@@ -3627,6 +3665,17 @@ useEffect(() => {
     }, 180);
     return () => window.clearTimeout(timer);
   }, [inventoryViewTab]);
+
+  useEffect(() => {
+    if (!isInventoryTableReady || readyLoggedRef.current) return;
+    readyLoggedRef.current = true;
+    perfLog('page.Admin.ready_for_first_useful_paint', {
+      runId: perfRunIdRef.current,
+      products: products.length,
+      purchaseOrders: purchaseOrders.length,
+      purchaseParties: purchaseParties.length,
+    });
+  }, [isInventoryTableReady, products.length, purchaseOrders.length, purchaseParties.length]);
 
   useEffect(() => {
     setOperatorInventoryPage((prev) => Math.min(prev, operatorInventoryTotalPages));

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import Auth from './pages/Auth';
 import VerificationRequired from './pages/VerificationRequired';
 import { getCurrentUser, logout } from './services/auth';
@@ -21,23 +21,47 @@ import { getStoredRoleSession, RoleSessionProvider, useRoleSession } from './src
 import { getCanonicalCustomerBalanceResult } from './services/customerBalanceView';
 import { buildPurchasePartyLedger } from './services/purchaseLedger';
 import { formatDateDisplay } from './src/utils/dateFormat';
-const WhatsAppLogs = lazy(() => import('./pages/WhatsAppLogs'));
 
-const Admin = lazy(() => import('./pages/Admin'));
-const Sales = lazy(() => import('./pages/Sales'));
-const Reports = lazy(() => import('./pages/Reports'));
-const Transactions = lazy(() => import('./pages/Transactions'));
-const Customers = lazy(() => import('./pages/Customers'));
-const Finance = lazy(() => import('./pages/Finance'));
-const ExpenseRepair = lazy(() => import('./pages/ExpenseRepair'));
-const PurchasePanel = lazy(() => import('./pages/PurchasePanel'));
-const ProductAnalytics = lazy(() => import('./pages/ProductAnalytics'));
-const Dashboard = lazy(() => import('./pages/Dashboard'));
-const Cashbook = lazy(() => import('./pages/Cashbook'));
-const TelegramPosts = lazy(() => import('./pages/TelegramPosts'));
+const loadWhatsAppLogs = () => import('./pages/WhatsAppLogs');
+const loadAdmin = () => import('./pages/Admin');
+const loadSales = () => import('./pages/Sales');
+const loadReports = () => import('./pages/Reports');
+const loadTransactions = () => import('./pages/Transactions');
+const loadCustomers = () => import('./pages/Customers');
+const loadFinance = () => import('./pages/Finance');
+const loadExpenseRepair = () => import('./pages/ExpenseRepair');
+const loadPurchasePanel = () => import('./pages/PurchasePanel');
+const loadProductAnalytics = () => import('./pages/ProductAnalytics');
+const loadDashboard = () => import('./pages/Dashboard');
+const loadCashbook = () => import('./pages/Cashbook');
+const loadTelegramPosts = () => import('./pages/TelegramPosts');
+
+const WhatsAppLogs = lazy(loadWhatsAppLogs);
+const Admin = lazy(loadAdmin);
+const Sales = lazy(loadSales);
+const Reports = lazy(loadReports);
+const Transactions = lazy(loadTransactions);
+const Customers = lazy(loadCustomers);
+const Finance = lazy(loadFinance);
+const ExpenseRepair = lazy(loadExpenseRepair);
+const PurchasePanel = lazy(loadPurchasePanel);
+const ProductAnalytics = lazy(loadProductAnalytics);
+const Dashboard = lazy(loadDashboard);
+const Cashbook = lazy(loadCashbook);
+const TelegramPosts = lazy(loadTelegramPosts);
 const ADMIN_REMINDER_START_DATE = '2026-07-19T00:00:00';
 const ADMIN_REMINDER_REPEAT_MS = 7 * 24 * 60 * 60 * 1000;
 const ADMIN_REMINDER_STORAGE_KEY = 'stockflow:admin-reminder:last-shown';
+const NAVIGATION_SAFETY_TIMEOUT_MS = 10000;
+
+const ROUTE_PRELOADERS: Partial<Record<string, () => Promise<unknown>>> = {
+  '/': loadAdmin,
+  '/sales': loadSales,
+  '/transactions': loadTransactions,
+  '/dashboard': loadDashboard,
+  '/finance': loadFinance,
+  '/purchase-panel': loadPurchasePanel,
+};
 
 type AdminReminderSummary = {
   customerDueTotal: number;
@@ -49,22 +73,83 @@ type AdminReminderSummary = {
 
 // --- Components ---
 
-const NavItem = ({ to, icon: Icon, label, labelClassName = '', optimisticActivePath, onOptimisticActivate }: { to: string, icon: any, label: string, labelClassName?: string, optimisticActivePath?: string | null, onOptimisticActivate?: (path: string) => void }) => {
+type AppNavItemProps = {
+  to: string;
+  icon: any;
+  label: string;
+  labelClassName?: string;
+  optimisticActivePath?: string | null;
+  onOptimisticActivate?: (path: string) => void;
+  onNavigate?: (path: string, label: string) => void;
+  onPreload?: (path: string) => void;
+  isNavigating?: boolean;
+};
+
+const NavItem = ({ to, icon: Icon, label, labelClassName = '', optimisticActivePath, onOptimisticActivate, onNavigate, onPreload, isNavigating = false }: AppNavItemProps) => {
   const location = useLocation();
   const isActive = (optimisticActivePath || location.pathname) === to;
   return (
-    <Link 
-      to={to} 
-      onClick={() => onOptimisticActivate?.(to)}
+    <button
+      type="button"
+      onClick={() => {
+        if (isNavigating) return;
+        onOptimisticActivate?.(to);
+        onNavigate?.(to, label);
+      }}
+      onMouseEnter={() => onPreload?.(to)}
+      onFocus={() => onPreload?.(to)}
+      disabled={isNavigating}
+      aria-current={isActive ? 'page' : undefined}
+      aria-label={label}
       className={`flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
         isActive 
           ? 'bg-primary text-primary-foreground' 
           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-      }`}
+      } ${isNavigating ? 'cursor-progress' : ''}`}
     >
       <Icon className="w-5 h-5" />
       <span className={labelClassName}>{label}</span>
-    </Link>
+    </button>
+  );
+};
+
+const MobileNavButton = ({
+  to,
+  label,
+  icon: Icon,
+  className,
+  onNavigate,
+  onPreload,
+  isNavigating = false,
+}: {
+  to: string;
+  label: string;
+  icon: any;
+  className: string;
+  onNavigate?: (path: string, label: string) => void;
+  onPreload?: (path: string) => void;
+  isNavigating?: boolean;
+}) => {
+  const location = useLocation();
+  const isActive = location.pathname === to;
+
+  return (
+    <button
+      type="button"
+      className={className}
+      onClick={() => {
+        if (isNavigating) return;
+        onNavigate?.(to, label);
+      }}
+      onMouseEnter={() => onPreload?.(to)}
+      onFocus={() => onPreload?.(to)}
+      disabled={isNavigating}
+      aria-current={isActive ? 'page' : undefined}
+      aria-label={label}
+    >
+      <Icon className="w-5 h-5" />
+      <span className="text-[10px] font-medium mt-1">{label}</span>
+    </button>
   );
 };
 
@@ -128,8 +213,43 @@ function AppContent() {
   const [optimisticActivePath, setOptimisticActivePath] = useState<string | null>(null);
   const [showAdminReminder, setShowAdminReminder] = useState(false);
   const [adminReminderSummary, setAdminReminderSummary] = useState<AdminReminderSummary | null>(null);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [navigationLabel, setNavigationLabel] = useState<string | null>(null);
+  const navigationSafetyTimeoutRef = React.useRef<number | null>(null);
   const clearOptimisticActivePath = React.useCallback(() => setOptimisticActivePath(null), []);
   const isFinanceRoute = location.pathname === '/finance';
+
+  const preloadRoute = React.useCallback((path: string) => {
+    const preload = ROUTE_PRELOADERS[path];
+    if (!preload) return;
+    void preload();
+  }, []);
+
+  const clearNavigationState = React.useCallback(() => {
+    if (navigationSafetyTimeoutRef.current !== null) {
+      window.clearTimeout(navigationSafetyTimeoutRef.current);
+      navigationSafetyTimeoutRef.current = null;
+    }
+    setIsNavigating(false);
+    setNavigationLabel(null);
+  }, []);
+
+  const startRouteNavigation = React.useCallback((path: string, label: string) => {
+    if (path === location.pathname || isNavigating) return;
+    setIsNavigating(true);
+    setNavigationLabel(`Opening ${label}...`);
+    if (navigationSafetyTimeoutRef.current !== null) {
+      window.clearTimeout(navigationSafetyTimeoutRef.current);
+    }
+    navigationSafetyTimeoutRef.current = window.setTimeout(() => {
+      navigationSafetyTimeoutRef.current = null;
+      setIsNavigating(false);
+      setNavigationLabel(null);
+    }, NAVIGATION_SAFETY_TIMEOUT_MS);
+    window.requestAnimationFrame(() => {
+      navigate(path);
+    });
+  }, [isNavigating, location.pathname, navigate]);
 
   useEffect(() => {
     if (!auth) {
@@ -248,6 +368,18 @@ function AppContent() {
   };
 
   useEffect(() => {
+    clearNavigationState();
+  }, [location.pathname, clearNavigationState]);
+
+  useEffect(() => {
+    return () => {
+      if (navigationSafetyTimeoutRef.current !== null) {
+        window.clearTimeout(navigationSafetyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (authStatus !== 'authenticated' || roleSession?.role !== 'admin') return;
     const reminderStartMs = new Date(ADMIN_REMINDER_START_DATE).getTime();
     const nowMs = Date.now();
@@ -305,7 +437,7 @@ function AppContent() {
         </Routes>
       );
     }
-    return <div className="min-h-screen bg-background" />;
+    return <LightweightLoader label="Checking your session..." className="min-h-screen" />;
   }
 
   if (isPublicRoute) {
@@ -329,9 +461,19 @@ function AppContent() {
 
   return (
       <>
-      <RouteActivationObserver onRouteCommitted={clearOptimisticActivePath} />
+      <RouteActivationObserver onRouteCommitted={() => {
+        clearOptimisticActivePath();
+        clearNavigationState();
+      }} />
       <MenuController setIsMenuOpen={setIsMenuOpen} />
       <div className="flex h-screen bg-background overflow-hidden">
+        {isNavigating && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/35 backdrop-blur-sm">
+            <div className="rounded-xl border bg-background px-5 py-4 shadow-2xl">
+              <LightweightLoader label={navigationLabel || 'Opening page...'} className="min-h-0 p-0" />
+            </div>
+          </div>
+        )}
         {updateAvailable && (
           <div className="fixed inset-x-3 bottom-3 z-[95] sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-[360px]">
             <div className="rounded-2xl border border-amber-200 bg-white/95 p-3 text-xs text-slate-800 shadow-xl backdrop-blur">
@@ -392,18 +534,18 @@ function AppContent() {
           
           <nav className="flex-1 px-4 space-y-1">
             <p className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-2">Menu</p>
-            <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            <NavItem to="/" icon={Package} label="Inventory" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            <NavItem to="/telegram-posts" icon={Send} label="Telegram Posts" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            <NavItem to="/sales" icon={ShoppingCart} label="POS System" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            <NavItem to="/transactions" icon={ArrowRightLeft} label="Transactions" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            {can('analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
-            <NavItem to="/customers" icon={Users} label="Customers" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            {can('reports') && <NavItem to="/pdf" icon={FileText} label="Reports" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
-            {can('settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
-            {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" labelClassName="text-red-600" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
-            <NavItem to="/finance" icon={Landmark} label="Finance" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />
-            {can('purchases') && <NavItem to="/purchase-panel" icon={ClipboardList} label="Purchase Parties" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} />}
+            <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/" icon={Package} label="Inventory" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/telegram-posts" icon={Send} label="Telegram Posts" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/sales" icon={ShoppingCart} label="Sales" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/transactions" icon={ArrowRightLeft} label="Transactions" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            {can('analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            <NavItem to="/customers" icon={Users} label="Customers" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />
+            {can('reports') && <NavItem to="/pdf" icon={FileText} label="Reports" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            {can('settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" labelClassName="text-red-600" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            <NavItem to="/finance" icon={Landmark} label="Finance" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            {can('purchases') && <NavItem to="/purchase-panel" icon={ClipboardList} label="Purchase Parties" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />}
 
           </nav>
           
@@ -420,87 +562,78 @@ function AppContent() {
 
         {/* Mobile Navigation (Bottom) */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 bg-card border-t h-16 flex items-center justify-around px-2 z-50 safe-area-bottom shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
-           <Link to="/" className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70">
-              <LayoutDashboard className="w-5 h-5" />
-              <span className="text-[10px] font-medium mt-1">Stock</span>
-           </Link>
-           <Link to="/sales" className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70">
-              <ShoppingCart className="w-5 h-5" />
-              <span className="text-[10px] font-medium mt-1">POS</span>
-           </Link>
+           <MobileNavButton to="/" label="Stock" icon={LayoutDashboard} className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+           <MobileNavButton to="/sales" label="Sales" icon={ShoppingCart} className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
 
-           <Link to="/customers" className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70">
-              <Users className="w-5 h-5" />
-              <span className="text-[10px] font-medium mt-1">Clients</span>
-           </Link>
+           <MobileNavButton to="/customers" label="Clients" icon={Users} className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70" onNavigate={startRouteNavigation} isNavigating={isNavigating} />
 
-           <button onClick={() => setIsMenuOpen(true)} className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70">
-              <Menu className="w-5 h-5" />
-              <span className="text-[10px] font-medium mt-1">More</span>
-           </button>
+           <button onClick={() => { if (!isNavigating) setIsMenuOpen(true); }} disabled={isNavigating} className="flex flex-col items-center justify-center w-14 h-full text-muted-foreground hover:text-primary active:text-primary/70 disabled:opacity-50">
+               <Menu className="w-5 h-5" />
+               <span className="text-[10px] font-medium mt-1">More</span>
+            </button>
         </div>
 
         {/* Mobile Menu Overlay */}
         {isMenuOpen && (
             <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex flex-col justify-end animate-in slide-in-from-bottom-10" onClick={() => setIsMenuOpen(false)}>
                 <div className="bg-card rounded-t-2xl p-6 space-y-4 pb-8" onClick={e => e.stopPropagation()}>
-                    <div className="flex justify-between items-center mb-2">
-                        <h3 className="font-bold text-lg">Menu</h3>
-                        <Button variant="ghost" size="icon" onClick={() => setIsMenuOpen(false)}><X className="w-5 h-5" /></Button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                         <Link to="/transactions" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-blue-100 text-blue-600 rounded-full mb-2">
-                                  <ArrowRightLeft className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Transactions</span>
-                         </Link>
-                         {can('reports') && <Link to="/pdf" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-purple-100 text-purple-600 rounded-full mb-2">
-                                  <FileText className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Reports</span>
-                         </Link>}
-                         <Link to="/dashboard" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-indigo-100 text-indigo-600 rounded-full mb-2">
-                                  <LayoutDashboard className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Dashboard</span>
-                         </Link>
-                         <Link to="/telegram-posts" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-sky-100 text-sky-700 rounded-full mb-2">
-                                  <Send className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Telegram Posts</span>
-                         </Link>
-                         {can('analytics') && <Link to="/product-analytics" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-cyan-100 text-cyan-600 rounded-full mb-2">
-                                  <BarChart3 className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Product Analytics</span>
-                         </Link>}
-                         <Link to="/finance" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-emerald-100 text-emerald-600 rounded-full mb-2">
-                                  <Landmark className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Finance</span>
-                         </Link>
-                         {can('purchases') && <Link to="/purchase-panel" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-cyan-100 text-cyan-600 rounded-full mb-2">
-                                  <ClipboardList className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Purchase Parties</span>
-                         </Link>}
-                         {can('settings') && <Link to="/settings" className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20">
-                              <div className="p-3 bg-gray-100 text-gray-600 rounded-full mb-2">
-                                  <SettingsIcon className="w-6 h-6" />
-                              </div>
-                              <span className="font-medium text-sm">Settings</span>
-                         </Link>}
-                         <button onClick={handleFullLogout} className="flex flex-col items-center justify-center p-4 bg-red-50 rounded-xl hover:bg-red-100 transition-colors border border-red-200">
-                              <div className="p-3 bg-white text-red-600 rounded-full mb-2 shadow-sm">
-                                  <LogOut className="w-6 h-6" />
-                              </div>
+                     <div className="flex justify-between items-center mb-2">
+                         <h3 className="font-bold text-lg">Menu</h3>
+                         <Button variant="ghost" size="icon" onClick={() => setIsMenuOpen(false)}><X className="w-5 h-5" /></Button>
+                     </div>
+                     <div className="grid grid-cols-2 gap-4">
+                         <button type="button" onClick={() => startRouteNavigation('/transactions', 'Transactions')} onMouseEnter={() => preloadRoute('/transactions')} onFocus={() => preloadRoute('/transactions')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-blue-100 text-blue-600 rounded-full mb-2">
+                                   <ArrowRightLeft className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Transactions</span>
+                         </button>
+                         {can('reports') && <button type="button" onClick={() => startRouteNavigation('/pdf', 'Reports')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-purple-100 text-purple-600 rounded-full mb-2">
+                                   <FileText className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Reports</span>
+                         </button>}
+                         <button type="button" onClick={() => startRouteNavigation('/dashboard', 'Dashboard')} onMouseEnter={() => preloadRoute('/dashboard')} onFocus={() => preloadRoute('/dashboard')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-indigo-100 text-indigo-600 rounded-full mb-2">
+                                   <LayoutDashboard className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Dashboard</span>
+                         </button>
+                         <button type="button" onClick={() => startRouteNavigation('/telegram-posts', 'Telegram Posts')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-sky-100 text-sky-700 rounded-full mb-2">
+                                   <Send className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Telegram Posts</span>
+                         </button>
+                         {can('analytics') && <button type="button" onClick={() => startRouteNavigation('/product-analytics', 'Product Analytics')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-cyan-100 text-cyan-600 rounded-full mb-2">
+                                   <BarChart3 className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Product Analytics</span>
+                         </button>}
+                         <button type="button" onClick={() => startRouteNavigation('/finance', 'Finance')} onMouseEnter={() => preloadRoute('/finance')} onFocus={() => preloadRoute('/finance')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-emerald-100 text-emerald-600 rounded-full mb-2">
+                                   <Landmark className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Finance</span>
+                         </button>
+                         {can('purchases') && <button type="button" onClick={() => startRouteNavigation('/purchase-panel', 'Purchase Parties')} onMouseEnter={() => preloadRoute('/purchase-panel')} onFocus={() => preloadRoute('/purchase-panel')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-cyan-100 text-cyan-600 rounded-full mb-2">
+                                   <ClipboardList className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Purchase Parties</span>
+                         </button>}
+                         {can('settings') && <button type="button" onClick={() => startRouteNavigation('/settings', 'Settings')} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-muted/50 rounded-xl hover:bg-muted transition-colors border border-transparent hover:border-primary/20 disabled:opacity-50">
+                               <div className="p-3 bg-gray-100 text-gray-600 rounded-full mb-2">
+                                   <SettingsIcon className="w-6 h-6" />
+                               </div>
+                               <span className="font-medium text-sm">Settings</span>
+                         </button>}
+                         <button onClick={handleFullLogout} disabled={isNavigating} className="flex flex-col items-center justify-center p-4 bg-red-50 rounded-xl hover:bg-red-100 transition-colors border border-red-200 disabled:opacity-50">
+                               <div className="p-3 bg-white text-red-600 rounded-full mb-2 shadow-sm">
+                                   <LogOut className="w-6 h-6" />
+                               </div>
                               <span className="font-medium text-sm text-red-700">Logout</span>
                          </button>
                     </div>

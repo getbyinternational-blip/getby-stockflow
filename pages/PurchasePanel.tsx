@@ -23,6 +23,7 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { auth } from '../services/firebase';
 import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport, classifyPurchasePartyReference, normalizePurchasePartyNameForMatch, type PurchasePartyReferenceStatus } from '../services/purchasePartyIdentity';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
 
 type PurchaseTab = 'orders' | 'parties';
 type WizardStep = 'source' | 'product' | 'variants' | 'pricing' | 'review' | 'newProduct';
@@ -679,6 +680,14 @@ type PurchasePanelProps = {
 };
 
 export default function PurchasePanel({ repairMode = false, embeddedRepairCenter = false }: PurchasePanelProps) {
+  const perfRunIdRef = useRef(createPerfRunId('purchase-panel'));
+  const renderStartLoggedRef = useRef(false);
+  const firstEffectLoggedRef = useRef(false);
+  const readyLoggedRef = useRef(false);
+  if (!renderStartLoggedRef.current) {
+    renderStartLoggedRef.current = true;
+    perfLog('page.PurchasePanel.render.start', { runId: perfRunIdRef.current });
+  }
   const purchasePanelRootRef = useRef<HTMLDivElement | null>(null);
   const { requestAdminOverride } = useRoleSession();
   const ORDERS_PAGE_SIZE = 15;
@@ -853,23 +862,38 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   ]);
 
   const refresh = () => {
-    const data = loadData();
-    const nextOrders = getPurchaseOrders();
-    setProducts(data.products || []);
-    setOrders(nextOrders);
-    setParties(Array.isArray(data.purchaseParties) ? data.purchaseParties : []);
+    perfMeasureSync('page.PurchasePanel.refresh', () => {
+      const data = loadData();
+      const nextOrders = getPurchaseOrders();
+      setProducts(data.products || []);
+      setOrders(nextOrders);
+      setParties(Array.isArray(data.purchaseParties) ? data.purchaseParties : []);
+    }, { runId: perfRunIdRef.current });
   };
 
   const refreshPurchaseReceipts = async () => {
-    await refreshPurchaseReceiptPostingsFromCloud();
-    refresh();
+    await perfMeasureAsync('page.PurchasePanel.refreshPurchaseReceipts', async () => {
+      await refreshPurchaseReceiptPostingsFromCloud();
+      refresh();
+    }, { runId: perfRunIdRef.current });
   };
 
   useEffect(() => {
+    if (!firstEffectLoggedRef.current) {
+      firstEffectLoggedRef.current = true;
+      perfLog('page.PurchasePanel.first_effect.start', { runId: perfRunIdRef.current });
+    }
     refresh();
     void refreshPurchaseReceipts();
-    window.addEventListener('local-storage-update', refresh);
-    return () => window.removeEventListener('local-storage-update', refresh);
+    const handleRefresh = (event: Event) => {
+      perfMeasureSync('page.PurchasePanel.storage_event', () => refresh(), {
+        runId: perfRunIdRef.current,
+        eventType: event.type,
+      });
+    };
+    window.addEventListener('local-storage-update', handleRefresh);
+    perfLog('page.PurchasePanel.first_effect.complete', { runId: perfRunIdRef.current });
+    return () => window.removeEventListener('local-storage-update', handleRefresh);
   }, []);
 
   const filteredProducts = useMemo(() => {
@@ -886,7 +910,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     [products]
   );
 
-  const orderList = useMemo(() => {
+  const orderList = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.orderList', () => {
     let rows = orders.map(order => ({
       order,
       date: new Date(order.orderDate).toLocaleDateString('en-GB'),
@@ -908,7 +932,13 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     else rows.sort((a, b) => new Date(b.order.updatedAt).getTime() - new Date(a.order.updatedAt).getTime());
 
     return rows;
-  }, [orders, homeSearch, filterBy, sortBy]);
+  }, {
+    runId: perfRunIdRef.current,
+    orders: orders.length,
+    searchLength: homeSearch.trim().length,
+    filterBy,
+    sortBy,
+  }), [orders, homeSearch, filterBy, sortBy]);
   const orderTotalPages = useMemo(
     () => Math.max(1, Math.ceil(orderList.length / ORDERS_PAGE_SIZE)),
     [orderList.length]
@@ -925,6 +955,21 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   useEffect(() => {
     setOrdersPage((prev) => Math.min(prev, orderTotalPages));
   }, [orderTotalPages]);
+
+  useEffect(() => {
+    if (readyLoggedRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (readyLoggedRef.current) return;
+      readyLoggedRef.current = true;
+      perfLog('page.PurchasePanel.ready_for_first_useful_paint', {
+        runId: perfRunIdRef.current,
+        products: products.length,
+        orders: orders.length,
+        parties: parties.length,
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [products.length, orders.length, parties.length]);
 
   const selectableInventoryVariants = useMemo(() => {
     if (!selectedProduct) return [] as Array<{ key: string; label: string; stock: number; variant?: string; color?: string }>;
@@ -974,29 +1019,50 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const hasMeaningfulVariantChoices = sourceMode === 'inventory' ? selectableInventoryVariants.length > 0 : true;
   const canGoVariantsNext = sourceMode === 'new' ? true : (!hasMeaningfulVariantChoices || selectedVariantKeys.length > 0);
   const canGoReviewNext = !!partyId && activeLines.length > 0 && activeLines.every(l => toNum(l.quantity) > 0 && toNum(l.unitCost) > 0);
-  const dataSnapshot = useMemo(() => loadData(), [orders, parties]);
+  const dataSnapshot = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.dataSnapshot', () => loadData(), {
+    runId: perfRunIdRef.current,
+    orders: orders.length,
+    parties: parties.length,
+  }), [orders, parties]);
   const supplierPayments = useMemo(() => dataSnapshot.supplierPayments || [], [dataSnapshot]);
   const partyCreditLedger = useMemo(() => dataSnapshot.partyCreditLedger || [], [dataSnapshot]);
-  const cashSourceAvailability = useMemo(() => getPurchaseCashSourceAvailability(dataSnapshot), [dataSnapshot]);
+  const cashSourceAvailability = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.cashSourceAvailability', () => getPurchaseCashSourceAvailability(dataSnapshot), {
+    runId: perfRunIdRef.current,
+    transactions: dataSnapshot.transactions.length,
+    purchaseOrders: dataSnapshot.purchaseOrders.length,
+    supplierPayments: (dataSnapshot.supplierPayments || []).length,
+  }), [dataSnapshot]);
   const getAvailableCashBySource = (source: CashSource) => (
     normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
   );
-  const duplicatePartyCheckReport = useMemo(() => buildPurchasePartyDuplicateCheckReport(
+  const duplicatePartyCheckReport = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.duplicatePartyCheckReport', () => buildPurchasePartyDuplicateCheckReport(
     parties,
     {
       purchaseOrders: orders,
       supplierPayments,
       partyCreditLedger,
     },
-  ), [parties, orders, supplierPayments, partyCreditLedger]);
-  const canonicalPartyView = useMemo(() => buildPurchasePartyCanonicalView(
+  ), {
+    runId: perfRunIdRef.current,
+    parties: parties.length,
+    orders: orders.length,
+    supplierPayments: supplierPayments.length,
+    partyCreditLedger: partyCreditLedger.length,
+  }), [parties, orders, supplierPayments, partyCreditLedger]);
+  const canonicalPartyView = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.canonicalPartyView', () => buildPurchasePartyCanonicalView(
     parties,
     {
       purchaseOrders: orders,
       supplierPayments,
       partyCreditLedger,
     },
-  ), [parties, orders, supplierPayments, partyCreditLedger]);
+  ), {
+    runId: perfRunIdRef.current,
+    parties: parties.length,
+    orders: orders.length,
+    supplierPayments: supplierPayments.length,
+    partyCreditLedger: partyCreditLedger.length,
+  }), [parties, orders, supplierPayments, partyCreditLedger]);
   const orphanRelatedPartyIds = useMemo(() => {
     const map = new Map<string, string[]>();
     duplicatePartyCheckReport.orphanGroups.forEach((group) => {
@@ -1020,8 +1086,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       createdAt: group.earliestOrderAt || group.earliestPaymentAt || group.earliestCreditAt || new Date(0).toISOString(),
       updatedAt: group.latestOrderAt || group.latestPaymentAt || group.latestCreditAt || new Date().toISOString(),
     })), [duplicatePartyCheckReport]);
-  const visibleParties = useMemo(() => [...canonicalPartyView.visibleParties, ...orphanStandaloneParties]
-    .sort((a, b) => String(a.name || '.').localeCompare(String(b.name || '.')) || new Date(a.createdAt || '.').getTime() - new Date(b.createdAt || '.').getTime()), [canonicalPartyView, orphanStandaloneParties]);
+  const visibleParties = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.visibleParties', () => [...canonicalPartyView.visibleParties, ...orphanStandaloneParties]
+    .sort((a, b) => String(a.name || '.').localeCompare(String(b.name || '.')) || new Date(a.createdAt || '.').getTime() - new Date(b.createdAt || '.').getTime()), {
+      runId: perfRunIdRef.current,
+      canonicalVisibleParties: canonicalPartyView.visibleParties.length,
+      orphanStandaloneParties: orphanStandaloneParties.length,
+    }), [canonicalPartyView, orphanStandaloneParties]);
   const visiblePartyById = useMemo(() => new Map(visibleParties.map((party) => [party.id, party])), [visibleParties]);
   const visiblePartyNameCounts = useMemo(() => {
     const counts = new Map<string, number>();

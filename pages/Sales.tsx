@@ -27,6 +27,7 @@ import { can } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { createPerfRunId, perfLog, perfMeasureSync } from '../services/perf';
 
 const toMoneyCents = (value: number) => Math.round((Number.isFinite(value) ? value : 0) * 100);
 const fromMoneyCents = (value: number) => value / 100;
@@ -405,6 +406,14 @@ const PosDatePicker: React.FC<{
 };
 
 export default function Sales() {
+  const perfRunIdRef = useRef(createPerfRunId('sales'));
+  const renderStartLoggedRef = useRef(false);
+  const firstEffectLoggedRef = useRef(false);
+  const readyLoggedRef = useRef(false);
+  if (!renderStartLoggedRef.current) {
+    renderStartLoggedRef.current = true;
+    perfLog('page.Sales.render.start', { runId: perfRunIdRef.current });
+  }
   type InvoiceCart = {
     id: string;
     label: string;
@@ -695,25 +704,49 @@ export default function Sales() {
   };
 
   const refreshData = () => {
-      const data = loadData();
-      setProducts(data.products);
-      setCustomers(data.customers);
-      setTransactions(data.transactions);
-      setUpfrontOrders(Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []);
-      
-      if (data.profile.defaultTaxLabel || Number.isFinite(Number(data.profile.defaultTaxRate))) {
-          const defaultOpt = resolveTaxOption(data.profile.defaultTaxLabel, data.profile.defaultTaxRate);
-          setSelectedTax(defaultOpt);
-      }
+      perfMeasureSync('page.Sales.refreshData', () => {
+        const data = loadData();
+        setProducts(data.products);
+        setCustomers(data.customers);
+        setTransactions(data.transactions);
+        setUpfrontOrders(Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []);
+        
+        if (data.profile.defaultTaxLabel || Number.isFinite(Number(data.profile.defaultTaxRate))) {
+            const defaultOpt = resolveTaxOption(data.profile.defaultTaxLabel, data.profile.defaultTaxRate);
+            setSelectedTax(defaultOpt);
+        }
+      }, { runId: perfRunIdRef.current });
   }
 
   useEffect(() => {
+    if (!firstEffectLoggedRef.current) {
+      firstEffectLoggedRef.current = true;
+      perfLog('page.Sales.first_effect.start', { runId: perfRunIdRef.current });
+    }
     refreshData();
-    window.addEventListener('storage', refreshData);
-    window.addEventListener('local-storage-update', refreshData);
+    const handleRefresh = (event: Event) => {
+      perfMeasureSync('page.Sales.storage_event', () => refreshData(), {
+        runId: perfRunIdRef.current,
+        eventType: event.type,
+      });
+    };
+    window.addEventListener('storage', handleRefresh);
+    window.addEventListener('local-storage-update', handleRefresh);
+    const readyFrame = window.requestAnimationFrame(() => {
+      if (readyLoggedRef.current) return;
+      readyLoggedRef.current = true;
+      perfLog('page.Sales.ready_for_first_useful_paint', {
+        runId: perfRunIdRef.current,
+        products: products.length,
+        customers: customers.length,
+        transactions: transactions.length,
+      });
+    });
+    perfLog('page.Sales.first_effect.complete', { runId: perfRunIdRef.current });
     return () => {
-        window.removeEventListener('storage', refreshData);
-        window.removeEventListener('local-storage-update', refreshData);
+        window.cancelAnimationFrame(readyFrame);
+        window.removeEventListener('storage', handleRefresh);
+        window.removeEventListener('local-storage-update', handleRefresh);
     };
   }, []);
 
@@ -835,7 +868,7 @@ export default function Sales() {
   }, [products]);
 
   const lineKey = (id: string, variant?: string, color?: string) => getStockBucketKey(id, variant, color);
-  const returnabilityIndexes = useMemo(() => {
+  const returnabilityIndexes = useMemo(() => perfMeasureSync('page.Sales.derive.returnabilityIndexes', () => {
     const overall = new Map<string, number>();
     const byCustomer = new Map<string, Map<string, number>>();
     const linkedReturnQtyBySourceLine = new Map<string, number>();
@@ -874,7 +907,10 @@ export default function Sales() {
     });
 
     return { overall, byCustomer, linkedReturnQtyBySourceLine, legacyReturnQtyByLine, legacyReturnQtyByCustomerLine };
-  }, [transactions]);
+  }, {
+    runId: perfRunIdRef.current,
+    transactions: transactions.length,
+  }), [transactions]);
 
   const getReturnableQty = (id: string, variant?: string, color?: string, customerId?: string) => {
     const key = lineKey(id, variant, color);
@@ -1493,11 +1529,16 @@ export default function Sales() {
   const safeCustomers = Array.isArray(customers) ? customers : [];
   const safeTransactions = Array.isArray(transactions) ? transactions : [];
   const safeUpfrontOrders = Array.isArray(upfrontOrders) ? upfrontOrders : [];
-  const cashSourceAvailability = useMemo(() => getSalesCashSourceAvailability(loadData()), [transactions, products, customers]);
+  const cashSourceAvailability = useMemo(() => perfMeasureSync('page.Sales.derive.cashSourceAvailability', () => getSalesCashSourceAvailability(loadData()), {
+    runId: perfRunIdRef.current,
+    transactions: transactions.length,
+    products: products.length,
+    customers: customers.length,
+  }), [transactions, products, customers]);
   const getAvailableCashBySource = (source: CashSource) => (
     normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
   );
-  const pendingAdvanceOrders = useMemo(() => {
+  const pendingAdvanceOrders = useMemo(() => perfMeasureSync('page.Sales.derive.pendingAdvanceOrders', () => {
     const q = advanceSearch.trim().toLowerCase();
     return safeUpfrontOrders
       .filter((order) => !order.fulfilledAt)
@@ -1516,7 +1557,11 @@ export default function Sales() {
         return haystack.includes(q);
       })
       .sort((a, b) => new Date(b.effectiveAt || b.date || b.createdAt || 0).getTime() - new Date(a.effectiveAt || a.date || a.createdAt || 0).getTime());
-  }, [advanceSearch, safeCustomers, safeUpfrontOrders]);
+  }, {
+    runId: perfRunIdRef.current,
+    upfrontOrders: safeUpfrontOrders.length,
+    customers: safeCustomers.length,
+  }), [advanceSearch, safeCustomers, safeUpfrontOrders]);
   const selectedAdvanceOrder = useMemo(
     () => pendingAdvanceOrders.find((order) => order.id === selectedAdvanceOrderId) || null,
     [pendingAdvanceOrders, selectedAdvanceOrderId]
@@ -1528,9 +1573,15 @@ export default function Sales() {
   const selectedAdvanceOrderRemaining = Math.max(0, Number(selectedAdvanceOrder?.remainingAmount || 0));
   const getCustomerCanonicalBalanceView = (customer: Customer | null) =>
     getCanonicalCustomerBalanceView(customer, safeCustomers, safeTransactions, safeUpfrontOrders);
-  const selectedCustomerBalanceView = useMemo(() => {
+  const selectedCustomerBalanceView = useMemo(() => perfMeasureSync('page.Sales.derive.selectedCustomerBalanceView', () => {
     return getCustomerCanonicalBalanceView(resolvedSelectedCustomer);
-  }, [resolvedSelectedCustomer, safeCustomers, safeTransactions, safeUpfrontOrders]);
+  }, {
+    runId: perfRunIdRef.current,
+    hasCustomer: Boolean(resolvedSelectedCustomer),
+    customers: safeCustomers.length,
+    transactions: safeTransactions.length,
+    upfrontOrders: safeUpfrontOrders.length,
+  }), [resolvedSelectedCustomer, safeCustomers, safeTransactions, safeUpfrontOrders]);
   const availableStoreCredit = selectedCustomerBalanceView.storeCredit;
   const normalizedAvailableStoreCredit = Math.max(0, safeNumber(availableStoreCredit));
   const selectedCustomerDue = selectedCustomerBalanceView.currentDue;

@@ -17,6 +17,7 @@ import { can, getCurrentRole } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { auth } from '../services/firebase';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
 
 type Expense = CanonicalExpense;
 
@@ -234,7 +235,7 @@ const shouldReduceReserveFromSource = (rawSource: unknown) => {
   const normalized = String(rawSource || '').trim().toLowerCase();
   if (normalized === 'drawer') return false;
   if (normalized === 'reserve') return true;
-  return true;
+  return false;
 };
 const financeShiftDiag = (tag: string, payload: Record<string, unknown>) => {
   if (!FINANCE_DIAGNOSTIC_DEBUG_ENABLED) return;
@@ -694,16 +695,21 @@ const getSessionCashTotals = (
     cashSales,
     deletedSaleCashIncluded: explicitDeletedSaleCashIncluded,
     cashRefunds,
+    activeCashRefunds,
     deleteCompensationRefunds: deleteCompensationOutflow,
     customerCashOutflow: customerCashOutflow.cashOutflow,
+    activeCustomerCashOutflow,
     customerOnlineOutflow: customerCashOutflow.onlineOutflow,
     customerCashCollections: cashCollections,
     customOrderCashCollections: customOrderCashIn,
     cashCollections: cashCollections + customOrderCashIn,
     cashAdditions: cashAdded + manualCashIn,
     supplierCashPayments,
+    activeSupplierCashPayments,
     expenses: expenseTotal,
+    activeExpenseTotal,
     cashWithdrawals: cashWithdrawn + manualCashOut + customerCashOutflow.cashOutflow,
+    activeCashWithdrawals: activeCashWithdrawn + activeManualCashOut + activeCustomerCashOutflow,
     expenseTotal,
     manualCashIn,
     manualCashOut,
@@ -930,6 +936,14 @@ type WithdrawalRepairPreview = {
 };
 
 export default function Finance({ repairMode = false, initialTab = 'cash', lockedTab, embeddedExpenseRepair = false, embeddedWithdrawalRepair = false }: FinanceProps) {
+  const perfRunIdRef = React.useRef(createPerfRunId('finance'));
+  const renderStartLoggedRef = React.useRef(false);
+  const firstEffectLoggedRef = React.useRef(false);
+  const readyLoggedRef = React.useRef(false);
+  if (!renderStartLoggedRef.current) {
+    renderStartLoggedRef.current = true;
+    perfLog('page.Finance.render.start', { runId: perfRunIdRef.current });
+  }
   const { session: roleSession, requestAdminOverride } = useRoleSession();
   const formatExpenseLoggedDate = (expense: Expense) => {
     const rawExpense = expense as Expense & { date?: unknown; timestamp?: unknown; expenseDate?: unknown };
@@ -1073,31 +1087,44 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   useEscapeLayer(withdrawalRepairConfirmOpen, () => setWithdrawalRepairConfirmOpen(false), { priority: 104 });
   useEscapeLayer(embeddedWithdrawalEditorOpen, () => setEmbeddedWithdrawalEditorOpen(false), { priority: 102 });
 
-  const refreshData = () => setData(loadData());
+  const refreshData = () => perfMeasureSync('page.Finance.refreshData', () => setData(loadData()), {
+    runId: perfRunIdRef.current,
+  });
   const refreshFinanceNonCriticalData = async () => {
-    try {
-      await Promise.all([refreshDeletedTransactionsFromCloud(), refreshExpenseActivitiesFromCloud()]);
-      setData(loadData());
-      setErrors(null);
-    } catch (error) {
-      setErrors(getFriendlyErrorMessage(error, 'finance.refresh_non_critical'));
-    }
+    await perfMeasureAsync('page.Finance.refreshFinanceNonCriticalData', async () => {
+      try {
+        await Promise.all([refreshDeletedTransactionsFromCloud(), refreshExpenseActivitiesFromCloud()]);
+        setData(loadData());
+        setErrors(null);
+      } catch (error) {
+        setErrors(getFriendlyErrorMessage(error, 'finance.refresh_non_critical'));
+      }
+    }, { runId: perfRunIdRef.current });
   };
 
   useEffect(() => {
+    if (!firstEffectLoggedRef.current) {
+      firstEffectLoggedRef.current = true;
+      perfLog('page.Finance.first_effect.start', { runId: perfRunIdRef.current });
+    }
     void refreshFinanceNonCriticalData();
+    perfLog('page.Finance.first_effect.complete', { runId: perfRunIdRef.current });
   }, []);
 
   const cashSessions: CashSession[] = useMemo(() => (Array.isArray(data.cashSessions) ? data.cashSessions : []), [data]);
   const expenses: Expense[] = useMemo(() => (Array.isArray(data.expenses) ? data.expenses : []), [data]);
   const cashAdjustments: CashAdjustment[] = useMemo(() => (Array.isArray(data.cashAdjustments) ? data.cashAdjustments : []), [data]);
   const upfrontOrders: UpfrontOrder[] = useMemo(() => (Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []), [data]);
-  const expenseCategories: string[] = useMemo(() => {
+  const expenseCategories: string[] = useMemo(() => perfMeasureSync('page.Finance.derive.expenseCategories', () => {
     const defaults = ['General'];
     const existing = Array.isArray(data.expenseCategories) ? data.expenseCategories : [];
     const usedByExpenses = expenses.map(expense => expense.category).filter(Boolean);
     return Array.from(new Set([...defaults, ...existing, ...usedByExpenses]));
-  }, [data.expenseCategories, expenses]);
+  }, {
+    runId: perfRunIdRef.current,
+    existingCategories: Array.isArray(data.expenseCategories) ? data.expenseCategories.length : 0,
+    expenses: expenses.length,
+  }), [data.expenseCategories, expenses]);
   const productsById = useMemo(() => new Map(data.products.map(product => [product.id, product])), [data.products]);
   const resolveBuyPriceForFinanceItem = (item: CartItem, txDate: string) => {
     const direct = Number.isFinite(item.buyPrice) ? Number(item.buyPrice) : 0;
@@ -1119,7 +1146,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const visibleCashSessions = useMemo(() => cashSessions.filter(session => !session.deletedAt), [cashSessions]);
   const cashHistory = [...visibleCashSessions].sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
-  const filteredCashHistory = useMemo(() => {
+  const filteredCashHistory = useMemo(() => perfMeasureSync('page.Finance.derive.filteredCashHistory', () => {
     const now = new Date();
 
     if (cashHistoryRange === 'all') return cashHistory;
@@ -1131,7 +1158,11 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     cutoff.setDate(cutoff.getDate() - (daysBack - 1));
 
     return cashHistory.filter(session => new Date(session.startTime) >= cutoff);
-  }, [cashHistory, cashHistoryRange]);
+  }, {
+    runId: perfRunIdRef.current,
+    cashHistory: cashHistory.length,
+    cashHistoryRange,
+  }), [cashHistory, cashHistoryRange]);
 
   const activeHistorySession = useMemo(
     () => filteredCashHistory.find(session => session.id === activeHistoryDetailSessionId) ?? null,
@@ -1148,7 +1179,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     }
   }, [activeHistoryDetailSessionId, activeHistorySession]);
 
-  const cashHistorySummary = useMemo(() => {
+  const cashHistorySummary = useMemo(() => perfMeasureSync('page.Finance.derive.cashHistorySummary', () => {
     const closed = filteredCashHistory.filter(session => session.status === 'closed');
     let matched = 0;
     let short = 0;
@@ -1164,7 +1195,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     });
 
     return { matched, short, over };
-  }, [filteredCashHistory, data.transactions, expenses]);
+  }, {
+    runId: perfRunIdRef.current,
+    filteredCashHistory: filteredCashHistory.length,
+    transactions: data.transactions.length,
+    expenses: expenses.length,
+  }), [filteredCashHistory, data.transactions, expenses]);
 
   const currentUserEmail = (getCurrentUser() || '').trim().toLowerCase();
   const todayKey = todayISO();
@@ -1246,25 +1282,30 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
   useEffect(() => {
     const handleStorageEvent = (event: Event) => {
-      const fresh = loadData();
-      financeShiftDiag('[FIN][SHIFT][STORAGE_EVENT]', {
-        type: event.type,
-        firedAt: new Date().toISOString(),
-        route: typeof window !== 'undefined' ? window.location.hash || window.location.pathname : 'unknown',
-        localCounts: getStateEntityCounts(data),
-        freshCounts: getStateEntityCounts(fresh),
-        localCashSessions: (data.cashSessions || []).length,
-        freshCashSessions: (fresh.cashSessions || []).length,
+      perfMeasureSync('page.Finance.storage_event', () => {
+        const fresh = loadData();
+        financeShiftDiag('[FIN][SHIFT][STORAGE_EVENT]', {
+          type: event.type,
+          firedAt: new Date().toISOString(),
+          route: typeof window !== 'undefined' ? window.location.hash || window.location.pathname : 'unknown',
+          localCounts: getStateEntityCounts(data),
+          freshCounts: getStateEntityCounts(fresh),
+          localCashSessions: (data.cashSessions || []).length,
+          freshCashSessions: (fresh.cashSessions || []).length,
+        });
+        financeShiftDiag('[FIN][SHIFT][FRESHNESS_CHECK]', {
+          source: `event:${event.type}`,
+          staleProducts: data.products.length !== fresh.products.length,
+          staleCustomers: data.customers.length !== fresh.customers.length,
+          staleTransactions: data.transactions.length !== fresh.transactions.length,
+          staleCashSessions: (data.cashSessions || []).length !== (fresh.cashSessions || []).length,
+          staleManualCashbookEntries: (data.manualCashbookEntries || []).length !== (fresh.manualCashbookEntries || []).length,
+        });
+        setData(fresh);
+      }, {
+        runId: perfRunIdRef.current,
+        eventType: event.type,
       });
-      financeShiftDiag('[FIN][SHIFT][FRESHNESS_CHECK]', {
-        source: `event:${event.type}`,
-        staleProducts: data.products.length !== fresh.products.length,
-        staleCustomers: data.customers.length !== fresh.customers.length,
-        staleTransactions: data.transactions.length !== fresh.transactions.length,
-        staleCashSessions: (data.cashSessions || []).length !== (fresh.cashSessions || []).length,
-        staleManualCashbookEntries: (data.manualCashbookEntries || []).length !== (fresh.manualCashbookEntries || []).length,
-      });
-      setData(fresh);
     };
 
     const handleCloudSyncStatus = (event: Event) => {
@@ -1286,6 +1327,21 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       window.removeEventListener('cloud-sync-status', handleCloudSyncStatus as EventListener);
     };
   }, [data]);
+
+  useEffect(() => {
+    if (readyLoggedRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (readyLoggedRef.current) return;
+      readyLoggedRef.current = true;
+      perfLog('page.Finance.ready_for_first_useful_paint', {
+        runId: perfRunIdRef.current,
+        transactions: data.transactions.length,
+        cashSessions: data.cashSessions.length,
+        expenses: data.expenses.length,
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [data.transactions.length, data.cashSessions.length, data.expenses.length]);
 
   useEffect(() => {
     if (openSession || openingBalance.trim() || editingOpeningBalance) return;
@@ -1391,11 +1447,11 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const customerCashCollections = dailyCashTotals.customerCashCollections ?? Math.max(0, dailyCashTotals.cashCollections - (dailyCashTotals.customOrderCashCollections || 0));
     const customOrderCashCollections = dailyCashTotals.customOrderCashCollections || 0;
     const cashCollections = customerCashCollections + customOrderCashCollections;
-    const cashRefunds = dailyCashTotals.cashRefunds || 0;
+    const cashRefunds = dailyCashTotals.activeCashRefunds ?? dailyCashTotals.cashRefunds ?? 0;
     const deleteCompensationRefunds = dailyCashTotals.deleteCompensationRefunds || 0;
-    const supplierCashPayments = dailyCashTotals.supplierCashPayments || 0;
-    const expenseCashOutflow = dailyCashTotals.expenses ?? dailyCashTotals.expenseTotal ?? 0;
-    const cashWithdrawals = dailyCashTotals.cashWithdrawals || 0;
+    const supplierCashPayments = dailyCashTotals.activeSupplierCashPayments ?? dailyCashTotals.supplierCashPayments ?? 0;
+    const expenseCashOutflow = dailyCashTotals.activeExpenseTotal ?? dailyCashTotals.expenses ?? dailyCashTotals.expenseTotal ?? 0;
+    const cashWithdrawals = dailyCashTotals.activeCashWithdrawals ?? dailyCashTotals.cashWithdrawals ?? 0;
     const netCashMovementAfterExpenses = cashAtSale + cashCollections + (dailyCashTotals.cashAdditions || 0) - cashRefunds - deleteCompensationRefunds - supplierCashPayments - expenseCashOutflow - cashWithdrawals;
     return { cashAtSale, customerCashCollections, customOrderCashCollections, cashCollections, cashRefunds, deleteCompensationRefunds, supplierCashPayments, expenseCashOutflow, cashWithdrawals, netCashMovementAfterExpenses };
   }, [dailyCashTotals]);
@@ -1500,16 +1556,20 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     cashAdjustments,
   ]);
   const activeCashInHand = useMemo(
-    () => roundMoney(Math.max(0, Math.min(currentShiftTotalCash, activeReserveBase - activeReserveOutflowSinceSave))),
-    [currentShiftTotalCash, activeReserveBase, activeReserveOutflowSinceSave],
+    () => roundMoney(Math.max(0, activeReserveBase - activeReserveOutflowSinceSave)),
+    [activeReserveBase, activeReserveOutflowSinceSave],
   );
   const currentOperationalCash = useMemo(
-    () => roundMoney(Math.max(0, currentShiftTotalCash - activeCashInHand)),
-    [currentShiftTotalCash, activeCashInHand],
-  );
-  const activeReserveInputMax = useMemo(
     () => roundMoney(Math.max(0, currentShiftTotalCash)),
     [currentShiftTotalCash],
+  );
+  const totalAccessibleCash = useMemo(
+    () => roundMoney(Math.max(0, currentOperationalCash + activeCashInHand)),
+    [currentOperationalCash, activeCashInHand],
+  );
+  const activeReserveInputMax = useMemo(
+    () => roundMoney(Math.max(0, totalAccessibleCash)),
+    [totalAccessibleCash],
   );
   const reserveDraftValue = useMemo(() => {
     if (!openSession) return 0;
@@ -1517,8 +1577,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     if (!trimmed) return 0;
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed)) return activeCashInHand;
-    return roundMoney(Math.max(0, Math.min(currentShiftTotalCash, parsed)));
-  }, [openSession, activeReserveAmount, activeCashInHand, currentShiftTotalCash]);
+    return roundMoney(Math.max(0, Math.min(totalAccessibleCash, parsed)));
+  }, [openSession, activeReserveAmount, activeCashInHand, totalAccessibleCash]);
   const reserveDraftDelta = useMemo(
     () => roundMoney(reserveDraftValue - activeCashInHand),
     [reserveDraftValue, activeCashInHand],
@@ -1532,16 +1592,16 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     [openSession, activeReserveBase, activeReserveOutflowSinceSave],
   );
   const displayedUsableCash = useMemo(
-    () => roundMoney(Math.max(0, currentShiftTotalCash - displayedReservedCash)),
-    [currentShiftTotalCash, displayedReservedCash],
+    () => roundMoney(Math.max(0, totalAccessibleCash - displayedReservedCash)),
+    [totalAccessibleCash, displayedReservedCash],
   );
   const reserveAfterSavePreview = useMemo(
     () => (openSession ? reserveDraftValue : 0),
     [openSession, reserveDraftValue],
   );
   const usableAfterSavePreview = useMemo(
-    () => roundMoney(Math.max(0, currentShiftTotalCash - reserveAfterSavePreview)),
-    [currentShiftTotalCash, reserveAfterSavePreview],
+    () => roundMoney(Math.max(0, totalAccessibleCash - reserveAfterSavePreview)),
+    [totalAccessibleCash, reserveAfterSavePreview],
   );
   const getAvailableCashBySource = (source: CashSource) => (
     normalizeCashSource(source) === 'reserve' ? activeCashInHand : currentOperationalCash
@@ -1551,8 +1611,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     [openSession, displayedReservedCash],
   );
   const autoCarryForwardValue = useMemo(
-    () => roundMoney(Math.max(0, expectedClosingForOpenSession - closingReserveValue)),
-    [expectedClosingForOpenSession, closingReserveValue],
+    () => roundMoney(Math.max(0, totalAccessibleCash - closingReserveValue)),
+    [totalAccessibleCash, closingReserveValue],
   );
   const submittedClosingValue = useMemo(() => {
     if (!openSession) return 0;
@@ -1680,11 +1740,11 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     const customerCashCollections = dailyCashTotals.customerCashCollections || 0;
     const customOrderCashCollections = dailyCashTotals.customOrderCashCollections || 0;
     const cashAdditions = dailyCashTotals.cashAdditions || 0;
-    const cashRefunds = dailyCashTotals.cashRefunds || 0;
+    const cashRefunds = dailyCashTotals.activeCashRefunds ?? dailyCashTotals.cashRefunds ?? 0;
     const deleteCompensationRefunds = dailyCashTotals.deleteCompensationRefunds || 0;
-    const supplierCashPayments = dailyCashTotals.supplierCashPayments || 0;
-    const expenses = dailyCashTotals.expenses ?? dailyCashTotals.expenseTotal ?? 0;
-    const cashWithdrawals = dailyCashTotals.cashWithdrawals || 0;
+    const supplierCashPayments = dailyCashTotals.activeSupplierCashPayments ?? dailyCashTotals.supplierCashPayments ?? 0;
+    const expenses = dailyCashTotals.activeExpenseTotal ?? dailyCashTotals.expenses ?? dailyCashTotals.expenseTotal ?? 0;
+    const cashWithdrawals = dailyCashTotals.activeCashWithdrawals ?? dailyCashTotals.cashWithdrawals ?? 0;
     const grossCashEntered = cashAtSale + customerCashCollections + customOrderCashCollections + cashAdditions;
     const grossCashExited = cashRefunds + deleteCompensationRefunds + supplierCashPayments + expenses + cashWithdrawals;
     const netCashMovement = grossCashEntered - grossCashExited;
@@ -1708,7 +1768,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     };
   }, [openSession, dailyCashTotals, expectedClosingForOpenSession]);
 
-  const closingVariance = openSession ? (countedClosingValue - expectedClosingForOpenSession) : 0;
+  const closingVariance = openSession ? (countedClosingValue - totalAccessibleCash) : 0;
 
   useEffect(() => {
     if (!openSession) {
@@ -2647,6 +2707,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         countedCashTotal: countedClosingValue,
         nextShiftOpeningCash: carryForwardPreview,
         reserveCashKeptOutsideNextShift: closingReserveValue,
+        totalAccessibleCash,
       },
       shiftComputation: {
         expectedClosingForOpenSession,
@@ -2660,6 +2721,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         displayedReservedCash,
         displayedUsableCash,
         autoCarryForwardValue,
+        totalAccessibleCash,
         closingVariance,
       },
       dailyCashTotals: {
@@ -2715,6 +2777,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     currentShiftTotalCash,
     activeCashInHand,
     currentOperationalCash,
+    totalAccessibleCash,
     reserveDraftValue,
     reserveDraftDelta,
     displayedReservedCash,
@@ -2727,6 +2790,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     activeReserveOutflowSinceSave,
     activeReserveInputMax,
     autoCarryForwardValue,
+    totalAccessibleCash,
     closingVariance,
     dailyCashTotals,
     cashManagementKpis,
@@ -3142,7 +3206,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       : (activeReserveAmount.trim() ? Number(activeReserveAmount) : 0);
     const nextReserve = Number.isFinite(nextReserveRaw) && nextReserveRaw >= 0 ? roundMoney(nextReserveRaw) : Number.NaN;
     if (!Number.isFinite(nextReserve) || nextReserve < 0) return setErrors('Please enter a valid cash in hand amount.');
-    if (nextReserve > currentShiftTotalCash) return setErrors('Cash in hand cannot be more than current total shift cash.');
+    if (nextReserve > totalAccessibleCash) return setErrors('Reserved cash cannot be more than total accessible cash.');
     const fresh = loadData();
     const freshSessions = Array.isArray(fresh.cashSessions) ? fresh.cashSessions : [];
     const updatedSessions = freshSessions.map((session) => {
@@ -3155,7 +3219,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     });
     await persistState({ cashSessions: updatedSessions });
     setClosingBalanceManuallySet(false);
-    setClosingBalance(Math.max(0, roundMoney(currentShiftTotalCash - nextReserve)).toFixed(2));
+    setClosingBalance(Math.max(0, roundMoney(totalAccessibleCash - nextReserve)).toFixed(2));
     setActiveReserveAmount(formatEditableAmount(nextReserve));
   };
 

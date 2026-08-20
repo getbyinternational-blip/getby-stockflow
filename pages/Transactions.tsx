@@ -21,6 +21,7 @@ import { useRoleSession } from '../src/auth/roleSession';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
@@ -54,6 +55,14 @@ type TransactionKpiKey =
   | 'totalCashOut';
 
 export default function Transactions() {
+  const perfRunIdRef = useRef(createPerfRunId('transactions'));
+  const renderStartLoggedRef = useRef(false);
+  const firstEffectLoggedRef = useRef(false);
+  const readyLoggedRef = useRef(false);
+  if (!renderStartLoggedRef.current) {
+    renderStartLoggedRef.current = true;
+    perfLog('page.Transactions.render.start', { runId: perfRunIdRef.current });
+  }
   const { requestAdminOverride } = useRoleSession();
   const COLORED_ROWS_STORAGE_KEY = 'stockflow.transactions.colored_rows';
   const isPurchaseOrderVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('purchase-order-');
@@ -463,39 +472,54 @@ export default function Transactions() {
   };
 
   useEffect(() => {
+    if (!firstEffectLoggedRef.current) {
+      firstEffectLoggedRef.current = true;
+      perfLog('page.Transactions.first_effect.start', { runId: perfRunIdRef.current });
+    }
     const refreshData = () => {
-      try {
-        const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
-        const data = loadData();
-        setTransactions(data.transactions || []);
-        setExpenses((data as any).expenses || []);
-        setCashAdjustments((data as any).cashAdjustments || []);
-        setManualCashbookEntries((data as any).manualCashbookEntries || []);
-        setDeleteCompensations((data as any).deleteCompensations || []);
-        setDeletedTransactions(deletedWindow.rows);
-        setCustomers(data.customers);
-        setProducts(data.products || []);
-        setPurchaseOrders(data.purchaseOrders || []);
-        setUpfrontOrders(data.upfrontOrders || []);
-        setSupplierPayments((data as any).supplierPayments || []);
-        setDeletedWindowCursor(deletedWindow.nextCursor);
-        setHasMoreDeletedWindow(deletedWindow.hasMore);
-        setIsDeletedWindowed(deletedWindow.hasMore);
-        setLoadError(null);
-      } catch (error) {
-        setLoadError('Unable to load transactions right now. Please try again.');
-      } finally {
-        setIsInitialLoading(false);
-      }
+      perfMeasureSync('page.Transactions.refreshData', () => {
+        try {
+          const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
+          const data = loadData();
+          setTransactions(data.transactions || []);
+          setExpenses((data as any).expenses || []);
+          setCashAdjustments((data as any).cashAdjustments || []);
+          setManualCashbookEntries((data as any).manualCashbookEntries || []);
+          setDeleteCompensations((data as any).deleteCompensations || []);
+          setDeletedTransactions(deletedWindow.rows);
+          setCustomers(data.customers);
+          setProducts(data.products || []);
+          setPurchaseOrders(data.purchaseOrders || []);
+          setUpfrontOrders(data.upfrontOrders || []);
+          setSupplierPayments((data as any).supplierPayments || []);
+          setDeletedWindowCursor(deletedWindow.nextCursor);
+          setHasMoreDeletedWindow(deletedWindow.hasMore);
+          setIsDeletedWindowed(deletedWindow.hasMore);
+          setLoadError(null);
+        } catch (error) {
+          setLoadError('Unable to load transactions right now. Please try again.');
+        } finally {
+          setIsInitialLoading(false);
+        }
+      }, { runId: perfRunIdRef.current });
     };
 
     refreshData();
-    void refreshDeletedTransactionsBin();
-    window.addEventListener('storage', refreshData);
-    window.addEventListener('local-storage-update', refreshData);
+    void perfMeasureAsync('page.Transactions.refreshDeletedTransactionsBin.startup', () => refreshDeletedTransactionsBin(), {
+      runId: perfRunIdRef.current,
+    });
+    const handleRefresh = (event: Event) => {
+      perfMeasureSync('page.Transactions.storage_event', () => refreshData(), {
+        runId: perfRunIdRef.current,
+        eventType: event.type,
+      });
+    };
+    window.addEventListener('storage', handleRefresh);
+    window.addEventListener('local-storage-update', handleRefresh);
+    perfLog('page.Transactions.first_effect.complete', { runId: perfRunIdRef.current });
     return () => {
-        window.removeEventListener('storage', refreshData);
-        window.removeEventListener('local-storage-update', refreshData);
+        window.removeEventListener('storage', handleRefresh);
+        window.removeEventListener('local-storage-update', handleRefresh);
     };
   }, []);
 
@@ -504,18 +528,30 @@ export default function Transactions() {
     window.localStorage.setItem(COLORED_ROWS_STORAGE_KEY, useColoredTransactionRows ? 'true' : 'false');
   }, [COLORED_ROWS_STORAGE_KEY, useColoredTransactionRows]);
 
+  useEffect(() => {
+    if (isInitialLoading || readyLoggedRef.current) return;
+    readyLoggedRef.current = true;
+    perfLog('page.Transactions.ready_for_first_useful_paint', {
+      runId: perfRunIdRef.current,
+      transactions: transactions.length,
+      deletedTransactions: deletedTransactions.length,
+    });
+  }, [isInitialLoading, transactions.length, deletedTransactions.length]);
+
   const refreshDeletedTransactionsBin = async () => {
-    try {
-      await refreshDeletedTransactionsFromCloud();
-      const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
-      setDeletedTransactions(deletedWindow.rows);
-      setDeletedWindowCursor(deletedWindow.nextCursor);
-      setHasMoreDeletedWindow(deletedWindow.hasMore);
-      setIsDeletedWindowed(deletedWindow.hasMore);
-      setLoadError(null);
-    } catch (error) {
-      setLoadError('Unable to refresh deleted transactions right now. Please try again.');
-    }
+    await perfMeasureAsync('page.Transactions.refreshDeletedTransactionsBin', async () => {
+      try {
+        await refreshDeletedTransactionsFromCloud();
+        const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
+        setDeletedTransactions(deletedWindow.rows);
+        setDeletedWindowCursor(deletedWindow.nextCursor);
+        setHasMoreDeletedWindow(deletedWindow.hasMore);
+        setIsDeletedWindowed(deletedWindow.hasMore);
+        setLoadError(null);
+      } catch (error) {
+        setLoadError('Unable to refresh deleted transactions right now. Please try again.');
+      }
+    }, { runId: perfRunIdRef.current });
   };
 
 
@@ -535,7 +571,7 @@ export default function Transactions() {
     if (!next.hasMore) setIsDeletedWindowed(false);
   };
 
-  const dateFilteredTransactions = useMemo(() => {
+  const dateFilteredTransactions = useMemo(() => perfMeasureSync('page.Transactions.derive.dateFilteredTransactions', () => {
       const now = new Date();
       now.setHours(0,0,0,0); // Start of today
 
@@ -593,7 +629,11 @@ export default function Transactions() {
                   return true;
           }
       }).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [renderedTransactions, filterType, customStart, customEnd]);
+  }, {
+    runId: perfRunIdRef.current,
+    renderedTransactions: renderedTransactions.length,
+    filterType,
+  }), [renderedTransactions, filterType, customStart, customEnd]);
 
   useEffect(() => {
     if (!(import.meta as any).env?.DEV) return;
@@ -635,7 +675,7 @@ export default function Transactions() {
     })
   );
 
-  const filteredTransactions = useMemo(() => {
+  const filteredTransactions = useMemo(() => perfMeasureSync('page.Transactions.derive.filteredTransactions', () => {
     const query = searchTerm.trim().toLowerCase();
     if (!query) return sortTransactionsForDisplay(dateFilteredTransactions);
 
@@ -664,7 +704,11 @@ export default function Transactions() {
         return itemHaystack.includes(query);
       });
     }));
-  }, [dateFilteredTransactions, searchTerm, customerPhoneById, productsById]);
+  }, {
+    runId: perfRunIdRef.current,
+    dateFilteredTransactions: dateFilteredTransactions.length,
+    searchLength: searchTerm.trim().length,
+  }), [dateFilteredTransactions, searchTerm, customerPhoneById, productsById]);
 
   const matchesCurrentDateFilter = (rawDate?: string) => {
     const parsed = rawDate ? new Date(rawDate) : null;

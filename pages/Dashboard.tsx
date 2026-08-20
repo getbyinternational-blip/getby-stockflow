@@ -16,6 +16,7 @@ import { can, isAdmin } from '../src/auth/simplePermissions';
 import { Package, Search } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { createPerfRunId, perfLog, perfMeasureSync } from '../services/perf';
 
 type CustomerReceivableRow = Customer & { receivable: number; ledgerBalanceUnavailable?: boolean };
 type PartyPayableRow = PurchaseParty & { payable: number; dueOrders: PurchaseOrder[]; partyCredit: number; dashboardMergedPartyIds?: string[] };
@@ -154,6 +155,14 @@ function StatementModal({ open, title, subtitle, onClose, children, headerAction
 }
 
 export default function Dashboard() {
+  const perfRunIdRef = React.useRef(createPerfRunId('dashboard'));
+  const renderStartLoggedRef = React.useRef(false);
+  const firstEffectLoggedRef = React.useRef(false);
+  const readyLoggedRef = React.useRef(false);
+  if (!renderStartLoggedRef.current) {
+    renderStartLoggedRef.current = true;
+    perfLog('page.Dashboard.render.start', { runId: perfRunIdRef.current });
+  }
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [parties, setParties] = useState<PurchaseParty[]>([]);
@@ -211,28 +220,41 @@ export default function Dashboard() {
   const deferredSupplierDashboardSearch = useDeferredValue(supplierDashboardSearch);
 
   const refresh = () => {
-    const data = loadData();
-    setCustomers(data.customers || []);
-    setTransactions(data.transactions || []);
-    setParties(getPurchaseParties());
-    setOrders(getPurchaseOrders());
-    setSupplierPayments(data.supplierPayments || []);
-    setPartyCreditLedger(data.partyCreditLedger || []);
-    setUpfrontOrders(data.upfrontOrders || []);
-    setExpenses(data.expenses || []);
-    setCashAdjustments(data.cashAdjustments || []);
-    setManualCashbookEntries((data.manualCashbookEntries || []).filter((entry) => !entry?.isDeleted));
-    setDeleteCompensations(data.deleteCompensations || []);
-    setCashSessions(data.cashSessions || []);
+    perfMeasureSync('page.Dashboard.refresh', () => {
+      const data = loadData();
+      setCustomers(data.customers || []);
+      setTransactions(data.transactions || []);
+      setParties(getPurchaseParties());
+      setOrders(getPurchaseOrders());
+      setSupplierPayments(data.supplierPayments || []);
+      setPartyCreditLedger(data.partyCreditLedger || []);
+      setUpfrontOrders(data.upfrontOrders || []);
+      setExpenses(data.expenses || []);
+      setCashAdjustments(data.cashAdjustments || []);
+      setManualCashbookEntries((data.manualCashbookEntries || []).filter((entry) => !entry?.isDeleted));
+      setDeleteCompensations(data.deleteCompensations || []);
+      setCashSessions(data.cashSessions || []);
+    }, { runId: perfRunIdRef.current });
   };
 
   useEffect(() => {
+    if (!firstEffectLoggedRef.current) {
+      firstEffectLoggedRef.current = true;
+      perfLog('page.Dashboard.first_effect.start', { runId: perfRunIdRef.current });
+    }
     refresh();
-    window.addEventListener('local-storage-update', refresh);
-    window.addEventListener('storage', refresh);
+    const handleRefresh = (event: Event) => {
+      perfMeasureSync('page.Dashboard.storage_event', () => refresh(), {
+        runId: perfRunIdRef.current,
+        eventType: event.type,
+      });
+    };
+    window.addEventListener('local-storage-update', handleRefresh);
+    window.addEventListener('storage', handleRefresh);
+    perfLog('page.Dashboard.first_effect.complete', { runId: perfRunIdRef.current });
     return () => {
-      window.removeEventListener('local-storage-update', refresh);
-      window.removeEventListener('storage', refresh);
+      window.removeEventListener('local-storage-update', handleRefresh);
+      window.removeEventListener('storage', handleRefresh);
     };
   }, []);
 
@@ -244,6 +266,18 @@ export default function Dashboard() {
     const handle = schedule(() => setDashboardDetailsReady(true));
     return () => cancel(handle as any);
   }, [customers, transactions, upfrontOrders, parties, orders, supplierPayments, partyCreditLedger]);
+
+  useEffect(() => {
+    if (!dashboardDetailsReady || readyLoggedRef.current) return;
+    readyLoggedRef.current = true;
+    perfLog('page.Dashboard.ready_for_first_useful_paint', {
+      runId: perfRunIdRef.current,
+      customers: customers.length,
+      transactions: transactions.length,
+      parties: parties.length,
+      orders: orders.length,
+    });
+  }, [dashboardDetailsReady, customers.length, transactions.length, parties.length, orders.length]);
 
   const transactionsByCustomerId = useMemo(() => {
     const map = new Map<string, Transaction[]>();
@@ -300,15 +334,26 @@ export default function Dashboard() {
     return map;
   }, [partyCreditLedger]);
 
-  const canonicalSnapshot = useMemo(() => getCanonicalCustomerBalanceSnapshot(customers, transactions, upfrontOrders), [customers, transactions, upfrontOrders]);
-  const canonicalPartyView = useMemo(() => buildPurchasePartyCanonicalView(
+  const canonicalSnapshot = useMemo(() => perfMeasureSync('page.Dashboard.derive.canonicalSnapshot', () => getCanonicalCustomerBalanceSnapshot(customers, transactions, upfrontOrders), {
+    runId: perfRunIdRef.current,
+    customers: customers.length,
+    transactions: transactions.length,
+    upfrontOrders: upfrontOrders.length,
+  }), [customers, transactions, upfrontOrders]);
+  const canonicalPartyView = useMemo(() => perfMeasureSync('page.Dashboard.derive.canonicalPartyView', () => buildPurchasePartyCanonicalView(
     parties,
     {
       purchaseOrders: orders,
       supplierPayments,
       partyCreditLedger,
     },
-  ), [parties, orders, supplierPayments, partyCreditLedger]);
+  ), {
+    runId: perfRunIdRef.current,
+    parties: parties.length,
+    orders: orders.length,
+    supplierPayments: supplierPayments.length,
+    partyCreditLedger: partyCreditLedger.length,
+  }), [parties, orders, supplierPayments, partyCreditLedger]);
   const visibleDashboardParties = useMemo(() => canonicalPartyView.visibleParties, [canonicalPartyView]);
   const getDashboardRelatedPartyIds = useCallback((partyId: string): string[] => (
     canonicalPartyView.canonicalIdToRelatedIds.get(partyId) || [partyId]
@@ -318,14 +363,20 @@ export default function Dashboard() {
     return party.dashboardMergedPartyIds?.length ? party.dashboardMergedPartyIds : getDashboardRelatedPartyIds(party.id);
   }, [getDashboardRelatedPartyIds]);
 
-  const canonicalReplayBalanceByCustomerId = useMemo(() => {
+  const canonicalReplayBalanceByCustomerId = useMemo(() => perfMeasureSync('page.Dashboard.derive.canonicalReplayBalanceByCustomerId', () => {
     const map = new Map<string, CanonicalCustomerDashboardBalance>();
     if (!dashboardDetailsReady) return map;
     customers.forEach((customer) => {
       map.set(customer.id, getCanonicalCustomerDashboardBalance(customer, transactions, upfrontOrders));
     });
     return map;
-  }, [dashboardDetailsReady, customers, transactions, upfrontOrders]);
+  }, {
+    runId: perfRunIdRef.current,
+    dashboardDetailsReady,
+    customers: customers.length,
+    transactions: transactions.length,
+    upfrontOrders: upfrontOrders.length,
+  }), [dashboardDetailsReady, customers, transactions, upfrontOrders]);
 
   const buildCustomerReceivableLedgerProjection = useCallback((customer: Customer) => {
     const customerTx = (transactionsByCustomerId.get(customer.id) || [])
@@ -439,14 +490,18 @@ export default function Dashboard() {
   const isCashOverdraw = payMethod === 'cash' && cashOverdrawAmount > 0;
 
   
-  const allCustomerDashboardRows = useMemo(() => {
+  const allCustomerDashboardRows = useMemo(() => perfMeasureSync('page.Dashboard.derive.allCustomerDashboardRows', () => {
     if (!dashboardDetailsReady) return [] as CustomerReceivableRow[];
     return customers.map((customer) => {
       const balance = canonicalReplayBalanceByCustomerId.get(customer.id);
       if (!balance || balance.status !== 'ok') return { ...customer, totalDue: 0, storeCredit: 0, receivable: 0, ledgerBalanceUnavailable: true } as CustomerReceivableRow;
       return { ...customer, totalDue: balance.currentDue, storeCredit: balance.storeCredit, receivable: balance.netReceivable } as CustomerReceivableRow;
     }).sort((a, b) => a.name.localeCompare(b.name));
-  }, [dashboardDetailsReady, customers, canonicalReplayBalanceByCustomerId]);
+  }, {
+    runId: perfRunIdRef.current,
+    dashboardDetailsReady,
+    customers: customers.length,
+  }), [dashboardDetailsReady, customers, canonicalReplayBalanceByCustomerId]);
   const receivableCustomerRows = useMemo(() => allCustomerDashboardRows.filter((c) => c.receivable > 0), [allCustomerDashboardRows]);
   const storeCreditCustomerRows = useMemo(() => allCustomerDashboardRows.filter((c) => c.receivable <= 0 && Math.max(0, Number(c.storeCredit || 0)) > 0), [allCustomerDashboardRows]);
   const zeroDueCustomerRows = useMemo(() => allCustomerDashboardRows.filter((c) => c.receivable <= 0 && Math.max(0, Number(c.storeCredit || 0)) <= 0), [allCustomerDashboardRows]);
@@ -462,7 +517,7 @@ export default function Dashboard() {
     ].some((value) => String(value || '').toLowerCase().includes(query)));
   }, [customerDashboardTab, deferredCustomerDashboardSearch, receivableCustomerRows, storeCreditCustomerRows, zeroDueCustomerRows]);
 
-  const allPartyDashboardRows = useMemo<PartyPayableRow[]>(() => {
+  const allPartyDashboardRows = useMemo<PartyPayableRow[]>(() => perfMeasureSync('page.Dashboard.derive.allPartyDashboardRows', () => {
     if (!dashboardDetailsReady) return [];
     const partyMap = new Map<string, PartyPayableRow>();
     visibleDashboardParties.forEach((party) => {
@@ -527,7 +582,14 @@ export default function Dashboard() {
     });
 
     return Array.from(partyMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [dashboardDetailsReady, visibleDashboardParties, canonicalPartyView, getDashboardRelatedPartyIds, orders, supplierPayments, partyCreditLedger]);
+  }, {
+    runId: perfRunIdRef.current,
+    dashboardDetailsReady,
+    visibleDashboardParties: visibleDashboardParties.length,
+    orders: orders.length,
+    supplierPayments: supplierPayments.length,
+    partyCreditLedger: partyCreditLedger.length,
+  }), [dashboardDetailsReady, visibleDashboardParties, canonicalPartyView, getDashboardRelatedPartyIds, orders, supplierPayments, partyCreditLedger]);
   const mergedPartyDashboardRows = useMemo<PartyPayableRow[]>(() => {
     const groups = new Map<string, PartyPayableRow[]>();
     allPartyDashboardRows.forEach((party) => {
