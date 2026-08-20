@@ -6,6 +6,7 @@ import { loadData, updateOperatorUsers, updateStoreProfile, uploadImageFileToClo
 import { logout, getCurrentUser } from '../services/auth';
 import { auth } from '../services/firebase';
 import { getConfiguredWhatsAppServerUrl, getWhatsAppHealth, getWhatsAppQr, getWhatsAppStatus, getWhatsAppMetrics, createWhatsAppSession, restartWhatsAppSession, logoutWhatsAppSession, sendInvoiceViaWhatsApp, sendCustomerLedgerViaWhatsApp } from '../services/whatsappStatus';
+import { getOfficialWhatsAppConfigDiagnostics } from '../services/metaWhatsAppStatus';
 import { appendWhatsAppLog, getWhatsAppLogStats } from '../services/whatsappLogs';
 import { Button, Input, Card, CardContent, CardHeader, CardTitle, Label, Select } from '../components/ui';
 import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit } from 'lucide-react';
@@ -45,6 +46,12 @@ const mergeInvoicePrintFields = (profile: StoreProfile, source?: Partial<StorePr
 };
 
 const formatPreviewCurrency = (value: number) => `₹${value.toFixed(2)}`;
+
+const getOfficialWhatsAppConfigMessage = () => {
+  const diagnostics = getOfficialWhatsAppConfigDiagnostics();
+  if (diagnostics.missingVars.length === 0) return null;
+  return `Official WhatsApp invoice sending is not configured. Missing env: ${diagnostics.missingVars.join(', ')}.${diagnostics.usingDevFallback ? ' Using localhost URL fallback for development.' : ''}`;
+};
 
 export default function Settings() {
   const adminAccess = isAdmin();
@@ -330,13 +337,9 @@ export default function Settings() {
 
 
   const refreshWhatsAppResolutionDebug = () => {
-    try {
-      setWaResolvedServerUrl(getConfiguredWhatsAppServerUrl());
-    } catch {
-      setWaResolvedServerUrl('');
-    }
-    const rawEnv = ((import.meta as any)?.env?.VITE_WHATSAPP_SERVER_URL || '').trim();
-    setWaEnvPresent(Boolean(rawEnv));
+    const diagnostics = getOfficialWhatsAppConfigDiagnostics();
+    setWaResolvedServerUrl(diagnostics.resolvedBaseUrl);
+    setWaEnvPresent(diagnostics.missingVars.length === 0);
   };
 
   const checkWhatsAppStatus = async () => {
@@ -364,9 +367,8 @@ export default function Settings() {
       setWaPendingSends(stats.pending);
       setWaLast10(stats.last10);
     } catch (error) {
-      if (error instanceof Error && error.message.includes('VITE_WHATSAPP_SERVER_URL')) {
-        setWaMessage('WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL in Vercel Project Settings → Environment Variables, then redeploy.');
-      }
+      const configMessage = getOfficialWhatsAppConfigMessage();
+      if (configMessage) setWaMessage(configMessage);
       logDebug({ step: 'whatsapp_status_result', error: error instanceof Error ? error.message : String(error) });
       setWaStatus('server_unavailable');
     }
@@ -387,11 +389,10 @@ export default function Settings() {
       await createWhatsAppSession(uid);
       logDebug({ step: 'whatsapp_create_session_success' });
     } catch (error) {
-      if (error instanceof Error && error.message.includes('VITE_WHATSAPP_SERVER_URL')) {
-        setWaMessage('WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL in Vercel Project Settings → Environment Variables, then redeploy.');
-      }
+      const configMessage = getOfficialWhatsAppConfigMessage();
+      if (configMessage) setWaMessage(configMessage);
       logDebug({ step: 'whatsapp_create_session_failure', error: error instanceof Error ? error.message : String(error) });
-      setWaMessage(error instanceof Error && error.message.includes('VITE_WHATSAPP_SERVER_URL') ? 'WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL in Vercel Project Settings → Environment Variables, then redeploy.' : 'Unable to connect WhatsApp');
+      setWaMessage(configMessage || 'Unable to connect WhatsApp');
       setWaModalOpen(false);
       return;
     }
@@ -409,7 +410,7 @@ export default function Settings() {
           setWaMessage('WhatsApp connected successfully');
         }
       } catch (error) {
-        setWaMessage(error instanceof Error && error.message.includes('VITE_WHATSAPP_SERVER_URL') ? 'WhatsApp server URL is not configured. Set VITE_WHATSAPP_SERVER_URL in Vercel Project Settings → Environment Variables, then redeploy.' : 'Unable to connect WhatsApp');
+        setWaMessage(getOfficialWhatsAppConfigMessage() || 'Unable to connect WhatsApp');
       }
     };
     await poll();

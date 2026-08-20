@@ -159,6 +159,7 @@ export interface TelegramPostCollection {
   frequencyUnit?: TelegramCollectionFrequencyUnit;
   batchSize?: number;
   autoStartTime?: string;
+  endTime?: string;
   repeatMode?: TelegramCollectionRepeatMode;
   maxFailuresBeforePause?: number;
   createdAt: string;

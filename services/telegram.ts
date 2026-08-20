@@ -161,6 +161,7 @@ export type TelegramCollectionSchedulerPayload = {
   frequencyUnit: TelegramCollectionFrequencyUnit;
   batchSize?: number;
   autoStartTime?: string;
+  endTime?: string;
   repeatMode: TelegramCollectionRepeatMode;
   maxFailuresBeforePause: number;
   postMode?: string;
@@ -201,6 +202,7 @@ export const startTelegramCollection = async (payload: TelegramCollectionSchedul
     batchCount: normalizedBatchSize,
     itemsPerRun: normalizedBatchSize,
     autoStartTime: payload.autoStartTime,
+    endTime: payload.endTime,
     repeatMode: payload.repeatMode,
     maxFailuresBeforePause: payload.maxFailuresBeforePause,
     schedulerOptions: {
@@ -208,6 +210,7 @@ export const startTelegramCollection = async (payload: TelegramCollectionSchedul
       frequencyUnit: payload.frequencyUnit,
       batchSize: normalizedBatchSize,
       autoStartTime: payload.autoStartTime,
+      endTime: payload.endTime,
       repeatMode: payload.repeatMode,
       maxFailuresBeforePause: payload.maxFailuresBeforePause,
     },

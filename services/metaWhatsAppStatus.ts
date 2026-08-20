@@ -30,15 +30,48 @@ export type MetaWhatsAppInvoiceResponse = {
   whatsappMediaId?: string;
 };
 
+const DEV_META_WHATSAPP_SERVER_URL = 'http://localhost:3000';
+
+export type OfficialWhatsAppConfigDiagnostics = {
+  resolvedBaseUrl: string;
+  hasExplicitUrlEnv: boolean;
+  hasBackendKey: boolean;
+  usingDevFallback: boolean;
+  missingVars: Array<'VITE_META_WHATSAPP_SERVER_URL' | 'VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY'>;
+};
+
+export const getOfficialWhatsAppConfigDiagnostics = (): OfficialWhatsAppConfigDiagnostics => {
+  const rawUrl = String(import.meta.env.VITE_META_WHATSAPP_SERVER_URL || '').trim();
+  const backendKey = String(import.meta.env.VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY || '').trim();
+  const hasExplicitUrlEnv = Boolean(rawUrl);
+  const usingDevFallback = !hasExplicitUrlEnv && Boolean(import.meta.env.DEV);
+  const resolvedBaseUrl = (hasExplicitUrlEnv ? rawUrl : (usingDevFallback ? DEV_META_WHATSAPP_SERVER_URL : ''))
+    .trim()
+    .replace(/\/$/, '');
+  const hasBackendKey = Boolean(backendKey);
+  const missingVars: Array<'VITE_META_WHATSAPP_SERVER_URL' | 'VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY'> = [];
+  if (!hasExplicitUrlEnv && !usingDevFallback) missingVars.push('VITE_META_WHATSAPP_SERVER_URL');
+  if (!hasBackendKey) missingVars.push('VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY');
+  return {
+    resolvedBaseUrl,
+    hasExplicitUrlEnv,
+    hasBackendKey,
+    usingDevFallback,
+    missingVars,
+  };
+};
+
 const getMetaBaseUrl = () => {
-  const value = String(import.meta.env.VITE_META_WHATSAPP_SERVER_URL || '').trim().replace(/\/$/, '');
-  if (!value) throw new Error('Official WhatsApp backend URL is not configured.');
-  return value;
+  const diagnostics = getOfficialWhatsAppConfigDiagnostics();
+  if (!diagnostics.resolvedBaseUrl) {
+    throw new Error('Official WhatsApp backend URL is not configured. Missing env: VITE_META_WHATSAPP_SERVER_URL.');
+  }
+  return diagnostics.resolvedBaseUrl;
 };
 
 const getMetaPublicKey = () => {
   const value = String(import.meta.env.VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY || '').trim();
-  if (!value) throw new Error('Official WhatsApp backend key is not configured.');
+  if (!value) throw new Error('Official WhatsApp backend key is not configured. Missing env: VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY.');
   return value;
 };
 
@@ -53,15 +86,47 @@ export const getConfiguredMetaWhatsAppServerUrl = () => {
 export const sendInvoiceViaMetaWhatsApp = async (
   payload: MetaWhatsAppInvoiceRequest,
 ): Promise<MetaWhatsAppInvoiceResponse> => {
+  const diagnostics = getOfficialWhatsAppConfigDiagnostics();
   const backendKey = getMetaPublicKey().trim();
-  const response = await fetch(`${getMetaBaseUrl()}/api/whatsapp/send-invoice`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-stockflow-whatsapp-key': backendKey,
+  const finalUrl = `${getMetaBaseUrl()}/api/whatsapp/send-invoice`;
+  console.info('[OFFICIAL_WHATSAPP_SEND][REQUEST]', {
+    finalUrl,
+    hasBackendKey: Boolean(backendKey),
+    hasExplicitUrlEnv: diagnostics.hasExplicitUrlEnv,
+    usingDevFallback: diagnostics.usingDevFallback,
+    missingVars: diagnostics.missingVars,
+    payloadSummary: {
+      to: payload.to,
+      invoiceNo: payload.invoiceNo,
+      customerName: payload.customerName,
+      itemsCount: Array.isArray(payload.items) ? payload.items.length : 0,
+      total: payload.total,
+      paymentMethod: payload.paymentMethod,
     },
-    body: JSON.stringify(payload),
   });
+
+  let response: Response;
+  try {
+    response = await fetch(finalUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-stockflow-whatsapp-key': backendKey,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    console.error('[OFFICIAL_WHATSAPP_SEND][FETCH_ERROR]', {
+      finalUrl,
+      hasBackendKey: Boolean(backendKey),
+      hasExplicitUrlEnv: diagnostics.hasExplicitUrlEnv,
+      usingDevFallback: diagnostics.usingDevFallback,
+      missingVars: diagnostics.missingVars,
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 
   const text = await response.text();
   let data: MetaWhatsAppInvoiceResponse = {};
@@ -70,6 +135,13 @@ export const sendInvoiceViaMetaWhatsApp = async (
   } catch {
     data = {};
   }
+
+  console.info('[OFFICIAL_WHATSAPP_SEND][RESPONSE]', {
+    finalUrl,
+    status: response.status,
+    ok: response.ok,
+    data,
+  });
 
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {

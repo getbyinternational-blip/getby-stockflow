@@ -30,10 +30,10 @@ import { formatDateTimeDisplay } from '../src/utils/dateFormat';
 const DEFAULT_TEMPLATE = `New arrival: {product_name}
 
 Price: {price}
-Category: {category}
-Stock: {stock}
+{telegram details}
 
 Order now while stock lasts!`;
+const TELEGRAM_MESSAGE_BOARD_BG = '/telegram/message-board-bg.jpg';
 
 const MAX_ACTIVITY_ENTRIES = 25;
 const DEFAULT_FREQUENCY_VALUE = 1;
@@ -89,13 +89,23 @@ const getTelegramDescription = (product?: Product | null) => {
   return [description, `Keywords: ${keywords}`].filter(Boolean).join('\n');
 };
 
+const sanitizeTelegramTemplate = (value?: string | null) => {
+  const raw = safeText(value, DEFAULT_TEMPLATE);
+  const withoutCategory = raw.replace(/\n?Category:\s*\{category\}\s*/gi, '\n');
+  const withoutStock = withoutCategory.replace(/\n?Stock:\s*\{stock\}\s*/gi, '\n');
+  const withTelegramDetails = withoutStock.includes('{telegram details}')
+    ? withoutStock
+    : withoutStock.replace(/Price:\s*\{price\}/i, 'Price: {price}\n{telegram details}');
+  return withTelegramDetails.replace(/\n{3,}/g, '\n\n').trim() || DEFAULT_TEMPLATE;
+};
+
 const normalizeCollections = (profile?: StoreProfile | null): TelegramPostCollection[] => (
   Array.isArray(profile?.telegramCollections)
     ? profile!.telegramCollections!.map((collection) => ({
         ...collection,
         category: safeText(collection.category, 'all'),
         channelId: safeText(collection.channelId),
-        template: safeText(collection.template, DEFAULT_TEMPLATE),
+        template: sanitizeTelegramTemplate(collection.template),
         notes: safeText(collection.notes),
         postMode: collection.postMode === 'out_of_stock' || collection.postMode === 'filtered' ? collection.postMode : 'selected',
         queuedProductIds: Array.isArray(collection.queuedProductIds) ? collection.queuedProductIds.filter(Boolean) : [],
@@ -150,6 +160,7 @@ export default function TelegramPosts() {
   const [frequencyUnit, setFrequencyUnit] = useState<TelegramCollectionFrequencyUnit>(DEFAULT_FREQUENCY_UNIT);
   const [batchSize, setBatchSize] = useState(String(DEFAULT_BATCH_SIZE));
   const [autoStartTime, setAutoStartTime] = useState('');
+  const [collectionEndTime, setCollectionEndTime] = useState('');
   const [repeatMode, setRepeatMode] = useState<TelegramCollectionRepeatMode>(DEFAULT_REPEAT_MODE);
   const [maxFailuresBeforePause, setMaxFailuresBeforePause] = useState(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -165,6 +176,10 @@ export default function TelegramPosts() {
   const [newChannelId, setNewChannelId] = useState('');
   const [isCollectionModalOpen, setIsCollectionModalOpen] = useState(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [expandedCategory, setExpandedCategory] = useState('');
+  const [telegramContactNumbers, setTelegramContactNumbers] = useState<string[]>(['']);
+  const [telegramAddressLink, setTelegramAddressLink] = useState('');
+  const [telegramCustomDetails, setTelegramCustomDetails] = useState<Array<{ label: string; value: string; hideKey: boolean }>>([{ label: 'Details1', value: '', hideKey: false }]);
 
   const refreshFromStore = () => {
     const data = loadData();
@@ -188,7 +203,7 @@ export default function TelegramPosts() {
       if (current && normalizedChannels.includes(current)) return current;
       return normalizedChannels[0] || '';
     });
-    setTelegramTemplate(safeText(safeProfile?.telegramTemplate, DEFAULT_TEMPLATE));
+    setTelegramTemplate(sanitizeTelegramTemplate(safeProfile?.telegramTemplate));
     setTelegramNotes(safeText(safeProfile?.telegramNotes));
     const storedActiveCollectionId = safeText(safeProfile?.telegramActiveCollectionId);
     const selectedCollection = collections.find((collection) => collection.id === storedActiveCollectionId) || null;
@@ -200,12 +215,13 @@ export default function TelegramPosts() {
     setFrequencyUnit((selectedCollection?.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit);
     setBatchSize(String((selectedCollection as any)?.batchSize || DEFAULT_BATCH_SIZE));
     setAutoStartTime((selectedCollection as any)?.autoStartTime || '');
+    setCollectionEndTime((selectedCollection as any)?.endTime || '');
     setRepeatMode((selectedCollection?.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode);
     setMaxFailuresBeforePause(String(selectedCollection?.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     if (selectedCollection) {
       setTelegramChannelId(selectedCollection.channelId || safeText(safeProfile?.telegramChannelId));
       setCollectionChannelId(selectedCollection.channelId || safeText(safeProfile?.telegramChannelId));
-      setTelegramTemplate(selectedCollection.template || safeText(safeProfile?.telegramTemplate, DEFAULT_TEMPLATE));
+      setTelegramTemplate(sanitizeTelegramTemplate(selectedCollection.template || safeProfile?.telegramTemplate));
       setTelegramNotes(selectedCollection.notes || safeText(safeProfile?.telegramNotes));
       setPostMode(selectedCollection.postMode);
       setQueuedProductIds(selectedCollection.queuedProductIds || []);
@@ -215,6 +231,7 @@ export default function TelegramPosts() {
       setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
       setBatchSize(String(DEFAULT_BATCH_SIZE));
       setAutoStartTime('');
+      setCollectionEndTime('');
       setRepeatMode(DEFAULT_REPEAT_MODE);
       setMaxFailuresBeforePause(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     }
@@ -252,6 +269,28 @@ export default function TelegramPosts() {
   const filterCategories = useMemo(() => (
     ['all', ...Array.from(new Set(products.map((product) => getProductCategory(product)).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b))]
   ), [products]);
+  const productCategoryGroups = useMemo(() => (
+    filterCategories
+      .filter((category) => category !== 'all')
+      .map((category) => ({
+        category,
+        products: products
+          .filter((product) => getProductCategory(product) === category)
+          .sort((left, right) => getProductName(left).localeCompare(getProductName(right))),
+      }))
+      .filter((group) => group.products.length > 0)
+  ), [filterCategories, products]);
+
+  useEffect(() => {
+    if (!isCollectionModalOpen) return;
+    if (productCategoryGroups.length === 0) {
+      if (expandedCategory) setExpandedCategory('');
+      return;
+    }
+    if (!expandedCategory || !productCategoryGroups.some((group) => group.category === expandedCategory)) {
+      setExpandedCategory(productCategoryGroups[0].category);
+    }
+  }, [expandedCategory, isCollectionModalOpen, productCategoryGroups]);
 
   const filteredProducts = useMemo(() => {
     const next = products.filter((product) => {
@@ -300,6 +339,7 @@ export default function TelegramPosts() {
     return queuedProducts;
   }, [queuedProducts]);
   const collectionProducts = queuedProducts;
+  const expandedProductCategoryGroup = productCategoryGroups.find((group) => group.category === expandedCategory) || productCategoryGroups[0] || null;
 
   const previewProduct = targetProducts[0] || queuedProducts[0] || filteredProducts[0] || null;
   const activeCollection = telegramCollections.find((collection) => collection.id === activeCollectionId) || null;
@@ -386,8 +426,6 @@ export default function TelegramPosts() {
     const replacements: Record<string, string> = {
       '{product_name}': getProductName(product),
       '{price}': formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice)),
-      '{category}': getProductCategory(product),
-      '{stock}': String(toNonNegativeNumber(product.stock)),
       '{barcode}': getProductBarcode(product),
       '{keywords}': getProductTelegramKeywords(product),
     };
@@ -397,6 +435,32 @@ export default function TelegramPosts() {
     });
     return output;
   };
+
+  const buildMessageBoardText = (product: Product | null) => {
+    const customValues = telegramCustomDetails
+      .filter((entry) => entry.label.trim() || entry.value.trim())
+      .reduce<Record<string, string>>((acc, entry) => {
+        const label = entry.label.trim();
+        if (!label) return acc;
+        acc[`{${label}}`] = entry.hideKey ? entry.value.trim() : `${label} : ${entry.value.trim()}`;
+        return acc;
+      }, {});
+
+    const replacements: Record<string, string> = {
+      ...customValues,
+      '{product_name}': product ? getProductName(product) : '{product_name}',
+      '{price}': product ? formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice)) : '{price}',
+      '{telegram details}': product ? getTelegramDescription(product) || '{telegram details}' : '{telegram details}',
+    };
+
+    let message = (telegramTemplate || DEFAULT_TEMPLATE).trim();
+    Object.entries(replacements).forEach(([token, value]) => {
+      message = message.split(token).join(value);
+    });
+    return message.replace(/\n{3,}/g, '\n\n').trim();
+  };
+
+  const messageBoardContacts = telegramContactNumbers.map((value) => value.trim()).filter(Boolean);
 
   const buildSchedulerProducts = (rows: Product[]): TelegramSchedulerProduct[] => rows.map((product) => ({
     id: product.id,
@@ -522,6 +586,7 @@ export default function TelegramPosts() {
       setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
       setBatchSize(String(DEFAULT_BATCH_SIZE));
       setAutoStartTime('');
+      setCollectionEndTime('');
       setRepeatMode(DEFAULT_REPEAT_MODE);
       setMaxFailuresBeforePause(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
       return;
@@ -536,6 +601,7 @@ export default function TelegramPosts() {
     setFrequencyUnit((collection.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit);
     setBatchSize(String((collection as any).batchSize || DEFAULT_BATCH_SIZE));
     setAutoStartTime((collection as any).autoStartTime || '');
+    setCollectionEndTime((collection as any).endTime || '');
     setRepeatMode((collection.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode);
     setMaxFailuresBeforePause(String(collection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
     void persistTelegramProfile({ telegramActiveCollectionId: collection.id }, { suppressNotice: true });
@@ -567,8 +633,14 @@ export default function TelegramPosts() {
 
   const saveCollection = async () => {
     const trimmedName = collectionName.trim();
+    const trimmedStartTime = autoStartTime.trim();
+    const trimmedEndTime = collectionEndTime.trim();
     if (!trimmedName) {
       setNotice({ type: 'error', message: 'Collection name is required.' });
+      return;
+    }
+    if (!trimmedStartTime || !trimmedEndTime) {
+      setNotice({ type: 'error', message: 'Start time and end time are required.' });
       return;
     }
     setIsSavingCollection(true);
@@ -588,7 +660,8 @@ export default function TelegramPosts() {
         frequencyValue: resolveFrequencyValue(),
         frequencyUnit,
         batchSize: resolveBatchSize(),
-        autoStartTime: autoStartTime.trim(),
+        autoStartTime: trimmedStartTime,
+        endTime: trimmedEndTime,
         repeatMode,
         maxFailuresBeforePause: resolveMaxFailuresBeforePause(),
         createdAt: activeCollection?.createdAt || now,
@@ -660,6 +733,7 @@ export default function TelegramPosts() {
     setFrequencyUnit(DEFAULT_FREQUENCY_UNIT);
     setBatchSize(String(DEFAULT_BATCH_SIZE));
     setAutoStartTime('');
+    setCollectionEndTime('');
     setRepeatMode(DEFAULT_REPEAT_MODE);
     setMaxFailuresBeforePause(String(DEFAULT_MAX_FAILURES_BEFORE_PAUSE));
   };
@@ -681,8 +755,13 @@ export default function TelegramPosts() {
 
   const ensureCollectionSaved = async () => {
     const trimmedName = collectionName.trim();
+    const trimmedStartTime = autoStartTime.trim();
+    const trimmedEndTime = collectionEndTime.trim();
     if (!trimmedName) {
       throw new Error('Collection name is required.');
+    }
+    if (!trimmedStartTime || !trimmedEndTime) {
+      throw new Error('Start time and end time are required.');
     }
     const channelId = safeText(collectionChannelId).trim() || requireTelegramChannelId();
     const now = new Date().toISOString();
@@ -698,7 +777,8 @@ export default function TelegramPosts() {
       frequencyValue: resolveFrequencyValue(),
       frequencyUnit,
       batchSize: resolveBatchSize(),
-      autoStartTime: autoStartTime.trim(),
+      autoStartTime: trimmedStartTime,
+      endTime: trimmedEndTime,
       repeatMode,
       maxFailuresBeforePause: resolveMaxFailuresBeforePause(),
       createdAt: activeCollection?.createdAt || now,
@@ -812,6 +892,7 @@ export default function TelegramPosts() {
         frequencyUnit: (collection.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit,
         batchSize: (collection as any).batchSize || DEFAULT_BATCH_SIZE,
         autoStartTime: (collection as any).autoStartTime || undefined,
+        endTime: collection.endTime || undefined,
         repeatMode: (collection.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode,
         maxFailuresBeforePause: collection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE,
         postMode: 'selected',
@@ -855,6 +936,7 @@ export default function TelegramPosts() {
         frequencyUnit: (savedCollection.frequencyUnit || DEFAULT_FREQUENCY_UNIT) as TelegramCollectionFrequencyUnit,
         batchSize: (savedCollection as any).batchSize || DEFAULT_BATCH_SIZE,
         autoStartTime: (savedCollection as any).autoStartTime || undefined,
+        endTime: savedCollection.endTime || undefined,
         repeatMode: (savedCollection.repeatMode || DEFAULT_REPEAT_MODE) as TelegramCollectionRepeatMode,
         maxFailuresBeforePause: savedCollection.maxFailuresBeforePause || DEFAULT_MAX_FAILURES_BEFORE_PAUSE,
         postMode: 'selected',
@@ -1203,317 +1285,243 @@ export default function TelegramPosts() {
       </Card>
 
       {isCollectionModalOpen && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
-          <div className="max-h-[92vh] w-full max-w-[1500px] overflow-hidden rounded-3xl border bg-white shadow-2xl">
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-6xl rounded-2xl border bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
-                <div className="text-lg font-bold text-slate-950">{activeCollection ? 'Edit Telegram Collection' : 'Create Telegram Collection'}</div>
-                <div className="text-sm text-slate-600">All collection creation stays inside this popup. The main page remains channel and running-collection focused.</div>
+                <div className="text-lg font-semibold text-slate-950">{activeCollection ? 'Edit Collection' : 'Add Collection'}</div>
               </div>
-              <button type="button" className="rounded-full border p-2 text-slate-600 transition hover:bg-slate-100" onClick={() => setIsCollectionModalOpen(false)}>
+              <Button type="button" variant="ghost" size="icon" onClick={() => setIsCollectionModalOpen(false)}>
                 <X className="h-4 w-4" />
-              </button>
+              </Button>
             </div>
-            <div className="grid xl:grid-cols-[minmax(0,1.2fr)_380px]">
-              <div className="max-h-[calc(92vh-76px)] overflow-y-auto p-6">
-                <div className="space-y-6">
-                  <Card className="shadow-none">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Collection Setup</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-1">
-                        <div className="space-y-2">
-                          <Label>Collection Name</Label>
-                          <Input value={collectionName} onChange={(event) => setCollectionName(event.target.value)} placeholder="e.g. Weekend Home Offers" />
-                        </div>
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-                        <div className="space-y-2">
-                          <Label>Frequency Value</Label>
-                          <Input
-                            type="number"
-                            min={frequencyUnit === 'seconds' ? String(MIN_TELEGRAM_SECONDS_INTERVAL) : '1'}
-                            value={frequencyValue}
-                            onChange={(event) => setFrequencyValue(event.target.value)}
-                            placeholder={frequencyUnit === 'seconds' ? String(MIN_TELEGRAM_SECONDS_INTERVAL) : '1'}
-                          />
-                          {frequencyUnit === 'seconds' && (
-                            <p className="text-xs text-muted-foreground">Minimum {MIN_TELEGRAM_SECONDS_INTERVAL} seconds.</p>
-                          )}
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Frequency Unit</Label>
-                          <Select value={frequencyUnit} onChange={(event) => setFrequencyUnit(event.target.value as TelegramCollectionFrequencyUnit)}>
-                            <option value="seconds">Seconds</option>
-                            <option value="minutes">Minutes</option>
-                            <option value="hours">Hours</option>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Batch Size</Label>
-                          <Select value={batchSize} onChange={(event) => setBatchSize(event.target.value)}>
-                            <option value="2">2 products</option>
-                            <option value="4">4 products</option>
-                            <option value="6">6 products</option>
-                            <option value="8">8 products</option>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Repeat Mode</Label>
-                          <Select value={repeatMode} onChange={(event) => setRepeatMode(event.target.value as TelegramCollectionRepeatMode)}>
-                            <option value="once">Once</option>
-                            <option value="loop">Loop</option>
-                          </Select>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Auto Start Time</Label>
-                          <Input type="time" value={autoStartTime} onChange={(event) => setAutoStartTime(event.target.value)} />
-                          <p className="text-xs text-muted-foreground">Optional daily start time for this collection.</p>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Max Failures Before Pause</Label>
-                          <Input type="number" min="1" value={maxFailuresBeforePause} onChange={(event) => setMaxFailuresBeforePause(event.target.value)} placeholder="3" />
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card className="shadow-none">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Content</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
+            <div className="grid max-h-[78vh] gap-5 overflow-y-auto px-6 py-6 xl:grid-cols-[minmax(300px,1fr)_minmax(280px,0.85fr)_minmax(320px,0.9fr)] xl:overflow-hidden">
+              <div className="min-h-0 space-y-4 pr-1 xl:overflow-y-auto">
+                <div className="rounded-2xl border bg-slate-50 p-4">
+                  <div className="grid gap-3">
+                    <div className="space-y-2">
+                      <Label>Collection Name <span className="text-red-500">*</span></Label>
+                      <Input
+                        value={collectionName}
+                        onChange={(event) => setCollectionName(event.target.value)}
+                        placeholder="Collection name"
+                      />
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Label>Text Template</Label>
-                        <textarea value={telegramTemplate} onChange={(event) => setTelegramTemplate(event.target.value)} rows={7} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
-                        <p className="text-xs text-muted-foreground">{'Use {product_name}, {price}, {category}, {stock}, {barcode}, {keywords}'}</p>
+                        <Label>Start Time <span className="text-red-500">*</span></Label>
+                        <Input
+                          type="time"
+                          value={autoStartTime}
+                          onChange={(event) => setAutoStartTime(event.target.value)}
+                        />
                       </div>
                       <div className="space-y-2">
-                        <Label>Notes</Label>
-                        <Input value={telegramNotes} onChange={(event) => setTelegramNotes(event.target.value)} placeholder="Optional footer or campaign notes" />
+                        <Label>End Time <span className="text-red-500">*</span></Label>
+                        <Input
+                          type="time"
+                          value={collectionEndTime}
+                          onChange={(event) => setCollectionEndTime(event.target.value)}
+                        />
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                      Collection name, start time, and end time are mandatory.
+                    </div>
+                  </div>
+                </div>
 
-                  <Card className="shadow-none">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Products</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_180px]">
-                        <div className="relative">
-                          <Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
-                          <Input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search products, barcode, category..." className="pl-9" />
-                        </div>
-                        <Select value={categoryFilter} onChange={(event) => {
-                          const nextCategory = event.target.value;
-                          setCategoryFilter(nextCategory);
-                          setCollectionCategory(nextCategory);
-                        }}>
-                          {filterCategories.map((category) => <option key={category} value={category}>{category === 'all' ? 'All Categories' : category}</option>)}
-                        </Select>
-                        <Select value={sortOption} onChange={(event) => setSortOption(event.target.value as typeof sortOption)}>
-                          <option value="name-asc">Name (A-Z)</option>
-                          <option value="stock-desc">Stock High-Low</option>
-                          <option value="stock-asc">Stock Low-High</option>
-                          <option value="price-desc">Price High-Low</option>
-                          <option value="price-asc">Price Low-High</option>
-                        </Select>
-                      </div>
-                      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
-                        <div className="rounded-2xl border bg-white">
-                          <div className="flex items-center justify-between border-b px-4 py-3">
-                            <div>
-                              <div className="text-sm font-semibold text-slate-900">Available Products</div>
-                              <div className="text-xs text-muted-foreground">Browse inventory and add products into this collection queue.</div>
-                            </div>
-                            <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{filteredProducts.length} found</div>
-                          </div>
-                          <div className="max-h-[520px] overflow-auto">
-                            {filteredProducts.map((product) => {
-                              const inQueue = queuedProductIds.includes(product.id);
-                              return (
-                                <div key={product.id} className="grid grid-cols-[64px_minmax(0,1fr)_88px] items-center gap-3 border-b px-4 py-3">
-                                  <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl border bg-slate-50">
-                                    {getProductImageUrl(product)
-                                      ? <img src={getProductImageUrl(product)} alt={getProductName(product)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
-                                      : <ImageIcon className="h-5 w-5 text-slate-300" />}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="truncate font-semibold text-slate-900">{getProductName(product)}</div>
-                                    <div className="truncate text-xs text-muted-foreground">{getProductBarcode(product)} • {getProductCategory(product)}</div>
-                                    {getProductTelegramKeywords(product) && <div className="mt-1 truncate text-[11px] text-sky-700">Keywords: {getProductTelegramKeywords(product)}</div>}
-                                    <div className="mt-1 flex items-center gap-3 text-xs text-slate-600">
-                                      <span>Stock {toNonNegativeNumber(product.stock)}</span>
-                                      <span>{formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice))}</span>
-                                    </div>
-                                  </div>
-                                  <Button type="button" variant={inQueue ? 'secondary' : 'outline'} size="sm" onClick={() => addProductToQueue(product.id)} disabled={inQueue}>
-                                    <Plus className="mr-1 h-4 w-4" /> {inQueue ? 'Added' : 'Add'}
-                                  </Button>
-                                </div>
-                              );
-                            })}
-                            {filteredProducts.length === 0 && <div className="p-8 text-center text-sm text-muted-foreground">No products match the current filters.</div>}
-                          </div>
-                        </div>
-                        <div className="space-y-4">
-                          <div className="rounded-2xl border bg-slate-50 p-4 text-sm">
-                            <div>Filtered products: <span className="font-semibold">{filteredProducts.length}</span></div>
-                            <div>Selected queue: <span className="font-semibold">{queuedProducts.length}</span></div>
-                            <div>Will send now: <span className="font-semibold">{targetProducts.length}</span></div>
-                          </div>
-                          <div className="rounded-2xl border bg-white">
-                            <div className="flex items-center justify-between border-b px-4 py-3">
-                              <div>
-                                <div className="text-sm font-semibold text-slate-900">Selected Product Queue</div>
-                                <div className="text-xs text-muted-foreground">Only queued products from this list will be sent.</div>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label>Categories</Label>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">{products.length} products</span>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {productCategoryGroups.length > 0 ? productCategoryGroups.map((group) => {
+                      const isActive = expandedProductCategoryGroup?.category === group.category;
+                      return (
+                        <button
+                          key={group.category}
+                          type="button"
+                          onClick={() => setExpandedCategory(group.category)}
+                          className={`shrink-0 rounded-full border px-3 py-2 text-left text-xs font-semibold transition ${isActive ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400'}`}
+                        >
+                          {group.category} <span className={isActive ? 'text-white/70' : 'text-slate-400'}>{group.products.length}</span>
+                        </button>
+                      );
+                    }) : (
+                      <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">No categories found.</div>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border bg-white p-3">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="font-semibold text-slate-950">{expandedProductCategoryGroup?.category || 'Products'}</div>
+                      <div className="text-xs text-slate-500">{expandedProductCategoryGroup?.products.length || 0} items</div>
+                    </div>
+                    <div className="flex gap-3 overflow-x-auto pb-2">
+                      {expandedProductCategoryGroup ? expandedProductCategoryGroup.products.map((product) => {
+                        const isQueued = queuedProductIds.includes(product.id);
+                        const productImage = getProductImageUrl(product);
+                        const telegramDetails = getTelegramDescription(product) || 'No telegram details saved.';
+                        return (
+                          <div key={product.id} className="w-56 shrink-0 rounded-2xl border bg-slate-50 p-3">
+                            <div className="flex gap-3">
+                              <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-white">
+                                {productImage ? (
+                                  <img src={productImage} alt={getProductName(product)} className="h-full w-full object-contain" loading="lazy" decoding="async" />
+                                ) : (
+                                  <ImageIcon className="h-5 w-5 text-slate-300" />
+                                )}
                               </div>
-                              <Button type="button" variant="outline" size="sm" onClick={clearQueue} disabled={queuedProducts.length === 0}>
-                                Clear
-                              </Button>
-                            </div>
-                            <div className="p-4">
-                              <div className="relative mb-3">
-                                <Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
-                                <Input value={queueSearchTerm} onChange={(event) => setQueueSearchTerm(event.target.value)} placeholder="Search queued products" className="pl-9" />
-                              </div>
-                              <div className="max-h-[380px] space-y-3 overflow-auto">
-                                {queueFilteredProducts.map((product) => (
-                                  <div key={product.id} className="flex items-center gap-3 rounded-xl border p-3">
-                                    <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl border bg-slate-50">
-                                      {getProductImageUrl(product)
-                                        ? <img src={getProductImageUrl(product)} alt={getProductName(product)} className="h-full w-full object-cover" loading="lazy" decoding="async" />
-                                        : <ImageIcon className="h-5 w-5 text-slate-300" />}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="truncate font-semibold text-slate-900">{getProductName(product)}</div>
-                                      <div className="truncate text-xs text-muted-foreground">{getProductBarcode(product)} • {getProductCategory(product)}</div>
-                                    </div>
-                                    <Button type="button" variant="outline" size="sm" onClick={() => removeProductFromQueue(product.id)}>
-                                      <Trash2 className="mr-1 h-4 w-4" /> Remove
-                                    </Button>
-                                  </div>
-                                ))}
-                                {queueFilteredProducts.length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">No products in the selected queue yet.</div>}
+                              <div className="min-w-0 flex-1">
+                                <div className="line-clamp-2 text-sm font-bold leading-snug text-slate-950">{getProductName(product)}</div>
+                                <div className="mt-1 text-sm font-semibold text-emerald-700">{formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice))}</div>
                               </div>
                             </div>
+                            <div className="mt-3 line-clamp-3 min-h-[48px] whitespace-pre-wrap text-xs leading-4 text-slate-600">{telegramDetails}</div>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={isQueued ? 'outline' : 'default'}
+                              className="mt-3 w-full"
+                              onClick={() => isQueued ? removeProductFromQueue(product.id) : addProductToQueue(product.id)}
+                            >
+                              {isQueued ? 'Added' : '+ Add Product'}
+                            </Button>
                           </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                        );
+                      }) : (
+                        <div className="rounded-xl border border-dashed p-6 text-sm text-slate-500">Select a category to see products.</div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="max-h-[calc(92vh-76px)] overflow-y-auto border-l bg-slate-50/70 p-6">
-                <div className="space-y-6">
-                  <Card className="shadow-none">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Preview</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      {previewProduct ? (
-                        <>
-                          <div className="overflow-hidden rounded-2xl border bg-white">
-                            {getProductImageUrl(previewProduct)
-                              ? <img src={getProductImageUrl(previewProduct)} alt={getProductName(previewProduct)} className="h-64 w-full object-cover" loading="lazy" decoding="async" />
-                              : <div className="flex h-64 items-center justify-center bg-slate-50"><ImageIcon className="h-10 w-10 text-slate-300" /></div>}
-                          </div>
-                          <div className="text-2xl font-bold text-slate-950">{getProductName(previewProduct)}</div>
-                          <div className="whitespace-pre-wrap rounded-2xl bg-white p-4 text-sm text-slate-700">{buildCaption(previewProduct)}</div>
-                        </>
-                      ) : (
-                        <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">Add products to the queue or widen the filters to generate a preview.</div>
-                      )}
-                      <div className="space-y-2">
-                        <Button type="button" className="h-11 w-full" onClick={() => void saveCollection()} disabled={isSavingCollection}>
-                          <Save className="mr-2 h-4 w-4" />
-                          {isSavingCollection ? 'Saving...' : activeCollection ? 'Update Collection' : 'Save Collection'}
-                        </Button>
-                        <Button type="button" className="h-11 w-full" onClick={() => void startCollectionRun()} disabled={isStartingCollection || targetProducts.length === 0}>
-                          <Play className="mr-2 h-4 w-4" />
-                          {isStartingCollection ? 'Starting Collection...' : 'Start Collection'}
-                        </Button>
-                        <Button type="button" variant="outline" className="h-11 w-full" onClick={() => void sendPosts()} disabled={isSending || targetProducts.length === 0}>
-                          <Send className="mr-2 h-4 w-4" />
-                          {isSending ? 'Sending Test Post...' : 'Send One Test Post'}
-                        </Button>
-                        {activeCollection && (
-                          <Button type="button" variant="outline" className="h-11 w-full" onClick={() => void deleteCollection()} disabled={isSavingCollection}>
-                            <Trash2 className="mr-2 h-4 w-4" /> Delete Collection
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
 
-                  <Card className="shadow-none">
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base tracking-wide uppercase text-slate-700">Activity</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="rounded-xl border bg-white p-3">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Posts sent</div>
-                          <div className="mt-1 text-xl font-bold text-slate-950">{Math.max(totalPostedCount, livePostedCount)}</div>
+              <div className="min-h-0 space-y-4 pr-1 xl:overflow-y-auto">
+                <div className="rounded-2xl border bg-white p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <Label>Total Products In Collection</Label>
+                      <div className="mt-1 text-3xl font-bold text-slate-950">{queuedProducts.length}</div>
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={clearQueue} disabled={queuedProducts.length === 0}>
+                      Clear
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {queuedProducts.length > 0 ? queuedProducts.map((product) => {
+                    const productImage = getProductImageUrl(product);
+                    return (
+                      <div key={product.id} className="rounded-2xl border bg-slate-50 p-3">
+                        <div className="flex gap-3">
+                          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-white">
+                            {productImage ? (
+                              <img src={productImage} alt={getProductName(product)} className="h-full w-full object-contain" loading="lazy" decoding="async" />
+                            ) : (
+                              <ImageIcon className="h-5 w-5 text-slate-300" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="line-clamp-2 text-sm font-bold leading-snug text-slate-950">{getProductName(product)}</div>
+                            <div className="mt-1 text-sm font-semibold text-emerald-700">{formatCurrency(toNonNegativeNumber(product.sellPrice || product.buyPrice))}</div>
+                            <div className="mt-2 line-clamp-2 whitespace-pre-wrap text-xs leading-4 text-slate-600">{getTelegramDescription(product) || 'No telegram details saved.'}</div>
+                          </div>
                         </div>
-                        <div className="rounded-xl border bg-white p-3">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last posted product</div>
-                          <div className="mt-1 text-sm font-bold text-slate-950">{lastPostedEntry?.lastPostedProductName || 'Not yet'}</div>
-                        </div>
+                        <Button type="button" variant="outline" size="sm" className="mt-3 w-full" onClick={() => removeProductFromQueue(product.id)}>
+                          Remove
+                        </Button>
                       </div>
-                      <div className="rounded-xl border bg-white p-3 text-sm">
-                        <div className="flex items-center gap-2 font-semibold text-slate-900">
-                          <Clock3 className="h-4 w-4" />
-                          Last activity
-                        </div>
-                        <div className="mt-2 text-slate-700">
-                          {lastPostedEntry ? (
-                            <>
-                              <div>{lastPostedEntry.collectionName || 'Quick post'} • {lastPostedEntry.successCount}/{lastPostedEntry.productCount} sent</div>
-                              <div className="text-xs text-muted-foreground">{lastPostedEntry.lastPostedProductName || 'Product not captured'} • {lastPostedEntry.category === 'all' ? 'All categories' : lastPostedEntry.category}</div>
-                            </>
+                    );
+                  }) : (
+                    <div className="rounded-2xl border border-dashed bg-slate-50 p-6 text-center text-sm text-slate-500">
+                      Add products from the category list.
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <Button type="button" variant="outline" className="flex-1" onClick={() => setIsCollectionModalOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="button" className="flex-1" onClick={() => void saveCollection()} disabled={isSavingCollection}>
+                    {activeCollection ? 'Update Collection' : 'Save Collection'}
+                  </Button>
+                  <Button type="button" className="flex-1" onClick={() => void startCollectionRun()} disabled={isStartingCollection}>
+                    Start Collection
+                  </Button>
+                </div>
+              </div>
+
+              <div className="min-h-0 space-y-2 xl:overflow-y-auto">
+                <Label>Preview</Label>
+                <div
+                  className="relative overflow-hidden rounded-[28px] border border-slate-200 bg-slate-950 shadow-2xl"
+                  style={{
+                    backgroundImage: `linear-gradient(180deg, rgba(2,6,23,0.18), rgba(2,6,23,0.66)), url('${TELEGRAM_MESSAGE_BOARD_BG}')`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                  }}
+                >
+                  <div className="relative flex justify-start p-3">
+                    <div className="w-[82%] max-w-[320px] overflow-hidden rounded-[18px] border border-white/75 bg-white shadow-xl">
+                      <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2">
+                        <div className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white">
+                          {profile?.logoImage ? (
+                            <img src={profile.logoImage} alt={profile.storeName || 'Store'} className="h-full w-full object-cover" />
                           ) : (
-                            <div className="text-muted-foreground">No posts have been sent yet.</div>
+                            <span className="text-[10px] font-bold text-slate-900">{safeText(profile?.storeName, 'SF').slice(0, 2).toUpperCase()}</span>
                           )}
                         </div>
+                        <div className="min-w-0">
+                          <div className="truncate text-xs font-bold text-slate-950">{safeText(profile?.storeName, selectedChannelId || 'Telegram Channel')}</div>
+                          <div className="truncate text-[10px] text-slate-500">{selectedChannelId || 'Message preview'}</div>
+                        </div>
                       </div>
-                      {selectedCollectionActivity.length > 0 && (
-                        <div className="space-y-3">
-                          <div className="text-sm font-semibold text-slate-900">Recent Activity</div>
-                          {selectedCollectionActivity.slice(0, 6).map((entry) => (
-                            <div key={entry.id} className="rounded-xl border bg-white p-3 text-sm">
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="font-semibold text-slate-900">{entry.productName || entry.collectionName || 'Telegram item'}</div>
-                                  <div className="text-xs text-slate-500">{entry.status || 'unknown'}</div>
-                                </div>
-                                <div className="text-right text-xs text-slate-500">{formatDateTime(entry.postedAt || entry.createdAt || entry.updatedAt)}</div>
-                              </div>
-                              {entry.error && <div className="mt-2 text-xs text-red-600">{entry.error}</div>}
-                            </div>
-                          ))}
+
+                      {previewProduct && getProductImageUrl(previewProduct) ? (
+                        <div className="flex h-52 w-full items-center justify-center bg-white">
+                          <img
+                            src={getProductImageUrl(previewProduct)}
+                            alt={getProductName(previewProduct)}
+                            className="max-h-full max-w-full object-contain"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex h-52 w-full items-center justify-center bg-white/10 text-sm text-white/70">
+                          Product image preview
                         </div>
                       )}
-                      <div className="space-y-3">
-                        <div className="text-sm font-semibold text-slate-900">Failed Products</div>
-                        {failedProducts.slice(0, 6).map((entry) => (
-                          <div key={entry.id} className="rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">
-                            <div className="font-semibold">{entry.productName || 'Unknown product'}</div>
-                            <div className="mt-1 text-xs">{entry.error}</div>
+
+                      <div className="space-y-2 px-3 py-3 text-slate-950">
+                        <div className="space-y-0.5">
+                          <div className="text-[10px] uppercase text-slate-500">Product</div>
+                          <div className="text-sm font-bold leading-snug text-slate-950">{previewProduct ? getProductName(previewProduct) : 'Product name'}</div>
+                        </div>
+                        <div className="whitespace-pre-wrap text-[13px] font-medium leading-5 text-slate-900">
+                          {buildMessageBoardText(previewProduct)}
+                        </div>
+                        {(messageBoardContacts.length > 0 || telegramAddressLink.trim()) && (
+                          <div className="space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">
+                            {messageBoardContacts.length > 0 && <div>{messageBoardContacts.join(' | ')}</div>}
+                            {telegramAddressLink.trim() && <div className="break-all">{telegramAddressLink.trim()}</div>}
                           </div>
-                        ))}
-                        {failedProducts.length === 0 && <div className="rounded-xl border border-dashed p-4 text-center text-sm text-muted-foreground">No failed products in the selected activity feed.</div>}
+                        )}
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 

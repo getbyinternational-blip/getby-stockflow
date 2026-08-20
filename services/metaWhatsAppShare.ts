@@ -1,6 +1,6 @@
 import { Customer, StoreProfile, Transaction } from '../types';
 import { getFriendlyErrorMessage } from './errorMessages';
-import { getConfiguredMetaWhatsAppServerUrl, sendInvoiceViaMetaWhatsApp } from './metaWhatsAppStatus';
+import { getConfiguredMetaWhatsAppServerUrl, getOfficialWhatsAppConfigDiagnostics, sendInvoiceViaMetaWhatsApp } from './metaWhatsAppStatus';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 
 export type MetaWhatsAppShareResult = {
@@ -98,10 +98,11 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
 ): Promise<MetaWhatsAppShareResult> => {
   const configuredUrl = getConfiguredMetaWhatsAppServerUrl();
   if (!configuredUrl) {
+    const diagnostics = getOfficialWhatsAppConfigDiagnostics();
     return {
       ok: false,
       reason: 'META_WHATSAPP_NOT_CONFIGURED',
-      message: 'Official WhatsApp backend URL is not configured.',
+      message: `Official WhatsApp backend URL is not configured. Missing env: ${diagnostics.missingVars.join(', ') || 'VITE_META_WHATSAPP_SERVER_URL'}.`,
     };
   }
 
@@ -110,7 +111,7 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
     return {
       ok: false,
       reason: 'META_WHATSAPP_KEY_MISSING',
-      message: 'Official WhatsApp backend key is not configured.',
+      message: 'Official WhatsApp backend key is not configured. Missing env: VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY.',
     };
   }
 
