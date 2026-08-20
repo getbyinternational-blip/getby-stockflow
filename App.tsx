@@ -101,7 +101,7 @@ const NavItem = ({ to, icon: Icon, label, labelClassName = '', optimisticActiveP
       disabled={isNavigating}
       aria-current={isActive ? 'page' : undefined}
       aria-label={label}
-      className={`flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
+      className={`flex w-full items-center gap-3 px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
         isActive 
           ? 'bg-primary text-primary-foreground' 
           : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -543,7 +543,7 @@ function AppContent() {
             <NavItem to="/customers" icon={Users} label="Customers" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />
             {can('reports') && <NavItem to="/pdf" icon={FileText} label="Reports" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
             {can('settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
-            {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" labelClassName="text-red-600" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
             <NavItem to="/finance" icon={Landmark} label="Finance" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
             {can('purchases') && <NavItem to="/purchase-panel" icon={ClipboardList} label="Purchase Parties" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />}
 

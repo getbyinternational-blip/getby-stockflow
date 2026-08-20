@@ -1,7 +1,7 @@
 ﻿import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, LightweightLoader } from '../components/ui';
-import { CashAdjustment, Customer, DeleteCompensationRecord, Expense, ManualCashbookEntry, PartyCreditLedgerEntry, PurchaseOrder, PurchaseParty, SupplierPaymentLedgerEntry, Transaction, UpfrontOrder } from '../types';
+import { AppState, CashAdjustment, CashSession, CashSource, Customer, DeleteCompensationRecord, Expense, ManualCashbookEntry, PartyCreditLedgerEntry, PurchaseOrder, PurchaseParty, SupplierPaymentLedgerEntry, Transaction, UpfrontOrder } from '../types';
 import { allocateCustomerPaymentAgainstCompositeReceivable, applyPartyCreditToPurchaseOrder, buildUpfrontOrderLedgerEffects, createSupplierPayment, deleteLegacySupplierPaymentGroup, deleteSupplierPayment, deleteTransaction, getCanonicalCustomerBalanceSnapshot, getCanonicalReturnAllocation, getCustomerCompositeReceivableBreakdown, getPurchaseOrders, getPurchaseParties, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, loadData, processTransaction, updateSupplierPayment, updateTransaction } from '../services/storage';
 import { DISPLAY_FALLBACK, formatINRPrecise, formatOptionalText, joinDisplayParts, sanitizeDisplayText } from '../services/numberFormat';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
@@ -38,6 +38,114 @@ const formatGroupedSupplierPaymentDescription = (method: string, allocationCount
   const methodLabel = normalizedMethod === 'online' ? 'Online' : normalizedMethod === 'bank' ? 'Bank' : 'Cash';
   if (allocationCount > 1) return `${methodLabel} supplier payment allocated across ${allocationCount} POs`;
   return `${methodLabel} supplier payment`;
+};
+
+const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
+const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
+const roundMoney = (value: unknown) => Math.round(((Number(value) || 0) + Number.EPSILON) * 100) / 100;
+const getExpenseEffectiveDate = (expense: Expense) => expense.effectiveAt || expense.createdAt;
+const getSupplierPaymentMethod = (method: unknown): 'cash' | 'online' => {
+  const normalized = String(method || '').toLowerCase();
+  return normalized === 'online' || normalized === 'bank' ? 'online' : 'cash';
+};
+const isInCashWindow = (iso: unknown, start: number, end = Number.POSITIVE_INFINITY) => {
+  const at = new Date(String(iso || '')).getTime();
+  return Number.isFinite(at) && at >= start && at <= end;
+};
+const shouldUseReserveCash = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve';
+const evaluateCarryForwardSession = (session: CashSession) => {
+  if (session.status !== 'closed') return { valid: false };
+  if (!Number.isFinite(session.closingBalance)) return { valid: false };
+  if ((session.closingBalance ?? 0) < 0) return { valid: false };
+  const closing = session.closingBalance ?? 0;
+  const opening = Number.isFinite(session.openingBalance) ? session.openingBalance : 0;
+  const system = Number.isFinite(session.systemCashTotal) ? (session.systemCashTotal as number) : 0;
+  const expected = opening + system;
+  const startMs = Number.isFinite(new Date(session.startTime).getTime()) ? new Date(session.startTime).getTime() : Number.NaN;
+  const endMs = session.endTime && Number.isFinite(new Date(session.endTime).getTime()) ? new Date(session.endTime).getTime() : Number.NaN;
+  const durationMs = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(0, endMs - startMs) : null;
+  const difference = Number.isFinite(session.difference) ? (session.difference as number) : (closing - expected);
+  const suspiciousZeroClose = closing === 0
+    && expected > 1
+    && (durationMs === null || durationMs < (15 * 60 * 1000) || Math.abs(difference) > 1);
+  return { valid: !suspiciousZeroClose };
+};
+const getSessionReservedCash = (session: CashSession) => {
+  const reserved = Number(session.reservedCashOnHand);
+  if (!Number.isFinite(reserved) || reserved < 0) return 0;
+  return roundMoney(reserved);
+};
+const getDashboardCashSourceAvailability = (state: AppState) => {
+  const openSession = (state.cashSessions || []).find((session: any) => session?.status === 'open' && !session?.deletedAt);
+  if (!openSession?.startTime) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const latestCarryForwardSession = [...(state.cashSessions || [])]
+    .sort((a: CashSession, b: CashSession) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
+    .find((session: CashSession) => evaluateCarryForwardSession(session).valid) || null;
+  const start = new Date(openSession.startTime).getTime();
+  if (!Number.isFinite(start)) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
+  const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
+  const cashFromTransactions = (state.transactions || []).reduce((sum, tx) => {
+    if (!isInCashWindow((tx as any).financialDate || tx.date, start, end)) return sum;
+    const amount = Math.max(0, Number(tx.total || 0));
+    const type = String((tx as any).type || '').toLowerCase();
+    if (type === 'sale' || type === 'historical_reference') return sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0));
+    if (type === 'payment' && tx.paymentMethod === 'Cash') return sum + amount;
+    if ((type === 'return' || type === 'customer_cash_out') && tx.paymentMethod === 'Cash') return sum - amount;
+    return sum;
+  }, 0);
+  const expenseOut = (state.expenses || [])
+    .filter((expense) => isInCashWindow(getExpenseEffectiveDate(expense), start, end))
+    .reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
+  const cashAdjustments = (state.cashAdjustments || [])
+    .filter((entry) => isInCashWindow(entry.effectiveAt || entry.createdAt, start, end))
+    .reduce((sum, entry) => sum + (entry.type === 'cash_addition' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const manualCash = (state.manualCashbookEntries || [])
+    .filter((entry) => !entry.isDeleted && isInCashWindow(entry.date || entry.createdAt, start, end))
+    .reduce((sum, entry) => sum + (entry.type === 'cash_in' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
+  const directPurchaseCashOut = (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
+    if (payment?.supplierPaymentId) return inner;
+    if (String(payment?.method || 'cash').toLowerCase() !== 'cash') return inner;
+    if (!isInCashWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, start, end)) return inner;
+    return inner + Math.max(0, Number(payment.amount || 0));
+  }, 0), 0);
+  const supplierCashOut = (state.supplierPayments || [])
+    .filter((payment) => !payment.deletedAt && getSupplierPaymentMethod(payment.method) === 'cash' && isInCashWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, start, end))
+    .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+  const totalCash = Math.max(0, Math.round((Number(openSession.openingBalance || 0) + cashFromTransactions + cashAdjustments + manualCash - expenseOut - directPurchaseCashOut - supplierCashOut) * 100) / 100);
+  const currentSessionReserve = getSessionReservedCash(openSession);
+  const priorReserve = latestCarryForwardSession ? getSessionReservedCash(latestCarryForwardSession) : 0;
+  const reserveBase = currentSessionReserve > 0 ? currentSessionReserve : priorReserve;
+  const reserveSavedAt = openSession.reservedCashSavedAt
+    || (priorReserve > 0
+      ? latestCarryForwardSession?.reservedCashSavedAt || latestCarryForwardSession?.endTime || latestCarryForwardSession?.startTime
+      : null)
+    || openSession.startTime;
+  const savedAt = new Date(reserveSavedAt).getTime();
+  const reserveOut = Number.isFinite(savedAt) ? (
+    (state.transactions || []).filter((tx) => {
+      const type = String((tx as any).type || '').trim().toLowerCase();
+      const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
+      const isCashOutTx = (type === 'return' && (returnMode === 'refund_cash' || tx.paymentMethod === 'Cash')) || (type === 'customer_cash_out' && tx.paymentMethod === 'Cash');
+      return isCashOutTx && isInCashWindow((tx as any).financialDate || tx.date, savedAt) && shouldUseReserveCash((tx as any).cashSource);
+    }).reduce((sum, tx) => sum + Math.max(0, Math.abs(Number(tx.total || 0))), 0)
+    + (state.expenses || []).filter((expense) => isInCashWindow(getExpenseEffectiveDate(expense), savedAt) && shouldUseReserveCash(expense.cashSource)).reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0)
+    + (state.cashAdjustments || []).filter((entry) => entry.type === 'cash_withdrawal' && isInCashWindow(entry.effectiveAt || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.manualCashbookEntries || []).filter((entry) => !entry.isDeleted && entry.type === 'cash_out' && isInCashWindow(entry.date || entry.createdAt, savedAt) && shouldUseReserveCash(entry.cashSource)).reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0)
+    + (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).filter((payment: any) => !payment?.supplierPaymentId && String(payment?.method || 'cash').toLowerCase() === 'cash').filter((payment: any) => {
+      const effectiveAt = [payment.paidAt, order.updatedAt, order.effectiveAt, order.orderDate, order.createdAt]
+        .map((value) => new Date(value || '').getTime())
+        .filter(Number.isFinite)
+        .sort((a, b) => b - a)[0];
+      return isInCashWindow(Number.isFinite(effectiveAt) ? new Date(effectiveAt).toISOString() : undefined, savedAt) && shouldUseReserveCash(payment.cashSource);
+    }).reduce((inner: number, payment: any) => inner + Math.max(0, Number(payment.amount || 0)), 0), 0)
+    + (state.supplierPayments || []).filter((payment) => !payment.deletedAt && getSupplierPaymentMethod(payment.method) === 'cash' && isInCashWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, savedAt) && shouldUseReserveCash(payment.cashSource)).reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0)
+  ) : 0;
+  const reserveCash = roundMoney(Math.max(0, reserveBase - reserveOut));
+  return {
+    activeCash: Math.max(0, roundMoney(totalCash)),
+    reserveCash,
+    totalCash: roundMoney(Math.max(0, Math.max(0, totalCash) + reserveCash)),
+  };
 };
 
 
@@ -186,14 +294,17 @@ export default function Dashboard() {
   const [payingParty, setPayingParty] = useState<PartyPayableRow | null>(null);
   const [payAmount, setPayAmount] = useState('');
   const [payMethod, setPayMethod] = useState<'cash' | 'online'>('cash');
+  const [payCashSource, setPayCashSource] = useState<CashSource>('drawer');
   const [payNote, setPayNote] = useState('');
   const [payDateTime, setPayDateTime] = useState(() => toDateTimeLocalValue(new Date()));
   const [payError, setPayError] = useState<string | null>(null);
+  const [isPaySubmitting, setIsPaySubmitting] = useState(false);
   const [statementCustomerId, setStatementCustomerId] = useState<string | null>(null);
   const [statementPartyId, setStatementPartyId] = useState<string | null>(null);
   const [editingSupplierPayment, setEditingSupplierPayment] = useState<SupplierPaymentLedgerEntry | null>(null);
   const [editSupplierAmount, setEditSupplierAmount] = useState('');
   const [editSupplierMethod, setEditSupplierMethod] = useState<'cash' | 'online' | 'bank'>('cash');
+  const [editSupplierCashSource, setEditSupplierCashSource] = useState<CashSource>('drawer');
   const [editSupplierNote, setEditSupplierNote] = useState('');
   const [editSupplierDateTime, setEditSupplierDateTime] = useState(() => toDateTimeLocalValue(new Date()));
   const [editSupplierError, setEditSupplierError] = useState<string | null>(null);
@@ -450,44 +561,43 @@ export default function Dashboard() {
   const payCurrentPayable = Math.max(0, Number(payingParty?.payable || 0));
   const payExtraToPartyCredit = payAmountValid ? Math.max(0, payAmountValue - payCurrentPayable) : 0;
   const openCashSession = useMemo(() => (cashSessions || []).find((session: any) => session?.status === 'open' && !session?.deletedAt), [cashSessions]);
-  const availableDrawerCash = useMemo(() => {
-    if (!openCashSession?.startTime) return null;
-    const start = new Date(openCashSession.startTime).getTime();
-    if (!Number.isFinite(start)) return null;
-    const inWindow = (iso: string) => {
-      const at = new Date(iso).getTime();
-      return Number.isFinite(at) && at >= start;
-    };
-    const cashSales = transactions.filter((tx) => inWindow(tx.date) && tx.type === 'sale').reduce((sum, tx) => sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0)), 0);
-    const cashCollections = transactions.filter((tx) => inWindow(tx.date) && tx.type === 'payment' && tx.paymentMethod === 'Cash').reduce((sum, tx) => sum + Math.max(0, Math.abs(Number(tx.total || 0))), 0);
-    const cashRefunds = transactions.filter((tx) => inWindow(tx.date) && tx.type === 'return' && tx.paymentMethod === 'Cash').reduce((sum, tx) => sum + Math.max(0, Math.abs(Number(tx.total || 0))), 0);
-    const expenseCash = expenses.filter((e) => inWindow(e.createdAt)).reduce((sum, e) => sum + Math.max(0, Number(e.amount || 0)), 0);
-    const deleteCompCash = deleteCompensations.filter((d) => inWindow(d.createdAt)).reduce((sum, d) => sum + Math.max(0, Number(d.amount || 0)), 0);
-    const supplierCash = supplierPayments.filter((p) => !p.deletedAt && (p.method || 'cash') === 'cash' && inWindow(p.paidAt || p.createdAt)).reduce((sum, p) => sum + Math.max(0, Number(p.amount || 0)), 0);
-    const cashAdded = cashAdjustments.filter((a) => inWindow(a.createdAt) && a.type === 'cash_addition').reduce((sum, a) => sum + Math.max(0, Number(a.amount || 0)), 0);
-    const cashWithdrawn = cashAdjustments.filter((a) => inWindow(a.createdAt) && a.type === 'cash_withdrawal').reduce((sum, a) => sum + Math.max(0, Number(a.amount || 0)), 0);
-    const manualCashIn = manualCashbookEntries
-      .filter((entry) => entry.type === 'cash_in' && inWindow(entry.date || entry.createdAt))
-      .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
-    const manualCashOut = manualCashbookEntries
-      .filter((entry) => entry.type === 'cash_out' && inWindow(entry.date || entry.createdAt))
-      .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount || 0)), 0);
-    const customOrderCash = buildUpfrontOrderLedgerEffects(upfrontOrders).filter((effect) => effect.type === 'custom_order_payment' && effect.isLegacyInfoOnly !== true && inWindow(effect.date)).reduce((sum, effect) => sum + Math.max(0, Number(effect.cashIn || 0)), 0);
-    return Number(openCashSession.openingBalance || 0)
-      + cashSales
-      + cashCollections
-      + customOrderCash
-      + cashAdded
-      + manualCashIn
-      - cashWithdrawn
-      - manualCashOut
-      - cashRefunds
-      - deleteCompCash
-      - expenseCash
-      - supplierCash;
-  }, [openCashSession, transactions, expenses, deleteCompensations, supplierPayments, cashAdjustments, manualCashbookEntries, upfrontOrders]);
-  const cashOverdrawAmount = payMethod === 'cash' && payAmountValid && availableDrawerCash !== null ? Math.max(0, payAmountValue - Math.max(0, availableDrawerCash)) : 0;
+  const cashSourceAvailability = useMemo(() => getDashboardCashSourceAvailability({
+    transactions,
+    expenses,
+    deleteCompensations,
+    supplierPayments,
+    cashAdjustments,
+    manualCashbookEntries,
+    upfrontOrders,
+    purchaseOrders: orders,
+    cashSessions,
+  } as AppState), [transactions, expenses, deleteCompensations, supplierPayments, cashAdjustments, manualCashbookEntries, upfrontOrders, orders, cashSessions]);
+  const getAvailableCashBySource = (source: CashSource) => (
+    normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+  );
+  const cashOverdrawAmount = payMethod === 'cash' && payAmountValid && openCashSession ? Math.max(0, payAmountValue - getAvailableCashBySource(payCashSource)) : 0;
   const isCashOverdraw = payMethod === 'cash' && cashOverdrawAmount > 0;
+  const editSupplierAmountValue = Number(editSupplierAmount);
+  const editSupplierAmountValid = Number.isFinite(editSupplierAmountValue) && editSupplierAmountValue > 0;
+  const editSupplierOriginalMethod = editingSupplierPayment
+    ? (String(editingSupplierPayment.method || 'cash').toLowerCase() === 'online' || String(editingSupplierPayment.method || 'cash').toLowerCase() === 'bank' ? 'online' : 'cash')
+    : editingLegacySupplierRow?.tone === 'cash' ? 'cash' : 'online';
+  const editSupplierOriginalCashSource = editingSupplierPayment
+    ? normalizeCashSource(editingSupplierPayment.cashSource)
+    : 'drawer';
+  const editSupplierReversibleCashAmount = editSupplierOriginalMethod === 'cash'
+    ? Math.max(0, Number(editingSupplierPayment?.amount || editingLegacySupplierRow?.credit || 0))
+    : 0;
+  const editableCashAvailableBySource = (source: CashSource) => {
+    const normalizedSource = normalizeCashSource(source);
+    const baseAvailable = getAvailableCashBySource(normalizedSource);
+    if (editSupplierOriginalMethod !== 'cash') return baseAvailable;
+    return baseAvailable + (editSupplierOriginalCashSource === normalizedSource ? editSupplierReversibleCashAmount : 0);
+  };
+  const editSupplierCashOverdrawAmount = editSupplierMethod === 'cash' && editSupplierAmountValid && openCashSession
+    ? Math.max(0, editSupplierAmountValue - editableCashAvailableBySource(editSupplierCashSource))
+    : 0;
+  const isEditSupplierCashOverdraw = editSupplierMethod === 'cash' && editSupplierCashOverdrawAmount > 0;
 
   
   const allCustomerDashboardRows = useMemo(() => perfMeasureSync('page.Dashboard.derive.allCustomerDashboardRows', () => {
@@ -946,6 +1056,7 @@ export default function Dashboard() {
     setPayingParty(party);
     setPayAmount('');
     setPayMethod('cash');
+    setPayCashSource('drawer');
     setPayNote('');
     setPayDateTime(toDateTimeLocalValue(new Date()));
     setPayError(null);
@@ -992,27 +1103,36 @@ export default function Dashboard() {
     if (!payingParty) return;
     const amount = Number(payAmount);
     if (!Number.isFinite(amount) || amount <= 0) return setPayError('Enter valid amount greater than zero.');
-    if (payMethod === 'cash' && availableDrawerCash !== null && amount > Math.max(0, availableDrawerCash)) {
-      return setPayError(`Cash payment exceeds available drawer cash by ${formatINRPrecise(amount - Math.max(0, availableDrawerCash))}.`);
+    if (payMethod === 'cash' && openCashSession && amount > getAvailableCashBySource(payCashSource)) {
+      return setPayError(`Cash payment exceeds available ${formatCashSourceLabel(payCashSource).toLowerCase()} by ${formatINRPrecise(amount - getAvailableCashBySource(payCashSource))}.`);
     }
     const paymentDate = payDateTime ? new Date(payDateTime) : new Date();
     if (Number.isNaN(paymentDate.getTime())) return setPayError('Please select a valid payment date.');
 
     const payableApplied = Math.min(amount, Math.max(0, Number(payingParty.payable || 0)));
     const partyCreditCreated = Math.max(0, amount - payableApplied);
-    await createSupplierPayment({
-      partyId: payingParty.id,
-      partyName: payingParty.name,
-      amount,
-      method: payMethod,
-      paidAt: paymentDate.toISOString(),
-      note: payNote.trim() || 'Supplier payment',
-      payableApplied,
-      partyCreditCreated,
-    });
-
+    const payingPartySnapshot = payingParty;
+    setIsPaySubmitting(true);
     setPayingParty(null);
-    refresh();
+    try {
+      await createSupplierPayment({
+        partyId: payingPartySnapshot.id,
+        partyName: payingPartySnapshot.name,
+        amount,
+        method: payMethod,
+        cashSource: payMethod === 'cash' ? payCashSource : undefined,
+        paidAt: paymentDate.toISOString(),
+        note: payNote.trim() || 'Supplier payment',
+        payableApplied,
+        partyCreditCreated,
+      });
+      refresh();
+    } catch (error) {
+      setPayingParty(payingPartySnapshot);
+      setPayError(getFriendlyErrorMessage(error, 'dashboard.create_supplier_payment'));
+    } finally {
+      setIsPaySubmitting(false);
+    }
   };
 
   const receiveAmountValue = Number(receiveAmount);
@@ -1147,6 +1267,7 @@ export default function Dashboard() {
       setEditingLegacySupplierRow(row);
       setEditSupplierAmount(String(row.credit || 0));
       setEditSupplierMethod(row.tone === 'cash' ? 'cash' : 'online');
+      setEditSupplierCashSource('drawer');
       setEditSupplierNote(row.description || 'Supplier payment');
       setEditSupplierDateTime(toDateTimeLocalValue(new Date(row.date)));
       return;
@@ -1158,6 +1279,7 @@ export default function Dashboard() {
     setEditingSupplierPayment(payment);
     setEditSupplierAmount(String(payment.amount || 0));
     setEditSupplierMethod(((String(payment.method || 'cash').toLowerCase() === 'online' || String(payment.method || 'cash').toLowerCase() === 'bank') ? String(payment.method || 'cash').toLowerCase() : 'cash') as 'cash' | 'online' | 'bank');
+    setEditSupplierCashSource(normalizeCashSource(payment.cashSource));
     setEditSupplierNote(payment.note || '');
     setEditSupplierDateTime(toDateTimeLocalValue(new Date(payment.paidAt || payment.createdAt || new Date().toISOString())));
   };
@@ -1168,15 +1290,19 @@ export default function Dashboard() {
     if (!Number.isFinite(amount) || amount <= 0) return setEditSupplierError('Enter valid amount greater than zero.');
     const paymentDate = editSupplierDateTime ? new Date(editSupplierDateTime) : new Date();
     if (Number.isNaN(paymentDate.getTime())) return setEditSupplierError('Please select a valid payment date.');
+    if (editSupplierMethod === 'cash' && openCashSession && amount > editableCashAvailableBySource(editSupplierCashSource)) {
+      return setEditSupplierError(`Cash payment exceeds available ${formatCashSourceLabel(editSupplierCashSource).toLowerCase()} by ${formatINRPrecise(amount - editableCashAvailableBySource(editSupplierCashSource))}.`);
+    }
     try {
       if (editingLegacySupplierRow) {
         await deleteLegacySupplierPaymentGroup(editingLegacySupplierRow.allocations?.map((a) => ({ orderId: a.orderId, paymentId: a.paymentId })) || []);
-        await createSupplierPayment({ partyId: selectedParty?.id || '', partyName: selectedParty?.name || '', amount, method: editSupplierMethod === 'online' ? 'online' : 'cash', paidAt: paymentDate.toISOString(), note: editSupplierNote.trim() || 'Supplier payment' });
+        await createSupplierPayment({ partyId: selectedParty?.id || '', partyName: selectedParty?.name || '', amount, method: editSupplierMethod === 'online' ? 'online' : 'cash', cashSource: editSupplierMethod === 'cash' ? editSupplierCashSource : undefined, paidAt: paymentDate.toISOString(), note: editSupplierNote.trim() || 'Supplier payment' });
         setEditingLegacySupplierRow(null);
       } else if (editingSupplierPayment) {
-        await updateSupplierPayment(editingSupplierPayment.id, { amount, method: editSupplierMethod === 'bank' ? 'online' : editSupplierMethod, note: editSupplierNote.trim(), paidAt: paymentDate.toISOString() });
+        await updateSupplierPayment(editingSupplierPayment.id, { amount, method: editSupplierMethod === 'bank' ? 'online' : editSupplierMethod, cashSource: editSupplierMethod === 'cash' ? editSupplierCashSource : undefined, note: editSupplierNote.trim(), paidAt: paymentDate.toISOString() });
       }
       setEditingSupplierPayment(null);
+      setEditingLegacySupplierRow(null);
       refresh();
     } catch (error) {
       setEditSupplierError(getFriendlyErrorMessage(error, 'dashboard.update_supplier_payment'));
@@ -1464,15 +1590,24 @@ export default function Dashboard() {
               </Select>
             </div>
             {payMethod === 'cash' && (
-              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                {availableDrawerCash === null
-                  ? 'No active cash shift found. Cash availability guard is not active.'
-                  : `Available drawer cash: ${formatINRPrecise(Math.max(0, availableDrawerCash))}`}
-              </div>
+              <>
+                <div>
+                  <Label>Utilize From</Label>
+                  <Select value={payCashSource} onChange={(e) => setPayCashSource(normalizeCashSource(e.target.value))}>
+                    <option value="drawer">Active Cash</option>
+                    <option value="reserve">Reserve Cash</option>
+                  </Select>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                  {openCashSession
+                    ? `Available in ${formatCashSourceLabel(payCashSource)}: ${formatINRPrecise(getAvailableCashBySource(payCashSource))}`
+                    : 'No active cash shift found. Cash availability guard is not active.'}
+                </div>
+              </>
             )}
             {isCashOverdraw && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                Cash payment exceeds available drawer cash by {formatINRPrecise(cashOverdrawAmount)}. Add cash to drawer or edit opening balance before paying.
+                Cash payment exceeds available {formatCashSourceLabel(payCashSource).toLowerCase()} by {formatINRPrecise(cashOverdrawAmount)}. Adjust cash management or choose the other source before paying.
               </div>
             )}
             <div>
@@ -1480,7 +1615,7 @@ export default function Dashboard() {
               <Input value={payNote} onChange={(e) => setPayNote(e.target.value)} placeholder="Optional reference" />
             </div>
             {payError && <p className="text-xs text-red-600">{payError}</p>}
-            <Button className="w-full" disabled={!payAmountValid || isCashOverdraw} onClick={() => void handlePay()}>{payExtraToPartyCredit > 0 ? 'Pay & Save Extra as Party Credit' : 'Pay'}</Button>
+            <Button className="w-full" disabled={!payAmountValid || isCashOverdraw || isPaySubmitting} onClick={() => void handlePay()}>{isPaySubmitting ? 'Paying...' : (payExtraToPartyCredit > 0 ? 'Pay & Save Extra as Party Credit' : 'Pay')}</Button>
           </div>
         )}
       </ActionModal>
@@ -1526,9 +1661,30 @@ export default function Dashboard() {
             <div><Label>Amount</Label><Input type="number" min="0" step="0.01" value={editSupplierAmount} onChange={(e) => setEditSupplierAmount(e.target.value)} /></div>
             <div><Label>Payment Date</Label><Input type="datetime-local" value={editSupplierDateTime} onChange={(e) => setEditSupplierDateTime(e.target.value)} /></div>
             <div><Label>Method</Label><Select value={editSupplierMethod} onChange={(e) => setEditSupplierMethod(e.target.value as 'cash' | 'online' | 'bank')}><option value="cash">Cash</option><option value="online">Online</option><option value="bank">Bank</option></Select></div>
+            {editSupplierMethod === 'cash' && (
+              <>
+                <div>
+                  <Label>Utilize From</Label>
+                  <Select value={editSupplierCashSource} onChange={(e) => setEditSupplierCashSource(normalizeCashSource(e.target.value))}>
+                    <option value="drawer">Active Cash</option>
+                    <option value="reserve">Reserve Cash</option>
+                  </Select>
+                </div>
+                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                  {openCashSession
+                    ? `Available in ${formatCashSourceLabel(editSupplierCashSource)}: ${formatINRPrecise(editableCashAvailableBySource(editSupplierCashSource))}`
+                    : 'No active cash shift found. Cash availability guard is not active.'}
+                </div>
+              </>
+            )}
+            {isEditSupplierCashOverdraw && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                Cash payment exceeds available {formatCashSourceLabel(editSupplierCashSource).toLowerCase()} by {formatINRPrecise(editSupplierCashOverdrawAmount)}.
+              </div>
+            )}
             <div><Label>Note</Label><Input value={editSupplierNote} onChange={(e) => setEditSupplierNote(e.target.value)} /></div>
             {editSupplierError && <p className="text-xs text-red-600">{editSupplierError}</p>}
-            <Button className="w-full" disabled={!Number.isFinite(Number(editSupplierAmount)) || Number(editSupplierAmount) <= 0} onClick={() => void handleSaveEditedSupplierPayment()}>Save Changes</Button>
+            <Button className="w-full" disabled={!editSupplierAmountValid || isEditSupplierCashOverdraw} onClick={() => void handleSaveEditedSupplierPayment()}>Save Changes</Button>
           </div>
         )}
       </ActionModal>
