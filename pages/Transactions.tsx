@@ -2074,16 +2074,38 @@ export default function Transactions() {
           ? order.paymentHistory
               .filter((payment) => String(payment?.method || '').trim().toLowerCase() === 'cash')
               .filter((payment) => !payment?.supplierPaymentId)
-              .map((payment, index) => ({
-                id: `purchase-cash-${order.id}-${payment.id || index}`,
-                date: payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt || '',
-                type: 'Purchase Cash',
-                name: order.partyName || 'Supplier',
-                method: 'Cash',
-                amount: Math.max(0, Number(payment.amount || 0)),
-                cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
-                tx: null,
-              }))
+              .map((payment, index) => {
+                const rowId = `purchase-cash-${order.id}-${payment.id || index}`;
+                const rowDate = payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt || '';
+                const rowAmount = Math.max(0, Number(payment.amount || 0));
+                const rowTx: Transaction = {
+                  id: rowId,
+                  type: 'payment',
+                  date: rowDate || new Date().toISOString(),
+                  total: rowAmount,
+                  items: [],
+                  customerId: order.partyId || '',
+                  customerName: order.partyName || 'Supplier',
+                  paymentMethod: 'Cash',
+                  cashSource: payment.cashSource,
+                  receiptNo: String(payment.id || '').trim() || order.billNumber || undefined,
+                  billRef: order.billNumber || undefined,
+                  sourceRef: order.id,
+                  notes: `Purchase Cash Payment | Order Ref: ${order.id}${order.billNumber ? ` | Bill: ${order.billNumber}` : ''}${payment.cashSource ? ` | Source: ${formatCashSourceLabel(payment.cashSource)}` : ''}${payment.note ? ` | Note: ${payment.note}` : ''}`,
+                  sourceTransactionDate: rowDate || undefined,
+                } as Transaction;
+
+                return {
+                  id: rowId,
+                  date: rowDate,
+                  type: 'Purchase Cash',
+                  name: order.partyName || 'Supplier',
+                  method: 'Cash',
+                  amount: rowAmount,
+                  cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
+                  tx: rowTx,
+                };
+              })
           : []
       );
       const supplierRows = filteredCashSupplierPayments.map((payment) => ({
