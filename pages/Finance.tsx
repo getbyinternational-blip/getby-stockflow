@@ -1089,6 +1089,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [closingBalance, setClosingBalance] = useState('');
   const [closingBalanceManuallySet, setClosingBalanceManuallySet] = useState(false);
   const [activeReserveAmount, setActiveReserveAmount] = useState('');
+  const [isReserveAmountEditorOpen, setIsReserveAmountEditorOpen] = useState(false);
   const [cashHistoryRange, setCashHistoryRange] = useState<'today' | '7d' | '30d' | 'all'>('today');
   const [closingCounts, setClosingCounts] = useState<Record<number, number>>(() => buildEmptyCounts());
   const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] = useState(false);
@@ -1718,36 +1719,36 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     [currentOperationalCash, activeCashInHand],
   );
   const activeReserveInputMax = useMemo(
-    () => roundMoney(Math.max(0, totalAccessibleCash)),
-    [totalAccessibleCash],
+    () => roundMoney(Math.max(0, currentOperationalCash)),
+    [currentOperationalCash],
   );
   const reserveDraftValue = useMemo(() => {
     if (!openSession) return 0;
     const trimmed = activeReserveAmount.trim();
     if (!trimmed) return 0;
     const parsed = Number(trimmed);
-    if (!Number.isFinite(parsed)) return activeCashInHand;
-    return roundMoney(Math.max(0, Math.min(totalAccessibleCash, parsed)));
-  }, [openSession, activeReserveAmount, activeCashInHand, totalAccessibleCash]);
+    if (!Number.isFinite(parsed)) return 0;
+    return roundMoney(Math.max(0, Math.min(currentOperationalCash, parsed)));
+  }, [openSession, activeReserveAmount, currentOperationalCash]);
   const reserveDraftDelta = useMemo(
-    () => roundMoney(reserveDraftValue - activeCashInHand),
-    [reserveDraftValue, activeCashInHand],
-  );
-  const displayedReservedCash = useMemo(
-    () => (openSession ? reserveDraftValue : 0),
-    [openSession, reserveDraftValue],
+    () => roundMoney(reserveDraftValue),
+    [reserveDraftValue],
   );
   const liveRemainingReserveCash = useMemo(
     () => (openSession ? roundMoney(Math.max(0, activeReserveBase - activeReserveOutflowSinceSave)) : 0),
     [openSession, activeReserveBase, activeReserveOutflowSinceSave],
+  );
+  const displayedReservedCash = useMemo(
+    () => (openSession ? roundMoney(liveRemainingReserveCash + reserveDraftValue) : 0),
+    [openSession, liveRemainingReserveCash, reserveDraftValue],
   );
   const displayedUsableCash = useMemo(
     () => roundMoney(Math.max(0, totalAccessibleCash - displayedReservedCash)),
     [totalAccessibleCash, displayedReservedCash],
   );
   const reserveAfterSavePreview = useMemo(
-    () => (openSession ? reserveDraftValue : 0),
-    [openSession, reserveDraftValue],
+    () => (openSession ? roundMoney(liveRemainingReserveCash + reserveDraftValue) : 0),
+    [openSession, liveRemainingReserveCash, reserveDraftValue],
   );
   const usableAfterSavePreview = useMemo(
     () => roundMoney(Math.max(0, totalAccessibleCash - reserveAfterSavePreview)),
@@ -1942,10 +1943,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   useEffect(() => {
     if (!openSession) {
       setActiveReserveAmount('');
+      setIsReserveAmountEditorOpen(false);
       return;
     }
-    setActiveReserveAmount(formatEditableAmount(activeCashInHand));
-  }, [openSession?.id, openSession?.reservedCashOnHand, activeCashInHand]);
+    setActiveReserveAmount('');
+    setIsReserveAmountEditorOpen(false);
+  }, [openSession?.id, openSession?.reservedCashOnHand]);
   const buildLayerFinanceBreakdown = (rows: CashbookRow[]) => {
     const grossSales = roundMoney(rows.reduce((sum, row) => sum + row.grossSales, 0));
     const salesReturns = roundMoney(rows.reduce((sum, row) => sum + row.salesReturn, 0));
@@ -3339,7 +3342,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     if (!openSession) return setErrors('No open cash session found.');
     const nextReserveRaw = typeof overrideReserve === 'number'
       ? overrideReserve
-      : (activeReserveAmount.trim() ? Number(activeReserveAmount) : 0);
+      : roundMoney(liveRemainingReserveCash + (activeReserveAmount.trim() ? Number(activeReserveAmount) : 0));
     const nextReserve = Number.isFinite(nextReserveRaw) && nextReserveRaw >= 0 ? roundMoney(nextReserveRaw) : Number.NaN;
     if (!Number.isFinite(nextReserve) || nextReserve < 0) return setErrors('Please enter a valid cash in hand amount.');
     if (nextReserve > totalAccessibleCash) return setErrors('Reserved cash cannot be more than total accessible cash.');
@@ -3356,7 +3359,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     await persistState({ cashSessions: updatedSessions });
     setClosingBalanceManuallySet(false);
     setClosingBalance(Math.max(0, roundMoney(totalAccessibleCash - nextReserve)).toFixed(2));
-    setActiveReserveAmount(formatEditableAmount(nextReserve));
+    setActiveReserveAmount('');
+    setIsReserveAmountEditorOpen(false);
   };
 
   const handleManagerUnlock = () => {
@@ -4830,45 +4834,81 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                         </button>
                         <StatCard label="Usable Cash" value={formatINRSummary(displayedUsableCash)} tone={displayedUsableCash > 0 ? 'good' : 'neutral'} />
                       </div>
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                        <div>
-                          <Label>Permanent Reserve Cash</Label>
-                          <Input
-                            type="number"
-                            min="0"
-                            max={activeReserveInputMax}
-                            value={activeReserveAmount}
-                            onChange={(e) => {
-                              const sanitized = e.target.value.replace(/[^\d.]/g, '');
-                              if (!sanitized.trim()) {
-                                setActiveReserveAmount('');
-                                return;
-                              }
-                              const parsed = Number(sanitized);
-                              if (!Number.isFinite(parsed)) {
-                                setActiveReserveAmount(sanitized);
-                                return;
-                              }
-                              if (parsed > activeReserveInputMax) {
-                                setActiveReserveAmount(formatEditableAmount(activeReserveInputMax));
-                                return;
-                              }
-                              setActiveReserveAmount(sanitized);
-                            }}
-                            placeholder=""
-                          />
-                          {/* <p className="mt-1 text-xs text-slate-500">
-                            Saved reserve stays here permanently, cannot exceed current shift cash, and usable cash updates automatically.
-                          </p> */}
-                        </div>
+                      <div className="space-y-3">
                         <div className="flex flex-wrap gap-2">
-                          <Button type="button" variant="outline" onClick={() => setActiveReserveAmount(formatEditableAmount(activeCashInHand))}>Reset</Button>
-                          <Button type="button" variant="outline" onClick={() => void saveActiveReserveAmount(0)} disabled={activeCashInHand <= 0 && reserveDraftValue <= 0}>Add Back to Shift</Button>
-                          <Button type="button" onClick={() => void saveActiveReserveAmount()}>Save Reserved Cash</Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => {
+                              setIsReserveAmountEditorOpen(true);
+                              setErrors(null);
+                            }}
+                            disabled={!openSession || currentOperationalCash <= 0}
+                          >
+                            Add More Reserve Cash
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void saveActiveReserveAmount(0)}
+                            disabled={activeCashInHand <= 0 && reserveDraftValue <= 0}
+                          >
+                            Add Back to Shift
+                          </Button>
                         </div>
-                      </div>
-                      <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                        Preview after save: Reserve {formatINRSummary(liveRemainingReserveCash)} to {formatINRSummary(reserveAfterSavePreview)} • Usable {formatINRSummary(currentOperationalCash)} to {formatINRSummary(usableAfterSavePreview)}
+                        {isReserveAmountEditorOpen && (
+                          <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-200 bg-white p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                            <div>
+                              <div className="mb-1 flex flex-nowrap items-center justify-between gap-3">
+                                <Label className="mb-0 whitespace-nowrap">Add more to Reserved Cash</Label>
+                                <div className="whitespace-nowrap text-[15px] font-semibold text-sky-700">
+                                  Reserve {formatINRSummary(liveRemainingReserveCash)} → {formatINRSummary(reserveAfterSavePreview)}
+                                  {' '}| Shift {formatINRSummary(currentOperationalCash)} → {formatINRSummary(usableAfterSavePreview)}
+                                </div>
+                              </div>
+                              <Input
+                                type="number"
+                                min="0"
+                                max={activeReserveInputMax}
+                                value={activeReserveAmount}
+                                onChange={(e) => {
+                                  const sanitized = e.target.value.replace(/[^\d.]/g, '');
+                                  if (!sanitized.trim()) {
+                                    setActiveReserveAmount('');
+                                    return;
+                                  }
+                                  const parsed = Number(sanitized);
+                                  if (!Number.isFinite(parsed)) {
+                                    setActiveReserveAmount(sanitized);
+                                    return;
+                                  }
+                                  if (parsed > activeReserveInputMax) {
+                                    setActiveReserveAmount(formatEditableAmount(activeReserveInputMax));
+                                    return;
+                                  }
+                                  setActiveReserveAmount(sanitized);
+                                }}
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button type="button" variant="outline" onClick={() => setActiveReserveAmount('')}>Reset</Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                  setIsReserveAmountEditorOpen(false);
+                                  setActiveReserveAmount('');
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                              <Button type="button" onClick={() => void saveActiveReserveAmount()} disabled={reserveDraftValue <= 0}>
+                                Save Reserved Cash
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <div className="rounded-lg border border-slate-200 bg-white p-3">

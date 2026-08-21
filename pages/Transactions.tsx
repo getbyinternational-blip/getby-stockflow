@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle, Badge, Select, Input, Button,
 import { TrendingDown, TrendingUp, Calendar, X, Eye, ArrowUpRight, ArrowDownLeft, User, Package, Clock, Download, CreditCard, IndianRupee, Percent, FileText, Edit, Trash2, Search, ChevronDown, Users } from 'lucide-react';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadTransactionsData, downloadTransactionsTemplate, importHistoricalTransactionsFromFile } from '../services/importExcel';
-import { DISPLAY_FALLBACK, formatCurrency, formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, joinDisplayParts, sanitizeDisplayText } from '../services/numberFormat';
+import { DISPLAY_FALLBACK, formatCurrency, formatCurrencyWhole, formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, joinDisplayParts, sanitizeDisplayText } from '../services/numberFormat';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { normalizeTransactionItems } from '../utils/transactionItems';
@@ -91,14 +91,9 @@ export default function Transactions() {
   const { requestAdminOverride } = useRoleSession();
   const COLORED_ROWS_STORAGE_KEY = 'stockflow.transactions.colored_rows';
   const isPurchaseOrderVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('purchase-order-');
-  const getTransactionReference = (tx: Transaction) => {
-    if (isPurchaseOrderVirtualTransaction(tx)) return tx.receiptNo || tx.billRef || tx.sourceRef || tx.id.slice(-6);
-    return tx.type === 'sale'
-      ? (tx.invoiceNo || tx.id.slice(-6))
-      : tx.type === 'return'
-        ? (tx.creditNoteNo || tx.id.slice(-6))
-        : (tx.receiptNo || tx.id.slice(-6));
-  };
+  const getTransactionReference = (tx: Transaction) => (
+    tx.type === 'sale' ? String(tx.invoiceNo || '').trim() : ''
+  );
   const isUpfrontVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('upfront-');
   const isSupplierPaymentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('supplier-payment-');
   const isExpenseVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('expense-');
@@ -233,6 +228,7 @@ export default function Transactions() {
   const [searchTerm, setSearchTerm] = useState(initialViewState.searchTerm);
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(initialViewState.searchTerm);
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+  const [selectedKpiTx, setSelectedKpiTx] = useState<Transaction | null>(null);
   const [selectedKpiKey, setSelectedKpiKey] = useState<TransactionKpiKey | null>(null);
   const [viewMode, setViewMode] = useState<'default' | 'list' | 'list-details' | 'medium'>('list-details');
   const [useColoredTransactionRows, setUseColoredTransactionRows] = useState(() => {
@@ -282,7 +278,8 @@ export default function Transactions() {
   useEscapeLayer(Boolean(deleteTargetTx), () => setDeleteTargetTx(null), { priority: 120 });
   useEscapeLayer(Boolean(selectedDeletedTx), () => setSelectedDeletedTx(null), { priority: 110 });
   useEscapeLayer(Boolean(selectedTx), () => setSelectedTx(null), { priority: 110 });
-  useEscapeLayer(Boolean(selectedKpiKey), () => setSelectedKpiKey(null), { priority: 110 });
+  useEscapeLayer(Boolean(selectedKpiTx), () => setSelectedKpiTx(null), { priority: 120 });
+  useEscapeLayer(Boolean(selectedKpiKey), () => { setSelectedKpiTx(null); setSelectedKpiKey(null); }, { priority: 110 });
   useEscapeLayer(Boolean(editingTx), () => setEditingTx(null), { priority: 110 });
   useEscapeLayer(isInvoiceOptionsOpen, () => { setIsInvoiceOptionsOpen(false); setTxToExport(null); }, { priority: 110 });
   useEscapeLayer(isEditingCustomerPickerOpen, () => setIsEditingCustomerPickerOpen(false), { priority: 115 });
@@ -2000,16 +1997,20 @@ export default function Transactions() {
           }
       });
 
+      const purchaseOrderCashTotal = filteredPurchaseOrders.reduce((sum, order) => (
+          sum + (Array.isArray(order.paymentHistory) ? order.paymentHistory.reduce((historySum, payment) => {
+              const method = String(payment?.method || '').trim().toLowerCase();
+              if (method !== 'cash') return historySum;
+              if (payment?.supplierPaymentId) return historySum;
+              return historySum + Math.max(0, Number(payment.amount || 0));
+          }, 0) : 0)
+      ), 0);
+
       const totalPurchaseCash =
-          filteredPurchaseOrders.reduce((sum, order) => (
-              sum + (Array.isArray(order.paymentHistory) ? order.paymentHistory.reduce((historySum, payment) => {
-                  const method = String(payment?.method || '').trim().toLowerCase();
-                  if (method !== 'cash') return historySum;
-                  if (payment?.supplierPaymentId) return historySum;
-                  return historySum + Math.max(0, Number(payment.amount || 0));
-              }, 0) : 0)
-          ), 0)
+          purchaseOrderCashTotal
           + filteredCashSupplierPayments.reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
+
+      totalCashOut += purchaseOrderCashTotal;
 
       const totalPurchaseCredit = filteredPurchaseOrders.reduce(
           (sum, order) => sum + Math.max(0, Number(order.remainingAmount || 0)),
@@ -2052,7 +2053,6 @@ export default function Transactions() {
       { key: 'totalCash' as const, label: 'Total Cash', value: transactionKpis.totalCash, cardClass: 'border-green-200 bg-green-50/70', labelClass: 'text-green-700/80', valueClass: 'text-green-950' },
       { key: 'totalCredit' as const, label: 'Credit', value: transactionKpis.totalCredit, cardClass: 'border-amber-200 bg-amber-50/80', labelClass: 'text-amber-700/80', valueClass: 'text-amber-950' },
       { key: 'totalOnline' as const, label: 'Online', value: transactionKpis.totalOnline, cardClass: 'border-purple-200 bg-purple-50/70', labelClass: 'text-purple-700/80', valueClass: 'text-purple-950' },
-      { key: 'totalCombined' as const, label: 'Cash + Credit + Online', value: transactionKpis.totalCombined, cardClass: 'border-indigo-200 bg-indigo-50/70', labelClass: 'text-indigo-700/80', valueClass: 'text-indigo-950' },
       { key: 'totalPurchaseCash' as const, label: 'Total Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-red-200 bg-red-50/70', labelClass: 'text-red-700/80', valueClass: 'text-red-950' },
       { key: 'totalPurchaseCredit' as const, label: 'Total Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/80', labelClass: 'text-orange-700/80', valueClass: 'text-orange-950' },
       { key: 'cashReceivedOnCreditDue' as const, label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-teal-200 bg-teal-50/80', labelClass: 'text-teal-700/80', valueClass: 'text-teal-950' },
@@ -2066,73 +2066,130 @@ export default function Transactions() {
   );
 
   const selectedKpiRows = useMemo(() => {
-    if (!selectedKpiKey) return [] as Array<{ id: string; date: string; type: string; name: string; method: string; amount: number; cashSource: string | null; tx: Transaction | null }>;
+    if (!selectedKpiKey) return [] as Array<{ id: string; date: string; type: string; name: string; method: string; amount: number; cashSource: string | null; imageSrc: string | null; imageAlt: string; productName: string | null; quantity: number | null; unitPrice: number | null; tx: Transaction | null }>;
+
+    const purchaseCashRows = filteredPurchaseOrders.flatMap((order) =>
+      Array.isArray(order.paymentHistory)
+        ? order.paymentHistory
+            .filter((payment) => String(payment?.method || '').trim().toLowerCase() === 'cash')
+            .filter((payment) => !payment?.supplierPaymentId)
+            .map((payment, index) => {
+              const rowId = `purchase-cash-${order.id}-${payment.id || index}`;
+              const rowDate = payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt || '';
+              const rowAmount = Math.max(0, Number(payment.amount || 0));
+              const firstLine = Array.isArray(order.lines) ? order.lines[0] : null;
+              const firstLineProductId = String(firstLine?.productId || firstLine?.id || '');
+              const firstLineProduct = firstLineProductId ? productsById.get(firstLineProductId) : null;
+              const rowTx: Transaction = {
+                id: rowId,
+                type: 'payment',
+                date: rowDate || new Date().toISOString(),
+                total: rowAmount,
+                items: [],
+                customerId: order.partyId || '',
+                customerName: order.partyName || 'Supplier',
+                paymentMethod: 'Cash',
+                cashSource: payment.cashSource,
+                receiptNo: String(payment.id || '').trim() || order.billNumber || undefined,
+                billRef: order.billNumber || undefined,
+                sourceRef: order.id,
+                notes: `Purchase Cash Payment | Order Ref: ${order.id}${order.billNumber ? ` | Bill: ${order.billNumber}` : ''}${payment.cashSource ? ` | Source: ${formatCashSourceLabel(payment.cashSource)}` : ''}${payment.note ? ` | Note: ${payment.note}` : ''}`,
+                sourceTransactionDate: rowDate || undefined,
+              } as Transaction;
+
+              return {
+                id: rowId,
+                date: rowDate,
+                type: 'Purchase Cash',
+                name: order.partyName || 'Supplier',
+                method: 'Cash',
+                amount: rowAmount,
+                cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
+                imageSrc: firstLine?.image || firstLineProduct?.image || null,
+                imageAlt: firstLine?.productName || firstLine?.name || firstLineProduct?.name || 'Product',
+                productName: firstLine?.productName || firstLine?.name || firstLineProduct?.name || null,
+                quantity: firstLine ? Math.max(0, Number(firstLine.quantity || 0)) : null,
+                unitPrice: firstLine ? Math.max(0, Number(firstLine.unitCost || 0)) : null,
+                tx: rowTx,
+              };
+            })
+        : []
+    );
+    const supplierCashRows = filteredCashSupplierPayments.map((payment) => ({
+      id: `supplier-cash-${payment.id}`,
+      date: payment.effectiveAt || payment.paidAt || payment.createdAt || '',
+      type: 'Supplier Payment',
+      name: payment.partyName || 'Supplier',
+      method: 'Cash',
+      amount: Math.max(0, Number(payment.amount || 0)),
+      cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
+      imageSrc: null,
+      imageAlt: 'Supplier Payment',
+      productName: null,
+      quantity: null,
+      unitPrice: null,
+      tx: virtualSupplierPaymentTransactions.find((tx) => tx.id === `supplier-payment-${payment.id}`) || null,
+    }));
 
     if (selectedKpiKey === 'totalPurchaseCash') {
-      const purchaseRows = filteredPurchaseOrders.flatMap((order) =>
-        Array.isArray(order.paymentHistory)
-          ? order.paymentHistory
-              .filter((payment) => String(payment?.method || '').trim().toLowerCase() === 'cash')
-              .filter((payment) => !payment?.supplierPaymentId)
-              .map((payment, index) => {
-                const rowId = `purchase-cash-${order.id}-${payment.id || index}`;
-                const rowDate = payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt || '';
-                const rowAmount = Math.max(0, Number(payment.amount || 0));
-                const rowTx: Transaction = {
-                  id: rowId,
-                  type: 'payment',
-                  date: rowDate || new Date().toISOString(),
-                  total: rowAmount,
-                  items: [],
-                  customerId: order.partyId || '',
-                  customerName: order.partyName || 'Supplier',
-                  paymentMethod: 'Cash',
-                  cashSource: payment.cashSource,
-                  receiptNo: String(payment.id || '').trim() || order.billNumber || undefined,
-                  billRef: order.billNumber || undefined,
-                  sourceRef: order.id,
-                  notes: `Purchase Cash Payment | Order Ref: ${order.id}${order.billNumber ? ` | Bill: ${order.billNumber}` : ''}${payment.cashSource ? ` | Source: ${formatCashSourceLabel(payment.cashSource)}` : ''}${payment.note ? ` | Note: ${payment.note}` : ''}`,
-                  sourceTransactionDate: rowDate || undefined,
-                } as Transaction;
+      return [...purchaseCashRows, ...supplierCashRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    }
 
-                return {
-                  id: rowId,
-                  date: rowDate,
-                  type: 'Purchase Cash',
-                  name: order.partyName || 'Supplier',
-                  method: 'Cash',
-                  amount: rowAmount,
-                  cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
-                  tx: rowTx,
-                };
-              })
-          : []
-      );
-      const supplierRows = filteredCashSupplierPayments.map((payment) => ({
-        id: `supplier-cash-${payment.id}`,
-        date: payment.effectiveAt || payment.paidAt || payment.createdAt || '',
-        type: 'Supplier Payment',
-        name: payment.partyName || 'Supplier',
-        method: 'Cash',
-        amount: Math.max(0, Number(payment.amount || 0)),
-        cashSource: payment.cashSource ? formatCashSourceLabel(payment.cashSource) : null,
-        tx: virtualSupplierPaymentTransactions.find((tx) => tx.id === `supplier-payment-${payment.id}`) || null,
-      }));
-      return [...purchaseRows, ...supplierRows].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    if (selectedKpiKey === 'totalCashOut') {
+      const transactionCashOutRows = filteredTransactions
+        .filter((tx) => {
+          const amount = Math.max(0, Math.abs(Number(tx.total || 0)));
+          if (amount <= 0) return false;
+          const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+          const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
+          const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
+          return isCashOutVirtual
+            || (txType === 'return' && (paymentMethod === 'cash' || String((tx as any).returnHandlingMode || '').trim().toLowerCase() === 'refund_cash'))
+            || (txType === 'customer_cash_out' && paymentMethod === 'cash')
+            || (txType === 'payment' && isSupplierPaymentVirtualTransaction(tx) && paymentMethod === 'cash');
+        })
+        .map((tx) => ({
+          id: tx.id,
+          date: getTransactionBusinessDate(tx) || tx.date,
+          type: getTransactionTypeUi(tx).typeLabel,
+          name: tx.customerName || 'Walk-in',
+          method: getDisplayPaymentMethod(tx),
+          amount: Math.max(0, Math.abs(Number(tx.total || 0))),
+          cashSource: getTransactionCashSourceLabel(tx),
+          imageSrc: normalizeTransactionItems(tx.items)[0]?.image || (normalizeTransactionItems(tx.items)[0]?.id ? productsById.get(normalizeTransactionItems(tx.items)[0]!.id)?.image || null : null),
+          imageAlt: normalizeTransactionItems(tx.items)[0]?.name || (normalizeTransactionItems(tx.items)[0]?.id ? productsById.get(normalizeTransactionItems(tx.items)[0]!.id)?.name || 'Product' : 'Product'),
+          productName: normalizeTransactionItems(tx.items)[0]?.name || (normalizeTransactionItems(tx.items)[0]?.id ? productsById.get(normalizeTransactionItems(tx.items)[0]!.id)?.name || null : null),
+          quantity: normalizeTransactionItems(tx.items)[0] ? Math.max(0, Number(normalizeTransactionItems(tx.items)[0]!.quantity || 0)) : null,
+          unitPrice: normalizeTransactionItems(tx.items)[0] ? Math.max(0, Number(normalizeTransactionItems(tx.items)[0]!.sellPrice || 0)) : null,
+          tx,
+        }));
+
+      return [...purchaseCashRows, ...transactionCashOutRows]
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     }
 
     if (selectedKpiKey === 'totalPurchaseCredit') {
       return filteredPurchaseOrders
-        .map((order) => ({
-          id: `purchase-credit-${order.id}`,
-          date: order.effectiveAt || order.orderDate || order.createdAt || '',
-          type: 'Purchase Credit',
-          name: order.partyName || 'Supplier',
-          method: 'Credit',
-          amount: Math.max(0, Number(order.remainingAmount || 0)),
-          cashSource: null,
-          tx: virtualPurchaseOrderTransactions.find((tx) => tx.id === `purchase-order-${order.id}`) || null,
-        }))
+        .map((order) => {
+          const firstLine = Array.isArray(order.lines) ? order.lines[0] : null;
+          const firstLineProductId = String(firstLine?.productId || firstLine?.id || '');
+          const firstLineProduct = firstLineProductId ? productsById.get(firstLineProductId) : null;
+          return {
+            id: `purchase-credit-${order.id}`,
+            date: order.effectiveAt || order.orderDate || order.createdAt || '',
+            type: 'Purchase Credit',
+            name: order.partyName || 'Supplier',
+            method: 'Credit',
+            amount: Math.max(0, Number(order.remainingAmount || 0)),
+            cashSource: null,
+            imageSrc: firstLine?.image || firstLineProduct?.image || null,
+            imageAlt: firstLine?.productName || firstLine?.name || firstLineProduct?.name || 'Product',
+            productName: firstLine?.productName || firstLine?.name || firstLineProduct?.name || null,
+            quantity: firstLine ? Math.max(0, Number(firstLine.quantity || 0)) : null,
+            unitPrice: firstLine ? Math.max(0, Number(firstLine.unitCost || 0)) : null,
+            tx: virtualPurchaseOrderTransactions.find((tx) => tx.id === `purchase-order-${order.id}`) || null,
+          };
+        })
         .filter((row) => row.amount > 0)
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     }
@@ -2157,8 +2214,6 @@ export default function Transactions() {
             return isSaleLike && roundMoney(Math.max(0, Number(settlement?.creditDue || 0))) > 0;
           case 'totalOnline':
             return isSaleLike && roundMoney(Math.max(0, Number(settlement?.onlinePaid || 0))) > 0;
-          case 'totalCombined':
-            return isSaleLike;
           case 'cashReceivedOnCreditDue':
             return isCustomerReceivableCashPayment(tx);
           case 'totalCashIn':
@@ -2176,6 +2231,8 @@ export default function Transactions() {
       })
       .map((tx) => {
         const settlement = isSaleLikeTransaction(tx) ? getCanonicalSaleSettlement(tx) : null;
+        const firstItem = normalizeTransactionItems(tx.items)[0];
+        const firstProduct = firstItem?.id ? productsById.get(firstItem.id) : null;
         let amount = Math.max(0, Math.abs(Number(tx.total || 0)));
         if (selectedKpiKey === 'totalCash') amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
         if (selectedKpiKey === 'totalCredit') amount = roundMoney(Math.max(0, Number(settlement?.creditDue || 0)));
@@ -2189,11 +2246,16 @@ export default function Transactions() {
           method: getDisplayPaymentMethod(tx),
           amount,
           cashSource: getTransactionCashSourceLabel(tx),
+          imageSrc: firstItem?.image || firstProduct?.image || null,
+          imageAlt: firstItem?.name || firstProduct?.name || 'Product',
+          productName: firstItem?.name || firstProduct?.name || null,
+          quantity: firstItem ? Math.max(0, Number(firstItem.quantity || 0)) : null,
+          unitPrice: firstItem ? Math.max(0, Number(firstItem.sellPrice || 0)) : null,
           tx,
         };
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [selectedKpiKey, filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments, virtualSupplierPaymentTransactions, virtualPurchaseOrderTransactions]);
+  }, [selectedKpiKey, filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments, virtualSupplierPaymentTransactions, virtualPurchaseOrderTransactions, productsById]);
 
   const getSaleSettlementText = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) {
@@ -2383,19 +2445,139 @@ export default function Transactions() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-10">
-        {transactionKpiCards.map(({ key, label, value, cardClass, labelClass, valueClass }) => (
-          <Card key={label} className={`border shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md ${cardClass}`} onClick={() => setSelectedKpiKey(key)}>
-            <CardContent className="p-2 lg:p-1.5">
-              <p className={`text-[9px] font-semibold uppercase leading-tight tracking-[0.06em] ${labelClass}`} title={label}>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-8">
+        {(() => {
+          const totalCashCard = transactionKpiCards.find((card) => card.key === 'totalCash');
+          const totalCreditCard = transactionKpiCards.find((card) => card.key === 'totalCredit');
+          const totalOnlineCard = transactionKpiCards.find((card) => card.key === 'totalOnline');
+          const totalPurchaseCashCard = transactionKpiCards.find((card) => card.key === 'totalPurchaseCash');
+          const totalPurchaseCreditCard = transactionKpiCards.find((card) => card.key === 'totalPurchaseCredit');
+          const totalCashInCard = transactionKpiCards.find((card) => card.key === 'totalCashIn');
+          const totalCashOutCard = transactionKpiCards.find((card) => card.key === 'totalCashOut');
+          const remainingCards = transactionKpiCards.filter((card) => ![
+            'totalCash',
+            'totalCredit',
+            'totalOnline',
+            'totalPurchaseCash',
+            'totalPurchaseCredit',
+            'totalCashIn',
+            'totalCashOut',
+          ].includes(card.key));
+
+          return (
+            <>
+              {totalCashCard && totalCreditCard && totalOnlineCard ? (
+                <Card className="col-span-2 border shadow-sm lg:col-span-2 xl:col-span-2">
+                  <CardContent className="grid min-h-[76px] grid-cols-3 p-0 lg:min-h-[88px]">
+                    {[totalCashCard, totalCreditCard, totalOnlineCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`flex min-w-0 flex-col justify-between p-3 text-left transition lg:p-3.5 ${cardClass} ${
+                          index < 2 ? 'border-r' : ''
+                        } hover:brightness-[0.99]`}
+                        onClick={() => setSelectedKpiKey(key)}
+                      >
+                        <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
+                          {label}
+                        </p>
+                        <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                          {formatCurrencyWhole(value)}
+                        </p>
+                      </button>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
+
+              {remainingCards
+                .filter((card) => card.key === 'cashReceivedOnCreditDue')
+                .map(({ key, label, value, cardClass, labelClass, valueClass }) => (
+                  <Card
+                    key={label}
+                    className={`border shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md ${cardClass}`}
+                    onClick={() => setSelectedKpiKey(key)}
+                  >
+                    <CardContent className="flex min-h-[76px] flex-col justify-between p-3 lg:min-h-[88px] lg:p-3.5">
+                      <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
+                        {label}
+                      </p>
+                      <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                        {formatCurrencyWhole(value)}
+                      </p>
+                    </CardContent>
+                  </Card>
+                ))}
+
+              {totalPurchaseCashCard && totalPurchaseCreditCard ? (
+                <Card className="col-span-2 border shadow-sm lg:col-span-2 xl:col-span-2">
+                  <CardContent className="grid min-h-[76px] grid-cols-2 p-0 lg:min-h-[88px]">
+                    {[totalPurchaseCashCard, totalPurchaseCreditCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`flex min-w-0 flex-col justify-between p-3 text-left transition lg:p-3.5 ${cardClass} ${
+                          index === 0 ? 'border-r' : ''
+                        } hover:brightness-[0.99]`}
+                        onClick={() => setSelectedKpiKey(key)}
+                      >
+                        <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
+                          {label}
+                        </p>
+                        <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                          {formatCurrencyWhole(value)}
+                        </p>
+                      </button>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
+
+              {totalCashInCard && totalCashOutCard ? (
+                <Card className="col-span-2 border shadow-sm lg:col-span-2 xl:col-span-2">
+                  <CardContent className="grid min-h-[76px] grid-cols-2 p-0 lg:min-h-[88px]">
+                    {[totalCashInCard, totalCashOutCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`flex min-w-0 flex-col justify-between p-3 text-left transition lg:p-3.5 ${cardClass} ${
+                          index === 0 ? 'border-r' : ''
+                        } hover:brightness-[0.99]`}
+                        onClick={() => setSelectedKpiKey(key)}
+                      >
+                        <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
+                          {label}
+                        </p>
+                        <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                          {formatCurrencyWhole(value)}
+                        </p>
+                      </button>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
+
+              {remainingCards
+                .filter((card) => card.key !== 'cashReceivedOnCreditDue')
+                .map(({ key, label, value, cardClass, labelClass, valueClass }) => (
+          <Card
+            key={label}
+            className={`border shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md ${cardClass}`}
+            onClick={() => setSelectedKpiKey(key)}
+          >
+            <CardContent className="flex min-h-[76px] flex-col justify-between p-3 lg:min-h-[88px] lg:p-3.5">
+              <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
                 {label}
               </p>
-              <p className={`mt-1 whitespace-nowrap text-[13px] font-bold leading-none lg:text-[12px] ${valueClass}`} title={formatCurrency(value)}>
-                {formatCurrency(value)}
+              <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                {formatCurrencyWhole(value)}
               </p>
             </CardContent>
           </Card>
-        ))}
+              ))}
+            </>
+          );
+        })()}
       </div>
 
       <div className="hidden grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4">
@@ -2504,12 +2686,12 @@ export default function Transactions() {
                     <thead className="text-xs text-muted-foreground uppercase bg-muted/50 font-bold">
                       <tr>
                         <th className="px-4 py-3">Deleted At</th>
-                        <th className="px-4 py-3">Type</th>
+                        <th className="px-4 py-3 whitespace-nowrap">Type</th>
                         <th className="px-4 py-3">Customer</th>
-                        <th className="px-4 py-3">Method</th>
-                        <th className="px-4 py-3 text-right">Amount</th>
+                        <th className="px-4 py-3 whitespace-nowrap">Method</th>
+                        <th className="px-4 py-3 text-right whitespace-nowrap">Amount</th>
                         <th className="px-4 py-3">Deleted By</th>
-                        <th className="px-4 py-3 text-center">View</th>
+                        <th className="px-4 py-3 text-center whitespace-nowrap">View</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -2526,7 +2708,7 @@ export default function Transactions() {
                               <div className="text-muted-foreground">{formatRoleLabel(record.deletedByRole)}</div>
                             </div>
                           </td>
-                          <td className="px-4 py-3 text-center">
+                          <td className="px-4 py-3 text-center whitespace-nowrap">
                             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedDeletedTx(record)}>
                               <Eye className="w-3.5 h-3.5" />
                             </Button>
@@ -2576,11 +2758,11 @@ export default function Transactions() {
                                 </th>
                                 <th className="px-4 py-3">Date & ID</th>
                                 <th className="px-4 py-3">Customer</th>
-                                <th className="px-4 py-3">Type</th>
+                                <th className="px-4 py-3 whitespace-nowrap">Type</th>
                                 {viewMode === 'list-details' && <th className="px-4 py-3">Items</th>}
-                                <th className="px-4 py-3">Method</th>
-                                <th className="px-4 py-3 text-right">Amount</th>
-                                <th className="px-4 py-3 text-center">Action</th>
+                                <th className="px-4 py-3 whitespace-nowrap">Method</th>
+                                <th className="px-4 py-3 text-right whitespace-nowrap">Amount</th>
+                                <th className="px-4 py-3 text-center whitespace-nowrap">Action</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">
@@ -2592,13 +2774,15 @@ export default function Transactions() {
                                               type="checkbox"
                                               checked={selectedTransactionIds.includes(tx.id)}
                                               onChange={() => handleToggleTransactionSelection(tx.id)}
-                                              aria-label={`Select transaction ${getTransactionReference(tx)}`}
+                                              aria-label="Select transaction"
                                               className="h-4 w-4 rounded border-slate-300"
                                             />
                                         </td>
                                         <td className="px-4 py-3">
                                             <div className={`font-semibold ${rowToneClass}`}>{formatDateDisplay(getTransactionBusinessDate(tx) || tx.date)}</div>
-                                            <div className={`text-[10px] font-mono ${rowSubtleToneClass}`}>#{getTransactionReference(tx)}</div>
+                                            {getTransactionReference(tx) ? (
+                                              <div className={`text-[10px] font-mono ${rowSubtleToneClass}`}>#{getTransactionReference(tx)}</div>
+                                            ) : null}
                                         </td>
                                         <td className="px-4 py-3">
                                             <div className="flex items-center gap-2">
@@ -2644,7 +2828,7 @@ export default function Transactions() {
                                               <div className={`text-[10px] font-medium ${rowSubtleToneClass}`}>{getSaleSettlementText(tx)}</div>
                                             )}
                                         </td>
-                                        <td className="px-4 py-3 text-center">
+                                        <td className="px-4 py-3 text-center whitespace-nowrap">
                                             <div className="flex items-center justify-center gap-1">
                                                 <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedTx(tx)}><Eye className="w-3.5 h-3.5" /></Button>
                                                 {can('transactionEdit') && !tx.id.startsWith('upfront-') && !isNonInvoiceVirtualTransaction(tx) && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => void openTransactionEditor(tx)}><Edit className="w-3.5 h-3.5" /></Button>}
@@ -2684,7 +2868,9 @@ export default function Transactions() {
                                     <div className={`h-1.5 w-full ${cardBorder}`}></div>
                                     <div className="p-4 space-y-3">
                                         <div className="flex justify-between items-center">
-                                            <Badge variant="outline" className="font-mono text-[9px] bg-muted/30 border-none">#{getTransactionReference(tx)}</Badge>
+                                            {getTransactionReference(tx) ? (
+                                              <Badge variant="outline" className="font-mono text-[9px] bg-muted/30 border-none">#{getTransactionReference(tx)}</Badge>
+                                            ) : <span />}
                                             <span className="text-[10px] text-muted-foreground font-medium">{formatDateDisplay(getTransactionBusinessDate(tx) || tx.date)}</span>
                                         </div>
                                         
@@ -2736,9 +2922,11 @@ export default function Transactions() {
                                 <div className="flex justify-between items-start">
                                     <div>
                                         <div className="flex items-center gap-2 mb-1">
-                                            <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground bg-muted/50 border-transparent px-1.5">
-                                                #{getTransactionReference(tx)}
-                                            </Badge>
+                                            {getTransactionReference(tx) ? (
+                                              <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground bg-muted/50 border-transparent px-1.5">
+                                                  #{getTransactionReference(tx)}
+                                              </Badge>
+                                            ) : null}
                                             <span className="text-xs text-muted-foreground">
                                                 {new Date(tx.date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                                             </span>
@@ -2811,28 +2999,48 @@ export default function Transactions() {
       </div>
 
       {/* Transaction Detail Modal */}
-      {selectedTx && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm">
+      {(() => {
+        const activeDetailTx = selectedKpiTx || selectedTx;
+        if (!activeDetailTx) {
+          return null;
+        }
+
+        const closeActiveDetailTx = () => {
+          if (selectedKpiTx) {
+            setSelectedKpiTx(null);
+            return;
+          }
+          setSelectedTx(null);
+        };
+
+        return (
+          <div
+            className={`fixed inset-0 bg-black/60 flex items-center justify-center p-4 backdrop-blur-sm ${
+              selectedKpiTx ? 'z-[70]' : 'z-50'
+            }`}
+          >
               <Card className="w-full max-w-md animate-in zoom-in duration-200 flex flex-col max-h-[90vh] shadow-2xl">
                   <CardHeader className="border-b pb-3 shrink-0 bg-muted/5">
                       <div className="flex justify-between items-center">
                           <CardTitle className="text-lg flex items-center gap-2">
-                              {getTransactionReceiptTitle(selectedTx)}
-                              <span className="text-xs font-normal text-muted-foreground font-mono">#{getTransactionReference(selectedTx)}</span>
+                              {getTransactionReceiptTitle(activeDetailTx)}
+                              {getTransactionReference(activeDetailTx) ? (
+                                <span className="text-xs font-normal text-muted-foreground font-mono">#{getTransactionReference(activeDetailTx)}</span>
+                              ) : null}
                           </CardTitle>
                           <div className="flex items-center gap-1">
-                              {canExportInvoiceForTransaction(selectedTx) && (
+                              {canExportInvoiceForTransaction(activeDetailTx) && (
                                 <Button 
                                     variant="outline" 
                                     size="sm" 
                                     className="h-8 gap-1.5 text-xs"
-                                    onClick={() => openInvoiceOptions(selectedTx)}
+                                    onClick={() => openInvoiceOptions(activeDetailTx)}
                                 >
                                     <Download className="w-3.5 h-3.5" />
-                                    {isUpfrontVirtualTransaction(selectedTx) ? 'Receipt' : 'Invoice'}
+                                    {isUpfrontVirtualTransaction(activeDetailTx) ? 'Receipt' : 'Invoice'}
                                 </Button>
                               )}
-                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive" onClick={() => setSelectedTx(null)}><X className="w-4 h-4" /></Button>
+                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive" onClick={closeActiveDetailTx}><X className="w-4 h-4" /></Button>
                           </div>
                       </div>
                   </CardHeader>
@@ -2844,38 +3052,38 @@ export default function Transactions() {
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Date</p>
                                   <p className="font-medium flex items-center gap-1.5">
                                      <Calendar className="w-3.5 h-3.5 text-primary" />
-                                     {formatDateTimeDisplay(selectedTx.date)}
+                                     {formatDateTimeDisplay(activeDetailTx.date)}
                                   </p>
                               </div>
                               <div>
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Customer</p>
                                   <p className="font-medium flex items-center gap-1.5">
                                       <User className="w-3.5 h-3.5 text-primary" />
-                                      {selectedTx.customerName || 'Walk-in'}
+                                      {activeDetailTx.customerName || 'Walk-in'}
                                   </p>
                               </div>
                               <div className="col-span-2 border-t pt-2 mt-1">
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Payment Method</p>
                                   <p className="font-medium flex items-center gap-1.5 text-primary">
                                       <CreditCard className="w-3.5 h-3.5" />
-                                      {getDisplayPaymentMethod(selectedTx)}
+                                      {getDisplayPaymentMethod(activeDetailTx)}
                                   </p>
                               </div>
-                              {getTransactionCashSourceLabel(selectedTx) && (
+                              {getTransactionCashSourceLabel(activeDetailTx) && (
                                 <div className="col-span-2 border-t pt-2 mt-1">
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Cash Source</p>
-                                  <p className="font-medium text-slate-900">{getTransactionCashSourceLabel(selectedTx)}</p>
+                                  <p className="font-medium text-slate-900">{getTransactionCashSourceLabel(activeDetailTx)}</p>
                                 </div>
                               )}
-                              {isUpfrontVirtualTransaction(selectedTx) && (
+                              {isUpfrontVirtualTransaction(activeDetailTx) && (
                                 <div className="col-span-2 rounded-lg border bg-blue-50 p-2">
                                   {(() => {
-                                    const note = String(selectedTx.notes || '');
+                                    const note = String(activeDetailTx.notes || '');
                                     const read = (label: string) => {
                                       const m = note.match(new RegExp(`${label}: ([\\d,]+)`));
                                       return m ? Number(m[1].replace(/,/g, '')) : 0;
                                     };
-                                    const total = read('Total') || Math.abs(Number(selectedTx.total || 0));
+                                    const total = read('Total') || Math.abs(Number(activeDetailTx.total || 0));
                                     const expense = read('Expense');
                                     const cashPaid = read('Cash');
                                     const onlinePaid = read('Online');
@@ -2888,21 +3096,21 @@ export default function Transactions() {
                                         <p className="text-xs font-semibold">Order Total: {formatMoneyWhole(total)}</p>
                                         <p className="text-xs">Paid Cash: {formatMoneyWhole(cashPaid)}</p>
                                         <p className="text-xs">Paid Online: {formatMoneyWhole(onlinePaid)}</p>
-                                        <p className="text-xs">Total Paid: {formatMoneyWhole(Math.max(advance, cashPaid + onlinePaid, isCustomOrderPaymentRow(selectedTx) ? Math.abs(Number(selectedTx.total || 0)) : 0))}</p>
+                                        <p className="text-xs">Total Paid: {formatMoneyWhole(Math.max(advance, cashPaid + onlinePaid, isCustomOrderPaymentRow(activeDetailTx) ? Math.abs(Number(activeDetailTx.total || 0)) : 0))}</p>
                                         <p className="text-xs font-semibold">Remaining Amount: {formatMoneyWhole(remaining)}</p>
                                       </>
                                     );
                                   })()}
                                 </div>
                               )}
-                              {isSaleLikeTransaction(selectedTx) && (
+                              {isSaleLikeTransaction(activeDetailTx) && (
                                 <div className="col-span-2 rounded-lg border bg-muted/10 p-2">
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Settlement</p>
-                                  <p className="text-xs">Total Sale: {formatMoneyWhole(Math.abs(selectedTx.total))}</p>
-                                  <p className="text-xs">Store Credit Used: {formatMoneyWhole(Number(selectedTx.storeCreditUsed || 0))}</p>
-                                  <p className="text-xs">Cash Paid: {formatMoneyWhole(getCanonicalSaleSettlement(selectedTx).cashPaid)}</p>
-                                  <p className="text-xs">Online Paid: {formatMoneyWhole(getCanonicalSaleSettlement(selectedTx).onlinePaid)}</p>
-                                  <p className="text-xs font-semibold">Credit Due Created: {formatMoneyWhole(getCanonicalSaleSettlement(selectedTx).creditDue)}</p>
+                                  <p className="text-xs">Total Sale: {formatMoneyWhole(Math.abs(activeDetailTx.total))}</p>
+                                  <p className="text-xs">Store Credit Used: {formatMoneyWhole(Number(activeDetailTx.storeCreditUsed || 0))}</p>
+                                  <p className="text-xs">Cash Paid: {formatMoneyWhole(getCanonicalSaleSettlement(activeDetailTx).cashPaid)}</p>
+                                  <p className="text-xs">Online Paid: {formatMoneyWhole(getCanonicalSaleSettlement(activeDetailTx).onlinePaid)}</p>
+                                  <p className="text-xs font-semibold">Credit Due Created: {formatMoneyWhole(getCanonicalSaleSettlement(activeDetailTx).creditDue)}</p>
                                 </div>
                               )}
                           </div>
@@ -2913,7 +3121,7 @@ export default function Transactions() {
                                   <Package className="w-4 h-4 text-primary" />
                                   Items Purchased
                               </p>
-                              {normalizeTransactionItems(selectedTx.items).map((item, idx) => (
+                              {normalizeTransactionItems(activeDetailTx.items).map((item, idx) => (
                                   <div key={idx} className="flex gap-3 items-start p-2 rounded-lg hover:bg-muted/50 transition-colors">
                                       <div className="h-10 w-10 bg-white rounded border flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
                                           {item.image ? (
@@ -2950,14 +3158,14 @@ export default function Transactions() {
                               {/* Subtotal */}
                               <div className="flex justify-between text-xs text-muted-foreground">
                                   <span>Subtotal</span>
-                                  <span>{formatMoneyWhole(selectedTx.subtotal ? selectedTx.subtotal : Math.abs(selectedTx.total))}</span>
+                                  <span>{formatMoneyWhole(activeDetailTx.subtotal ? activeDetailTx.subtotal : Math.abs(activeDetailTx.total))}</span>
                               </div>
                               
                               {/* Discount */}
                               <div className="flex justify-between text-xs text-green-600">
                                   <span>Discount</span>
-                                  {selectedTx.discount && selectedTx.discount > 0 ? (
-                                      <span>-{formatMoneyWhole(selectedTx.discount)}</span>
+                                  {activeDetailTx.discount && activeDetailTx.discount > 0 ? (
+                                      <span>-{formatMoneyWhole(activeDetailTx.discount)}</span>
                                   ) : (
                                       <span className="text-muted-foreground font-medium">No discount</span>
                                   )}
@@ -2965,9 +3173,9 @@ export default function Transactions() {
 
                               {/* Tax */}
                               <div className="flex justify-between text-xs text-muted-foreground">
-                                  <span>Tax {selectedTx.tax && selectedTx.tax > 0 ? `(${selectedTx.taxLabel})` : ''}</span>
-                                  {selectedTx.tax && selectedTx.tax > 0 ? (
-                                      <span>+{formatMoneyWhole(selectedTx.tax)}</span>
+                                  <span>Tax {activeDetailTx.tax && activeDetailTx.tax > 0 ? `(${activeDetailTx.taxLabel})` : ''}</span>
+                                  {activeDetailTx.tax && activeDetailTx.tax > 0 ? (
+                                      <span>+{formatMoneyWhole(activeDetailTx.tax)}</span>
                                   ) : (
                                       <span className="text-muted-foreground font-medium">No tax applied</span>
                                   )}
@@ -2975,8 +3183,8 @@ export default function Transactions() {
 
                               <div className="border-t pt-2 mt-2 flex justify-between items-center font-bold text-xl">
                                   <span>Total</span>
-                                  <span className={selectedTx.type === 'sale' ? 'text-green-700' : selectedTx.type === 'return' ? 'text-red-700' : 'text-emerald-700'}>
-                                      {selectedTx.type === 'return' ? '-' : ''}{formatMoneyWhole(Math.abs(selectedTx.total))}
+                                  <span className={activeDetailTx.type === 'sale' ? 'text-green-700' : activeDetailTx.type === 'return' ? 'text-red-700' : 'text-emerald-700'}>
+                                      {activeDetailTx.type === 'return' ? '-' : ''}{formatMoneyWhole(Math.abs(activeDetailTx.total))}
                                   </span>
                               </div>
                           </div>
@@ -2984,52 +3192,143 @@ export default function Transactions() {
                   </CardContent>
               </Card>
           </div>
-      )}
+        );
+      })()}
 
       {selectedKpiCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <Card className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden shadow-2xl">
+          <Card className="flex max-h-[90vh] w-full max-w-[calc(100vw-2rem)] flex-col overflow-hidden shadow-2xl">
             <CardHeader className={`border-b ${selectedKpiCard.cardClass}`}>
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <CardTitle>{selectedKpiCard.label}</CardTitle>
-                  <p className="mt-1 text-sm text-slate-600">
-                    {selectedKpiRows.length} entr{selectedKpiRows.length === 1 ? 'y' : 'ies'} • Total {formatCurrency(selectedKpiCard.value)}
-                  </p>
+                  <div className="flex items-center gap-5">
+                    <CardTitle>{selectedKpiCard.label}</CardTitle>
+                    <div className="text-xl font-medium text-slate-600">
+                      {selectedKpiRows.length} entr{selectedKpiRows.length === 1 ? 'y' : 'ies'}
+                    </div>
+                    <div className="text-xl font-semibold text-sky-700">
+                      {formatCurrencyWhole(selectedKpiCard.value)}
+                    </div>
+                  </div>
                 </div>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedKpiKey(null)}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => {
+                    setSelectedKpiTx(null);
+                    setSelectedKpiKey(null);
+                  }}
+                >
                   <X className="w-4 h-4" />
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="overflow-auto p-0">
+            <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
               {selectedKpiRows.length === 0 ? (
                 <div className="p-8 text-center text-sm text-muted-foreground">No rows found for this KPI in the current filter.</div>
               ) : (
-                <table className="w-full text-sm text-left">
-                  <thead className="sticky top-0 bg-muted/60 text-xs font-bold uppercase text-muted-foreground">
+                <>
+                <div className="hidden space-y-3 p-4">
+                  {selectedKpiRows.map((row) => (
+                    <div key={row.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="grid gap-4 xl:grid-cols-[120px_72px_minmax(0,1.3fr)_auto] xl:items-start">
+                        <div className="space-y-1">
+                          <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Date</div>
+                          <div className="font-semibold text-slate-900">{formatDateDisplay(row.date)}</div>
+                          <div className="text-xs text-slate-500">{row.type}</div>
+                        </div>
+                        <div className="h-14 w-14 overflow-hidden rounded-xl border bg-muted/30">
+                          {row.imageSrc ? (
+                            <img src={row.imageSrc} alt={row.imageAlt} className="h-full w-full object-contain" />
+                          ) : (
+                            <Package className="h-full w-full p-3 opacity-40" />
+                          )}
+                        </div>
+                        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 xl:grid-cols-4">
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Product</div>
+                            <div className="mt-1 break-words text-sm font-medium text-slate-900">{row.productName || '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Name</div>
+                            <div className="mt-1 break-words text-sm font-medium text-slate-900">{row.name}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Qty</div>
+                            <div className="mt-1 text-sm font-medium text-slate-900">{row.quantity != null && row.quantity > 0 ? row.quantity : '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Price / Pcs</div>
+                            <div className="mt-1 text-sm font-medium text-slate-900">{row.unitPrice != null && row.unitPrice > 0 ? formatMoneyWhole(row.unitPrice) : '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Method</div>
+                            <div className="mt-1 text-sm font-medium text-slate-900">{row.method}</div>
+                          </div>
+                          <div>
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Source</div>
+                            <div className="mt-1 text-sm font-medium text-slate-900">{row.cashSource || '—'}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-start justify-between gap-3 xl:flex-col xl:items-end">
+                          <div className="text-right">
+                            <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Amount</div>
+                            <div className="mt-1 text-lg font-bold text-slate-900">{formatMoneyWhole(row.amount)}</div>
+                          </div>
+                          {row.tx ? (
+                            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => setSelectedKpiTx(row.tx)}>
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="h-full max-h-[calc(90vh-110px)] overflow-x-auto overflow-y-auto">
+                <table className="min-w-[1320px] w-full text-[17px] text-left">
+                  <thead className="sticky top-0 z-10 bg-slate-100 text-[15px] font-bold uppercase text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                     <tr>
-                      <th className="px-4 py-3">Date</th>
-                      <th className="px-4 py-3">Type</th>
-                      <th className="px-4 py-3">Name</th>
-                      <th className="px-4 py-3">Method</th>
-                      <th className="px-4 py-3">Source</th>
-                      <th className="px-4 py-3 text-right">Amount</th>
-                      <th className="px-4 py-3 text-center">View</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Date</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Photo</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Product</th>
+                      <th className="px-4 py-3 text-right whitespace-nowrap">Qty</th>
+                      <th className="px-4 py-3 text-right whitespace-nowrap">Price / Pcs</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Type</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Name</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Method</th>
+                      <th className="px-4 py-3 whitespace-nowrap">Source</th>
+                      <th className="px-4 py-3 text-right whitespace-nowrap">Amount</th>
+                      <th className="px-4 py-3 text-center whitespace-nowrap">View</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
                     {selectedKpiRows.map((row) => (
                       <tr key={row.id} className="hover:bg-muted/30">
-                        <td className="px-4 py-3 font-medium">{formatDateDisplay(row.date)}</td>
-                        <td className="px-4 py-3">{row.type}</td>
-                        <td className="px-4 py-3">{row.name}</td>
-                        <td className="px-4 py-3">{row.method}</td>
-                        <td className="px-4 py-3">{row.cashSource || '—'}</td>
-                        <td className="px-4 py-3 text-right font-semibold">{formatMoneyWhole(row.amount)}</td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 font-medium whitespace-nowrap">{formatDateDisplay(row.date)}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="h-10 w-10 overflow-hidden rounded-lg border bg-muted/30">
+                            {row.imageSrc ? (
+                              <img src={row.imageSrc} alt={row.imageAlt} className="h-full w-full object-contain" />
+                            ) : (
+                              <Package className="h-full w-full p-2 opacity-40" />
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.productName || '-'}</td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">{row.quantity != null && row.quantity > 0 ? row.quantity : '-'}</td>
+                        <td className="px-4 py-3 text-right whitespace-nowrap">{row.unitPrice != null && row.unitPrice > 0 ? formatMoneyWhole(row.unitPrice) : '-'}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.type}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.name}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.method}</td>
+                        <td className="px-4 py-3 whitespace-nowrap">{row.cashSource || '-'}</td>
+                        <td className="px-4 py-3 text-right font-semibold whitespace-nowrap">{formatMoneyWhole(row.amount)}</td>
+                        <td className="px-4 py-3 text-center whitespace-nowrap">
                           {row.tx ? (
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedTx(row.tx)}>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedKpiTx(row.tx)}>
                               <Eye className="w-3.5 h-3.5" />
                             </Button>
                           ) : (
@@ -3040,6 +3339,8 @@ export default function Transactions() {
                     ))}
                   </tbody>
                 </table>
+                </div>
+                </>
               )}
             </CardContent>
           </Card>
@@ -3171,7 +3472,7 @@ export default function Transactions() {
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <Card className="w-full max-w-2xl max-h-[90vh] overflow-auto">
             <CardHeader>
-              <CardTitle>Delete Transaction #{deleteTargetTx.id.slice(-6)}</CardTitle>
+              <CardTitle>Delete Transaction</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-lg border bg-muted/10 p-3 space-y-1 text-sm">
@@ -3288,7 +3589,7 @@ export default function Transactions() {
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
           <Card className="w-full max-w-5xl max-h-[90vh] overflow-hidden">
             <CardHeader className="border-b py-3 flex flex-row items-center justify-between gap-2">
-              <CardTitle>{isBatchEditing ? `Batch Edit ${batchEditTransactionIndex + 1}/${batchEditTransactionIds.length}` : `Edit #${editingTx.id.slice(-6)}`} • {editingTx.type.toUpperCase()}</CardTitle>
+              <CardTitle>{isBatchEditing ? `Batch Edit ${batchEditTransactionIndex + 1}/${batchEditTransactionIds.length}` : 'Edit Transaction'} • {editingTx.type.toUpperCase()}</CardTitle>
               <div className="flex items-center gap-2">
                 <div className="text-xs text-muted-foreground">{formatDateTimeDisplay(editingTx.date)} • {editingTx.customerName || 'Walk-in customer'}</div>
                 <Button
@@ -3654,7 +3955,11 @@ export default function Transactions() {
             <CardHeader className="border-b pb-4 flex flex-row items-center justify-between">
               <div>
                 <CardTitle className="text-lg">Export Invoice</CardTitle>
-                <p className="text-xs text-muted-foreground mt-1">Choose how you want to generate or send invoice #{getTransactionReference(txToExport)}.</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {getTransactionReference(txToExport)
+                    ? `Choose how you want to generate or send invoice #${getTransactionReference(txToExport)}.`
+                    : 'Choose how you want to generate or send this receipt.'}
+                </p>
               </div>
               <Button variant="ghost" size="icon" onClick={closeInvoiceOptions} className="h-8 w-8">
                 <X className="w-4 h-4" />
@@ -3692,3 +3997,5 @@ export default function Transactions() {
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
+
+
