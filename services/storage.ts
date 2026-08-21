@@ -38,6 +38,7 @@ import {
   type User,
 } from 'firebase/auth';
 import { aggregateCartItemsByStockBucket, normalizeStockBucketColor, normalizeStockBucketVariant } from './stockBuckets';
+import { perfLog } from './perf';
 import { financeLog } from './financeLogger';
 import { roundMoneyWhole } from './numberFormat';
 import { emitFinanceSnapshot } from '../utils/financeDebugLogger';
@@ -599,7 +600,7 @@ const getProductAuditSample = (products: Product[] = []) => products.slice(0, 3)
 const logStockFlowDataAudit = (event: string, detail: Record<string, unknown>) => {
   if (!STORAGE_DEBUG_LOGS_ENABLED) return;
   try {
-    console.info(STOCKFLOW_DATA_AUDIT_PREFIX, event, detail);
+    perfLog('storage.stockflow_data_audit', { event, detail });
   } catch (_error) {
   }
 };
@@ -1751,7 +1752,14 @@ const rebuildCustomerBalanceFromLedger = (customerId: string, transactions: Tran
   if (customerLedgerDebugEnabled && customerLedgerDebugRows.length) {
     const customer = customers.find(c => c.id === customerId) as Customer | undefined;
     const storedDue = toFiniteNonNegative(customer?.totalDue);
-    console.log('[CUSTOMER_LEDGER_DEBUG]', { customerId, storedDue, calculatedDue: runningDue, difference: roundCurrency(runningDue - storedDue), rows: customerLedgerDebugRows });
+    perfLog('storage.customer_ledger_debug', {
+      customerId,
+      storedDue,
+      calculatedDue: runningDue,
+      difference: roundCurrency(runningDue - storedDue),
+      rowCount: customerLedgerDebugRows.length,
+      sampleRows: customerLedgerDebugRows.slice(0, 5),
+    });
   }
 
   const totalDue = roundCurrency(Math.max(0, runningDue));
@@ -4987,8 +4995,9 @@ export const safeFinancePersistState = async (patch: FinancePersistPatch, option
     Object.entries(payload).filter(([key]) => FINANCE_SPLIT_DOCUMENT_FIELD_SET.has(key)),
   ) as Partial<Record<FinanceSplitDocumentField, unknown>>;
 
-  console.info('finance.persistState writing keys:', writeKeys, {
+  perfLog('storage.finance.persist_state', {
     reason,
+    writeKeys,
     ignoredNonFinanceKeys: ignoredKeys,
     blockedKeysPresentInInput: blockedKeys,
     droppedUnsafePaths: droppedPaths,
@@ -6172,7 +6181,7 @@ const sanitizeUpfrontOrdersForPersist = (orders: UpfrontOrder[] = [], reason: st
     return sanitized;
   });
   if (strippedImageCount > 0 && shouldLogUpfrontOrderSanitization()) {
-    console.info('[storage] Sanitized legacy upfront order image payloads before save.', { reason, strippedImageCount });
+    perfLog('storage.upfront_order_images_sanitized', { reason, strippedImageCount });
   }
   return next;
 };
@@ -9133,7 +9142,7 @@ export const updateSupplierPayment = async (paymentId: string, updates: Partial<
       .map((order) => order.id),
   ]));
   if (shouldTraceSupplierPaymentEdit) {
-    console.log('[SUPPLIER_PAYMENT_EDIT_TRACE_BEFORE_SAVE]', {
+    perfLog('storage.supplier_payment_edit.before_save', {
       paymentId,
       partyId: existing.partyId,
       affectedPurchaseOrderIds: affectedOrderIds,
@@ -9235,7 +9244,7 @@ export const updateSupplierPayment = async (paymentId: string, updates: Partial<
     if (shouldTraceSupplierPaymentEdit) {
       const afterSaveData = loadData();
       const persistedPaymentFromState = (afterSaveData.supplierPayments || []).find((item) => item.id === paymentId && !item.deletedAt);
-      console.log('[SUPPLIER_PAYMENT_EDIT_TRACE_AFTER_SAVE]', {
+      perfLog('storage.supplier_payment_edit.after_save', {
         paymentId,
         partyId: existing.partyId,
         affectedPurchaseOrderIds: affectedOrderIds,
@@ -9279,7 +9288,7 @@ export const deleteSupplierPayment = async (paymentId: string) => {
       .map((order) => order.id),
   ]));
   if (shouldTraceSupplierPaymentDelete) {
-    console.log('[SUPPLIER_PAYMENT_DELETE_TRACE_BEFORE_SAVE]', {
+    perfLog('storage.supplier_payment_delete.before_save', {
       paymentId,
       partyId: existing.partyId,
       affectedPurchaseOrderIds: affectedOrderIds,
@@ -9352,7 +9361,7 @@ export const deleteSupplierPayment = async (paymentId: string) => {
     if (shouldTraceSupplierPaymentDelete) {
       const afterSaveData = loadData();
       const persistedPaymentFromState = (afterSaveData.supplierPayments || []).find((item) => item.id === paymentId);
-      console.log('[SUPPLIER_PAYMENT_DELETE_TRACE_AFTER_SAVE]', {
+      perfLog('storage.supplier_payment_delete.after_save', {
         paymentId,
         partyId: existing.partyId,
         affectedPurchaseOrderIds: affectedOrderIds,
@@ -9395,7 +9404,7 @@ export const deleteLegacySupplierPaymentGroup = async (allocations: Array<{ orde
   });
   const affectedOrderIds = Array.from(byOrder.keys());
   if (shouldTraceSupplierPaymentDelete) {
-    console.log('[SUPPLIER_PAYMENT_DELETE_TRACE_BEFORE_SAVE]', {
+    perfLog('storage.supplier_payment_delete_legacy_group.before_save', {
       paymentId: 'legacy_group',
       partyId: null,
       affectedPurchaseOrderIds: affectedOrderIds,
@@ -9446,7 +9455,7 @@ export const deleteLegacySupplierPaymentGroup = async (allocations: Array<{ orde
     });
     if (shouldTraceSupplierPaymentDelete) {
       const afterSaveData = loadData();
-      console.log('[SUPPLIER_PAYMENT_DELETE_TRACE_AFTER_SAVE]', {
+      perfLog('storage.supplier_payment_delete_legacy_group.after_save', {
         paymentId: 'legacy_group',
         partyId: null,
         affectedPurchaseOrderIds: affectedOrderIds,
@@ -9675,7 +9684,7 @@ export const editInventoryPurchaseHistoryEntry = async (
     newAmount: Number((newQty * newUnitPrice).toFixed(2)),
   };
   if (shouldTracePurchaseEdit) {
-    console.log('[PURCHASE_EDIT_TRACE_BEFORE_SAVE]', {
+    perfLog('storage.purchase_edit.before_save', {
       mode: db ? 'cloud' : 'local',
       ...forensicSnapshot,
       originalStatus: order?.status || null,
@@ -9787,7 +9796,7 @@ export const editInventoryPurchaseHistoryEntry = async (
       const persistedOrderFromState = nextOrder ? (afterSaveData.purchaseOrders || []).find((item) => item.id === nextOrder.id) : null;
       const persistedProductFromState = (afterSaveData.products || []).find((item) => item.id === productId);
       const persistedHistoryFromState = (persistedProductFromState?.purchaseHistory || []).find((item) => item.id === purchaseHistoryId);
-      console.log('[PURCHASE_EDIT_TRACE_AFTER_SAVE]', {
+      perfLog('storage.purchase_edit.after_save', {
         mode: 'cloud',
         ...forensicSnapshot,
         purchaseOrdersCountAfterSave: (afterSaveData.purchaseOrders || []).length,
@@ -9808,7 +9817,7 @@ export const editInventoryPurchaseHistoryEntry = async (
     const persistedOrder = (afterSaveData.purchaseOrders || []).find((item) => item.id === order.id);
     const persistedProduct = (afterSaveData.products || []).find((item) => item.id === productId);
     const persistedHistory = (persistedProduct?.purchaseHistory || []).find((item) => item.id === purchaseHistoryId);
-    console.log('[PURCHASE_EDIT_TRACE_AFTER_SAVE]', {
+    perfLog('storage.purchase_edit.after_save', {
       mode: db ? 'cloud' : 'local',
       productId,
       purchaseHistoryId,

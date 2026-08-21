@@ -1,8 +1,16 @@
 const PERF_PREFIX = '[PERF]';
 const LONG_TASK_THRESHOLD_MS = 50;
 const WINDOW_OBSERVER_KEY = '__stockflowLongTaskObserverInstalled__';
+const WINDOW_PERF_LOGS_KEY = '__perfLogs';
 
 type PerfDetail = Record<string, unknown>;
+type PerfLogEntry = {
+  seq: number;
+  event: string;
+  timeIso: string;
+  timestampMs: number;
+  data: unknown;
+};
 
 const roundDuration = (value: number) => Math.round(value * 100) / 100;
 
@@ -17,9 +25,48 @@ export const PERF_ENABLED = Boolean((import.meta as any).env?.DEV) && typeof win
 
 export const createPerfRunId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
 
+const sanitizePerfValue = (value: unknown, seen = new WeakSet<object>()): unknown => {
+  if (value === null || typeof value === 'undefined') return value;
+  if (typeof value === 'function') {
+    return `[Function ${value.name || 'anonymous'}]`;
+  }
+  if (typeof value !== 'object') return value;
+  if (seen.has(value as object)) return '[Circular]';
+  seen.add(value as object);
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizePerfValue(entry, seen));
+  }
+  const next: Record<string, unknown> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([key, entry]) => {
+    next[key] = sanitizePerfValue(entry, seen);
+  });
+  return next;
+};
+
+const appendPerfHistory = (label: string, detail: PerfDetail) => {
+  if (typeof window === 'undefined') return;
+  const globalWindow = window as typeof window & { [WINDOW_PERF_LOGS_KEY]?: PerfLogEntry[] };
+  const history = globalWindow[WINDOW_PERF_LOGS_KEY] ?? [];
+  const entry: PerfLogEntry = {
+    seq: history.length + 1,
+    event: label,
+    timeIso: new Date().toISOString(),
+    timestampMs: roundDuration(getPerfNow()),
+    data: sanitizePerfValue(detail),
+  };
+  history.push(entry);
+  globalWindow[WINDOW_PERF_LOGS_KEY] = history;
+  return entry;
+};
+
 export const perfLog = (label: string, detail: PerfDetail = {}) => {
   if (!PERF_ENABLED) return;
-  console.log(PERF_PREFIX, label, detail);
+  const entry = appendPerfHistory(label, detail);
+  console.log(`${PERF_PREFIX} ${JSON.stringify(entry ?? {
+    event: label,
+    timestampMs: roundDuration(getPerfNow()),
+    data: sanitizePerfValue(detail),
+  })}`);
 };
 
 export const perfMark = (markName: string, detail: PerfDetail = {}) => {

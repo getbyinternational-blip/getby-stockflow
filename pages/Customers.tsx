@@ -24,6 +24,8 @@ import { useRoleSession } from '../src/auth/roleSession';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { perfLog } from '../services/perf';
+import { useRouteReady } from '../src/routing/routeReady';
 
 const normalizePhone = (v?: string) => String(v || '').replace(/\D/g, '');
 const normalizeName = (v?: string) => String(v || '').trim().toLowerCase();
@@ -664,10 +666,38 @@ type CustomersProps = {
 export default function Customers({ repairMode = false, hideStandardHeaderActions = false }: CustomersProps) {
   const { requestAdminOverride } = useRoleSession();
   const CUSTOMERS_PAGE_SIZE = 15;
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
+  const initialDataRef = React.useRef<{
+    customers: Customer[];
+    transactions: Transaction[];
+    upfrontOrders: UpfrontOrder[];
+    products: Product[];
+    loadError: string | null;
+  } | null>(null);
+  if (initialDataRef.current === null) {
+    try {
+      const data = loadData();
+      initialDataRef.current = {
+        customers: data.customers || [],
+        transactions: data.transactions || [],
+        upfrontOrders: data.upfrontOrders || [],
+        products: data.products || [],
+        loadError: null,
+      };
+    } catch {
+      initialDataRef.current = {
+        customers: [],
+        transactions: [],
+        upfrontOrders: [],
+        products: [],
+        loadError: 'Unable to load customer data right now. Please try again.',
+      };
+    }
+  }
+  const initialData = initialDataRef.current;
+  const [customers, setCustomers] = useState<Customer[]>(initialData.customers);
+  const [transactions, setTransactions] = useState<Transaction[]>(initialData.transactions);
+  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>(initialData.upfrontOrders);
+  const [products, setProducts] = useState<Product[]>(initialData.products);
   
   // Modal States
   const [viewingCustomer, setViewingCustomer] = useState<Customer | null>(null);
@@ -742,8 +772,8 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [customerHeaderMenu, setCustomerHeaderMenu] = useState<string | null>(null);
   const [customerPage, setCustomerPage] = useState(1);
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isInitialLoading, setIsInitialLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(initialData.loadError);
   const [editingCustomerTx, setEditingCustomerTx] = useState<Transaction | null>(null);
   const [customerActionModalOpen, setCustomerActionModalOpen] = useState(false);
   const [paymentAuditOpen, setPaymentAuditOpen] = useState(false);
@@ -777,6 +807,15 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const [upfrontRepairConfirmOpen, setUpfrontRepairConfirmOpen] = useState(false);
   const [upfrontRepairSubmitting, setUpfrontRepairSubmitting] = useState(false);
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const storageRefreshFrameRef = React.useRef<number | null>(null);
+  const queuedStorageEventTypesRef = React.useRef<string[]>([]);
+  const correctLedgerAuditEnabledRef = React.useRef(false);
+  const customerDeriveFrameRef = React.useRef<number | null>(null);
+  const routeReady = useRouteReady();
+  const shellPainted = routeReady?.shellPainted ?? true;
+  const isRouteActive = routeReady?.isRouteActive ?? true;
+  const [isCustomerSecondaryReady, setIsCustomerSecondaryReady] = useState(false);
+  const isCustomerSecondaryPending = !isCustomerSecondaryReady;
   useEscapeLayer(isDeleteModalOpen && !!viewingCustomer, () => setIsDeleteModalOpen(false), { priority: 120 });
   useEscapeLayer(paymentAuditOpen && !!viewingCustomer && !!paymentAuditResult, () => setPaymentAuditOpen(false), { priority: 110 });
   useEscapeLayer(updatedViewOpen && !!viewingCustomer && !!updatedViewPreview, () => setUpdatedViewOpen(false), { priority: 110 });
@@ -808,7 +847,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   }, { priority: 100 });
   useEscapeLayer(isAddModalOpen, () => setIsAddModalOpen(false), { priority: 100 });
 
-  const refreshData = () => {
+  const refreshData = React.useCallback(() => {
     try {
       const data = loadData();
       setCustomers(data.customers);
@@ -829,7 +868,36 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     } finally {
       setIsInitialLoading(false);
     }
-  };
+  }, [viewingCustomer]);
+
+  useEffect(() => {
+    if (customerDeriveFrameRef.current !== null) {
+      window.cancelAnimationFrame(customerDeriveFrameRef.current);
+      customerDeriveFrameRef.current = null;
+    }
+    if (!isRouteActive) {
+      return;
+    }
+    if (isCustomerSecondaryReady) {
+      return;
+    }
+    if (!shellPainted) {
+      perfLog('page.Customers.secondary.waiting_for_shell_paint', {});
+      return;
+    }
+    perfLog('page.Customers.secondary.schedule', {});
+    customerDeriveFrameRef.current = window.requestAnimationFrame(() => {
+      customerDeriveFrameRef.current = null;
+      perfLog('page.Customers.secondary.ready', {});
+      setIsCustomerSecondaryReady(true);
+    });
+    return () => {
+      if (customerDeriveFrameRef.current !== null) {
+        window.cancelAnimationFrame(customerDeriveFrameRef.current);
+        customerDeriveFrameRef.current = null;
+      }
+    };
+  }, [isCustomerSecondaryReady, isRouteActive, shellPainted]);
 
   useEffect(() => {
     if (import.meta.env.DEV && !assertCanonicalBalanceErrorDoesNotTrustSnapshot()) {
@@ -838,19 +906,38 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   }, []);
 
   useEffect(() => {
-    refreshData();
-    window.addEventListener('storage', refreshData);
-    window.addEventListener('local-storage-update', refreshData);
-    return () => {
-        window.removeEventListener('storage', refreshData);
-        window.removeEventListener('local-storage-update', refreshData);
+    if (loadError) {
+      refreshData();
+    }
+    const handleStorageRefresh = (event: Event) => {
+      queuedStorageEventTypesRef.current.push(event.type);
+      if (storageRefreshFrameRef.current !== null) return;
+      storageRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        const eventTypes = Array.from(new Set(queuedStorageEventTypesRef.current));
+        queuedStorageEventTypesRef.current = [];
+        storageRefreshFrameRef.current = null;
+        perfLog('page.Customers.storage_refresh', { eventTypes });
+        refreshData();
+      });
     };
-  }, []);
+    window.addEventListener('storage', handleStorageRefresh);
+    window.addEventListener('local-storage-update', handleStorageRefresh);
+    return () => {
+        if (storageRefreshFrameRef.current !== null) {
+          window.cancelAnimationFrame(storageRefreshFrameRef.current);
+          storageRefreshFrameRef.current = null;
+        }
+        queuedStorageEventTypesRef.current = [];
+        window.removeEventListener('storage', handleStorageRefresh);
+        window.removeEventListener('local-storage-update', handleStorageRefresh);
+    };
+  }, [loadError, refreshData]);
 
   useEffect(() => {
     if (!customers.length || typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     if (params.get('showCorrectLedger') !== '1') return;
+    correctLedgerAuditEnabledRef.current = true;
     const auditCustomerId = String(params.get('auditCustomerId') || '').trim();
     setShowCorrectLedgerView(true);
     if (auditCustomerId) {
@@ -868,28 +955,41 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   }, [customers]);
 
   const highValueThreshold = useMemo(() => {
+    if (isCustomerSecondaryPending) return Infinity;
     if (customers.length < 3) return Infinity;
     const sorted = [...customers].sort((a, b) => b.totalSpend - a.totalSpend);
     const index = Math.max(0, Math.floor(customers.length * 0.1));
     return sorted[index].totalSpend;
-  }, [customers]);
+  }, [isCustomerSecondaryPending, customers]);
 
   const canonicalCustomers = useMemo(() => customers, [customers]);
 
   const canonicalDisplayBalanceByCustomerId = useMemo(() => {
+    if (isCustomerSecondaryPending) return new Map<string, CanonicalCustomerBalanceResult>();
+    const startAt = performance.now();
     const map = new Map<string, CanonicalCustomerBalanceResult>();
     customers.forEach((customer) => {
       map.set(customer.id, getCanonicalCustomerBalanceResult(customer, transactions, upfrontOrders));
     });
+    perfLog('page.Customers.derive.canonicalDisplayBalanceByCustomerId', {
+      customers: customers.length,
+      transactions: transactions.length,
+      upfrontOrders: upfrontOrders.length,
+      durationMs: Math.round((performance.now() - startAt) * 100) / 100,
+    });
     return map;
-  }, [customers, transactions, upfrontOrders]);
+  }, [isCustomerSecondaryPending, customers, transactions, upfrontOrders]);
 
   const canonicalBalanceUnavailableSummary = useMemo(() => {
+    if (isCustomerSecondaryPending) return { count: 0, firstMessage: 'Ledger calculation unavailable.' };
     const unavailable = (Array.from(canonicalDisplayBalanceByCustomerId.values()) as CanonicalCustomerBalanceResult[]).filter((balance) => balance.status === 'error');
     return { count: unavailable.length, firstMessage: unavailable[0]?.errorMessage || 'Ledger calculation unavailable.' };
-  }, [canonicalDisplayBalanceByCustomerId]);
+  }, [isCustomerSecondaryPending, canonicalDisplayBalanceByCustomerId]);
 
   const canonicalBalanceMismatchSummary = useMemo(() => {
+    if (isCustomerSecondaryPending) {
+      return { totalCustomersScanned: 0, mismatchCount: 0, totalStoredReceivable: 0, totalCanonicalReceivable: 0, largestMismatch: null };
+    }
     let mismatchCount = 0;
     let totalStoredReceivable = 0;
     let totalCanonicalReceivable = 0;
@@ -907,15 +1007,17 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       }
     });
     return { totalCustomersScanned: customers.length, mismatchCount, totalStoredReceivable, totalCanonicalReceivable, largestMismatch };
-  }, [customers, canonicalDisplayBalanceByCustomerId]);
+  }, [isCustomerSecondaryPending, customers, canonicalDisplayBalanceByCustomerId]);
 
   useEffect(() => {
     if (!import.meta.env.DEV || canonicalBalanceMismatchSummary.mismatchCount === 0) return;
-    console.info('[Customers] canonical display balance mismatch summary', canonicalBalanceMismatchSummary);
+    perfLog('page.Customers.canonical_balance_mismatch', canonicalBalanceMismatchSummary);
   }, [canonicalBalanceMismatchSummary]);
 
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.DEV || !correctLedgerAuditEnabledRef.current) return;
+    let mismatchCount = 0;
+    let largestMismatch: { customerId: string; customerName: string; difference: number } | null = null;
     customers.forEach((customer) => {
       const displayed = canonicalDisplayBalanceByCustomerId.get(customer.id);
       if (!displayed || displayed.status !== 'ok') return;
@@ -923,18 +1025,30 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       const displayedDue = roundCorrectPreviewMoney(displayed.currentDue);
       const correctLedgerDue = roundCorrectPreviewMoney(correctLedger.summary.correctedCurrentDue);
       if (Math.abs(displayedDue - correctLedgerDue) <= 0.01) return;
-      console.warn('[Customers] normal displayed due differs from Correct Ledger View due', {
-        customerId: customer.id,
-        customerName: customer.name,
-        storedDue: correctLedger.summary.storedCurrentDue,
-        displayedDue,
-        correctLedgerDue,
-        difference: roundCorrectPreviewMoney(displayedDue - correctLedgerDue),
-      });
+      const difference = roundCorrectPreviewMoney(displayedDue - correctLedgerDue);
+      mismatchCount += 1;
+      if (!largestMismatch || Math.abs(difference) > Math.abs(largestMismatch.difference)) {
+        largestMismatch = {
+          customerId: customer.id,
+          customerName: customer.name,
+          difference,
+        };
+      }
     });
+    if (mismatchCount > 0) {
+      perfLog('page.Customers.correct_ledger_audit', {
+        customersScanned: customers.length,
+        mismatchCount,
+        largestMismatch,
+      });
+    }
   }, [customers, transactions, upfrontOrders, canonicalDisplayBalanceByCustomerId]);
 
   const filteredData = useMemo(() => {
+    if (isCustomerSecondaryPending) {
+      return { displayCustomers: [] as Customer[], totalDues: 0, totalCount: 0 };
+    }
+    const startAt = performance.now();
     let processed = [...canonicalCustomers];
     const customerSeriesMap = buildCustomerSeriesMap(canonicalCustomers);
     
@@ -975,8 +1089,19 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     });
 
     const totalDues = processed.reduce((acc, c) => acc + (canonicalDisplayBalanceByCustomerId.get(c.id)?.status === 'ok' ? canonicalDisplayBalanceByCustomerId.get(c.id)!.netReceivable : 0), 0);
-    return { displayCustomers: processed, totalDues, totalCount: processed.length };
-  }, [canonicalCustomers, deferredSearchQuery, filterType, sortBy, sortOrder, highValueThreshold, canonicalDisplayBalanceByCustomerId]);
+    const result = { displayCustomers: processed, totalDues, totalCount: processed.length };
+    perfLog('page.Customers.derive.filteredData', {
+      customers: canonicalCustomers.length,
+      filteredCustomers: processed.length,
+      transactions: transactions.length,
+      sortBy,
+      sortOrder,
+      filterType,
+      hasSearchQuery: deferredSearchQuery.trim().length > 0,
+      durationMs: Math.round((performance.now() - startAt) * 100) / 100,
+    });
+    return result;
+  }, [isCustomerSecondaryPending, canonicalCustomers, deferredSearchQuery, filterType, sortBy, sortOrder, highValueThreshold, canonicalDisplayBalanceByCustomerId, transactions.length]);
   const customerSeriesById = useMemo(() => buildCustomerSeriesMap(customers), [customers]);
   const customerById = useMemo(() => new Map(customers.map((customer) => [customer.id, customer])), [customers]);
   const customerTotalPages = Math.max(1, Math.ceil(filteredData.displayCustomers.length / CUSTOMERS_PAGE_SIZE));
@@ -985,9 +1110,9 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     [filteredData.displayCustomers, customerPage]
   );
   const correctCustomerLedgerPreviews = useMemo(() => {
-    if (!showCorrectLedgerView) return [];
+    if (isCustomerSecondaryPending || !showCorrectLedgerView) return [];
     return customers.map((customer) => buildCorrectCustomerLedgerPreview(customer, transactions, upfrontOrders));
-  }, [showCorrectLedgerView, customers, transactions, upfrontOrders]);
+  }, [isCustomerSecondaryPending, showCorrectLedgerView, customers, transactions, upfrontOrders]);
 
   const filteredCorrectCustomerLedgerPreviews = useMemo(() => {
     const lowerQ = deferredSearchQuery.trim().toLowerCase();
@@ -1012,16 +1137,16 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   }, [filteredCorrectCustomerLedgerPreviews]);
 
   const customerLedgerBalanceAnalysis = useMemo(() => (
-    showCorrectLedgerView
+    !isCustomerSecondaryPending && showCorrectLedgerView
       ? analyzeCustomerLedgerBalances({ customers, transactions, upfrontOrders })
       : null
-  ), [showCorrectLedgerView, customers, transactions, upfrontOrders]);
+  ), [isCustomerSecondaryPending, showCorrectLedgerView, customers, transactions, upfrontOrders]);
 
   const customerLedgerBalanceDryRun = useMemo(() => (
-    showCorrectLedgerView
+    !isCustomerSecondaryPending && showCorrectLedgerView
       ? repairCustomerLedgerBalancesDryRun({ customers, transactions, upfrontOrders })
       : null
-  ), [showCorrectLedgerView, customers, transactions, upfrontOrders]);
+  ), [isCustomerSecondaryPending, showCorrectLedgerView, customers, transactions, upfrontOrders]);
 
   const downloadCustomerLedgerDryRunJson = () => {
     if (!customerLedgerBalanceDryRun) return;
@@ -2239,7 +2364,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                 </div>
               )}
             </div>
-            {can('analytics') && filteredData.totalDues > 0 && (
+            {can('analytics') && !isCustomerSecondaryPending && filteredData.totalDues > 0 && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3">
                 <div className="flex items-center gap-2 text-red-700">
                   <AlertCircle className="h-5 w-5" />
@@ -2365,7 +2490,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           </div>
 
           {filteredCorrectCustomerLedgerPreviews.length === 0 ? (
-            <div className="rounded-xl border bg-white p-6 text-center text-sm text-muted-foreground">No customers match the current search.</div>
+            <div className="rounded-xl border bg-white p-6 text-center text-sm text-muted-foreground">{isCustomerSecondaryPending ? 'Preparing customers...' : 'No customers match the current search.'}</div>
           ) : filteredCorrectCustomerLedgerPreviews.map((preview) => {
             const expanded = expandedCorrectCustomerIds.includes(preview.customer.id);
             return (
@@ -2555,7 +2680,13 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                 </tr>
               </thead>
               <tbody>
-                {paginatedCustomers.map((customer) => {
+                {isCustomerSecondaryPending ? (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-10">
+                      <LightweightLoader label="Preparing customers..." />
+                    </td>
+                  </tr>
+                ) : paginatedCustomers.map((customer) => {
                   return (
                   <tr key={customer.id} className="border-t hover:bg-muted/20">
                     <td className="px-3 py-2.5 align-top">
@@ -2639,7 +2770,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
               </tbody>
             </table>
           </div>
-          {filteredData.displayCustomers.length > CUSTOMERS_PAGE_SIZE && (
+          {!isCustomerSecondaryPending && filteredData.displayCustomers.length > CUSTOMERS_PAGE_SIZE && (
             <div className="mt-3 flex items-center justify-between rounded-lg border bg-card p-2">
               <Button variant="outline" size="sm" onClick={() => setCustomerPage((prev) => Math.max(1, prev - 1))} disabled={customerPage === 1}>Prev</Button>
               <span className="text-xs text-muted-foreground">Page {customerPage} of {customerTotalPages}</span>

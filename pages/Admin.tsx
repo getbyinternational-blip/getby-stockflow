@@ -133,16 +133,21 @@ export default function Admin() {
   }
   const navigate = useNavigate();
   const INVENTORY_PAGE_SIZE = 100;
-  const [products, setProducts] = useState<Product[]>([]);
-  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const initialDataRef = useRef<any | null>(null);
+  if (initialDataRef.current === null) {
+    initialDataRef.current = loadData();
+  }
+  const initialData = initialDataRef.current;
+  const [products, setProducts] = useState<Product[]>(initialData.products || []);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(Array.isArray(initialData.purchaseOrders) ? initialData.purchaseOrders : []);
+  const [customers, setCustomers] = useState<Customer[]>(Array.isArray(initialData.customers) ? initialData.customers : []);
+  const [transactions, setTransactions] = useState<Transaction[]>(Array.isArray(initialData.transactions) ? initialData.transactions : []);
+  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>(Array.isArray(initialData.upfrontOrders) ? initialData.upfrontOrders : []);
+  const [categories, setCategories] = useState<string[]>(initialData.categories || []);
   const [storeName, setStoreName] = useState('StockFlow');
-  const [storeProfile, setStoreProfile] = useState<any>(null);
-  const [variantsMaster, setVariantsMaster] = useState<string[]>([]);
-  const [colorsMaster, setColorsMaster] = useState<string[]>([]);
+  const [storeProfile, setStoreProfile] = useState<any>(initialData.profile || null);
+  const [variantsMaster, setVariantsMaster] = useState<string[]>(initialData.variantsMaster || []);
+  const [colorsMaster, setColorsMaster] = useState<string[]>(initialData.colorsMaster || []);
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -240,7 +245,7 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isCatalogOptionsOpen, setIsCatalogOptionsOpen] = useState(false);
-  const [purchaseParties, setPurchaseParties] = useState<PurchaseParty[]>([]);
+  const [purchaseParties, setPurchaseParties] = useState<PurchaseParty[]>(Array.isArray(initialData.purchaseParties) ? initialData.purchaseParties : []);
   const [selectedPurchasePartyId, setSelectedPurchasePartyId] = useState('');
   const [supplierPayableManuallyEdited, setSupplierPayableManuallyEdited] = useState(false);
   const [stockManuallyEdited, setStockManuallyEdited] = useState(false);
@@ -264,7 +269,7 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [isBatchDeleteConfirmOpen, setIsBatchDeleteConfirmOpen] = useState(false);
   const [notice, setNotice] = useState<{ type: 'error' | 'success' | 'info'; message: string } | null>(null);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
-  const [appStateSnapshot, setAppStateSnapshot] = useState<any>(() => loadData());
+  const [appStateSnapshot, setAppStateSnapshot] = useState<any>(initialData);
 
   const [purchaseEditTarget, setPurchaseEditTarget] = useState<{ productId: string; historyId: string } | null>(null);
   const [purchaseEditQuantity, setPurchaseEditQuantity] = useState('');

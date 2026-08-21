@@ -267,22 +267,30 @@ export default function Dashboard() {
   const renderStartLoggedRef = React.useRef(false);
   const firstEffectLoggedRef = React.useRef(false);
   const readyLoggedRef = React.useRef(false);
+  const dataReadyLoggedRef = React.useRef(false);
+  const storageRefreshFrameRef = React.useRef<number | null>(null);
+  const queuedStorageEventTypesRef = React.useRef<string[]>([]);
   if (!renderStartLoggedRef.current) {
     renderStartLoggedRef.current = true;
     perfLog('page.Dashboard.render.start', { runId: perfRunIdRef.current });
   }
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [parties, setParties] = useState<PurchaseParty[]>([]);
-  const [orders, setOrders] = useState<PurchaseOrder[]>([]);
-  const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>([]);
-  const [partyCreditLedger, setPartyCreditLedger] = useState<PartyCreditLedgerEntry[]>([]);
-  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>([]);
-  const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>([]);
-  const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>([]);
-  const [cashSessions, setCashSessions] = useState<any[]>([]);
+  const initialDataRef = React.useRef<ReturnType<typeof loadData> | null>(null);
+  if (initialDataRef.current === null) {
+    initialDataRef.current = loadData();
+  }
+  const initialData = initialDataRef.current;
+  const [customers, setCustomers] = useState<Customer[]>(initialData.customers || []);
+  const [transactions, setTransactions] = useState<Transaction[]>(initialData.transactions || []);
+  const [parties, setParties] = useState<PurchaseParty[]>(getPurchaseParties());
+  const [orders, setOrders] = useState<PurchaseOrder[]>(getPurchaseOrders());
+  const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>(initialData.supplierPayments || []);
+  const [partyCreditLedger, setPartyCreditLedger] = useState<PartyCreditLedgerEntry[]>(initialData.partyCreditLedger || []);
+  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>(initialData.upfrontOrders || []);
+  const [expenses, setExpenses] = useState<Expense[]>(initialData.expenses || []);
+  const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>(initialData.cashAdjustments || []);
+  const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>((initialData.manualCashbookEntries || []).filter((entry) => !entry?.isDeleted));
+  const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>(initialData.deleteCompensations || []);
+  const [cashSessions, setCashSessions] = useState<any[]>(initialData.cashSessions || []);
 
   const [receivingCustomer, setReceivingCustomer] = useState<CustomerReceivableRow | null>(null);
   const [receiveAmount, setReceiveAmount] = useState('');
@@ -349,25 +357,50 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
+    if (dataReadyLoggedRef.current) return;
+    dataReadyLoggedRef.current = true;
+    perfLog('page.Dashboard.data_ready', {
+      runId: perfRunIdRef.current,
+      customers: customers.length,
+      transactions: transactions.length,
+      parties: parties.length,
+      orders: orders.length,
+      supplierPayments: supplierPayments.length,
+    });
+  }, [customers.length, orders.length, parties.length, supplierPayments.length, transactions.length]);
+
+  useEffect(() => {
     if (!firstEffectLoggedRef.current) {
       firstEffectLoggedRef.current = true;
       perfLog('page.Dashboard.first_effect.start', { runId: perfRunIdRef.current });
     }
-    refresh();
+    if (!customers.length && !transactions.length && !orders.length && !parties.length) {
+      refresh();
+    }
     const handleRefresh = (event: Event) => {
-      perfMeasureSync('page.Dashboard.storage_event', () => refresh(), {
-        runId: perfRunIdRef.current,
-        eventType: event.type,
+      queuedStorageEventTypesRef.current.push(event.type);
+      if (storageRefreshFrameRef.current !== null) return;
+      storageRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        const eventTypes = Array.from(new Set(queuedStorageEventTypesRef.current));
+        queuedStorageEventTypesRef.current = [];
+        storageRefreshFrameRef.current = null;
+        perfMeasureSync('page.Dashboard.storage_event', () => refresh(), {
+          runId: perfRunIdRef.current,
+          eventTypes,
+        });
       });
     };
     window.addEventListener('local-storage-update', handleRefresh);
     window.addEventListener('storage', handleRefresh);
     perfLog('page.Dashboard.first_effect.complete', { runId: perfRunIdRef.current });
     return () => {
+      if (storageRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(storageRefreshFrameRef.current);
+      }
       window.removeEventListener('local-storage-update', handleRefresh);
       window.removeEventListener('storage', handleRefresh);
     };
-  }, []);
+  }, [customers.length, orders.length, parties.length, transactions.length]);
 
 
   useEffect(() => {
@@ -381,6 +414,13 @@ export default function Dashboard() {
   useEffect(() => {
     if (!dashboardDetailsReady || readyLoggedRef.current) return;
     readyLoggedRef.current = true;
+    perfLog('page.Dashboard.secondary_calculations_complete', {
+      runId: perfRunIdRef.current,
+      customers: customers.length,
+      transactions: transactions.length,
+      parties: parties.length,
+      orders: orders.length,
+    });
     perfLog('page.Dashboard.ready_for_first_useful_paint', {
       runId: perfRunIdRef.current,
       customers: customers.length,

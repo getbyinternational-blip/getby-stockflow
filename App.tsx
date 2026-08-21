@@ -10,6 +10,8 @@ import { emitFinanceSnapshot } from './utils/financeDebugLogger';
 import { LayoutDashboard, ShoppingCart, FileText, Package, ArrowRightLeft, Users, Menu, X, Settings as SettingsIcon, LogOut, Landmark, ClipboardList, BarChart3, Send } from 'lucide-react';
 import { Button, LightweightLoader } from './components/ui';
 import { useVersionCheck } from './src/hooks/useVersionCheck';
+import { perfLog } from './services/perf';
+import { RouteReadyProvider } from './src/routing/routeReady';
 import Settings from './pages/Settings';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import Terms from './pages/Terms';
@@ -63,6 +65,28 @@ const ROUTE_PRELOADERS: Partial<Record<string, () => Promise<unknown>>> = {
   '/purchase-panel': loadPurchasePanel,
 };
 
+type PersistentRouteConfig = {
+  path: string;
+  label: string;
+  component: React.ComponentType;
+  permission?: SimplePermission;
+};
+
+const PERSISTENT_ROUTE_CONFIGS: PersistentRouteConfig[] = [
+  { path: '/', label: 'Inventory', component: Admin },
+  { path: '/transactions', label: 'Transactions', component: Transactions },
+  { path: '/finance', label: 'Finance', component: Finance },
+  { path: '/customers', label: 'Customers', component: Customers },
+  { path: '/dashboard', label: 'Dashboard', component: Dashboard },
+];
+
+const getPersistentPageInstanceId = (path: string) => path === '/' ? 'persistent:inventory' : `persistent:${path.slice(1)}`;
+const getRouteContainerClass = (path: string) => (
+  path === '/finance'
+    ? 'min-h-full pb-20 md:pb-8'
+    : 'min-h-full p-4 md:p-8 pb-20 md:pb-8 max-w-7xl mx-auto'
+);
+
 type AdminReminderSummary = {
   customerDueTotal: number;
   customerDueCount: number;
@@ -78,22 +102,19 @@ type AppNavItemProps = {
   icon: any;
   label: string;
   labelClassName?: string;
-  optimisticActivePath?: string | null;
-  onOptimisticActivate?: (path: string) => void;
   onNavigate?: (path: string, label: string) => void;
   onPreload?: (path: string) => void;
   isNavigating?: boolean;
 };
 
-const NavItem = ({ to, icon: Icon, label, labelClassName = '', optimisticActivePath, onOptimisticActivate, onNavigate, onPreload, isNavigating = false }: AppNavItemProps) => {
+const NavItem = ({ to, icon: Icon, label, labelClassName = '', onNavigate, onPreload, isNavigating = false }: AppNavItemProps) => {
   const location = useLocation();
-  const isActive = (optimisticActivePath || location.pathname) === to;
+  const isActive = location.pathname === to;
   return (
     <button
       type="button"
       onClick={() => {
         if (isNavigating) return;
-        onOptimisticActivate?.(to);
         onNavigate?.(to, label);
       }}
       onMouseEnter={() => onPreload?.(to)}
@@ -154,12 +175,140 @@ const MobileNavButton = ({
 };
 
 
-const RouteActivationObserver = ({ onRouteCommitted }: { onRouteCommitted: () => void }) => {
-  const location = useLocation();
+const RouteReadyBoundary = ({
+  routePath,
+  routeLabel,
+  pageInstanceId,
+  isActive,
+  transitionId,
+  onReady,
+  children,
+}: {
+  routePath: string;
+  routeLabel: string;
+  pageInstanceId: string;
+  isActive: boolean;
+  transitionId: number | null;
+  onReady: (routePath: string, routeLabel: string) => void;
+  children: React.ReactElement;
+}) => {
+  const [shellPainted, setShellPainted] = React.useState(false);
+
   useEffect(() => {
-    onRouteCommitted();
-  }, [location.pathname, onRouteCommitted]);
-  return null;
+    if (!isActive) return;
+    setShellPainted(false);
+  }, [isActive, routeLabel, routePath, transitionId]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    perfLog('navigation.route.render', {
+      routePath,
+      routeLabel,
+      pageInstanceId,
+      transitionId,
+    });
+  }, [isActive, pageInstanceId, routeLabel, routePath, transitionId]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
+    let didEmit = false;
+    let firstFrame: number | null = null;
+    let secondFrame: number | null = null;
+
+    perfLog('navigation.route.first_paint.schedule', {
+      routePath,
+      routeLabel,
+      pageInstanceId,
+      transitionId,
+    });
+
+    firstFrame = window.requestAnimationFrame(() => {
+      firstFrame = null;
+      secondFrame = window.requestAnimationFrame(() => {
+        secondFrame = null;
+        if (cancelled) return;
+        didEmit = true;
+        perfLog('navigation.route.first_paint.emit', {
+          routePath,
+          routeLabel,
+          pageInstanceId,
+          transitionId,
+        });
+        perfLog('navigation.route.first_paint', {
+          routePath,
+          routeLabel,
+          pageInstanceId,
+          transitionId,
+          source: 'boundary',
+        });
+        setShellPainted(true);
+        onReady(routePath, routeLabel);
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      if (firstFrame !== null) {
+        window.cancelAnimationFrame(firstFrame);
+      }
+      if (secondFrame !== null) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+      if (!didEmit) {
+        perfLog('navigation.route.first_paint.cancel', {
+          routePath,
+          routeLabel,
+          pageInstanceId,
+          transitionId,
+        });
+      }
+    };
+  }, [isActive, onReady, pageInstanceId, routeLabel, routePath, transitionId]);
+
+  return (
+    <RouteReadyProvider value={{ routePath, routeLabel, transitionId, shellPainted, isRouteActive: isActive, pageInstanceId }}>
+      {children}
+    </RouteReadyProvider>
+  );
+};
+
+const PersistentRouteSlot = ({
+  config,
+  isActive,
+  transitionId,
+  onReady,
+}: {
+  config: PersistentRouteConfig;
+  isActive: boolean;
+  transitionId: number | null;
+  onReady: (routePath: string, routeLabel: string) => void;
+}) => {
+  const Component = config.component;
+  const pageInstanceId = getPersistentPageInstanceId(config.path);
+  return (
+    <section
+      key={config.path}
+      className={getRouteContainerClass(config.path)}
+      hidden={!isActive}
+      aria-hidden={!isActive}
+      data-route-path={config.path}
+      data-route-active={isActive ? 'true' : 'false'}
+    >
+      <Suspense fallback={isActive ? <LightweightLoader label="Loading page..." className="min-h-[320px]" /> : null}>
+        <RouteReadyBoundary
+          routePath={config.path}
+          routeLabel={config.label}
+          pageInstanceId={pageInstanceId}
+          isActive={isActive}
+          transitionId={transitionId}
+          onReady={onReady}
+        >
+          <Component />
+        </RouteReadyBoundary>
+      </Suspense>
+    </section>
+  );
 };
 
 const MenuController = ({ setIsMenuOpen }: { setIsMenuOpen: (open: boolean) => void }) => {
@@ -210,14 +359,32 @@ function AppContent() {
   const [cloudStatus, setCloudStatus] = useState<{ status: string; message?: string }>({ status: navigator.onLine ? 'loading' : 'offline' });
   const [opStatus, setOpStatus] = useState<{ phase: 'start' | 'success' | 'error'; message: string; op?: string } | null>(null);
   const [salesCartCount, setSalesCartCount] = useState(0);
-  const [optimisticActivePath, setOptimisticActivePath] = useState<string | null>(null);
   const [showAdminReminder, setShowAdminReminder] = useState(false);
   const [adminReminderSummary, setAdminReminderSummary] = useState<AdminReminderSummary | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
   const [navigationLabel, setNavigationLabel] = useState<string | null>(null);
   const navigationSafetyTimeoutRef = React.useRef<number | null>(null);
-  const clearOptimisticActivePath = React.useCallback(() => setOptimisticActivePath(null), []);
-  const isFinanceRoute = location.pathname === '/finance';
+  const navigationSequenceRef = React.useRef(0);
+  const navigationTraceRef = React.useRef<{ fromPath: string; targetPath: string; label: string; startedAt: number; transitionId: number } | null>(null);
+  const mountedPersistentPathsRef = React.useRef<Set<string>>(new Set());
+  const previousPersistentActivePathRef = React.useRef<string | null>(null);
+  const [mountedPersistentPaths, setMountedPersistentPaths] = useState<string[]>([]);
+  const persistentRouteConfigByPath = React.useMemo(() => new Map(PERSISTENT_ROUTE_CONFIGS.map((config) => [config.path, config])), []);
+  const activePersistentRouteConfig = persistentRouteConfigByPath.get(location.pathname) || null;
+  const isPersistentRouteAllowed = React.useCallback((config: PersistentRouteConfig | null) => {
+    if (!config) return false;
+    if (authStatus !== 'authenticated') return false;
+    if (config.permission && !can(config.permission)) return false;
+    return true;
+  }, [authStatus]);
+  const isPersistentRouteActive = isPersistentRouteAllowed(activePersistentRouteConfig);
+  const renderedPersistentPaths = React.useMemo(() => {
+    const paths = new Set(mountedPersistentPaths);
+    if (isPersistentRouteActive && activePersistentRouteConfig) {
+      paths.add(activePersistentRouteConfig.path);
+    }
+    return Array.from(paths);
+  }, [activePersistentRouteConfig, isPersistentRouteActive, mountedPersistentPaths]);
 
   const preloadRoute = React.useCallback((path: string) => {
     const preload = ROUTE_PRELOADERS[path];
@@ -225,10 +392,35 @@ function AppContent() {
     void preload();
   }, []);
 
-  const clearNavigationState = React.useCallback(() => {
+  const clearNavigationState = React.useCallback((reason: 'route_ready' | 'timeout', routePath?: string, routeLabel?: string) => {
     if (navigationSafetyTimeoutRef.current !== null) {
       window.clearTimeout(navigationSafetyTimeoutRef.current);
       navigationSafetyTimeoutRef.current = null;
+    }
+    const trace = navigationTraceRef.current;
+    if (trace && reason === 'route_ready' && routePath && trace.targetPath !== routePath) {
+      perfLog('navigation.loader.end_ignored', {
+        reason,
+        routePath,
+        routeLabel: routeLabel || null,
+        transitionId: trace.transitionId,
+        expectedTargetPath: trace.targetPath,
+      });
+      return;
+    }
+    if (trace) {
+      const durationMs = Math.round((performance.now() - trace.startedAt) * 100) / 100;
+      perfLog('navigation.loader.end', {
+        fromPath: trace.fromPath,
+        targetPath: trace.targetPath,
+        targetLabel: trace.label,
+        transitionId: trace.transitionId,
+        routePath: routePath || null,
+        readyRouteLabel: routeLabel || null,
+        reason,
+        durationMs,
+      });
+      navigationTraceRef.current = null;
     }
     setIsNavigating(false);
     setNavigationLabel(null);
@@ -236,6 +428,29 @@ function AppContent() {
 
   const startRouteNavigation = React.useCallback((path: string, label: string) => {
     if (path === location.pathname || isNavigating) return;
+    const startedAt = performance.now();
+    const transitionId = ++navigationSequenceRef.current;
+    navigationTraceRef.current = {
+      fromPath: location.pathname,
+      targetPath: path,
+      label,
+      startedAt,
+      transitionId,
+    };
+    perfLog('navigation.click', {
+      fromPath: location.pathname,
+      toPath: path,
+      targetLabel: label,
+      transitionId,
+      startedAtMs: Math.round(startedAt * 100) / 100,
+    });
+    perfLog('navigation.loader.start', {
+      fromPath: location.pathname,
+      toPath: path,
+      targetLabel: label,
+      transitionId,
+      startedAtMs: Math.round(startedAt * 100) / 100,
+    });
     setIsNavigating(true);
     setNavigationLabel(`Opening ${label}...`);
     if (navigationSafetyTimeoutRef.current !== null) {
@@ -243,13 +458,70 @@ function AppContent() {
     }
     navigationSafetyTimeoutRef.current = window.setTimeout(() => {
       navigationSafetyTimeoutRef.current = null;
-      setIsNavigating(false);
-      setNavigationLabel(null);
+      clearNavigationState('timeout');
     }, NAVIGATION_SAFETY_TIMEOUT_MS);
     window.requestAnimationFrame(() => {
+      perfLog('navigation.navigate.dispatch', {
+        fromPath: location.pathname,
+        toPath: path,
+        targetLabel: label,
+        transitionId,
+      });
       navigate(path);
     });
-  }, [isNavigating, location.pathname, navigate]);
+  }, [clearNavigationState, isNavigating, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (authStatus === 'authenticated') return;
+    mountedPersistentPathsRef.current.clear();
+    previousPersistentActivePathRef.current = null;
+    setMountedPersistentPaths([]);
+  }, [authStatus]);
+
+  useEffect(() => {
+    const nextActivePath = isPersistentRouteActive && activePersistentRouteConfig ? activePersistentRouteConfig.path : null;
+    const previousActivePath = previousPersistentActivePathRef.current;
+
+    if (previousActivePath && previousActivePath !== nextActivePath) {
+      const previousConfig = persistentRouteConfigByPath.get(previousActivePath);
+      if (previousConfig) {
+        perfLog('route.cache.deactivate', {
+          routePath: previousConfig.path,
+          routeLabel: previousConfig.label,
+          pageInstanceId: getPersistentPageInstanceId(previousConfig.path),
+        });
+      }
+    }
+
+    if (nextActivePath && activePersistentRouteConfig) {
+      const wasMounted = mountedPersistentPathsRef.current.has(nextActivePath);
+      if (!wasMounted) {
+        mountedPersistentPathsRef.current.add(nextActivePath);
+        setMountedPersistentPaths(Array.from(mountedPersistentPathsRef.current));
+        perfLog('route.cache.first_mount', {
+          routePath: activePersistentRouteConfig.path,
+          routeLabel: activePersistentRouteConfig.label,
+          pageInstanceId: getPersistentPageInstanceId(activePersistentRouteConfig.path),
+        });
+      } else if (previousActivePath !== nextActivePath) {
+        perfLog('route.cache.reuse', {
+          routePath: activePersistentRouteConfig.path,
+          routeLabel: activePersistentRouteConfig.label,
+          pageInstanceId: getPersistentPageInstanceId(activePersistentRouteConfig.path),
+        });
+      }
+
+      if (previousActivePath !== nextActivePath) {
+        perfLog('route.cache.activate', {
+          routePath: activePersistentRouteConfig.path,
+          routeLabel: activePersistentRouteConfig.label,
+          pageInstanceId: getPersistentPageInstanceId(activePersistentRouteConfig.path),
+        });
+      }
+    }
+
+    previousPersistentActivePathRef.current = nextActivePath;
+  }, [activePersistentRouteConfig, isPersistentRouteActive, persistentRouteConfigByPath]);
 
   useEffect(() => {
     if (!auth) {
@@ -368,10 +640,6 @@ function AppContent() {
   };
 
   useEffect(() => {
-    clearNavigationState();
-  }, [location.pathname, clearNavigationState]);
-
-  useEffect(() => {
     return () => {
       if (navigationSafetyTimeoutRef.current !== null) {
         window.clearTimeout(navigationSafetyTimeoutRef.current);
@@ -461,10 +729,6 @@ function AppContent() {
 
   return (
       <>
-      <RouteActivationObserver onRouteCommitted={() => {
-        clearOptimisticActivePath();
-        clearNavigationState();
-      }} />
       <MenuController setIsMenuOpen={setIsMenuOpen} />
       <div className="flex h-screen bg-background overflow-hidden">
         {isNavigating && (
@@ -534,18 +798,18 @@ function AppContent() {
           
           <nav className="flex-1 px-4 space-y-1">
             <p className="px-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 mt-2">Menu</p>
-            <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
-            <NavItem to="/" icon={Package} label="Inventory" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
-            <NavItem to="/telegram-posts" icon={Send} label="Telegram Posts" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
-            <NavItem to="/sales" icon={ShoppingCart} label="Sales" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
-            <NavItem to="/transactions" icon={ArrowRightLeft} label="Transactions" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
-            {can('analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
-            <NavItem to="/customers" icon={Users} label="Customers" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />
-            {can('reports') && <NavItem to="/pdf" icon={FileText} label="Reports" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
-            {can('settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
-            {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
-            <NavItem to="/finance" icon={Landmark} label="Finance" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
-            {can('purchases') && <NavItem to="/purchase-panel" icon={ClipboardList} label="Purchase Parties" optimisticActivePath={optimisticActivePath} onOptimisticActivate={setOptimisticActivePath} onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />}
+            <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/" icon={Package} label="Inventory" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/telegram-posts" icon={Send} label="Telegram Posts" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/sales" icon={ShoppingCart} label="Sales" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            <NavItem to="/transactions" icon={ArrowRightLeft} label="Transactions" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            {can('analytics') && <NavItem to="/product-analytics" icon={BarChart3} label="Product Analytics" onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            <NavItem to="/customers" icon={Users} label="Customers" onNavigate={startRouteNavigation} isNavigating={isNavigating} />
+            {can('reports') && <NavItem to="/pdf" icon={FileText} label="Reports" onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            {can('settings') && <NavItem to="/settings" icon={SettingsIcon} label="Settings" onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            {can('cashbook') && <NavItem to="/cashbook" icon={Landmark} label="Cashbook" onNavigate={startRouteNavigation} isNavigating={isNavigating} />}
+            <NavItem to="/finance" icon={Landmark} label="Finance" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />
+            {can('purchases') && <NavItem to="/purchase-panel" icon={ClipboardList} label="Purchase Parties" onNavigate={startRouteNavigation} onPreload={preloadRoute} isNavigating={isNavigating} />}
 
           </nav>
           
@@ -643,31 +907,47 @@ function AppContent() {
 
         {/* Main Content */}
         <main className="flex-1 overflow-auto bg-background">
-          <div className={isFinanceRoute ? 'min-h-full pb-20 md:pb-8' : 'min-h-full p-4 md:p-8 pb-20 md:pb-8 max-w-7xl mx-auto'}>
-            <Suspense fallback={<LightweightLoader label="Loading page…" className="min-h-[320px]" />}>
+          {renderedPersistentPaths.map((path) => {
+            const config = persistentRouteConfigByPath.get(path);
+            if (!config) return null;
+            if (!isPersistentRouteAllowed(config) && location.pathname === config.path) return null;
+            return (
+              <PersistentRouteSlot
+                key={config.path}
+                config={config}
+                isActive={location.pathname === config.path && isPersistentRouteAllowed(config)}
+                transitionId={navigationTraceRef.current?.transitionId ?? null}
+                onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}
+              />
+            );
+          })}
+          {!isPersistentRouteActive && (
+            <div className={getRouteContainerClass(location.pathname)}>
+              <Suspense fallback={<LightweightLoader label="Loading page..." className="min-h-[320px]" />}>
               <Routes>
-                <Route path="/" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Admin /></ProtectedRoute>} />
-                <Route path="/telegram-posts" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><TelegramPosts /></ProtectedRoute>} />
-                <Route path="/transactions" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Transactions /></ProtectedRoute>} />
-                <Route path="/dashboard" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Dashboard /></ProtectedRoute>} />
-                <Route path="/product-analytics" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="analytics" label="Product Analytics"><ProductAnalytics /></AccessControlledRoute>} />
-                <Route path="/customers" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Customers /></ProtectedRoute>} />
-                <Route path="/pdf" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="reports" label="Reports"><Reports /></AccessControlledRoute>} />
-                <Route path="/settings" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="Settings"><Settings /></AccessControlledRoute>} />
-                <Route path="/whatsapp-logs" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="WhatsApp Logs"><WhatsAppLogs /></AccessControlledRoute>} />
-                <Route path="/cashbook" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="cashbook" label="Cashbook"><Cashbook /></AccessControlledRoute>} />
-                <Route path="/finance" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Finance /></ProtectedRoute>} />
-                <Route path="/expense-repair" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="Expense Repair"><ExpenseRepair /></AccessControlledRoute>} />
-                <Route path="/purchase-panel" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="purchases" label="Purchase Parties"><PurchasePanel /></AccessControlledRoute>} />
+                <Route path="/" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/" routeLabel="Inventory" pageInstanceId={getPersistentPageInstanceId('/')} isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Admin /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/telegram-posts" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/telegram-posts" routeLabel="Telegram Posts" pageInstanceId="route:telegram-posts" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><TelegramPosts /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/transactions" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/transactions" routeLabel="Transactions" pageInstanceId={getPersistentPageInstanceId('/transactions')} isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Transactions /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/dashboard" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/dashboard" routeLabel="Dashboard" pageInstanceId={getPersistentPageInstanceId('/dashboard')} isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Dashboard /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/product-analytics" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="analytics" label="Product Analytics"><RouteReadyBoundary routePath="/product-analytics" routeLabel="Product Analytics" pageInstanceId="route:product-analytics" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><ProductAnalytics /></RouteReadyBoundary></AccessControlledRoute>} />
+                <Route path="/customers" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/customers" routeLabel="Customers" pageInstanceId={getPersistentPageInstanceId('/customers')} isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Customers /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/pdf" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="reports" label="Reports"><RouteReadyBoundary routePath="/pdf" routeLabel="Reports" pageInstanceId="route:pdf" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Reports /></RouteReadyBoundary></AccessControlledRoute>} />
+                <Route path="/settings" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="Settings"><RouteReadyBoundary routePath="/settings" routeLabel="Settings" pageInstanceId="route:settings" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Settings /></RouteReadyBoundary></AccessControlledRoute>} />
+                <Route path="/whatsapp-logs" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="WhatsApp Logs"><RouteReadyBoundary routePath="/whatsapp-logs" routeLabel="WhatsApp Logs" pageInstanceId="route:whatsapp-logs" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><WhatsAppLogs /></RouteReadyBoundary></AccessControlledRoute>} />
+                <Route path="/cashbook" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="cashbook" label="Cashbook"><RouteReadyBoundary routePath="/cashbook" routeLabel="Cashbook" pageInstanceId="route:cashbook" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Cashbook /></RouteReadyBoundary></AccessControlledRoute>} />
+                <Route path="/finance" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/finance" routeLabel="Finance" pageInstanceId={getPersistentPageInstanceId('/finance')} isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Finance /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/expense-repair" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="settings" label="Expense Repair"><RouteReadyBoundary routePath="/expense-repair" routeLabel="Expense Repair" pageInstanceId="route:expense-repair" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><ExpenseRepair /></RouteReadyBoundary></AccessControlledRoute>} />
+                <Route path="/purchase-panel" element={<AccessControlledRoute isVerified={authStatus === "authenticated"} permission="purchases" label="Purchase Parties"><RouteReadyBoundary routePath="/purchase-panel" routeLabel="Purchase Parties" pageInstanceId="route:purchase-panel" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><PurchasePanel /></RouteReadyBoundary></AccessControlledRoute>} />
                 
                 {/* Unprotected Route (POS) */}
-                <Route path="/sales" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><Sales /></ProtectedRoute>} />
+                <Route path="/sales" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/sales" routeLabel="Sales" pageInstanceId="route:sales" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Sales /></RouteReadyBoundary></ProtectedRoute>} />
                 
                 <Route path="/verify-email" element={<VerificationRequired email={currentEmail || undefined} />} />
                 <Route path="*" element={<Navigate to="/" />} />
               </Routes>
-            </Suspense>
-          </div>
+              </Suspense>
+            </div>
+          )}
         </main>
       </div>
       {authStatus === 'authenticated' && !roleSession && <RoleLoginModal onLogin={handleAccessLogin} />}

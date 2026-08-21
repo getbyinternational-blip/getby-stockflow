@@ -5,7 +5,7 @@ import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry, Expense, CashAdjustment, DeleteCompensationRecord, ManualCashbookEntry } from '../types';
 import { NO_COLOR, NO_VARIANT } from '../services/productVariants';
 import { auth } from '../services/firebase';
-import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
+import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getHistoricalAwareSaleSettlement, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
 import { generateReceiptPDF } from '../services/pdf';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { appendWhatsAppLog } from '../services/whatsappLogs';
@@ -21,7 +21,9 @@ import { useRoleSession } from '../src/auth/roleSession';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { useRouteReady } from '../src/routing/routeReady';
 import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
+import { computeFilteredTransactionIds, type TransactionFilterRequest, type TransactionsFilterType } from '../services/transactionsFilter';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
@@ -59,6 +61,29 @@ export default function Transactions() {
   const renderStartLoggedRef = useRef(false);
   const firstEffectLoggedRef = useRef(false);
   const readyLoggedRef = useRef(false);
+  const TRANSACTIONS_VIEW_STATE_KEY = 'stockflow.transactions.view-state';
+  const readPersistedViewState = () => {
+    if (typeof window === 'undefined') {
+      return { filterType: 'today', customStart: '', customEnd: '', searchTerm: '' };
+    }
+    try {
+      const parsed = JSON.parse(window.sessionStorage.getItem(TRANSACTIONS_VIEW_STATE_KEY) || '{}') as Partial<{
+        filterType: string;
+        customStart: string;
+        customEnd: string;
+        searchTerm: string;
+      }>;
+      return {
+        filterType: parsed.filterType || 'today',
+        customStart: parsed.customStart || '',
+        customEnd: parsed.customEnd || '',
+        searchTerm: parsed.searchTerm || '',
+      };
+    } catch {
+      return { filterType: 'today', customStart: '', customEnd: '', searchTerm: '' };
+    }
+  };
+  const initialViewState = readPersistedViewState();
   if (!renderStartLoggedRef.current) {
     renderStartLoggedRef.current = true;
     perfLog('page.Transactions.render.start', { runId: perfRunIdRef.current });
@@ -129,21 +154,84 @@ export default function Transactions() {
 
   const DELETED_ROWS_PER_PAGE = 25;
   const DELETED_WINDOW_BATCH_SIZE = 100;
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>([]);
-  const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>([]);
-  const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>([]);
-  const [deletedTransactions, setDeletedTransactions] = useState<DeletedTransactionRecord[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
-  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>([]);
-  const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>([]);
-  const [filterType, setFilterType] = useState('today');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
+  const TRANSACTION_RENDER_BATCH_SIZE = 100;
+  const routeReady = useRouteReady();
+  const isRouteActive = routeReady?.isRouteActive ?? true;
+  const initialDataRef = useRef<{
+    transactions: Transaction[];
+    expenses: Expense[];
+    cashAdjustments: CashAdjustment[];
+    manualCashbookEntries: ManualCashbookEntry[];
+    deleteCompensations: DeleteCompensationRecord[];
+    deletedTransactions: DeletedTransactionRecord[];
+    customers: Customer[];
+    products: Product[];
+    purchaseOrders: PurchaseOrder[];
+    upfrontOrders: UpfrontOrder[];
+    supplierPayments: SupplierPaymentLedgerEntry[];
+    deletedWindowCursor: TransactionPageCursor;
+    hasMoreDeletedWindow: boolean;
+    isDeletedWindowed: boolean;
+    loadError: string | null;
+  } | null>(null);
+  if (initialDataRef.current === null) {
+    try {
+      const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
+      const data = loadData();
+      initialDataRef.current = {
+        transactions: data.transactions || [],
+        expenses: (data as any).expenses || [],
+        cashAdjustments: (data as any).cashAdjustments || [],
+        manualCashbookEntries: (data as any).manualCashbookEntries || [],
+        deleteCompensations: (data as any).deleteCompensations || [],
+        deletedTransactions: deletedWindow.rows,
+        customers: data.customers || [],
+        products: data.products || [],
+        purchaseOrders: data.purchaseOrders || [],
+        upfrontOrders: data.upfrontOrders || [],
+        supplierPayments: (data as any).supplierPayments || [],
+        deletedWindowCursor: deletedWindow.nextCursor,
+        hasMoreDeletedWindow: deletedWindow.hasMore,
+        isDeletedWindowed: deletedWindow.hasMore,
+        loadError: null,
+      };
+    } catch {
+      initialDataRef.current = {
+        transactions: [],
+        expenses: [],
+        cashAdjustments: [],
+        manualCashbookEntries: [],
+        deleteCompensations: [],
+        deletedTransactions: [],
+        customers: [],
+        products: [],
+        purchaseOrders: [],
+        upfrontOrders: [],
+        supplierPayments: [],
+        deletedWindowCursor: null,
+        hasMoreDeletedWindow: false,
+        isDeletedWindowed: false,
+        loadError: 'Unable to load transactions right now. Please try again.',
+      };
+    }
+  }
+  const initialData = initialDataRef.current;
+  const [transactions, setTransactions] = useState<Transaction[]>(initialData.transactions);
+  const [expenses, setExpenses] = useState<Expense[]>(initialData.expenses);
+  const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>(initialData.cashAdjustments);
+  const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>(initialData.manualCashbookEntries);
+  const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>(initialData.deleteCompensations);
+  const [deletedTransactions, setDeletedTransactions] = useState<DeletedTransactionRecord[]>(initialData.deletedTransactions);
+  const [customers, setCustomers] = useState<Customer[]>(initialData.customers);
+  const [products, setProducts] = useState<Product[]>(initialData.products);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(initialData.purchaseOrders);
+  const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>(initialData.upfrontOrders);
+  const [supplierPayments, setSupplierPayments] = useState<SupplierPaymentLedgerEntry[]>(initialData.supplierPayments);
+  const [filterType, setFilterType] = useState(initialViewState.filterType);
+  const [customStart, setCustomStart] = useState(initialViewState.customStart);
+  const [customEnd, setCustomEnd] = useState(initialViewState.customEnd);
+  const [searchTerm, setSearchTerm] = useState(initialViewState.searchTerm);
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(initialViewState.searchTerm);
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [selectedKpiKey, setSelectedKpiKey] = useState<TransactionKpiKey | null>(null);
   const [viewMode, setViewMode] = useState<'default' | 'list' | 'list-details' | 'medium'>('list-details');
@@ -179,8 +267,14 @@ export default function Transactions() {
   const [editingError, setEditingError] = useState<string | null>(null);
   const [editingSectionWarning, setEditingSectionWarning] = useState<{ section: 'lines' | 'settlement' | 'customer' | 'general'; message: string } | null>(null);
   const [isSavingTransaction, setIsSavingTransaction] = useState(false);
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isInitialLoading, setIsInitialLoading] = useState(false);
+  const [isTransactionsProcessing, setIsTransactionsProcessing] = useState(false);
+  const [hasProcessedCurrentQuery, setHasProcessedCurrentQuery] = useState(false);
+  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
+  const [visibleTransactionCount, setVisibleTransactionCount] = useState(TRANSACTION_RENDER_BATCH_SIZE);
+  const [isLoadingMoreTransactions, setIsLoadingMoreTransactions] = useState(false);
+  const [lastTransactionProcessingMs, setLastTransactionProcessingMs] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(initialData.loadError);
   const [showBin, setShowBin] = useState(false);
   const [selectedDeletedTx, setSelectedDeletedTx] = useState<DeletedTransactionRecord | null>(null);
   const [deleteTargetTx, setDeleteTargetTx] = useState<Transaction | null>(null);
@@ -197,9 +291,15 @@ export default function Transactions() {
   const [deleteReasonOther, setDeleteReasonOther] = useState('');
   const [deletedPage, setDeletedPage] = useState(1);
   const [waSendingStage, setWaSendingStage] = useState<string | null>(null);
-  const [deletedWindowCursor, setDeletedWindowCursor] = useState<TransactionPageCursor>(null);
-  const [hasMoreDeletedWindow, setHasMoreDeletedWindow] = useState(false);
-  const [isDeletedWindowed, setIsDeletedWindowed] = useState(true);
+  const [deletedWindowCursor, setDeletedWindowCursor] = useState<TransactionPageCursor>(initialData.deletedWindowCursor);
+  const [hasMoreDeletedWindow, setHasMoreDeletedWindow] = useState(initialData.hasMoreDeletedWindow);
+  const [isDeletedWindowed, setIsDeletedWindowed] = useState(initialData.isDeletedWindowed);
+  const transactionProcessingRequestRef = useRef(0);
+  const transactionProcessingLoaderTimeoutRef = useRef<number | null>(null);
+  const loadMoreTransactionsSentinelRef = useRef<HTMLDivElement | null>(null);
+  const transactionWorkerRef = useRef<Worker | null>(null);
+  const transactionWorkerBusyRef = useRef(false);
+  const transactionsWorkerFailedRef = useRef(false);
   const virtualSupplierPaymentTransactions = useMemo<Transaction[]>(() => (supplierPayments || [])
     .filter((payment) => !payment.deletedAt)
     .map((payment) => {
@@ -504,7 +604,9 @@ export default function Transactions() {
       }, { runId: perfRunIdRef.current });
     };
 
-    refreshData();
+    if (loadError) {
+      refreshData();
+    }
     void perfMeasureAsync('page.Transactions.refreshDeletedTransactionsBin.startup', () => refreshDeletedTransactionsBin(), {
       runId: perfRunIdRef.current,
     });
@@ -521,12 +623,32 @@ export default function Transactions() {
         window.removeEventListener('storage', handleRefresh);
         window.removeEventListener('local-storage-update', handleRefresh);
     };
-  }, []);
+  }, [loadError]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(COLORED_ROWS_STORAGE_KEY, useColoredTransactionRows ? 'true' : 'false');
   }, [COLORED_ROWS_STORAGE_KEY, useColoredTransactionRows]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.sessionStorage.setItem(TRANSACTIONS_VIEW_STATE_KEY, JSON.stringify({
+      filterType,
+      customStart,
+      customEnd,
+      searchTerm,
+    }));
+  }, [TRANSACTIONS_VIEW_STATE_KEY, customEnd, customStart, filterType, searchTerm]);
+
+  useEffect(() => {
+    perfLog('page.Transactions.filter.change', {
+      runId: perfRunIdRef.current,
+      filterType,
+      customStart,
+      customEnd,
+      searchTermLength: searchTerm.trim().length,
+    });
+  }, [customEnd, customStart, filterType, searchTerm]);
 
   useEffect(() => {
     if (isInitialLoading || readyLoggedRef.current) return;
@@ -571,93 +693,6 @@ export default function Transactions() {
     if (!next.hasMore) setIsDeletedWindowed(false);
   };
 
-  const dateFilteredTransactions = useMemo(() => perfMeasureSync('page.Transactions.derive.dateFilteredTransactions', () => {
-      const now = new Date();
-      now.setHours(0,0,0,0); // Start of today
-
-      return renderedTransactions.filter(tx => {
-          const txDate = getTransactionBusinessDayStart(tx);
-          if (!txDate) return false;
-          
-          switch(filterType) {
-              case 'today':
-                  return txDate.getTime() === now.getTime();
-              case 'yesterday':
-                  const yest = new Date(now);
-                  yest.setDate(yest.getDate() - 1);
-                  return txDate.getTime() === yest.getTime();
-              case '7days':
-                  const week = new Date(now);
-                  week.setDate(week.getDate() - 7);
-                  return txDate >= week;
-              case '15days':
-                  const days15 = new Date(now);
-                  days15.setDate(days15.getDate() - 15);
-                  return txDate >= days15;
-              case '30days':
-                  const days30 = new Date(now);
-                  days30.setDate(days30.getDate() - 30);
-                  return txDate >= days30;
-              case 'thismonth': {
-                  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-                  monthStart.setHours(0, 0, 0, 0);
-                  return txDate >= monthStart;
-              }
-              case '6months':
-                  const months6 = new Date(now);
-                  months6.setMonth(months6.getMonth() - 6);
-                  return txDate >= months6;
-              case '1year':
-                  const year1 = new Date(now);
-                  year1.setFullYear(year1.getFullYear() - 1);
-                  return txDate >= year1;
-              case 'all':
-                  return true;
-              case 'custom':
-                  if (!customStart) return true;
-                  const start = new Date(customStart);
-                  start.setHours(0,0,0,0);
-                  if (txDate < start) return false;
-                  
-                  if (customEnd) {
-                      const end = new Date(customEnd);
-                      end.setHours(23,59,59,999);
-                      if (txDate > end) return false;
-                  }
-                  return true;
-              default:
-                  return true;
-          }
-      }).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, {
-    runId: perfRunIdRef.current,
-    renderedTransactions: renderedTransactions.length,
-    filterType,
-  }), [renderedTransactions, filterType, customStart, customEnd]);
-
-  useEffect(() => {
-    if (!(import.meta as any).env?.DEV) return;
-    const sampleRows = (supplierPayments || []).slice(0, 5).map((payment) => {
-      const selectedDate = payment.paidAt || (payment as any).paymentDate || (payment as any).date || payment.createdAt || null;
-      const normalizedDate = selectedDate && Number.isFinite(new Date(selectedDate).getTime()) ? new Date(selectedDate).toISOString() : null;
-      const includedBeforeDateFilter = !payment.deletedAt && !!normalizedDate;
-      const includedAfterDateFilter = dateFilteredTransactions.some((tx) => tx.id === `supplier-payment-${payment.id}`);
-      return {
-        id: payment.id,
-        voucherNo: payment.voucherNo,
-        partyName: payment.partyName,
-        amount: payment.amount,
-        method: payment.method,
-        rawDates: { paidAt: payment.paidAt, paymentDate: (payment as any).paymentDate, date: (payment as any).date, createdAt: payment.createdAt },
-        selectedDate,
-        normalizedDate,
-        includedBeforeDateFilter,
-        includedAfterDateFilter,
-        excludedReason: payment.deletedAt ? 'deleted' : (!normalizedDate ? 'invalid_date' : (includedAfterDateFilter ? null : 'filtered_by_date')),
-      };
-    });
-  }, [supplierPayments, renderedTransactions, dateFilteredTransactions, filterType]);
-
   const customerPhoneById = useMemo(
     () => new Map(customers.map(customer => [customer.id, customer.phone || ''])),
     [customers]
@@ -666,49 +701,236 @@ export default function Transactions() {
     () => new Map<string, Product>(products.map(product => [product.id, product])),
     [products]
   );
-  const sortTransactionsForDisplay = (rows: Transaction[]) => (
-    [...rows].sort((left, right) => {
-      const leftReserve = normalizeCashSource((left as any).cashSource) === 'reserve' || getTransactionCashSourceLabel(left) === 'Reserve Cash';
-      const rightReserve = normalizeCashSource((right as any).cashSource) === 'reserve' || getTransactionCashSourceLabel(right) === 'Reserve Cash';
-      if (leftReserve !== rightReserve) return leftReserve ? -1 : 1;
-      return new Date(right.date).getTime() - new Date(left.date).getTime();
+
+  const searchableTransactions = useMemo(() => perfMeasureSync('page.Transactions.derive.searchableTransactions', () => (
+    renderedTransactions.map((tx) => {
+      const customerPhone = tx.customerId ? (customerPhoneById.get(tx.customerId) || '') : '';
+      const itemSearchText = normalizeTransactionItems(tx.items)
+        .map((item) => {
+          const product = productsById.get(item.id);
+          return [
+            item.id,
+            product?.id || '',
+            item.name || '',
+            product?.name || '',
+            product?.barcode || '',
+          ].join(' ');
+        })
+        .join(' ');
+      return {
+        tx,
+        businessDayStartMs: getTransactionBusinessDayStart(tx)?.getTime() ?? Number.NaN,
+        sortDateMs: Number.isFinite(new Date(tx.date).getTime()) ? new Date(tx.date).getTime() : 0,
+        reserveFirst: normalizeCashSource((tx as any).cashSource) === 'reserve' || getTransactionCashSourceLabel(tx) === 'Reserve Cash',
+        searchText: [
+          tx.id,
+          tx.customerName || '',
+          customerPhone,
+          tx.customerId || '',
+          tx.receiptNo || '',
+          tx.paymentMethod || '',
+          tx.notes || '',
+          itemSearchText,
+        ].join(' ').toLowerCase(),
+      };
     })
+  ), {
+    runId: perfRunIdRef.current,
+    renderedTransactions: renderedTransactions.length,
+  }), [renderedTransactions, customerPhoneById, productsById]);
+
+  const searchableTransactionRows = useMemo(() => searchableTransactions.map((entry) => ({
+    id: entry.tx.id,
+    businessDayStartMs: entry.businessDayStartMs,
+    sortDateMs: entry.sortDateMs,
+    reserveFirst: entry.reserveFirst,
+    searchText: entry.searchText,
+  })), [searchableTransactions]);
+
+  const transactionsById = useMemo(
+    () => new Map(renderedTransactions.map((tx) => [tx.id, tx])),
+    [renderedTransactions]
   );
 
-  const filteredTransactions = useMemo(() => perfMeasureSync('page.Transactions.derive.filteredTransactions', () => {
-    const query = searchTerm.trim().toLowerCase();
-    if (!query) return sortTransactionsForDisplay(dateFilteredTransactions);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [searchTerm]);
 
-    return sortTransactionsForDisplay(dateFilteredTransactions.filter((tx) => {
-      const customerPhone = tx.customerId ? (customerPhoneById.get(tx.customerId) || '') : '';
-      const baseHaystack = [
-        tx.id,
-        tx.customerName || '',
-        customerPhone,
-        tx.customerId || '',
-        tx.receiptNo || '',
-        tx.paymentMethod || '',
-      ].join(' ').toLowerCase();
-      if (baseHaystack.includes(query)) return true;
-      if ((tx.notes || '').toLowerCase().includes(query)) return true;
+  useEffect(() => {
+    const requestId = ++transactionProcessingRequestRef.current;
+    let cancelled = false;
+    setHasProcessedCurrentQuery(false);
+    perfLog('page.Transactions.filter.worker_dispatch', {
+      runId: perfRunIdRef.current,
+      requestId,
+      filterType,
+      customStart,
+      customEnd,
+      queryLength: debouncedSearchTerm.trim().length,
+      rows: searchableTransactionRows.length,
+    });
+    if (transactionProcessingLoaderTimeoutRef.current !== null) {
+      window.clearTimeout(transactionProcessingLoaderTimeoutRef.current);
+      transactionProcessingLoaderTimeoutRef.current = null;
+    }
+    transactionProcessingLoaderTimeoutRef.current = window.setTimeout(() => {
+      if (!cancelled && transactionProcessingRequestRef.current === requestId) {
+        setIsTransactionsProcessing(true);
+      }
+    }, 150);
 
-      return normalizeTransactionItems(tx.items).some((item) => {
-        const product = productsById.get(item.id);
-        const itemHaystack = [
-          item.id,
-          product?.id || '',
-          item.name || '',
-          product?.name || '',
-          product?.barcode || '',
-        ].join(' ').toLowerCase();
-        return itemHaystack.includes(query);
+    const finishProcessing = (matchingIds: string[], durationMs: number) => {
+      if (cancelled || transactionProcessingRequestRef.current !== requestId) return;
+      perfLog('page.Transactions.filter.worker_result_apply.start', {
+        runId: perfRunIdRef.current,
+        requestId,
+        matchingIds: matchingIds.length,
+        workerDurationMs: durationMs,
       });
-    }));
-  }, {
-    runId: perfRunIdRef.current,
-    dateFilteredTransactions: dateFilteredTransactions.length,
-    searchLength: searchTerm.trim().length,
-  }), [dateFilteredTransactions, searchTerm, customerPhoneById, productsById]);
+      const nextFilteredTransactions = matchingIds
+        .map((id) => transactionsById.get(id))
+        .filter((tx): tx is Transaction => Boolean(tx));
+      setFilteredTransactions(nextFilteredTransactions);
+      setVisibleTransactionCount(Math.min(TRANSACTION_RENDER_BATCH_SIZE, nextFilteredTransactions.length));
+      setIsLoadingMoreTransactions(false);
+      setLastTransactionProcessingMs(durationMs);
+      setHasProcessedCurrentQuery(true);
+      if (transactionProcessingLoaderTimeoutRef.current !== null) {
+        window.clearTimeout(transactionProcessingLoaderTimeoutRef.current);
+        transactionProcessingLoaderTimeoutRef.current = null;
+      }
+      setIsTransactionsProcessing(false);
+      perfLog('page.Transactions.filter.worker_result_apply.end', {
+        runId: perfRunIdRef.current,
+        requestId,
+        filteredTransactions: nextFilteredTransactions.length,
+        visibleTransactions: Math.min(TRANSACTION_RENDER_BATCH_SIZE, nextFilteredTransactions.length),
+        workerDurationMs: durationMs,
+      });
+    };
+
+    const requestPayload: TransactionFilterRequest = {
+      requestId,
+      rows: searchableTransactionRows,
+      filterType: filterType as TransactionsFilterType,
+      customStart,
+      customEnd,
+      query: debouncedSearchTerm,
+    };
+
+    const runSyncFallback = () => {
+      const frame = window.requestAnimationFrame(() => {
+        const result = perfMeasureSync('page.Transactions.compute.filteredTransactionsSyncFallback', () => (
+          computeFilteredTransactionIds(requestPayload)
+        ), {
+          runId: perfRunIdRef.current,
+          searchableTransactions: searchableTransactionRows.length,
+          filterType,
+          searchLength: debouncedSearchTerm.trim().length,
+        });
+        finishProcessing(result.matchingIds, result.durationMs);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    };
+
+    if (typeof window === 'undefined' || typeof Worker === 'undefined' || transactionsWorkerFailedRef.current) {
+      const cancelSync = runSyncFallback();
+      return () => {
+        cancelled = true;
+        cancelSync();
+        if (transactionProcessingLoaderTimeoutRef.current !== null) {
+          window.clearTimeout(transactionProcessingLoaderTimeoutRef.current);
+          transactionProcessingLoaderTimeoutRef.current = null;
+        }
+      };
+    }
+
+    if (transactionWorkerBusyRef.current && transactionWorkerRef.current) {
+      transactionWorkerRef.current.terminate();
+      transactionWorkerRef.current = null;
+      transactionWorkerBusyRef.current = false;
+    }
+
+    try {
+      const worker = transactionWorkerRef.current ?? new Worker(new URL('../workers/transactionsFilter.worker.ts', import.meta.url), { type: 'module' });
+      transactionWorkerRef.current = worker;
+      transactionWorkerBusyRef.current = true;
+      worker.onmessage = (event: MessageEvent<{ requestId: number; matchingIds: string[]; durationMs: number; error?: string }>) => {
+        if (cancelled || transactionProcessingRequestRef.current !== event.data.requestId) return;
+        transactionWorkerBusyRef.current = false;
+        perfLog('page.Transactions.filter.worker_result', {
+          runId: perfRunIdRef.current,
+          requestId: event.data.requestId,
+          matchingIds: event.data.matchingIds?.length || 0,
+          durationMs: event.data.durationMs,
+          hasError: Boolean(event.data.error),
+        });
+        if (event.data.error) {
+          transactionsWorkerFailedRef.current = true;
+          worker.terminate();
+          if (transactionWorkerRef.current === worker) {
+            transactionWorkerRef.current = null;
+          }
+          const result = perfMeasureSync('page.Transactions.compute.filteredTransactionsSyncFallback.afterWorkerError', () => (
+            computeFilteredTransactionIds(requestPayload)
+          ), {
+            runId: perfRunIdRef.current,
+            searchableTransactions: searchableTransactionRows.length,
+            filterType,
+            searchLength: debouncedSearchTerm.trim().length,
+          });
+          finishProcessing(result.matchingIds, result.durationMs);
+          return;
+        }
+        finishProcessing(event.data.matchingIds, event.data.durationMs);
+      };
+      worker.onerror = () => {
+        transactionWorkerBusyRef.current = false;
+        if (transactionWorkerRef.current === worker) {
+          transactionWorkerRef.current = null;
+        }
+        worker.terminate();
+        transactionsWorkerFailedRef.current = true;
+        const result = perfMeasureSync('page.Transactions.compute.filteredTransactionsSyncFallback.afterWorkerFailure', () => (
+          computeFilteredTransactionIds(requestPayload)
+        ), {
+          runId: perfRunIdRef.current,
+          searchableTransactions: searchableTransactionRows.length,
+          filterType,
+          searchLength: debouncedSearchTerm.trim().length,
+        });
+        finishProcessing(result.matchingIds, result.durationMs);
+      };
+      worker.postMessage(requestPayload);
+    } catch {
+      transactionsWorkerFailedRef.current = true;
+      const cancelSync = runSyncFallback();
+      return () => {
+        cancelled = true;
+        cancelSync();
+        if (transactionProcessingLoaderTimeoutRef.current !== null) {
+          window.clearTimeout(transactionProcessingLoaderTimeoutRef.current);
+          transactionProcessingLoaderTimeoutRef.current = null;
+        }
+      };
+    }
+
+    return () => {
+      cancelled = true;
+      if (transactionWorkerBusyRef.current && transactionWorkerRef.current) {
+        transactionWorkerRef.current.terminate();
+        transactionWorkerRef.current = null;
+        transactionWorkerBusyRef.current = false;
+      }
+      if (transactionProcessingLoaderTimeoutRef.current !== null) {
+        window.clearTimeout(transactionProcessingLoaderTimeoutRef.current);
+        transactionProcessingLoaderTimeoutRef.current = null;
+      }
+    };
+  }, [searchableTransactionRows, transactionsById, filterType, customStart, customEnd, debouncedSearchTerm]);
 
   const matchesCurrentDateFilter = (rawDate?: string) => {
     const parsed = rawDate ? new Date(rawDate) : null;
@@ -776,7 +998,7 @@ export default function Transactions() {
   };
 
   const filteredPurchaseOrders = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
+    const query = debouncedSearchTerm.trim().toLowerCase();
 
     return (purchaseOrders || []).filter((order) => {
       if (!order || order.status === 'cancelled') return false;
@@ -793,10 +1015,10 @@ export default function Transactions() {
 
       return haystack.includes(query);
     });
-  }, [purchaseOrders, searchTerm, filterType, customStart, customEnd]);
+  }, [purchaseOrders, debouncedSearchTerm, filterType, customStart, customEnd]);
 
   const filteredCashSupplierPayments = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
+    const query = debouncedSearchTerm.trim().toLowerCase();
 
     return (supplierPayments || []).filter((payment) => {
       if (!payment || payment.deletedAt) return false;
@@ -814,7 +1036,12 @@ export default function Transactions() {
 
       return haystack.includes(query);
     });
-  }, [supplierPayments, searchTerm, filterType, customStart, customEnd]);
+  }, [supplierPayments, debouncedSearchTerm, filterType, customStart, customEnd]);
+  const shouldShowPendingTransactionsState = !showBin
+    && !isTransactionsProcessing
+    && !hasProcessedCurrentQuery
+    && renderedTransactions.length > 0
+    && filteredTransactions.length === 0;
 
   const getDisplayPaymentMethod = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) return 'Cash';
@@ -823,9 +1050,8 @@ export default function Transactions() {
     if (isDeleteCompensationVirtualTransaction(tx)) return tx.paymentMethod || 'Cash';
     if (isPurchaseOrderVirtualTransaction(tx)) return tx.paymentMethod || 'Credit';
     if (tx.id.startsWith('upfront-')) return 'Advance';
-    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-    if (txType !== 'sale' && txType !== 'historical_reference') return tx.paymentMethod || 'Cash';
-    const settlement = getSaleSettlementBreakdown(tx);
+    if (!isSaleLikeTransaction(tx)) return tx.paymentMethod || 'Cash';
+    const settlement = getCanonicalSaleSettlement(tx);
     if (settlement.creditDue > 0) return 'Credit';
     if (settlement.cashPaid > 0 && settlement.onlinePaid > 0) return 'Split';
     if (settlement.onlinePaid > 0) return 'Online';
@@ -836,8 +1062,18 @@ export default function Transactions() {
     [renderedTransactions, selectedTransactionIds]
   );
   const paginatedTransactions = useMemo(() => {
-    return filteredTransactions;
-  }, [filteredTransactions]);
+    return filteredTransactions.slice(0, visibleTransactionCount);
+  }, [filteredTransactions, visibleTransactionCount]);
+  const hasMoreVisibleTransactions = visibleTransactionCount < filteredTransactions.length;
+  useEffect(() => {
+    if (showBin || isTransactionsProcessing || !hasProcessedCurrentQuery) return;
+    perfLog('page.Transactions.visible_rows.commit', {
+      runId: perfRunIdRef.current,
+      filteredTransactions: filteredTransactions.length,
+      visibleTransactions: paginatedTransactions.length,
+      hasMoreVisibleTransactions,
+    });
+  }, [filteredTransactions.length, hasMoreVisibleTransactions, hasProcessedCurrentQuery, isTransactionsProcessing, paginatedTransactions.length, showBin]);
   const getTransactionTypeUi = (tx: Transaction) => {
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     const isSale = txType === 'sale' || txType === 'historical_reference';
@@ -901,9 +1137,8 @@ export default function Transactions() {
     } as const;
   };
   const isCreditTransaction = (tx: Transaction) => {
-    const normalizedType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-    if (normalizedType !== 'sale' && normalizedType !== 'historical_reference') return false;
-    return getSaleSettlementBreakdown(tx).creditDue > 0;
+    if (!isSaleLikeTransaction(tx)) return false;
+    return getCanonicalSaleSettlement(tx).creditDue > 0;
   };
   const getTransactionRowSurfaceClass = (tx: Transaction) => {
     const normalizedType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
@@ -933,7 +1168,7 @@ export default function Transactions() {
     if (normalizedType === 'payment') return 'bg-blue-100/80 hover:bg-blue-50/60';
     return 'bg-slate-100/75 hover:bg-slate-50/55';
   };
-  const paginatedTransactionRows = useMemo(() => paginatedTransactions.map((tx) => {
+  const paginatedTransactionRows = useMemo(() => perfMeasureSync('page.Transactions.derive.visibleRows', () => paginatedTransactions.map((tx) => {
     const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
     const txTypeUi = getTransactionTypeUi(tx);
     const isSale = txTypeUi.isSale;
@@ -984,6 +1219,9 @@ export default function Transactions() {
       rowSubtleToneClass,
       rowSurfaceClass: getTransactionRowSurfaceClass(tx),
     };
+  }), {
+    runId: perfRunIdRef.current,
+    paginatedTransactions: paginatedTransactions.length,
   }), [paginatedTransactions]);
   const deletedTotalPages = useMemo(
     () => Math.max(1, Math.ceil(deletedTransactions.length / DELETED_ROWS_PER_PAGE)),
@@ -1004,6 +1242,25 @@ export default function Transactions() {
   useEffect(() => {
     setDeletedPage((prev) => Math.min(prev, deletedTotalPages));
   }, [deletedTotalPages]);
+
+  useEffect(() => {
+    if (!isRouteActive || showBin || isTransactionsProcessing || !hasMoreVisibleTransactions) return;
+    const sentinel = loadMoreTransactionsSentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      setIsLoadingMoreTransactions(true);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          setVisibleTransactionCount((prev) => Math.min(filteredTransactions.length, prev + TRANSACTION_RENDER_BATCH_SIZE));
+          setIsLoadingMoreTransactions(false);
+        });
+      });
+    }, { rootMargin: '240px 0px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [isRouteActive, showBin, isTransactionsProcessing, hasMoreVisibleTransactions, filteredTransactions.length, visibleTransactionCount]);
   const toSafeMoney = (value: unknown) => {
     const num = Number(value);
     if (!Number.isFinite(num)) return 0;
@@ -1019,6 +1276,69 @@ export default function Transactions() {
     return `${item.id}__${variant}__${color}__${toSafeMoney(item.sellPrice)}`;
   };
   const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const isSaleLikeTransaction = (tx: Transaction) => {
+    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+    return txType === 'sale' || txType === 'historical_reference';
+  };
+  const getCanonicalSaleSettlement = (tx: Transaction) => {
+    if (!isSaleLikeTransaction(tx)) {
+      return { cashPaid: 0, onlinePaid: 0, creditDue: 0 };
+    }
+
+    const baseSettlement = tx.type === 'historical_reference'
+      ? getHistoricalAwareSaleSettlement(tx)
+      : getSaleSettlementBreakdown(tx);
+    const amount = roundMoney(Math.max(0, Math.abs(Number(tx.total || 0))));
+    let cashPaid = roundMoney(Math.max(0, Number(baseSettlement.cashPaid || 0)));
+    let onlinePaid = roundMoney(Math.max(0, Number(baseSettlement.onlinePaid || 0)));
+    let creditDue = roundMoney(Math.max(0, Number(baseSettlement.creditDue || 0)));
+    const settlementTotal = roundMoney(cashPaid + onlinePaid + creditDue);
+
+    if (settlementTotal < amount) {
+      const remainder = roundMoney(amount - settlementTotal);
+      if (creditDue > 0) {
+        creditDue = roundMoney(creditDue + remainder);
+      } else if (onlinePaid > 0) {
+        onlinePaid = roundMoney(onlinePaid + remainder);
+      } else {
+        cashPaid = roundMoney(cashPaid + remainder);
+      }
+    } else if (settlementTotal > amount) {
+      let overflow = roundMoney(settlementTotal - amount);
+      const reduceComponent = (value: number) => {
+        const reduction = Math.min(value, overflow);
+        overflow = roundMoney(overflow - reduction);
+        return roundMoney(value - reduction);
+      };
+
+      if (creditDue > 0) creditDue = reduceComponent(creditDue);
+      if (overflow > 0 && onlinePaid > 0) onlinePaid = reduceComponent(onlinePaid);
+      if (overflow > 0 && cashPaid > 0) cashPaid = reduceComponent(cashPaid);
+    }
+
+    return {
+      cashPaid,
+      onlinePaid,
+      creditDue,
+    };
+  };
+  const isCustomerReceivableCashPayment = (tx: Transaction) => {
+    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+    if (txType !== 'payment') return false;
+    if (isSupplierPaymentVirtualTransaction(tx)) return false;
+    if (String(tx.paymentMethod || '').trim().toLowerCase() !== 'cash') return false;
+
+    const appliedToReceivable = Math.max(
+      0,
+      Number((tx as any).paymentAppliedToReceivable || 0),
+      Number((tx as any).paymentAppliedToCanonicalReceivable || 0),
+      Number((tx as any).paymentAppliedToCustomOrderReceivable || 0),
+      Number((tx as any).appliedToCanonicalReceivable || 0),
+      Number((tx as any).appliedToCustomOrderReceivable || 0),
+    );
+
+    return Boolean(tx.customerId || tx.customerName || appliedToReceivable > 0);
+  };
   function parseBusinessDate(value?: string | number | Date | null) {
     if (value instanceof Date) {
       return Number.isFinite(value.getTime()) ? new Date(value.getTime()) : null;
@@ -1070,7 +1390,7 @@ export default function Transactions() {
       const approved = await requestAdminOverride('Admin password required to edit transaction history.');
       if (!approved) return;
     }
-    const settlement = getSaleSettlementBreakdown(tx);
+    const settlement = getCanonicalSaleSettlement(tx);
     setEditingTx(tx);
     setEditingAmount(String(Math.abs(tx.total || 0)));
     setEditingTxDate(tx.date ? toLocalDateTimeInputValue(tx.date) : '');
@@ -1591,10 +1911,12 @@ export default function Transactions() {
     return {
       loadedTransactions: transactions.length,
       filteredTransactions: filteredTransactions.length,
+      visibleTransactions: Math.min(visibleTransactionCount, filteredTransactions.length),
+      lastTransactionProcessingMs,
       typeCounts,
       searchTerm,
     };
-  }, [transactions, filteredTransactions.length, searchTerm]);
+  }, [transactions, filteredTransactions.length, visibleTransactionCount, lastTransactionProcessingMs, searchTerm]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1603,8 +1925,7 @@ export default function Transactions() {
     if (!show) return;
   }, [diagnostics]);
 
-  const stats = useMemo(() => {
-      const productsById = new Map<string, Product>(products.map(product => [product.id, product]));
+  const transactionDerivedSummary = useMemo(() => perfMeasureSync('page.Transactions.derive.summary', () => {
       const resolveBuyPrice = (item: CartItem, txDate: string) => {
           const direct = Number.isFinite(item.buyPrice) ? Number(item.buyPrice) : 0;
           if (direct > 0) return direct;
@@ -1623,41 +1944,6 @@ export default function Transactions() {
       let totalReturns = 0;
       let grossProfit = 0;
       let totalDiscount = 0;
-
-      filteredTransactions.forEach(tx => {
-          const amount = Math.abs(tx.total);
-          const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-          const isSaleLike = txType === 'sale' || txType === 'historical_reference';
-          
-          if (isSaleLike) {
-              totalRevenue += amount;
-              totalDiscount += (tx.discount || 0);
-              // Calculate Profit: (Sell - Buy) * Qty
-              normalizeTransactionItems(tx.items).forEach(item => {
-                  const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
-                  grossProfit += profit;
-              });
-          } else if (tx.type === 'return') {
-              totalReturns += amount;
-              // Reverse Profit for returns
-              normalizeTransactionItems(tx.items).forEach(item => {
-                  const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
-                  grossProfit -= profit;
-              });
-          }
-      });
-
-       return {
-           totalRevenue,
-           totalReturns,
-           netSales: totalRevenue - totalReturns,
-           grossProfit,
-           totalDiscount
-       };
-  }, [filteredTransactions, products]);
-
-  const transactionKpis = useMemo(() => {
-      let totalRevenue = 0;
       let totalCash = 0;
       let totalCredit = 0;
       let totalOnline = 0;
@@ -1665,89 +1951,51 @@ export default function Transactions() {
       let totalCashIn = 0;
       let totalCashOut = 0;
 
-      filteredTransactions.forEach((tx) => {
-          const amount = Math.max(0, Math.abs(Number(tx.total || 0)));
+      filteredTransactions.forEach(tx => {
+          const amount = Math.abs(tx.total);
           const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+          const isSaleLike = isSaleLikeTransaction(tx);
           const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
-          const isSupplierPayment = isSupplierPaymentVirtualTransaction(tx);
-
-          if (isExpenseVirtualTransaction(tx)) {
-              totalCashOut += amount;
-              return;
-          }
-
-          if (isDeleteCompensationVirtualTransaction(tx)) {
-              totalCashOut += amount;
-              return;
-          }
-
-          if (isCashWithdrawalVirtualTransaction(tx)) {
-              if (paymentMethod === 'cash') totalCashOut += amount;
-              return;
-          }
-
-          if (isCashAdditionVirtualTransaction(tx)) {
-              if (paymentMethod === 'cash') totalCashIn += amount;
-              return;
-          }
-
-          if (isManualCashOutVirtualTransaction(tx)) {
-              totalCashOut += amount;
-              return;
-          }
-
-          if (isManualCashInVirtualTransaction(tx)) {
-              totalCashIn += amount;
-              return;
-          }
-
-          if (isPurchaseOrderVirtualTransaction(tx)) {
-              return;
-          }
-
-          if (txType === 'sale' || txType === 'historical_reference') {
-              const settlement = getSaleSettlementBreakdown(tx);
-              let cashPaid = roundMoney(Math.max(0, Number(settlement.cashPaid || 0)));
-              let creditDue = roundMoney(Math.max(0, Number(settlement.creditDue || 0)));
-              let onlinePaid = roundMoney(Math.max(0, Number(settlement.onlinePaid || 0)));
-              const settlementTotal = roundMoney(cashPaid + creditDue + onlinePaid);
-              const settlementDelta = roundMoney(amount - settlementTotal);
-              if (Math.abs(settlementDelta) >= 0.01) {
-                  if (creditDue > 0) creditDue = roundMoney(Math.max(0, creditDue + settlementDelta));
-                  else if (onlinePaid > 0) onlinePaid = roundMoney(Math.max(0, onlinePaid + settlementDelta));
-                  else cashPaid = roundMoney(Math.max(0, cashPaid + settlementDelta));
-              }
-
+          
+          if (isSaleLike) {
+              const settlement = getCanonicalSaleSettlement(tx);
+              const cashPaid = roundMoney(Math.max(0, Number(settlement.cashPaid || 0)));
+              const creditDue = roundMoney(Math.max(0, Number(settlement.creditDue || 0)));
+              const onlinePaid = roundMoney(Math.max(0, Number(settlement.onlinePaid || 0)));
               totalRevenue += amount;
+              totalDiscount += (tx.discount || 0);
               totalCash += cashPaid;
               totalCredit += creditDue;
               totalOnline += onlinePaid;
               totalCashIn += cashPaid;
-              return;
-          }
-
-          if (txType === 'payment') {
-              if (isSupplierPayment) {
-                  if (paymentMethod === 'cash') {
-                      totalCashOut += amount;
-                  }
-                  return;
-              }
-
-              if (paymentMethod === 'cash') {
+              // Calculate Profit: (Sell - Buy) * Qty
+              normalizeTransactionItems(tx.items).forEach(item => {
+                  const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
+                  grossProfit += profit;
+              });
+          } else if (tx.type === 'return') {
+              totalReturns += amount;
+              const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
+              if (paymentMethod === 'cash' || returnMode === 'refund_cash') totalCashOut += amount;
+              // Reverse Profit for returns
+              normalizeTransactionItems(tx.items).forEach(item => {
+                  const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
+                  grossProfit -= profit;
+              });
+          } else if (isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx)) {
+              totalCashOut += amount;
+          } else if (isCashWithdrawalVirtualTransaction(tx)) {
+              if (paymentMethod === 'cash') totalCashOut += amount;
+          } else if (isCashAdditionVirtualTransaction(tx) || isManualCashInVirtualTransaction(tx)) {
+              if (paymentMethod === 'cash' || isManualCashInVirtualTransaction(tx)) totalCashIn += amount;
+          } else if (txType === 'payment') {
+              if (isSupplierPaymentVirtualTransaction(tx)) {
+                  if (paymentMethod === 'cash') totalCashOut += amount;
+              } else if (isCustomerReceivableCashPayment(tx)) {
                   totalCashIn += amount;
                   cashReceivedOnCreditDue += amount;
               }
-              return;
-          }
-
-          if (txType === 'return') {
-              const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
-              if (paymentMethod === 'cash' || returnMode === 'refund_cash') totalCashOut += amount;
-              return;
-          }
-
-          if (txType === 'customer_cash_out' && paymentMethod === 'cash') {
+          } else if (txType === 'customer_cash_out' && paymentMethod === 'cash') {
               totalCashOut += amount;
           }
       });
@@ -1769,18 +2017,35 @@ export default function Transactions() {
       );
 
       return {
-          totalRevenue: roundMoney(totalRevenue),
-          totalCash: roundMoney(totalCash),
-          totalCredit: roundMoney(totalCredit),
-          totalOnline: roundMoney(totalOnline),
-          totalCombined: roundMoney(totalCash + totalCredit + totalOnline),
-          totalPurchaseCash: roundMoney(totalPurchaseCash),
-          totalPurchaseCredit: roundMoney(totalPurchaseCredit),
-          cashReceivedOnCreditDue: roundMoney(cashReceivedOnCreditDue),
-          totalCashIn: roundMoney(totalCashIn),
-          totalCashOut: roundMoney(totalCashOut),
+          stats: {
+            totalRevenue,
+            totalReturns,
+            netSales: totalRevenue - totalReturns,
+            grossProfit,
+            totalDiscount,
+          },
+          kpis: {
+            totalRevenue: roundMoney(totalRevenue),
+            totalCash: roundMoney(totalCash),
+            totalCredit: roundMoney(totalCredit),
+            totalOnline: roundMoney(totalOnline),
+            totalCombined: roundMoney(totalCash + totalCredit + totalOnline),
+            totalPurchaseCash: roundMoney(totalPurchaseCash),
+            totalPurchaseCredit: roundMoney(totalPurchaseCredit),
+            cashReceivedOnCreditDue: roundMoney(cashReceivedOnCreditDue),
+            totalCashIn: roundMoney(totalCashIn),
+            totalCashOut: roundMoney(totalCashOut),
+          },
       };
-  }, [filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments]);
+  }, {
+    runId: perfRunIdRef.current,
+    filteredTransactions: filteredTransactions.length,
+    filteredPurchaseOrders: filteredPurchaseOrders.length,
+    filteredCashSupplierPayments: filteredCashSupplierPayments.length,
+  }), [filteredCashSupplierPayments, filteredPurchaseOrders, filteredTransactions, productsById]);
+
+  const stats = transactionDerivedSummary.stats;
+  const transactionKpis = transactionDerivedSummary.kpis;
 
   const transactionKpiCards = useMemo(() => ([
       { key: 'totalRevenue' as const, label: 'Total Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/70', labelClass: 'text-blue-700/80', valueClass: 'text-blue-950' },
@@ -1856,11 +2121,10 @@ export default function Transactions() {
         if (amount <= 0) return false;
         const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
         const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
-        const isSaleLike = txType === 'sale' || txType === 'historical_reference';
-        const isSupplierPayment = isSupplierPaymentVirtualTransaction(tx);
+        const isSaleLike = isSaleLikeTransaction(tx);
         const isCashInVirtual = isCashAdditionVirtualTransaction(tx) || isManualCashInVirtualTransaction(tx);
         const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
-        const settlement = isSaleLike ? getSaleSettlementBreakdown(tx) : null;
+        const settlement = isSaleLike ? getCanonicalSaleSettlement(tx) : null;
 
         switch (selectedKpiKey) {
           case 'totalRevenue':
@@ -1874,28 +2138,27 @@ export default function Transactions() {
           case 'totalCombined':
             return isSaleLike;
           case 'cashReceivedOnCreditDue':
-            return txType === 'payment' && !isSupplierPayment && paymentMethod === 'cash';
+            return isCustomerReceivableCashPayment(tx);
           case 'totalCashIn':
             return (isSaleLike && roundMoney(Math.max(0, Number(settlement?.cashPaid || 0))) > 0)
-              || (txType === 'payment' && !isSupplierPayment && paymentMethod === 'cash')
+              || isCustomerReceivableCashPayment(tx)
               || isCashInVirtual;
           case 'totalCashOut':
             return isCashOutVirtual
               || (txType === 'return' && (paymentMethod === 'cash' || String((tx as any).returnHandlingMode || '').trim().toLowerCase() === 'refund_cash'))
               || (txType === 'customer_cash_out' && paymentMethod === 'cash')
-              || (txType === 'payment' && isSupplierPayment && paymentMethod === 'cash');
+              || (txType === 'payment' && isSupplierPaymentVirtualTransaction(tx) && paymentMethod === 'cash');
           default:
             return false;
         }
       })
       .map((tx) => {
-        const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-        const settlement = (txType === 'sale' || txType === 'historical_reference') ? getSaleSettlementBreakdown(tx) : null;
+        const settlement = isSaleLikeTransaction(tx) ? getCanonicalSaleSettlement(tx) : null;
         let amount = Math.max(0, Math.abs(Number(tx.total || 0)));
         if (selectedKpiKey === 'totalCash') amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
         if (selectedKpiKey === 'totalCredit') amount = roundMoney(Math.max(0, Number(settlement?.creditDue || 0)));
         if (selectedKpiKey === 'totalOnline') amount = roundMoney(Math.max(0, Number(settlement?.onlinePaid || 0)));
-        if (selectedKpiKey === 'totalCashIn' && txType === 'sale') amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
+        if (selectedKpiKey === 'totalCashIn' && isSaleLikeTransaction(tx)) amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
         return {
           id: tx.id,
           date: getTransactionBusinessDate(tx) || tx.date,
@@ -1926,9 +2189,8 @@ export default function Transactions() {
       if (paidMatch) return `Paid ${paidMatch[1]} ? Remaining ${remainingMatch?.[1] || '0'}`;
       return `Total ${totalMatch?.[1] || '0'} ? Advance ${advanceMatch?.[1] || '0'} ? Remaining ${remainingMatch?.[1] || '0'}`;
     }
-    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-    if (txType !== 'sale' && txType !== 'historical_reference') return null;
-    const settlement = getSaleSettlementBreakdown(tx);
+    if (!isSaleLikeTransaction(tx)) return null;
+    const settlement = getCanonicalSaleSettlement(tx);
     const used = Math.max(0, Number(tx.storeCreditUsed || 0));
     return `Cash ${formatINRPrecise(settlement.cashPaid)} | Online ${formatINRPrecise(settlement.onlinePaid)} | Due ${formatINRPrecise(settlement.creditDue)}${used > 0 ? ` | SC ${formatINRPrecise(used)}` : ''}`;
   };
@@ -2261,7 +2523,13 @@ export default function Transactions() {
                 )}
               </Card>
             )
-        ) : filteredTransactions.length === 0 ? (
+        ) : isTransactionsProcessing || shouldShowPendingTransactionsState ? (
+            <Card className="border-none shadow-sm">
+              <CardContent className="p-8">
+                <LightweightLoader label="Loading transactions..." />
+              </CardContent>
+            </Card>
+        ) : hasProcessedCurrentQuery && filteredTransactions.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-lg bg-muted/10 text-muted-foreground">
                 <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-4">
                     <Calendar className="w-6 h-6 opacity-50" />
@@ -2319,7 +2587,7 @@ export default function Transactions() {
                                             </div>
                                         </td>
                                         <td className="px-4 py-3">
-                                            <Badge variant={typeVariant} className={`text-[9px] font-bold px-1.5 h-4 ${getPaymentStatusColorClass(typeTone)}`}>
+                                            <Badge variant={typeVariant} className={`min-h-4 w-fit whitespace-nowrap leading-none text-[9px] font-bold px-1.5 ${getPaymentStatusColorClass(typeTone)}`}>
                                                 {typeLabel}
                                             </Badge>
                                         </td>
@@ -2509,6 +2777,15 @@ export default function Transactions() {
                 })}
             </div>
         )}
+        {!showBin && !isTransactionsProcessing && hasMoreVisibleTransactions && (
+          <div ref={loadMoreTransactionsSentinelRef} className="flex items-center justify-center py-3">
+            {isLoadingMoreTransactions ? (
+              <div className="text-sm text-muted-foreground">Loading more transactions...</div>
+            ) : (
+              <div className="h-5 w-full" aria-hidden="true" />
+            )}
+          </div>
+        )}
       </div>
 
       {/* Transaction Detail Modal */}
@@ -2596,14 +2873,14 @@ export default function Transactions() {
                                   })()}
                                 </div>
                               )}
-                              {selectedTx.type === 'sale' && (
+                              {isSaleLikeTransaction(selectedTx) && (
                                 <div className="col-span-2 rounded-lg border bg-muted/10 p-2">
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Settlement</p>
                                   <p className="text-xs">Total Sale: {formatMoneyWhole(Math.abs(selectedTx.total))}</p>
                                   <p className="text-xs">Store Credit Used: {formatMoneyWhole(Number(selectedTx.storeCreditUsed || 0))}</p>
-                                  <p className="text-xs">Cash Paid: {formatMoneyWhole(getSaleSettlementBreakdown(selectedTx).cashPaid)}</p>
-                                  <p className="text-xs">Online Paid: {formatMoneyWhole(getSaleSettlementBreakdown(selectedTx).onlinePaid)}</p>
-                                  <p className="text-xs font-semibold">Credit Due Created: {formatMoneyWhole(getSaleSettlementBreakdown(selectedTx).creditDue)}</p>
+                                  <p className="text-xs">Cash Paid: {formatMoneyWhole(getCanonicalSaleSettlement(selectedTx).cashPaid)}</p>
+                                  <p className="text-xs">Online Paid: {formatMoneyWhole(getCanonicalSaleSettlement(selectedTx).onlinePaid)}</p>
+                                  <p className="text-xs font-semibold">Credit Due Created: {formatMoneyWhole(getCanonicalSaleSettlement(selectedTx).creditDue)}</p>
                                 </div>
                               )}
                           </div>
@@ -3201,8 +3478,8 @@ export default function Transactions() {
                         <div className="flex justify-between"><span>Credit Due</span><span>{formatMoneyPrecise(toSafeMoney(editingCreditDue))}</span></div>
                       </div>
                       {editingTx.type === 'sale' && (() => {
-                        const before = getSaleSettlementBreakdown(editingTx);
-                        const after = getSaleSettlementBreakdown(editingDraftTransaction || editingTx);
+                        const before = getCanonicalSaleSettlement(editingTx);
+                        const after = getCanonicalSaleSettlement(editingDraftTransaction || editingTx);
                         return (
                           <div className="rounded border bg-white p-2 space-y-1">
                             <div className="font-medium">Settlement change</div>

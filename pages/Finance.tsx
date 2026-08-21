@@ -2,7 +2,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, LightweightLoader } from '../components/ui';
 import { appendRepairHistoryEntry, buildUpfrontOrderLedgerEffects, getCanonicalCustomerBalanceSnapshot, getCanonicalReturnAllocation, loadData, safeFinancePersistState, processTransaction, getSaleSettlementBreakdown, saveExpenseToSubcollection, saveExpenseActivityToSubcollection, deleteExpenseFromSubcollection, isExpenseStoredInSubcollection, refreshDeletedTransactionsFromCloud, refreshExpenseActivitiesFromCloud } from '../services/storage';
 import { financeLog } from '../services/financeLogger';
 import { AppState, CartItem, CashAdjustment, CashSession, CashSource, Customer, DeleteCompensationRecord, DeletedTransactionRecord, Expense as CanonicalExpense, ExpenseActivity, ManualCashbookEntry, PurchaseOrder, RepairHistoryEntry, Transaction, UpdatedTransactionRecord, UpfrontOrder } from '../types';
@@ -18,6 +18,7 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { auth } from '../services/firebase';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
+import { useRouteReady } from '../src/routing/routeReady';
 
 type Expense = CanonicalExpense;
 
@@ -318,6 +319,32 @@ const getSessionCarryForwardBalance = (session: CashSession) => {
   const countedClosing = Number(session.closingBalance);
   if (!Number.isFinite(countedClosing) || countedClosing < 0) return 0;
   return roundMoney(Math.max(0, countedClosing - getSessionReservedCash(session)));
+};
+
+const EMPTY_FINANCE_SESSION_TOTALS = {
+  cashSales: 0,
+  deletedSaleCashIncluded: 0,
+  cashRefunds: 0,
+  activeCashRefunds: 0,
+  deleteCompensationRefunds: 0,
+  customerCashOutflow: 0,
+  activeCustomerCashOutflow: 0,
+  customerOnlineOutflow: 0,
+  customerCashCollections: 0,
+  customOrderCashCollections: 0,
+  cashCollections: 0,
+  cashAdditions: 0,
+  supplierCashPayments: 0,
+  activeSupplierCashPayments: 0,
+  expenses: 0,
+  activeExpenseTotal: 0,
+  cashWithdrawals: 0,
+  activeCashWithdrawals: 0,
+  expenseTotal: 0,
+  manualCashIn: 0,
+  manualCashOut: 0,
+  systemCashTotal: 0,
+  activeSystemCashTotal: 0,
 };
 
 const getLastValidClosingSession = (sessions: CashSession[]) => {
@@ -940,11 +967,18 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const renderStartLoggedRef = React.useRef(false);
   const firstEffectLoggedRef = React.useRef(false);
   const readyLoggedRef = React.useRef(false);
+  const dataReadyLoggedRef = React.useRef(false);
+  const detailedCashbookFrameRef = React.useRef<{ first: number | null; second: number | null }>({ first: null, second: null });
+  const storageRefreshFrameRef = React.useRef<number | null>(null);
+  const queuedStorageEventTypesRef = React.useRef<string[]>([]);
   if (!renderStartLoggedRef.current) {
     renderStartLoggedRef.current = true;
     perfLog('page.Finance.render.start', { runId: perfRunIdRef.current });
   }
   const { session: roleSession, requestAdminOverride } = useRoleSession();
+  const routeReady = useRouteReady();
+  const shellPainted = routeReady?.shellPainted ?? true;
+  const isRouteActive = routeReady?.isRouteActive ?? true;
   const formatExpenseLoggedDate = (expense: Expense) => {
     const rawExpense = expense as Expense & { date?: unknown; timestamp?: unknown; expenseDate?: unknown };
     const pick = rawExpense.effectiveAt ?? rawExpense.createdAt ?? rawExpense.date ?? rawExpense.timestamp ?? rawExpense.expenseDate;
@@ -977,6 +1011,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   const [data, setData] = useState<AppState>(loadData());
   const [errors, setErrors] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<FinanceTabKey>(lockedTab || initialTab);
+  const [isDetailedCashbookReady, setIsDetailedCashbookReady] = useState(false);
   useEffect(() => {
     if (lockedTab && activeTab !== lockedTab) {
       setActiveTab(lockedTab);
@@ -986,7 +1021,66 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   }, [activeTab, initialTab, lockedTab]);
   // Cash tab summary cards depend on the same canonical cashbook rows used by cashbook/profit tabs.
   // Keep derivation gated to tabs that actually render those metrics so other tabs stay lightweight.
-  const shouldComputeDetailedCashbook = activeTab === 'cash';
+  const shouldComputeDetailedCashbook = activeTab === 'cash' && isDetailedCashbookReady;
+  const isDetailedCashbookPending = activeTab === 'cash' && !isDetailedCashbookReady;
+  const shouldComputeExpenseTabDerives = activeTab === 'expense';
+
+  useEffect(() => {
+    if (detailedCashbookFrameRef.current.first !== null) {
+      window.cancelAnimationFrame(detailedCashbookFrameRef.current.first);
+      detailedCashbookFrameRef.current.first = null;
+    }
+    if (detailedCashbookFrameRef.current.second !== null) {
+      window.cancelAnimationFrame(detailedCashbookFrameRef.current.second);
+      detailedCashbookFrameRef.current.second = null;
+    }
+    if (!isRouteActive) {
+      return;
+    }
+    if (activeTab !== 'cash') {
+      if (isDetailedCashbookReady) {
+        setIsDetailedCashbookReady(false);
+      }
+      return;
+    }
+    if (isDetailedCashbookReady) {
+      return;
+    }
+    if (!shellPainted) {
+      perfLog('page.Finance.secondary.waiting_for_shell_paint', {
+        runId: perfRunIdRef.current,
+        activeTab,
+      });
+      return;
+    }
+    perfLog('page.Finance.secondary.schedule', {
+      runId: perfRunIdRef.current,
+      activeTab,
+      shellPainted,
+    });
+    detailedCashbookFrameRef.current.first = window.requestAnimationFrame(() => {
+      detailedCashbookFrameRef.current.first = null;
+      detailedCashbookFrameRef.current.second = window.requestAnimationFrame(() => {
+        detailedCashbookFrameRef.current.second = null;
+        perfLog('page.Finance.secondary.ready', {
+          runId: perfRunIdRef.current,
+          activeTab,
+          shellPainted,
+        });
+        setIsDetailedCashbookReady(true);
+      });
+    });
+    return () => {
+      if (detailedCashbookFrameRef.current.first !== null) {
+        window.cancelAnimationFrame(detailedCashbookFrameRef.current.first);
+        detailedCashbookFrameRef.current.first = null;
+      }
+      if (detailedCashbookFrameRef.current.second !== null) {
+        window.cancelAnimationFrame(detailedCashbookFrameRef.current.second);
+        detailedCashbookFrameRef.current.second = null;
+      }
+    };
+  }, [activeTab, isDetailedCashbookReady, isRouteActive, shellPainted]);
 
   const [openingBalance, setOpeningBalance] = useState('');
   const [openingBalanceAutoFilled, setOpeningBalanceAutoFilled] = useState(false);
@@ -1096,6 +1190,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         await Promise.all([refreshDeletedTransactionsFromCloud(), refreshExpenseActivitiesFromCloud()]);
         setData(loadData());
         setErrors(null);
+        perfLog('page.Finance.secondary_calculations_complete', {
+          runId: perfRunIdRef.current,
+        });
       } catch (error) {
         setErrors(getFriendlyErrorMessage(error, 'finance.refresh_non_critical'));
       }
@@ -1180,6 +1277,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   }, [activeHistoryDetailSessionId, activeHistorySession]);
 
   const cashHistorySummary = useMemo(() => perfMeasureSync('page.Finance.derive.cashHistorySummary', () => {
+    if (activeTab === 'cash' && !isDetailedCashbookReady) {
+      return { matched: 0, short: 0, over: 0 };
+    }
     const closed = filteredCashHistory.filter(session => session.status === 'closed');
     let matched = 0;
     let short = 0;
@@ -1200,7 +1300,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     filteredCashHistory: filteredCashHistory.length,
     transactions: data.transactions.length,
     expenses: expenses.length,
-  }), [filteredCashHistory, data.transactions, expenses]);
+    activeTab,
+    isDetailedCashbookReady,
+  }), [filteredCashHistory, data.transactions, expenses, activeTab, isDetailedCashbookReady]);
 
   const currentUserEmail = (getCurrentUser() || '').trim().toLowerCase();
   const todayKey = todayISO();
@@ -1281,30 +1383,50 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
   }, [cashSessions, latestCarryForwardSession, openSession]);
 
   useEffect(() => {
+    if (dataReadyLoggedRef.current) return;
+    dataReadyLoggedRef.current = true;
+    perfLog('page.Finance.data_ready', {
+      runId: perfRunIdRef.current,
+      transactions: data.transactions.length,
+      cashSessions: data.cashSessions.length,
+      expenses: data.expenses.length,
+      products: data.products.length,
+      customers: data.customers.length,
+    });
+  }, [data.cashSessions.length, data.customers.length, data.expenses.length, data.products.length, data.transactions.length]);
+
+  useEffect(() => {
     const handleStorageEvent = (event: Event) => {
-      perfMeasureSync('page.Finance.storage_event', () => {
-        const fresh = loadData();
-        financeShiftDiag('[FIN][SHIFT][STORAGE_EVENT]', {
-          type: event.type,
-          firedAt: new Date().toISOString(),
-          route: typeof window !== 'undefined' ? window.location.hash || window.location.pathname : 'unknown',
-          localCounts: getStateEntityCounts(data),
-          freshCounts: getStateEntityCounts(fresh),
-          localCashSessions: (data.cashSessions || []).length,
-          freshCashSessions: (fresh.cashSessions || []).length,
+      queuedStorageEventTypesRef.current.push(event.type);
+      if (storageRefreshFrameRef.current !== null) return;
+      storageRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        const eventTypes = Array.from(new Set(queuedStorageEventTypesRef.current));
+        queuedStorageEventTypesRef.current = [];
+        storageRefreshFrameRef.current = null;
+        perfMeasureSync('page.Finance.storage_event', () => {
+          const fresh = loadData();
+          financeShiftDiag('[FIN][SHIFT][STORAGE_EVENT]', {
+            type: eventTypes.join(','),
+            firedAt: new Date().toISOString(),
+            route: typeof window !== 'undefined' ? window.location.hash || window.location.pathname : 'unknown',
+            localCounts: getStateEntityCounts(data),
+            freshCounts: getStateEntityCounts(fresh),
+            localCashSessions: (data.cashSessions || []).length,
+            freshCashSessions: (fresh.cashSessions || []).length,
+          });
+          financeShiftDiag('[FIN][SHIFT][FRESHNESS_CHECK]', {
+            source: `event:${eventTypes.join(',')}`,
+            staleProducts: data.products.length !== fresh.products.length,
+            staleCustomers: data.customers.length !== fresh.customers.length,
+            staleTransactions: data.transactions.length !== fresh.transactions.length,
+            staleCashSessions: (data.cashSessions || []).length !== (fresh.cashSessions || []).length,
+            staleManualCashbookEntries: (data.manualCashbookEntries || []).length !== (fresh.manualCashbookEntries || []).length,
+          });
+          setData(fresh);
+        }, {
+          runId: perfRunIdRef.current,
+          eventTypes,
         });
-        financeShiftDiag('[FIN][SHIFT][FRESHNESS_CHECK]', {
-          source: `event:${event.type}`,
-          staleProducts: data.products.length !== fresh.products.length,
-          staleCustomers: data.customers.length !== fresh.customers.length,
-          staleTransactions: data.transactions.length !== fresh.transactions.length,
-          staleCashSessions: (data.cashSessions || []).length !== (fresh.cashSessions || []).length,
-          staleManualCashbookEntries: (data.manualCashbookEntries || []).length !== (fresh.manualCashbookEntries || []).length,
-        });
-        setData(fresh);
-      }, {
-        runId: perfRunIdRef.current,
-        eventType: event.type,
       });
     };
 
@@ -1322,6 +1444,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     window.addEventListener('local-storage-update', handleStorageEvent);
     window.addEventListener('cloud-sync-status', handleCloudSyncStatus as EventListener);
     return () => {
+      if (storageRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(storageRefreshFrameRef.current);
+      }
       window.removeEventListener('storage', handleStorageEvent);
       window.removeEventListener('local-storage-update', handleStorageEvent);
       window.removeEventListener('cloud-sync-status', handleCloudSyncStatus as EventListener);
@@ -1384,7 +1509,10 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     return candidate;
   };
 
-  const dailyCashTotals = useMemo(() => {
+  const dailyCashTotals = useMemo(() => perfMeasureSync('page.Finance.derive.dailyCashTotals', () => {
+    if (activeTab === 'cash' && !isDetailedCashbookReady) {
+      return EMPTY_FINANCE_SESSION_TOTALS;
+    }
     if (openSession) {
       return getSessionCashTotals(
         data.transactions,
@@ -1419,7 +1547,16 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       upfrontOrders,
       data.supplierPayments || []
     );
-  }, [
+  }, {
+    runId: perfRunIdRef.current,
+    activeTab,
+    isDetailedCashbookReady,
+    openSessionId: openSession?.id || null,
+    transactions: data.transactions.length,
+    expenses: expenses.length,
+    purchaseOrders: (data.purchaseOrders || []).length,
+    supplierPayments: (data.supplierPayments || []).length,
+  }), [
     openSession?.id,
     openSession?.startTime,
     data.transactions,
@@ -1431,6 +1568,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     data.purchaseOrders,
     data.supplierPayments,
     upfrontOrders,
+    activeTab,
+    isDetailedCashbookReady,
   ]);
 
   const closingCountTotal = useMemo(() => {
@@ -1462,8 +1601,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     [openSession, activeClosingForOpenSession],
   );
   const currentShiftTotalCash = useMemo(
-    () => roundMoney(Math.max(0, expectedClosingForOpenSession)),
-    [expectedClosingForOpenSession],
+    () => roundMoney(Math.max(0, activeClosingForOpenSession)),
+    [activeClosingForOpenSession],
   );
   const activeReserveBase = useMemo(
     () => {
@@ -1486,7 +1625,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     }
     return openSession.startTime;
   }, [openSession, latestCarryForwardSession]);
-  const activeReserveOutflowSinceSave = useMemo(() => {
+  const activeReserveOutflowSinceSave = useMemo(() => perfMeasureSync('page.Finance.derive.activeReserveOutflowSinceSave', () => {
+    if (activeTab === 'cash' && !isDetailedCashbookReady) return 0;
     if (!openSession || activeReserveBase <= 0) return 0;
     const savedAt = activeReserveSavedAt || openSession.startTime;
     const savedAtMs = new Date(savedAt).getTime();
@@ -1544,7 +1684,15 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       + reserveWithdrawals
       + reserveManualCashOut,
     );
-  }, [
+  }, {
+    runId: perfRunIdRef.current,
+    activeTab,
+    isDetailedCashbookReady,
+    openSessionId: openSession?.id || null,
+    transactions: data.transactions.length,
+    expenses: expenses.length,
+    supplierPayments: (data.supplierPayments || []).length,
+  }), [
     openSession,
     activeReserveBase,
     activeReserveSavedAt,
@@ -1554,6 +1702,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     data.supplierPayments,
     expenses,
     cashAdjustments,
+    activeTab,
+    isDetailedCashbookReady,
   ]);
   const activeCashInHand = useMemo(
     () => roundMoney(Math.max(0, activeReserveBase - activeReserveOutflowSinceSave)),
@@ -1627,7 +1777,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     () => roundMoney(Math.max(0, submittedClosingValue)),
     [submittedClosingValue],
   );
-  const reserveLedgerRows = useMemo(() => {
+  const reserveLedgerRows = useMemo(() => perfMeasureSync('page.Finance.derive.reserveLedgerRows', () => {
+    if (activeTab === 'cash' && !isDetailedCashbookReady) return [] as Array<{ id: string; date: string; type: string; details: string; amount: number }>;
     if (!openSession || activeReserveBase <= 0) return [] as Array<{ id: string; date: string; type: string; details: string; amount: number }>;
     const savedAtMs = new Date(activeReserveSavedAt || openSession.startTime).getTime();
     if (!Number.isFinite(savedAtMs)) return [] as Array<{ id: string; date: string; type: string; details: string; amount: number }>;
@@ -1721,7 +1872,15 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     });
 
     return rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [
+  }, {
+    runId: perfRunIdRef.current,
+    activeTab,
+    isDetailedCashbookReady,
+    openSessionId: openSession?.id || null,
+    transactions: data.transactions.length,
+    expenses: expenses.length,
+    supplierPayments: (data.supplierPayments || []).length,
+  }), [
     openSession,
     activeReserveBase,
     activeReserveSavedAt,
@@ -1731,6 +1890,8 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     data.manualCashbookEntries,
     expenses,
     cashAdjustments,
+    activeTab,
+    isDetailedCashbookReady,
   ]);
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
@@ -1848,9 +2009,17 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
       .sort((a, b) => new Date(getExpenseEffectiveDate(b)).getTime() - new Date(getExpenseEffectiveDate(a)).getTime());
   };
 
-  const filteredExpenses = useMemo(() => {
+  const filteredExpenses = useMemo(() => perfMeasureSync('page.Finance.derive.filteredExpenses', () => {
+    if (!shouldComputeExpenseTabDerives) return [] as Expense[];
     return filterExpensesCollection(expenses);
-  }, [expenses, expenseSearchQuery, expenseCategoryFilter]);
+  }, {
+    runId: perfRunIdRef.current,
+    activeTab,
+    expenses: expenses.length,
+    expensePreset,
+    expenseCategoryFilter,
+    hasSearchQuery: expenseSearchQuery.trim().length > 0,
+  }), [shouldComputeExpenseTabDerives, expenses, expenseSearchQuery, expenseCategoryFilter, expensePreset, expenseCustomFrom, expenseCustomTo, activeTab]);
 
   const expensesTotalForDate = useMemo(() => filteredExpenses.reduce((sum, e) => sum + e.amount, 0), [filteredExpenses]);
   const expenseReportFilterLabel = useMemo(() => {
@@ -1860,35 +2029,54 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     return labels.join(' | ');
   }, [expenseCategoryFilter, expenseSearchQuery]);
   const expenseFilterLabel = expenseReportFilterLabel;
-  const allExpensesTotal = useMemo(() => expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0), [expenses]);
+  const allExpensesTotal = useMemo(() => shouldComputeExpenseTabDerives ? expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0) : 0, [shouldComputeExpenseTabDerives, expenses]);
   const thisMonthExpensesTotal = useMemo(() => {
+    if (!shouldComputeExpenseTabDerives) return 0;
     const currentMonthKey = monthKeyOf(new Date().toISOString());
     return expenses
       .filter((expense) => monthKeyOf(getExpenseEffectiveDate(expense)) === currentMonthKey)
       .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
-  }, [expenses]);
+  }, [shouldComputeExpenseTabDerives, expenses]);
   const latestExpenseLoggedAt = filteredExpenses[0] ? getExpenseEffectiveDate(filteredExpenses[0]) : '';
 
 
-  const canonicalCustomerBalanceById = useMemo(() => {
+  const canonicalCustomerBalanceById = useMemo(() => perfMeasureSync('page.Finance.derive.canonicalCustomerBalanceById', () => {
+    if (!shouldComputeExpenseTabDerives) return new Map<string, ReturnType<typeof getCanonicalCustomerBalanceView>>();
     const map = new Map<string, ReturnType<typeof getCanonicalCustomerBalanceView>>();
     data.customers.forEach((customer) => {
       const view = getCanonicalCustomerBalanceView(customer, data.customers, data.transactions, data.upfrontOrders || []);
       map.set(customer.id, view);
     });
     return map;
-  }, [data.customers, data.transactions, data.upfrontOrders]);
+  }, {
+    runId: perfRunIdRef.current,
+    activeTab,
+    customers: data.customers.length,
+    transactions: data.transactions.length,
+    upfrontOrders: (data.upfrontOrders || []).length,
+  }), [shouldComputeExpenseTabDerives, data.customers, data.transactions, data.upfrontOrders, activeTab]);
 
-  const creditCustomers = useMemo(() => data.customers.filter(c => (canonicalCustomerBalanceById.get(c.id)?.currentDue || 0) > 0).sort((a, b) => (canonicalCustomerBalanceById.get(b.id)?.currentDue || 0) - (canonicalCustomerBalanceById.get(a.id)?.currentDue || 0)), [data.customers, canonicalCustomerBalanceById]);
+  const creditCustomers = useMemo(() => shouldComputeExpenseTabDerives
+    ? data.customers.filter(c => (canonicalCustomerBalanceById.get(c.id)?.currentDue || 0) > 0).sort((a, b) => (canonicalCustomerBalanceById.get(b.id)?.currentDue || 0) - (canonicalCustomerBalanceById.get(a.id)?.currentDue || 0))
+    : [], [shouldComputeExpenseTabDerives, data.customers, canonicalCustomerBalanceById]);
 
-  const dueStoreCreditSummary = useMemo(() => {
+  const dueStoreCreditSummary = useMemo(() => perfMeasureSync('page.Finance.derive.dueStoreCreditSummary', () => {
+    if (!shouldComputeExpenseTabDerives) {
+      return { status: 'idle' as const, totalDue: 0, totalStoreCredit: 0, errorMessage: '' };
+    }
     try {
       const snapshot = getCanonicalCustomerBalanceSnapshot(data.customers, data.transactions, data.upfrontOrders || []);
       return { status: 'ok' as const, totalDue: snapshot.totalDue, totalStoreCredit: snapshot.totalStoreCredit, errorMessage: '' };
     } catch (error) {
       return { status: 'error' as const, totalDue: 0, totalStoreCredit: 0, errorMessage: error instanceof Error ? error.message : 'Ledger calculation unavailable.' };
     }
-  }, [data.customers, data.transactions, data.upfrontOrders]);
+  }, {
+    runId: perfRunIdRef.current,
+    activeTab,
+    customers: data.customers.length,
+    transactions: data.transactions.length,
+    upfrontOrders: (data.upfrontOrders || []).length,
+  }), [shouldComputeExpenseTabDerives, data.customers, data.transactions, data.upfrontOrders, activeTab]);
 
   const scopedCashbookTransactions = useMemo(() => {
     if (cashbookScope === 'all') return data.transactions;
@@ -2681,8 +2869,9 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
     return { shiftStartingBalance, cashInMovement, cashOutMovement, bankInMovement, bankOutMovement };
   }, [openSession, openingBalance, cashManagementKpis, dailyCashTotals, todayFinanceBreakdown]);
   useEffect(() => {
-    const kpiDebugPayload = {
-      timestamp: new Date().toISOString(),
+    if (!FINANCE_DIAGNOSTIC_DEBUG_ENABLED) return;
+    perfLog('page.Finance.kpi_debug', {
+      runId: perfRunIdRef.current,
       openSession: openSession
         ? {
             id: openSession.id,
@@ -2691,7 +2880,6 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
             endTime: openSession.endTime || null,
             openingBalance: openSession.openingBalance,
             reservedCashOnHand: (openSession as any).reservedCashOnHand ?? null,
-            reservedCashSavedAt: (openSession as any).reservedCashSavedAt ?? null,
           }
         : null,
       shownKpis: {
@@ -2709,45 +2897,6 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         reserveCashKeptOutsideNextShift: closingReserveValue,
         totalAccessibleCash,
       },
-      shiftComputation: {
-        expectedClosingForOpenSession,
-        activeReserveBase,
-        activeReserveOutflowSinceSave,
-        activeReserveInputMax,
-        savedReservedCash: activeCashInHand,
-        savedUsableCash: currentOperationalCash,
-        reserveDraftValue,
-        reserveDraftDelta,
-        displayedReservedCash,
-        displayedUsableCash,
-        autoCarryForwardValue,
-        totalAccessibleCash,
-        closingVariance,
-      },
-      dailyCashTotals: {
-        cashSales: dailyCashTotals.cashSales || 0,
-        deletedSaleCashIncluded: dailyCashTotals.deletedSaleCashIncluded || 0,
-        cashRefunds: dailyCashTotals.cashRefunds || 0,
-        deleteCompensationRefunds: dailyCashTotals.deleteCompensationRefunds || 0,
-        customerCashOutflow: dailyCashTotals.customerCashOutflow || 0,
-        customerOnlineOutflow: dailyCashTotals.customerOnlineOutflow || 0,
-        customerCashCollections: dailyCashTotals.customerCashCollections || 0,
-        customOrderCashCollections: dailyCashTotals.customOrderCashCollections || 0,
-        cashCollections: dailyCashTotals.cashCollections || 0,
-        cashAdditions: dailyCashTotals.cashAdditions || 0,
-        supplierCashPayments: dailyCashTotals.supplierCashPayments || 0,
-        expenses: dailyCashTotals.expenses || 0,
-        cashWithdrawals: dailyCashTotals.cashWithdrawals || 0,
-        manualCashIn: dailyCashTotals.manualCashIn || 0,
-        manualCashOut: dailyCashTotals.manualCashOut || 0,
-        systemCashTotal: dailyCashTotals.systemCashTotal || 0,
-      },
-      cashManagementKpis,
-      todayFinanceBreakdown: {
-        onlineSalesAtSale: todayFinanceBreakdown.onlineSalesAtSale || 0,
-        onlineCollections: todayFinanceBreakdown.onlineCollections || 0,
-        onlineRefunds: todayFinanceBreakdown.onlineRefunds || 0,
-      },
       sourceCounts: {
         transactions: data.transactions.length,
         expenses: expenses.length,
@@ -2756,20 +2905,7 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
         purchaseOrders: (data.purchaseOrders || []).length,
         supplierPayments: (data.supplierPayments || []).length,
       },
-      recentManualCashbookEntries: (data.manualCashbookEntries || []).slice(0, 10).map((entry) => ({
-        id: entry.id,
-        type: entry.type,
-        amount: entry.amount,
-        date: entry.date,
-        createdAt: entry.createdAt,
-        updatedAt: entry.updatedAt,
-        isDeleted: entry.isDeleted || false,
-        details: entry.details || '',
-      })),
-    };
-    console.groupCollapsed('[Finance KPI Debug]');
-    console.log(kpiDebugPayload);
-    console.groupEnd();
+    });
   }, [
     openSession,
     financeMovementSummary,
@@ -4632,6 +4768,13 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
 
         {activeTab === 'cash' && (
           <div className="space-y-4">
+            {isDetailedCashbookPending && (
+              <Card className="border-slate-200 shadow-sm">
+                <CardContent className="py-4">
+                  <LightweightLoader label="Preparing detailed cashbook analytics..." />
+                </CardContent>
+              </Card>
+            )}
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <Card className="border-slate-200 shadow-sm">
                 <CardHeader>
@@ -4656,12 +4799,12 @@ export default function Finance({ repairMode = false, initialTab = 'cash', locke
                       type="button"
                       className="text-left"
                       onClick={() => {
-                        if (!openSession) return;
+                        if (!openSession || isDetailedCashbookPending) return;
                         setIsCurrentClosingBreakdownOpen(true);
                       }}
-                      disabled={!openSession}
+                      disabled={!openSession || isDetailedCashbookPending}
                     >
-                      <StatCard label="Closing Balance" value={formatINRSummary(closingBalanceKpiValue)} tone={!openSession ? 'neutral' : closingBalanceKpiValue < 0 ? 'bad' : 'good'} interactive={!!openSession} hint={openSession ? 'Click to view breakdown' : undefined} />
+                      <StatCard label="Closing Balance" value={formatINRSummary(closingBalanceKpiValue)} tone={!openSession ? 'neutral' : closingBalanceKpiValue < 0 ? 'bad' : 'good'} interactive={!!openSession && !isDetailedCashbookPending} hint={openSession ? (isDetailedCashbookPending ? 'Preparing breakdown...' : 'Click to view breakdown') : undefined} />
                     </button>
                   </div>
                   {openSession && (

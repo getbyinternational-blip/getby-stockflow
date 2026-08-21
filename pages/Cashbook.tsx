@@ -8,6 +8,7 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { BanknoteArrowDown, BanknoteArrowUp, ChevronDown, CreditCard, Receipt, ShoppingCart, Store, Truck, Wallet, X } from 'lucide-react';
 import { ResolvedCostSource, resolveTransactionItemCost } from '../services/costResolution';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
+import { perfLog } from '../services/perf';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -382,6 +383,8 @@ export default function Cashbook() {
   const dailyBreakdownTriggerRef = React.useRef<HTMLButtonElement | null>(null);
   const grossProfitModalRef = React.useRef<HTMLDivElement | null>(null);
   const grossProfitCloseButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const storageRefreshFrameRef = React.useRef<number | null>(null);
+  const queuedStorageEventTypesRef = React.useRef<string[]>([]);
   function closeDailyBreakdownModal() {
     setSelectedDailyBreakdownKey(null);
     window.setTimeout(() => {
@@ -391,24 +394,39 @@ export default function Cashbook() {
   useEscapeLayer(Boolean(selectedDailyBreakdownKey), closeDailyBreakdownModal, { priority: 110 });
   useEscapeLayer(isGrossProfitModalOpen, () => setIsGrossProfitModalOpen(false), { priority: 115 });
 
-  const refreshCashbookData = async () => {
+  const refreshCashbookData = React.useCallback(async () => {
     try {
       await refreshDeletedTransactionsFromCloud();
     } finally {
       setReloadKey((k) => k + 1);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void refreshCashbookData();
-    const handleReload = () => setReloadKey((k) => k + 1);
+    const handleReload = (event: Event) => {
+      queuedStorageEventTypesRef.current.push(event.type);
+      if (storageRefreshFrameRef.current !== null) return;
+      storageRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        const eventTypes = Array.from(new Set(queuedStorageEventTypesRef.current));
+        queuedStorageEventTypesRef.current = [];
+        storageRefreshFrameRef.current = null;
+        perfLog('page.Cashbook.storage_refresh', { eventTypes });
+        setReloadKey((k) => k + 1);
+      });
+    };
     window.addEventListener('local-storage-update', handleReload);
     window.addEventListener('storage', handleReload);
     return () => {
+      if (storageRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(storageRefreshFrameRef.current);
+        storageRefreshFrameRef.current = null;
+      }
+      queuedStorageEventTypesRef.current = [];
       window.removeEventListener('local-storage-update', handleReload);
       window.removeEventListener('storage', handleReload);
     };
-  }, []);
+  }, [refreshCashbookData]);
 
   const safeTransactions = asArray<Transaction>(data.transactions);
   const safeProducts = asArray<Product>((data as any).products);
