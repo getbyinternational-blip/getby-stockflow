@@ -1042,6 +1042,84 @@ export default function Transactions() {
     && !hasProcessedCurrentQuery
     && renderedTransactions.length > 0
     && filteredTransactions.length === 0;
+  const toSafeMoney = (value: unknown) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 0;
+    return Math.max(0, num);
+  };
+  const normalizeBucketValue = (value: unknown, fallback: string) => {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return normalized || fallback;
+  };
+  const getLineCompositeKey = (item: Pick<CartItem, 'id' | 'selectedVariant' | 'selectedColor' | 'sellPrice'>) => {
+    const variant = normalizeBucketValue(item.selectedVariant, NO_VARIANT);
+    const color = normalizeBucketValue(item.selectedColor, NO_COLOR);
+    return `${item.id}__${variant}__${color}__${toSafeMoney(item.sellPrice)}`;
+  };
+  const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const isSaleLikeTransaction = (tx: Transaction) => {
+    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+    return txType === 'sale' || txType === 'historical_reference';
+  };
+  const getCanonicalSaleSettlement = (tx: Transaction) => {
+    if (!isSaleLikeTransaction(tx)) {
+      return { cashPaid: 0, onlinePaid: 0, creditDue: 0 };
+    }
+
+    const baseSettlement = tx.type === 'historical_reference'
+      ? getHistoricalAwareSaleSettlement(tx)
+      : getSaleSettlementBreakdown(tx);
+    const amount = roundMoney(Math.max(0, Math.abs(Number(tx.total || 0))));
+    let cashPaid = roundMoney(Math.max(0, Number(baseSettlement.cashPaid || 0)));
+    let onlinePaid = roundMoney(Math.max(0, Number(baseSettlement.onlinePaid || 0)));
+    let creditDue = roundMoney(Math.max(0, Number(baseSettlement.creditDue || 0)));
+    const settlementTotal = roundMoney(cashPaid + onlinePaid + creditDue);
+
+    if (settlementTotal < amount) {
+      const remainder = roundMoney(amount - settlementTotal);
+      if (creditDue > 0) {
+        creditDue = roundMoney(creditDue + remainder);
+      } else if (onlinePaid > 0) {
+        onlinePaid = roundMoney(onlinePaid + remainder);
+      } else {
+        cashPaid = roundMoney(cashPaid + remainder);
+      }
+    } else if (settlementTotal > amount) {
+      let overflow = roundMoney(settlementTotal - amount);
+      const reduceComponent = (value: number) => {
+        const reduction = Math.min(value, overflow);
+        overflow = roundMoney(overflow - reduction);
+        return roundMoney(value - reduction);
+      };
+
+      if (creditDue > 0) creditDue = reduceComponent(creditDue);
+      if (overflow > 0 && onlinePaid > 0) onlinePaid = reduceComponent(onlinePaid);
+      if (overflow > 0 && cashPaid > 0) cashPaid = reduceComponent(cashPaid);
+    }
+
+    return {
+      cashPaid,
+      onlinePaid,
+      creditDue,
+    };
+  };
+  const isCustomerReceivableCashPayment = (tx: Transaction) => {
+    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+    if (txType !== 'payment') return false;
+    if (isSupplierPaymentVirtualTransaction(tx)) return false;
+    if (String(tx.paymentMethod || '').trim().toLowerCase() !== 'cash') return false;
+
+    const appliedToReceivable = Math.max(
+      0,
+      Number((tx as any).paymentAppliedToReceivable || 0),
+      Number((tx as any).paymentAppliedToCanonicalReceivable || 0),
+      Number((tx as any).paymentAppliedToCustomOrderReceivable || 0),
+      Number((tx as any).appliedToCanonicalReceivable || 0),
+      Number((tx as any).appliedToCustomOrderReceivable || 0),
+    );
+
+    return Boolean(tx.customerId || tx.customerName || appliedToReceivable > 0);
+  };
 
   const getDisplayPaymentMethod = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) return 'Cash';
@@ -1261,84 +1339,6 @@ export default function Transactions() {
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [isRouteActive, showBin, isTransactionsProcessing, hasMoreVisibleTransactions, filteredTransactions.length, visibleTransactionCount]);
-  const toSafeMoney = (value: unknown) => {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return 0;
-    return Math.max(0, num);
-  };
-  const normalizeBucketValue = (value: unknown, fallback: string) => {
-    const normalized = typeof value === 'string' ? value.trim() : '';
-    return normalized || fallback;
-  };
-  const getLineCompositeKey = (item: Pick<CartItem, 'id' | 'selectedVariant' | 'selectedColor' | 'sellPrice'>) => {
-    const variant = normalizeBucketValue(item.selectedVariant, NO_VARIANT);
-    const color = normalizeBucketValue(item.selectedColor, NO_COLOR);
-    return `${item.id}__${variant}__${color}__${toSafeMoney(item.sellPrice)}`;
-  };
-  const roundMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
-  const isSaleLikeTransaction = (tx: Transaction) => {
-    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-    return txType === 'sale' || txType === 'historical_reference';
-  };
-  const getCanonicalSaleSettlement = (tx: Transaction) => {
-    if (!isSaleLikeTransaction(tx)) {
-      return { cashPaid: 0, onlinePaid: 0, creditDue: 0 };
-    }
-
-    const baseSettlement = tx.type === 'historical_reference'
-      ? getHistoricalAwareSaleSettlement(tx)
-      : getSaleSettlementBreakdown(tx);
-    const amount = roundMoney(Math.max(0, Math.abs(Number(tx.total || 0))));
-    let cashPaid = roundMoney(Math.max(0, Number(baseSettlement.cashPaid || 0)));
-    let onlinePaid = roundMoney(Math.max(0, Number(baseSettlement.onlinePaid || 0)));
-    let creditDue = roundMoney(Math.max(0, Number(baseSettlement.creditDue || 0)));
-    const settlementTotal = roundMoney(cashPaid + onlinePaid + creditDue);
-
-    if (settlementTotal < amount) {
-      const remainder = roundMoney(amount - settlementTotal);
-      if (creditDue > 0) {
-        creditDue = roundMoney(creditDue + remainder);
-      } else if (onlinePaid > 0) {
-        onlinePaid = roundMoney(onlinePaid + remainder);
-      } else {
-        cashPaid = roundMoney(cashPaid + remainder);
-      }
-    } else if (settlementTotal > amount) {
-      let overflow = roundMoney(settlementTotal - amount);
-      const reduceComponent = (value: number) => {
-        const reduction = Math.min(value, overflow);
-        overflow = roundMoney(overflow - reduction);
-        return roundMoney(value - reduction);
-      };
-
-      if (creditDue > 0) creditDue = reduceComponent(creditDue);
-      if (overflow > 0 && onlinePaid > 0) onlinePaid = reduceComponent(onlinePaid);
-      if (overflow > 0 && cashPaid > 0) cashPaid = reduceComponent(cashPaid);
-    }
-
-    return {
-      cashPaid,
-      onlinePaid,
-      creditDue,
-    };
-  };
-  const isCustomerReceivableCashPayment = (tx: Transaction) => {
-    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-    if (txType !== 'payment') return false;
-    if (isSupplierPaymentVirtualTransaction(tx)) return false;
-    if (String(tx.paymentMethod || '').trim().toLowerCase() !== 'cash') return false;
-
-    const appliedToReceivable = Math.max(
-      0,
-      Number((tx as any).paymentAppliedToReceivable || 0),
-      Number((tx as any).paymentAppliedToCanonicalReceivable || 0),
-      Number((tx as any).paymentAppliedToCustomOrderReceivable || 0),
-      Number((tx as any).appliedToCanonicalReceivable || 0),
-      Number((tx as any).appliedToCustomOrderReceivable || 0),
-    );
-
-    return Boolean(tx.customerId || tx.customerName || appliedToReceivable > 0);
-  };
   function parseBusinessDate(value?: string | number | Date | null) {
     if (value instanceof Date) {
       return Number.isFinite(value.getTime()) ? new Date(value.getTime()) : null;
