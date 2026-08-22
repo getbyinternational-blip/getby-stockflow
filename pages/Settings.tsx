@@ -5,16 +5,34 @@ import { OperatorUser, StoreProfile, TAX_OPTIONS, resolveTaxOption } from '../ty
 import { loadData, updateOperatorUsers, updateStoreProfile, uploadImageFileToCloudinary } from '../services/storage';
 import { logout, getCurrentUser } from '../services/auth';
 import { auth } from '../services/firebase';
+import { collection, getDocs, limit, orderBy, query, Timestamp, where } from 'firebase/firestore';
+import { db } from '../services/firebase';
 import { getConfiguredWhatsAppServerUrl, getWhatsAppHealth, getWhatsAppQr, getWhatsAppStatus, getWhatsAppMetrics, createWhatsAppSession, restartWhatsAppSession, logoutWhatsAppSession, sendInvoiceViaWhatsApp, sendCustomerLedgerViaWhatsApp } from '../services/whatsappStatus';
 import { getOfficialWhatsAppConfigDiagnostics } from '../services/metaWhatsAppStatus';
 import { appendWhatsAppLog, getWhatsAppLogStats } from '../services/whatsappLogs';
 import { Button, Input, Card, CardContent, CardHeader, CardTitle, Label, Select } from '../components/ui';
-import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit } from 'lucide-react';
+import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit, History } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { getEffectiveAdminPin } from '../src/auth/permissions';
 import { isAdmin } from '../src/auth/simplePermissions';
 import { getNormalizedInvoicePrintPreferences, getStoredInvoicePrintPreferences, saveInvoicePrintPreferences } from '../services/invoicePrintPreferences';
 const isValidOperatorPin = (value: string) => /^\d{6,8}$/.test(value.trim());
+
+type RecentCommitEntry = {
+  time: string;
+  date: string;
+  author: string;
+  message: string;
+  hash: string;
+};
+
+type AuditEventEntry = {
+  id: string;
+  operation: string;
+  actorEmail: string;
+  createdAt: string;
+  reason: string;
+};
 
 const THERMAL_STYLE_OPTIONS = [
   { value: 'grocery', label: 'Grocery Classic' },
@@ -104,6 +122,11 @@ export default function Settings() {
   const [editingOperatorId, setEditingOperatorId] = useState<string | null>(null);
   const [editingOperatorName, setEditingOperatorName] = useState('');
   const [editingOperatorPassword, setEditingOperatorPassword] = useState('');
+  const [recentActivityLoaded, setRecentActivityLoaded] = useState(false);
+  const [isLoadingRecentActivity, setIsLoadingRecentActivity] = useState(false);
+  const [recentActivityError, setRecentActivityError] = useState<string | null>(null);
+  const [recentCommits, setRecentCommits] = useState<RecentCommitEntry[]>([]);
+  const [recentAuditEvents, setRecentAuditEvents] = useState<AuditEventEntry[]>([]);
   useEffect(() => {
     const refreshData = () => {
       const data = loadData();
@@ -496,6 +519,61 @@ export default function Settings() {
     }
   };
 
+  const handleLoadRecentActivity = async () => {
+    setIsLoadingRecentActivity(true);
+    setRecentActivityError(null);
+    try {
+      const since = new Date('2026-08-22T23:59:59.999');
+      since.setDate(since.getDate() - 2);
+      since.setHours(0, 0, 0, 0);
+
+      const commitPromise = fetch('/api/recent-commits')
+        .then(async (response) => {
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload?.error || 'Unable to load recent commits.');
+          }
+          return response.json() as Promise<{ commits?: RecentCommitEntry[] }>;
+        })
+        .then((payload) => Array.isArray(payload.commits) ? payload.commits : []);
+
+      const auditPromise = (async () => {
+        const uid = auth?.currentUser?.uid;
+        if (!db || !uid) return [] as AuditEventEntry[];
+        const auditQuery = query(
+          collection(db, 'stores', uid, 'auditEvents'),
+          where('createdAt', '>=', Timestamp.fromDate(since)),
+          orderBy('createdAt', 'desc'),
+          limit(50),
+        );
+        const snap = await getDocs(auditQuery);
+        return snap.docs.map((doc) => {
+          const data = doc.data() as Record<string, any>;
+          const createdAtValue = data.createdAt?.toDate instanceof Function
+            ? data.createdAt.toDate().toISOString()
+            : '';
+          return {
+            id: doc.id,
+            operation: String(data.operation || 'UNKNOWN'),
+            actorEmail: String(data.actorEmail || data.actorUid || 'Unknown'),
+            createdAt: createdAtValue,
+            reason: String(data.context?.reason || data.context?.purchaseOrderId || data.context?.supplierPaymentId || data.context?.expenseId || ''),
+          };
+        });
+      })();
+
+      const [commits, auditEvents] = await Promise.all([commitPromise, auditPromise]);
+      setRecentCommits(commits);
+      setRecentAuditEvents(auditEvents);
+      setRecentActivityLoaded(true);
+    } catch (error) {
+      setRecentActivityError(getFriendlyErrorMessage(error, 'settings.recent_activity'));
+      setRecentActivityLoaded(true);
+    } finally {
+      setIsLoadingRecentActivity(false);
+    }
+  };
+
   const thermalPreviewSubtotal = useMemo(
     () => THERMAL_PREVIEW_ITEMS.reduce((sum, item) => sum + item.amount, 0),
     []
@@ -612,6 +690,75 @@ export default function Settings() {
           {profileMessage.text}
         </div>
       )}
+
+      <Card className="border-slate-200">
+        <CardHeader className="flex flex-row items-center justify-between gap-4">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <History className="w-5 h-5 text-primary" />
+              Recent Activity
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Load commits and audit events from the last 3 days only when needed.
+            </p>
+          </div>
+          <Button type="button" variant="outline" onClick={() => void handleLoadRecentActivity()} disabled={isLoadingRecentActivity}>
+            {isLoadingRecentActivity ? 'Loading...' : 'Fetch Last 3 Days'}
+          </Button>
+        </CardHeader>
+        {recentActivityLoaded && (
+          <CardContent className="space-y-4">
+            {recentActivityError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {recentActivityError}
+              </div>
+            )}
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-white">
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">Git Commits</div>
+                  <div className="text-xs text-slate-500">{recentCommits.length} commit{recentCommits.length === 1 ? '' : 's'}</div>
+                </div>
+                <div className="max-h-80 overflow-auto divide-y divide-slate-200">
+                  {recentCommits.length === 0 ? (
+                    <div className="p-4 text-sm text-slate-500">No commits found for the last 3 days.</div>
+                  ) : recentCommits.map((commit) => (
+                    <div key={`${commit.date}-${commit.time}-${commit.hash}`} className="px-4 py-3 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium text-slate-900">{commit.message}</div>
+                        <div className="text-xs font-semibold text-slate-500">{commit.hash}</div>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {commit.date} {commit.time} • {commit.author}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white">
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">Audit Events</div>
+                  <div className="text-xs text-slate-500">{recentAuditEvents.length} event{recentAuditEvents.length === 1 ? '' : 's'}</div>
+                </div>
+                <div className="max-h-80 overflow-auto divide-y divide-slate-200">
+                  {recentAuditEvents.length === 0 ? (
+                    <div className="p-4 text-sm text-slate-500">No audit events found for the last 3 days.</div>
+                  ) : recentAuditEvents.map((event) => (
+                    <div key={event.id} className="px-4 py-3 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium text-slate-900">{event.operation}</div>
+                        <div className="text-xs text-slate-500">{event.createdAt ? new Date(event.createdAt).toLocaleString() : 'Unknown time'}</div>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">{event.actorEmail}</div>
+                      {event.reason && <div className="mt-1 text-xs text-slate-600">{event.reason}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        )}
+      </Card>
 
       {waModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">

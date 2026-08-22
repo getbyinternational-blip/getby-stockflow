@@ -3,6 +3,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
 
 const VERSION_TEMPLATE_PATH = path.resolve(__dirname, 'public/version.json');
 const VERSION_OUTPUT_PATH = path.resolve(__dirname, 'dist/version.json');
@@ -65,6 +66,62 @@ const cloudinaryDevSignaturePlugin = (resolvedEnv: Record<string, string>) => ({
   },
 });
 
+const RECENT_COMMITS_DEV_PATH = '/api/recent-commits';
+
+const recentCommitsDevPlugin = () => ({
+  name: 'recent-commits-dev-endpoint',
+  configureServer(server: any) {
+    server.middlewares.use((req: any, res: any, next: () => void) => {
+      const requestUrl = String(req.url || '').split('?')[0];
+      if (requestUrl !== RECENT_COMMITS_DEV_PATH) {
+        next();
+        return;
+      }
+
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+        return;
+      }
+
+      try {
+        const now = new Date();
+        const since = new Date(now);
+        since.setDate(now.getDate() - 2);
+        since.setHours(0, 0, 0, 0);
+        const sinceIso = since.toISOString();
+        const format = ['%H', '%ad', '%an', '%s', '%h'].join('%x1f');
+        const raw = execSync(
+          `git log --since="${sinceIso}" --date=short --pretty=format:"${format}"`,
+          {
+            cwd: __dirname,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ).trim();
+
+        const commits = raw
+          ? raw.split(/\r?\n/).map((line) => {
+              const [time, date, author, message, hash] = line.split('\x1f');
+              return { time, date, author, message, hash };
+            })
+          : [];
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ commits }));
+      } catch (error) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: error instanceof Error ? error.message : 'Unable to read commit history.',
+        }));
+      }
+    });
+  },
+});
+
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const buildId = process.env.VERCEL_GIT_COMMIT_SHA || Date.now().toString();
@@ -77,7 +134,7 @@ export default defineConfig(({ mode }) => {
         strictPort: false,
         host: '127.0.0.1',
       },
-      plugins: [react(), cloudinaryDevSignaturePlugin(env)],
+      plugins: [react(), cloudinaryDevSignaturePlugin(env), recentCommitsDevPlugin()],
       define: {
         APP_BUILD_ID: JSON.stringify(buildId),
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),

@@ -37,8 +37,17 @@ Order now while stock lasts!`;
 const TELEGRAM_MESSAGE_BOARD_BG = '/telegram/message-board-bg.jpg';
 
 const MAX_ACTIVITY_ENTRIES = 25;
-const DEFAULT_FREQUENCY_VALUE = 1;
-const DEFAULT_FREQUENCY_UNIT: TelegramCollectionFrequencyUnit = 'minutes';
+const TELEGRAM_FREQUENCY_OPTIONS = [
+  5,
+  10,
+  15,
+] as const;
+const TELEGRAM_BATCH_OPTIONS = [
+  2,
+  4,
+] as const;
+const DEFAULT_FREQUENCY_VALUE = 5;
+const DEFAULT_FREQUENCY_UNIT: TelegramCollectionFrequencyUnit = 'seconds';
 const DEFAULT_REPEAT_MODE: TelegramCollectionRepeatMode = 'loop';
 
 const TELEGRAM_DEBUG_LOGS_ENABLED =
@@ -48,7 +57,6 @@ const TELEGRAM_DEBUG_LOGS_ENABLED =
 
 const DEFAULT_MAX_FAILURES_BEFORE_PAUSE = 3;
 const DEFAULT_BATCH_SIZE = 2;
-const MIN_TELEGRAM_SECONDS_INTERVAL = 3;
 
 const TELEGRAM_CHANNEL_REQUIRED_MESSAGE =
   'Telegram Channel ID is required. Save a channel ID for this collection first.';
@@ -66,6 +74,33 @@ const toNonNegativeNumber = (value: unknown, fallback = 0) => {
   }
 
   return Math.max(0, parsed);
+};
+
+const normalizeTelegramFrequencyValue = (
+  value: unknown,
+) => {
+  const parsed = Number(value);
+
+  return TELEGRAM_FREQUENCY_OPTIONS.includes(
+    parsed as
+      | 5
+      | 10
+      | 15,
+  )
+    ? parsed
+    : DEFAULT_FREQUENCY_VALUE;
+};
+
+const normalizeTelegramBatchSize = (
+  value: unknown,
+) => {
+  const parsed = Number(value);
+
+  return TELEGRAM_BATCH_OPTIONS.includes(
+    parsed as 2 | 4,
+  )
+    ? parsed
+    : DEFAULT_BATCH_SIZE;
 };
 
 const formatDateTime = (value?: string) => {
@@ -212,21 +247,20 @@ const normalizeCollections = (
           : [],
 
         frequencyValue:
-          toNonNegativeNumber(
+          normalizeTelegramFrequencyValue(
             collection.frequencyValue,
-            DEFAULT_FREQUENCY_VALUE,
-          ) || DEFAULT_FREQUENCY_VALUE,
+          ),
 
-        frequencyUnit: safeText(
-          collection.frequencyUnit,
-          DEFAULT_FREQUENCY_UNIT,
-        ) as TelegramCollectionFrequencyUnit,
+        frequencyUnit:
+          collection.frequencyUnit ===
+          'seconds'
+            ? 'seconds'
+            : DEFAULT_FREQUENCY_UNIT,
 
         batchSize:
-          toNonNegativeNumber(
+          normalizeTelegramBatchSize(
             (collection as any).batchSize,
-            DEFAULT_BATCH_SIZE,
-          ) || DEFAULT_BATCH_SIZE,
+          ),
 
         autoStartTime: safeText(
           (collection as any).autoStartTime,
@@ -1846,27 +1880,8 @@ export default function TelegramPosts() {
 
   const resolveFrequencyValue =
     () => {
-      const parsed =
-        Number(
-          frequencyValue,
-        );
-
-      if (
-        !Number.isFinite(
-          parsed,
-        ) ||
-        parsed <= 0
-      ) {
-        return DEFAULT_FREQUENCY_VALUE;
-      }
-
-      return Math.max(
-        frequencyUnit ===
-          'seconds'
-          ? MIN_TELEGRAM_SECONDS_INTERVAL
-          : 1,
-
-        Math.floor(parsed),
+      return normalizeTelegramFrequencyValue(
+        frequencyValue,
       );
     };
 
@@ -1894,17 +1909,9 @@ export default function TelegramPosts() {
 
   const resolveBatchSize =
     () => {
-      const parsed =
-        Number(batchSize);
-
-      return [
-        2,
-        4,
-        6,
-        8,
-      ].includes(parsed)
-        ? parsed
-        : DEFAULT_BATCH_SIZE;
+      return normalizeTelegramBatchSize(
+        batchSize,
+      );
     };
 
   const getResolvedTelegramChannelId =
@@ -4876,6 +4883,7 @@ export default function TelegramPosts() {
                   {collectionValidationMessage}
                 </div>
               ) : null}
+
             </div>
 
             {/* THREE COLUMN MODAL BODY */}
@@ -5109,6 +5117,67 @@ export default function TelegramPosts() {
                       category list.
                     </div>
                   )}
+                </div>
+
+                <div className="grid shrink-0 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-slate-600">
+                      Batch
+                    </Label>
+                    <Select
+                      value={batchSize}
+                      onChange={(event) =>
+                        setBatchSize(
+                          event.target.value,
+                        )
+                      }
+                      className="h-9"
+                    >
+                      {TELEGRAM_BATCH_OPTIONS.map(
+                        (option) => (
+                          <option
+                            key={option}
+                            value={String(
+                              option,
+                            )}
+                          >
+                            {option} products
+                          </option>
+                        ),
+                      )}
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-slate-600">
+                      Frequency
+                    </Label>
+                    <Select
+                      value={frequencyValue}
+                      onChange={(event) => {
+                        setFrequencyValue(
+                          event.target.value,
+                        );
+                        setFrequencyUnit(
+                          'seconds',
+                        );
+                      }}
+                      className="h-9"
+                    >
+                      {TELEGRAM_FREQUENCY_OPTIONS.map(
+                        (option) => (
+                          <option
+                            key={option}
+                            value={String(
+                              option,
+                            )}
+                          >
+                            Every {option}s
+                          </option>
+                        ),
+                      )}
+                    </Select>
+                  </div>
                 </div>
 
                 {/* MODAL ACTIONS */}

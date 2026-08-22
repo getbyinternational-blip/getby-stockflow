@@ -374,6 +374,13 @@ export interface CashSession {
   closingBalance?: number;
   reservedCashOnHand?: number;
   reservedCashSavedAt?: string;
+  reserveCashLedger?: Array<{
+    id: string;
+    date: string;
+    type: 'in' | 'out';
+    amount: number;
+    note?: string;
+  }>;
   carryForwardBalance?: number;
   systemCashTotal?: number;
   sessionExpenseTotal?: number;
