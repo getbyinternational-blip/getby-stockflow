@@ -196,6 +196,8 @@ export default function Admin() {
   const [stockSourceVariantKey, setStockSourceVariantKey] = useState('');
   const [stockSourceQty, setStockSourceQty] = useState('');
   const [stockSourceUnitCost, setStockSourceUnitCost] = useState('');
+  const [stockSourceNextBuyPrice, setStockSourceNextBuyPrice] = useState('');
+  const [stockSourceNextBuyPriceTouched, setStockSourceNextBuyPriceTouched] = useState(false);
   const [stockSourceSellPrice, setStockSourceSellPrice] = useState('');
   const [stockSourcePartyName, setStockSourcePartyName] = useState('');
   const [stockSourcePartyId, setStockSourcePartyId] = useState('');
@@ -1600,6 +1602,39 @@ const displayProductCategory = (value: unknown): string => {
     () => stockSourceVariantRows.find((row) => row.key === stockSourceVariantKey) || null,
     [stockSourceVariantRows, stockSourceVariantKey]
   );
+  const stockSourceAverageBuyPricePreview = useMemo(() => {
+    if (!stockSourceProduct) {
+      return {
+        currentStock: 0,
+        currentBuyPrice: 0,
+        incomingQty: 0,
+        incomingUnitCost: 0,
+        suggestedNextBuyPrice: 0,
+      };
+    }
+    const isVariantPurchase = productHasCombinationStock(stockSourceProduct) && !!selectedStockSourceVariantRow;
+    const currentStock = isVariantPurchase
+      ? toNonNegativeNumber(selectedStockSourceVariantRow?.stock)
+      : toNonNegativeNumber(stockSourceProduct.stock);
+    const currentBuyPrice = isVariantPurchase
+      ? toNonNegativeNumber(selectedStockSourceVariantRow?.buyPrice)
+      : toNonNegativeNumber(stockSourceProduct.buyPrice);
+    const incomingQty = Math.max(0, Number(stockSourceQty || 0) || 0);
+    const incomingUnitCost = Math.max(0, Number(stockSourceUnitCost || 0) || 0);
+    const suggestedNextBuyPrice = incomingQty > 0 && incomingUnitCost > 0
+      ? roundAdminMoney(currentStock + incomingQty > 0
+        ? (((currentStock * currentBuyPrice) + (incomingQty * incomingUnitCost)) / (currentStock + incomingQty))
+        : incomingUnitCost)
+      : roundAdminMoney(currentBuyPrice);
+
+    return {
+      currentStock,
+      currentBuyPrice: roundAdminMoney(currentBuyPrice),
+      incomingQty,
+      incomingUnitCost: roundAdminMoney(incomingUnitCost),
+      suggestedNextBuyPrice,
+    };
+  }, [stockSourceProduct, selectedStockSourceVariantRow, stockSourceQty, stockSourceUnitCost]);
 
   const resetStockSourceState = () => {
     setStockSourceProduct(null);
@@ -1608,6 +1643,8 @@ const displayProductCategory = (value: unknown): string => {
     setStockSourceVariantKey('');
     setStockSourceQty('');
     setStockSourceUnitCost('');
+    setStockSourceNextBuyPrice('');
+    setStockSourceNextBuyPriceTouched(false);
     setStockSourceSellPrice('');
     setStockSourcePartyName('');
     setStockSourcePartyId('');
@@ -1973,10 +2010,24 @@ const displayProductCategory = (value: unknown): string => {
     });
   }, [stockSourceProduct, stockSourceVariantRows]);
 
+  useEffect(() => {
+    if (!stockSourceProduct || stockSourceMode !== 'purchase') return;
+    if (stockSourceNextBuyPriceTouched) return;
+    const suggested = stockSourceAverageBuyPricePreview.suggestedNextBuyPrice;
+    const nextValue = suggested > 0 ? suggested.toFixed(2) : '';
+    setStockSourceNextBuyPrice((prev) => (prev === nextValue ? prev : nextValue));
+  }, [
+    stockSourceProduct,
+    stockSourceMode,
+    stockSourceNextBuyPriceTouched,
+    stockSourceAverageBuyPricePreview.suggestedNextBuyPrice,
+  ]);
+
   const applyStockSourceInventoryUpdate = async (options: {
     product: Product;
     quantity: number;
     unitCost: number;
+    nextBuyPriceOverride?: number;
     sellPrice?: number;
     partyName: string;
     note?: string;
@@ -1990,9 +2041,15 @@ const displayProductCategory = (value: unknown): string => {
     const isVariantPurchase = productHasCombinationStock(options.product) && !!selectedStockSourceVariantRow;
     const currentStock = isVariantPurchase ? toNonNegativeNumber(selectedStockSourceVariantRow?.stock) : toNonNegativeNumber(options.product.stock);
     const currentBuyPrice = isVariantPurchase ? toNonNegativeNumber(selectedStockSourceVariantRow?.buyPrice) : toNonNegativeNumber(options.product.buyPrice);
-    const nextBuyPrice = currentStock + options.quantity > 0
+    const weightedNextBuyPrice = currentStock + options.quantity > 0
       ? (((currentStock * currentBuyPrice) + (options.quantity * options.unitCost)) / (currentStock + options.quantity))
       : options.unitCost;
+    const nextBuyPrice = Math.max(
+      0,
+      Number.isFinite(Number(options.nextBuyPriceOverride))
+        ? roundAdminMoney(options.nextBuyPriceOverride)
+        : roundAdminMoney(weightedNextBuyPrice)
+    );
 
     const updatedVariantRows = isVariantPurchase
       ? (options.product.stockByVariantColor || []).map((row) => {
@@ -2115,6 +2172,7 @@ const displayProductCategory = (value: unknown): string => {
     setStockSourceError(null);
     const quantity = stockSourceComputed.qty;
     const unitCost = stockSourceComputed.unitCost;
+    const nextBuyPrice = parseOptionalNonNegative(stockSourceNextBuyPrice) ?? stockSourceAverageBuyPricePreview.suggestedNextBuyPrice;
     const totalAmount = stockSourceComputed.totalAmount;
     const requestedCashPaidAmount = stockSourceComputed.requestedCashPaid;
     const paidAmount = stockSourceComputed.effectivePaid;
@@ -2126,6 +2184,10 @@ const displayProductCategory = (value: unknown): string => {
     const partyName = stockSourcePartyName.trim();
     if (quantity <= 0 || unitCost <= 0) {
       setStockSourceError('Enter a valid quantity and unit cost.');
+      return;
+    }
+    if (!Number.isFinite(nextBuyPrice) || nextBuyPrice < 0) {
+      setStockSourceError('Enter a valid new average buy price.');
       return;
     }
     if (sellPriceRaw && !/^\d+(\.\d+)?$/.test(sellPriceRaw)) {
@@ -2207,6 +2269,7 @@ const displayProductCategory = (value: unknown): string => {
         product: stockSourceProduct,
         quantity,
         unitCost,
+        nextBuyPriceOverride: nextBuyPrice,
         sellPrice: sellPriceRaw ? Number(sellPriceRaw) : 0,
         partyName: party.name,
         note: stockSourceNote.trim() || undefined,
@@ -4794,6 +4857,44 @@ useEffect(() => {
                     </div>
 
                     <div className="space-y-4 rounded-xl border p-4 bg-muted/10">
+                      {stockSourceMode === 'purchase' && (
+                        <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                          <div className="grid gap-2 md:grid-cols-[minmax(1,1fr)_minmax(150px,1fr)_auto] md:items-end">
+                            <div className="min-w-0 space-y-2">
+                              <div className="text-[11px] font-semibold leading-tight text-slate-800">Suggested Avg Buy Price</div>
+                              <div className="flex h-10 items-center rounded-md border border-slate-300 bg-slate-50 px-3 text-center text-sm font-bold text-slate-900">
+                                {formatCurrency(stockSourceAverageBuyPricePreview.suggestedNextBuyPrice)}
+                              </div>
+                            </div>
+                            <div className="min-w-0 w-full space-y-2">
+                              <Label className="text-[11px] font-semibold leading-tight whitespace-nowrap text-slate-800">New Avg Buy Price</Label>
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={stockSourceNextBuyPrice}
+                                onChange={(e) => {
+                                  setStockSourceNextBuyPriceTouched(true);
+                                  setStockSourceNextBuyPrice(e.target.value);
+                                }}
+                                className="h-10 w-full border-slate-300 bg-white px-3 text-center text-sm font-bold text-slate-900"
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-10 whitespace-nowrap border-slate-300 px-3 text-xs font-semibold text-slate-700"
+                              onClick={() => {
+                                setStockSourceNextBuyPriceTouched(false);
+                                setStockSourceNextBuyPrice(stockSourceAverageBuyPricePreview.suggestedNextBuyPrice.toFixed(2));
+                              }}
+                            >
+                              Use Avg Price
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                       <div className="rounded-xl border bg-white p-4">
                         <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Impact Preview</div>
                         <div className="mt-3 flex flex-wrap gap-2">

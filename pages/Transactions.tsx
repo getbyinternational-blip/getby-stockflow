@@ -2445,7 +2445,7 @@ export default function Transactions() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-8">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
         {(() => {
           const totalCashCard = transactionKpiCards.find((card) => card.key === 'totalCash');
           const totalCreditCard = transactionKpiCards.find((card) => card.key === 'totalCredit');
@@ -2467,8 +2467,8 @@ export default function Transactions() {
           return (
             <>
               {totalCashCard && totalCreditCard && totalOnlineCard ? (
-                <Card className="col-span-2 border shadow-sm lg:col-span-2 xl:col-span-2">
-                  <CardContent className="grid min-h-[76px] grid-cols-3 p-0 lg:min-h-[88px]">
+                <Card className="border shadow-sm sm:col-span-2">
+                  <CardContent className="grid min-h-[76px] grid-cols-1 p-0 sm:grid-cols-3 lg:min-h-[88px]">
                     {[totalCashCard, totalCreditCard, totalOnlineCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
                       <button
                         key={key}
@@ -2481,7 +2481,7 @@ export default function Transactions() {
                         <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
                           {label}
                         </p>
-                        <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                        <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
                           {formatCurrencyWhole(value)}
                         </p>
                       </button>
@@ -2502,7 +2502,7 @@ export default function Transactions() {
                       <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
                         {label}
                       </p>
-                      <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                      <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
                         {formatCurrencyWhole(value)}
                       </p>
                     </CardContent>
@@ -2510,8 +2510,8 @@ export default function Transactions() {
                 ))}
 
               {totalPurchaseCashCard && totalPurchaseCreditCard ? (
-                <Card className="col-span-2 border shadow-sm lg:col-span-2 xl:col-span-2">
-                  <CardContent className="grid min-h-[76px] grid-cols-2 p-0 lg:min-h-[88px]">
+                <Card className="border shadow-sm sm:col-span-2">
+                  <CardContent className="grid min-h-[76px] grid-cols-1 p-0 sm:grid-cols-2 lg:min-h-[88px]">
                     {[totalPurchaseCashCard, totalPurchaseCreditCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
                       <button
                         key={key}
@@ -2524,7 +2524,7 @@ export default function Transactions() {
                         <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
                           {label}
                         </p>
-                        <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                        <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
                           {formatCurrencyWhole(value)}
                         </p>
                       </button>
@@ -2534,8 +2534,8 @@ export default function Transactions() {
               ) : null}
 
               {totalCashInCard && totalCashOutCard ? (
-                <Card className="col-span-2 border shadow-sm lg:col-span-2 xl:col-span-2">
-                  <CardContent className="grid min-h-[76px] grid-cols-2 p-0 lg:min-h-[88px]">
+                <Card className="border shadow-sm sm:col-span-2">
+                  <CardContent className="grid min-h-[76px] grid-cols-1 p-0 sm:grid-cols-2 lg:min-h-[88px]">
                     {[totalCashInCard, totalCashOutCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
                       <button
                         key={key}
@@ -2548,7 +2548,7 @@ export default function Transactions() {
                         <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
                           {label}
                         </p>
-                        <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+                        <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
                           {formatCurrencyWhole(value)}
                         </p>
                       </button>
@@ -2569,7 +2569,7 @@ export default function Transactions() {
               <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
                 {label}
               </p>
-              <p className={`mt-2 whitespace-nowrap text-[18px] font-bold leading-none lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
+              <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
                 {formatCurrencyWhole(value)}
               </p>
             </CardContent>
