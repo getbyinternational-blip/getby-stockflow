@@ -1497,7 +1497,13 @@ const displayProductCategory = (value: unknown): string => {
       locationRack: cleanOptionalText(formData.locationRack) || '',
       locationShelf: cleanOptionalText(formData.locationShelf) || '',
       piecesPerCarton: cleanOptionalNumber(formData.piecesPerCarton, 0),
-      telegramKeywords: cleanOptionalText(formData.telegramKeywords) || '',
+      telegramKeywords:
+        (cleanOptionalText(
+          formData.telegramKeywords,
+        ) || '').replace(
+          /^keywords\s*:\s*/i,
+          '',
+        ),
       ...(cleanOptionalText(formData.hsn) ? { hsn: cleanOptionalText(formData.hsn)! } : {}),
       buyPrice: hasCombos ? cleanOptionalNumber(editingProduct?.buyPrice, 0) : effectiveBuyPrice,
       sellPrice: cleanOptionalNumber(formData.sellPrice, 0),
@@ -4309,8 +4315,8 @@ useEffect(() => {
       {/* Edit/Add Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <Card className="w-full max-w-5xl max-h-[95vh] overflow-y-auto animate-in fade-in zoom-in duration-200 shadow-2xl">
-            <CardHeader className="flex flex-row items-center justify-between border-b pb-4 bg-muted/20">
+            <Card className="w-full max-w-[1380px] max-h-[96vh] overflow-y-auto animate-in fade-in zoom-in duration-200 shadow-2xl">
+            <CardHeader className="flex flex-row items-center justify-between border-b px-6 py-5 bg-muted/20">
                 <CardTitle className="text-xl">
                   {editingProduct
                     ? (isBatchEditing ? `Batch Edit Product ${batchEditIndex + 1} of ${batchEditProductIds.length}` : 'Edit Product')
@@ -4318,7 +4324,7 @@ useEffect(() => {
                 </CardTitle>
                 <Button variant="ghost" size="sm" onClick={closeModal}><X className="w-4 h-4" /></Button>
             </CardHeader>
-            <CardContent className="space-y-5 pt-6">
+            <CardContent className="space-y-7 px-6 py-6">
                 {error && (
                     <div className="bg-destructive/10 text-destructive border border-destructive/20 px-4 py-3 rounded-lg flex items-center gap-2 text-sm font-medium animate-in slide-in-from-top-2">
                         <AlertCircle className="w-4 h-4 shrink-0" />
@@ -4326,12 +4332,12 @@ useEffect(() => {
                     </div>
                 )}
                 
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.18fr_0.82fr] lg:items-start">
-                  <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.12fr_0.88fr] xl:items-start">
+                  <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                     <div className="space-y-2">
                       <Label>Product Image</Label>
-                      <div className="flex flex-col gap-3 rounded-xl border border-dashed border-slate-200 p-3 transition-colors sm:flex-row sm:items-center hover:bg-muted/10">
-                        <div className="h-16 w-16 shrink-0 bg-white rounded-md overflow-hidden border flex items-center justify-center shadow-sm">
+                      <div className="flex flex-col gap-4 rounded-xl border border-dashed border-slate-200 p-4 transition-colors sm:flex-row sm:items-center hover:bg-muted/10">
+                        <div className="h-20 w-20 shrink-0 bg-white rounded-md overflow-hidden border flex items-center justify-center shadow-sm">
                           {formData.image ? (
                             <img src={formData.image} alt="Preview" className="h-full w-full object-contain"  loading="lazy"  decoding="async" />
                           ) : (
@@ -4339,8 +4345,8 @@ useEffect(() => {
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 transition hover:border-slate-300 hover:bg-slate-50">
-                            <span className="inline-flex h-9 shrink-0 items-center rounded-full bg-slate-950 px-4 text-sm font-semibold text-white">
+                          <label className="flex cursor-pointer items-center gap-4 rounded-xl border border-slate-200 bg-white px-5 py-4 transition hover:border-slate-300 hover:bg-slate-50">
+                            <span className="inline-flex h-10 shrink-0 items-center rounded-full bg-slate-950 px-5 text-sm font-semibold text-white">
                               Choose Image
                             </span>
                             <span className="min-w-0 truncate text-sm text-slate-600">
@@ -4381,9 +4387,9 @@ useEffect(() => {
                       {showAddCategoryInline && <div className="flex gap-2"><Input value={newInlineCategory} onChange={e => setNewInlineCategory(e.target.value)} placeholder="New category" /><Button type="button" variant="outline" onClick={() => { const c = newInlineCategory.trim(); if (!c) return; const next = addCategory(c); setCategories(next); setFormData({ ...formData, category: c }); setNewInlineCategory(''); setShowAddCategoryInline(false); }}>Save</Button></div>}
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-3 md:col-span-2">
+                    <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/50 p-4 md:col-span-2">
                       <h4 className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Location</h4>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                         <div className="space-y-2"><Label>Zone</Label><Input value={formData.locationZone || ''} onChange={e => setFormData({ ...formData, locationZone: e.target.value })} placeholder="A, Front, B-2" /></div>
                         <div className="space-y-2"><Label>Row</Label><Input value={formData.locationRow || ''} onChange={e => setFormData({ ...formData, locationRow: e.target.value })} placeholder="03" /></div>
                         <div className="space-y-2"><Label>Rack</Label><Input value={formData.locationRack || ''} onChange={e => setFormData({ ...formData, locationRack: e.target.value })} placeholder="05" /></div>
@@ -4398,45 +4404,45 @@ useEffect(() => {
 
                   </div>
 
-                  <div className="space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 p-4 shadow-sm">
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">{editingProduct ? 'Inventory, Telegram & Packing' : 'Telegram & Packing'}</h4>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3">
-                      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="space-y-5 rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 via-white to-slate-50 p-5 shadow-sm">
+
+                    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+                      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
                         <Label>Telegram Keywords</Label>
-                        <Input
+                        <textarea
                           value={formData.telegramKeywords || ''}
                           onChange={e => setFormData({ ...formData, telegramKeywords: e.target.value })}
                           placeholder="gift, trending, premium"
+                          rows={12}
+                          className="min-h-[320px] w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                         />
                       </div>
 
-                      <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
-                        <Label>Pieces Per Carton</Label>
-                        <Input
-                          type="number"
-                          min="0"
-                          value={formData.piecesPerCarton ?? ''}
-                          onChange={e => setFormData({ ...formData, piecesPerCarton: e.target.value })}
-                          placeholder="0"
-                        />
-                      </div>
+                      <div className="space-y-4">
+                        <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+                          <Label>Pieces Per Carton</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={formData.piecesPerCarton ?? ''}
+                            onChange={e => setFormData({ ...formData, piecesPerCarton: e.target.value })}
+                            placeholder="0"
+                          />
+                        </div>
 
-                      <div className="space-y-2">
-                        <Label>Sell Price</Label>
-                        <Input
-                          type="number"
-                          min="0"
-                          value={formData.sellPrice ?? ''}
-                          onChange={e => setFormData({ ...formData, sellPrice: e.target.value })}
-                          placeholder="0.00"
-                        />
-                      </div>
+                        <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+                          <Label>Sell Price</Label>
+                          <Input
+                            type="number"
+                            min="0"
+                            value={formData.sellPrice ?? ''}
+                            onChange={e => setFormData({ ...formData, sellPrice: e.target.value })}
+                            placeholder="0.00"
+                          />
+                        </div>
 
-                      {editingProduct && (
-                        <>
-                          <div className="space-y-2 col-span-2">
+                        {editingProduct && (
+                          <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
                             <Label>Opening / Current Stock</Label>
                             {(!formData.variants?.length && !formData.colors?.length) ? (
                               <Input
@@ -4456,49 +4462,49 @@ useEffect(() => {
                               />
                             )}
                           </div>
+                        )}
 
-                          <div className="space-y-2">
-                            <Label>Purchase / Buy Price</Label>
-                            <div className="relative">
-                              <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
-                              <Input type="number" className="pl-6" value={formData.buyPrice ?? ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
+                        {editingProduct && (
+                          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                            <div className="space-y-2">
+                              <Label>Purchase / Buy Price</Label>
+                              <div className="relative">
+                                <span className="absolute left-2.5 top-2.5 text-muted-foreground text-xs"></span>
+                                <Input type="number" className="pl-6" value={formData.buyPrice ?? ''} onChange={e => setFormData({ ...formData, buyPrice: e.target.value })} placeholder="0.00" disabled={!!(formData.variants?.length || formData.colors?.length)} />
+                              </div>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label>Total Purchase</Label>
+                              <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => {
+                                const value = e.target.value;
+                                if (value === '') setStockManuallyEdited(false);
+                                setFormData({ ...formData, totalPurchase: value });
+                              }} placeholder="0" />
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label>Total Sold <span className="text-muted-foreground">(Optional)</span></Label>
+                              <Input type="number" min="0" value={formData.totalSold ?? ''} onChange={e => setFormData({ ...formData, totalSold: e.target.value })} placeholder="0" />
                             </div>
                           </div>
-                        </>
-                      )}
-
-                      {editingProduct && (
-                        <>
-                          <div className="space-y-2">
-                            <Label>Total Purchase</Label>
-                            <Input type="number" min="0" value={formData.totalPurchase ?? ''} onChange={e => {
-                              const value = e.target.value;
-                              if (value === '') setStockManuallyEdited(false);
-                              setFormData({ ...formData, totalPurchase: value });
-                            }} placeholder="0" />
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Total Sold <span className="text-muted-foreground">(Optional)</span></Label>
-                            <Input type="number" min="0" value={formData.totalSold ?? ''} onChange={e => setFormData({ ...formData, totalSold: e.target.value })} placeholder="0" />
-                          </div>
-                        </>
-                      )}
+                        )}
+                      </div>
                     </div>
                     {editingProduct && (
-                      <div className="rounded-xl border border-slate-200 bg-white p-3 text-[12px] text-slate-500">
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 text-[12px] text-slate-500">
                         Suggested stock: {getSuggestedStock(formData.totalPurchase, formData.totalSold)}
                       </div>
                     )}
                 </div>
                 </div>
                 
-                <div className="pt-3">
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <Button className="h-11 rounded-xl text-base shadow-sm" onClick={handleSave} disabled={isSaving}>
+                <div className="pt-2">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <Button className="h-12 rounded-xl text-base shadow-sm" onClick={handleSave} disabled={isSaving}>
                           <Save className="w-4 h-4 mr-2" /> {isSaving ? 'Saving...' : editingProduct ? 'Update Product' : 'Save Product'}
                       </Button>
-                      <Button variant="outline" className="h-11 rounded-xl text-base bg-white" onClick={handleSaveAndNext} disabled={isSaving}>
+                      <Button variant="outline" className="h-12 rounded-xl text-base bg-white" onClick={handleSaveAndNext} disabled={isSaving}>
                           {isSaving ? 'Saving...' : editingProduct ? (remainingBatchProducts > 0 ? `Update & Next (${remainingBatchProducts} left)` : 'Update & Next') : 'Save & Next'}
                       </Button>
                     </div>

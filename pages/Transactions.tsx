@@ -10,7 +10,7 @@ import { generateReceiptPDF } from '../services/pdf';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { appendWhatsAppLog } from '../services/whatsappLogs';
 import { Card, CardContent, CardHeader, CardTitle, Badge, Select, Input, Button, LightweightLoader } from '../components/ui';
-import { TrendingDown, TrendingUp, Calendar, X, Eye, ArrowUpRight, ArrowDownLeft, User, Package, Clock, Download, CreditCard, IndianRupee, Percent, FileText, Edit, Trash2, Search, ChevronDown, Users } from 'lucide-react';
+import { TrendingDown, TrendingUp, Calendar, X, Eye, ArrowUpRight, ArrowDownLeft, User, Package, Clock, Download, CreditCard, IndianRupee, Percent, FileText, Edit, Trash2, Search, ChevronDown, Users, Globe, ShoppingCart, ShoppingBag, ArrowDownToLine, ArrowUpToLine, BarChart3 } from 'lucide-react';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadTransactionsData, downloadTransactionsTemplate, importHistoricalTransactionsFromFile } from '../services/importExcel';
 import { DISPLAY_FALLBACK, formatCurrency, formatCurrencyWhole, formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole, joinDisplayParts, sanitizeDisplayText } from '../services/numberFormat';
@@ -2049,15 +2049,15 @@ export default function Transactions() {
   const transactionKpis = transactionDerivedSummary.kpis;
 
   const transactionKpiCards = useMemo(() => ([
-      { key: 'totalRevenue' as const, label: 'Total Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/70', labelClass: 'text-blue-700/80', valueClass: 'text-blue-950' },
-      { key: 'totalCash' as const, label: 'Total Cash', value: transactionKpis.totalCash, cardClass: 'border-green-200 bg-green-50/70', labelClass: 'text-green-700/80', valueClass: 'text-green-950' },
-      { key: 'totalCredit' as const, label: 'Credit', value: transactionKpis.totalCredit, cardClass: 'border-amber-200 bg-amber-50/80', labelClass: 'text-amber-700/80', valueClass: 'text-amber-950' },
-      { key: 'totalOnline' as const, label: 'Online', value: transactionKpis.totalOnline, cardClass: 'border-purple-200 bg-purple-50/70', labelClass: 'text-purple-700/80', valueClass: 'text-purple-950' },
-      { key: 'totalPurchaseCash' as const, label: 'Total Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-red-200 bg-red-50/70', labelClass: 'text-red-700/80', valueClass: 'text-red-950' },
-      { key: 'totalPurchaseCredit' as const, label: 'Total Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/80', labelClass: 'text-orange-700/80', valueClass: 'text-orange-950' },
-      { key: 'cashReceivedOnCreditDue' as const, label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-teal-200 bg-teal-50/80', labelClass: 'text-teal-700/80', valueClass: 'text-teal-950' },
-      { key: 'totalCashIn' as const, label: 'Total Cash In', value: transactionKpis.totalCashIn, cardClass: 'border-emerald-200 bg-emerald-50/70', labelClass: 'text-emerald-700/80', valueClass: 'text-emerald-950' },
-      { key: 'totalCashOut' as const, label: 'Total Cash Out', value: transactionKpis.totalCashOut, cardClass: 'border-rose-200 bg-rose-50/70', labelClass: 'text-rose-700/80', valueClass: 'text-rose-950' },
+      { key: 'totalCash' as const, label: 'Cash', value: transactionKpis.totalCash, cardClass: 'border-emerald-200 bg-emerald-50/60', labelClass: 'text-emerald-700', valueClass: 'text-emerald-600' },
+      { key: 'totalCredit' as const, label: 'Credit', value: transactionKpis.totalCredit, cardClass: 'border-amber-200 bg-amber-50/70', labelClass: 'text-amber-700', valueClass: 'text-amber-500' },
+      { key: 'totalOnline' as const, label: 'Online', value: transactionKpis.totalOnline, cardClass: 'border-violet-200 bg-violet-50/60', labelClass: 'text-violet-700', valueClass: 'text-violet-600' },
+      { key: 'cashReceivedOnCreditDue' as const, label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-cyan-200 bg-cyan-50/60', labelClass: 'text-cyan-700', valueClass: 'text-emerald-600' },
+      { key: 'totalPurchaseCash' as const, label: 'Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-rose-200 bg-rose-50/60', labelClass: 'text-rose-700', valueClass: 'text-rose-500' },
+      { key: 'totalPurchaseCredit' as const, label: 'Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/60', labelClass: 'text-orange-700', valueClass: 'text-orange-500' },
+      { key: 'totalCashIn' as const, label: 'Cash In', value: transactionKpis.totalCashIn, cardClass: 'border-emerald-200 bg-emerald-50/60', labelClass: 'text-emerald-700', valueClass: 'text-emerald-600' },
+      { key: 'totalCashOut' as const, label: 'Cash Out', value: transactionKpis.totalCashOut, cardClass: 'border-rose-200 bg-rose-50/60', labelClass: 'text-rose-700', valueClass: 'text-rose-500' },
+      { key: 'totalRevenue' as const, label: 'Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/60', labelClass: 'text-blue-700', valueClass: 'text-blue-500' },
   ]), [transactionKpis]);
 
   const selectedKpiCard = useMemo(
@@ -2445,139 +2445,80 @@ export default function Transactions() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-        {(() => {
-          const totalCashCard = transactionKpiCards.find((card) => card.key === 'totalCash');
-          const totalCreditCard = transactionKpiCards.find((card) => card.key === 'totalCredit');
-          const totalOnlineCard = transactionKpiCards.find((card) => card.key === 'totalOnline');
-          const totalPurchaseCashCard = transactionKpiCards.find((card) => card.key === 'totalPurchaseCash');
-          const totalPurchaseCreditCard = transactionKpiCards.find((card) => card.key === 'totalPurchaseCredit');
-          const totalCashInCard = transactionKpiCards.find((card) => card.key === 'totalCashIn');
-          const totalCashOutCard = transactionKpiCards.find((card) => card.key === 'totalCashOut');
-          const remainingCards = transactionKpiCards.filter((card) => ![
-            'totalCash',
-            'totalCredit',
-            'totalOnline',
-            'totalPurchaseCash',
-            'totalPurchaseCredit',
-            'totalCashIn',
-            'totalCashOut',
-          ].includes(card.key));
+      <div className="flex flex-wrap items-start gap-3">
+        {transactionKpiCards.map(({ key, label, value, cardClass, valueClass, labelClass }) => {
+          const formattedValue = formatCurrencyWhole(value);
+          const compactFormattedValue = formattedValue.replace(/₹\s?/g, '');
 
           return (
-            <>
-              {totalCashCard && totalCreditCard && totalOnlineCard ? (
-                <Card className="border shadow-sm sm:col-span-2">
-                  <CardContent className="grid min-h-[76px] grid-cols-1 p-0 sm:grid-cols-3 lg:min-h-[88px]">
-                    {[totalCashCard, totalCreditCard, totalOnlineCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
-                      <button
-                        key={key}
-                        type="button"
-                        className={`flex min-w-0 flex-col justify-between p-3 text-left transition lg:p-3.5 ${cardClass} ${
-                          index < 2 ? 'border-r' : ''
-                        } hover:brightness-[0.99]`}
-                        onClick={() => setSelectedKpiKey(key)}
-                      >
-                        <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
-                          {label}
-                        </p>
-                        <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
-                          {formatCurrencyWhole(value)}
-                        </p>
-                      </button>
-                    ))}
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              {remainingCards
-                .filter((card) => card.key === 'cashReceivedOnCreditDue')
-                .map(({ key, label, value, cardClass, labelClass, valueClass }) => (
-                  <Card
-                    key={label}
-                    className={`border shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md ${cardClass}`}
-                    onClick={() => setSelectedKpiKey(key)}
-                  >
-                    <CardContent className="flex min-h-[76px] flex-col justify-between p-3 lg:min-h-[88px] lg:p-3.5">
-                      <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
-                        {label}
-                      </p>
-                      <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
-                        {formatCurrencyWhole(value)}
-                      </p>
-                    </CardContent>
-                  </Card>
-                ))}
-
-              {totalPurchaseCashCard && totalPurchaseCreditCard ? (
-                <Card className="border shadow-sm sm:col-span-2">
-                  <CardContent className="grid min-h-[76px] grid-cols-1 p-0 sm:grid-cols-2 lg:min-h-[88px]">
-                    {[totalPurchaseCashCard, totalPurchaseCreditCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
-                      <button
-                        key={key}
-                        type="button"
-                        className={`flex min-w-0 flex-col justify-between p-3 text-left transition lg:p-3.5 ${cardClass} ${
-                          index === 0 ? 'border-r' : ''
-                        } hover:brightness-[0.99]`}
-                        onClick={() => setSelectedKpiKey(key)}
-                      >
-                        <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
-                          {label}
-                        </p>
-                        <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
-                          {formatCurrencyWhole(value)}
-                        </p>
-                      </button>
-                    ))}
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              {totalCashInCard && totalCashOutCard ? (
-                <Card className="border shadow-sm sm:col-span-2">
-                  <CardContent className="grid min-h-[76px] grid-cols-1 p-0 sm:grid-cols-2 lg:min-h-[88px]">
-                    {[totalCashInCard, totalCashOutCard].map(({ key, label, value, cardClass, labelClass, valueClass }, index) => (
-                      <button
-                        key={key}
-                        type="button"
-                        className={`flex min-w-0 flex-col justify-between p-3 text-left transition lg:p-3.5 ${cardClass} ${
-                          index === 0 ? 'border-r' : ''
-                        } hover:brightness-[0.99]`}
-                        onClick={() => setSelectedKpiKey(key)}
-                      >
-                        <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
-                          {label}
-                        </p>
-                        <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
-                          {formatCurrencyWhole(value)}
-                        </p>
-                      </button>
-                    ))}
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              {remainingCards
-                .filter((card) => card.key !== 'cashReceivedOnCreditDue')
-                .map(({ key, label, value, cardClass, labelClass, valueClass }) => (
-          <Card
-            key={label}
-            className={`border shadow-sm cursor-pointer transition hover:-translate-y-0.5 hover:shadow-md ${cardClass}`}
+          <button
+            key={key}
+            type="button"
             onClick={() => setSelectedKpiKey(key)}
+            className="inline-block w-fit max-w-full text-left align-top"
           >
-            <CardContent className="flex min-h-[76px] flex-col justify-between p-3 lg:min-h-[88px] lg:p-3.5">
-              <p className={`text-[10px] font-semibold uppercase leading-snug tracking-[0.05em] ${labelClass}`} title={label}>
-                {label}
-              </p>
-              <p className={`mt-2 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[15px] font-bold leading-none sm:text-[18px] lg:text-[20px] ${valueClass}`} title={formatCurrencyWhole(value)}>
-                {formatCurrencyWhole(value)}
-              </p>
-            </CardContent>
-          </Card>
-              ))}
-            </>
-          );
-        })()}
+            <Card
+              className={`
+                w-fit max-w-full
+                rounded-[14px]
+                border
+                bg-white
+                shadow-[0_6px_18px_rgba(15,23,42,0.05)]
+                transition
+                hover:-translate-y-0.5
+                hover:shadow-[0_10px_22px_rgba(15,23,42,0.08)]
+                ${cardClass.replace(/bg-[^ ]+/g, 'bg-white')}
+              `}
+            >
+              <CardContent
+                className="
+                  inline-grid
+                  grid-cols-[max-content_1px_max-content_max-content]
+                  items-center
+                  gap-x-2.5
+                  px-3.5
+                  py-3
+                "
+              >
+                <p
+                  className={`
+                    w-max
+                    max-w-[168px]
+                    text-[13px]
+                    font-semibold
+                    uppercase
+                    leading-[1.15]
+                    tracking-[0.03em]
+                    line-clamp-2
+                    ${labelClass}
+                  `}
+                >
+                  {label}
+                </p>
+
+                <div className="h-7 w-px bg-slate-200" />
+
+                <p
+                  className={`
+                    whitespace-nowrap
+                    text-[22px]
+                    font-bold
+                    leading-none
+                    tracking-tight
+                    ${valueClass}
+                  `}
+                  title={compactFormattedValue}
+                >
+                  {compactFormattedValue}
+                </p>
+
+                <span className="whitespace-nowrap text-[19px] font-light leading-none text-slate-300">
+                  -
+                </span>
+              </CardContent>
+            </Card>
+          </button>
+        )})}
       </div>
 
       <div className="hidden grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4">
@@ -3997,5 +3938,3 @@ export default function Transactions() {
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
-
-
