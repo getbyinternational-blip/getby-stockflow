@@ -5,7 +5,7 @@ import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { Transaction, Customer, DeletedTransactionRecord, CartItem, Product, PurchaseOrder, UpfrontOrder, SupplierPaymentLedgerEntry, Expense, CashAdjustment, DeleteCompensationRecord, ManualCashbookEntry } from '../types';
 import { NO_COLOR, NO_VARIANT } from '../services/productVariants';
 import { auth } from '../services/firebase';
-import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getHistoricalAwareSaleSettlement, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, loadData, deleteTransaction, updateTransaction, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
+import { getDeleteTransactionPreview, getSaleSettlementBreakdown, getHistoricalAwareSaleSettlement, getCanonicalReturnPreviewForDraft, getTransactionUpdateAuditPreview, getStorageHydrationState, loadData, deleteTransaction, updateTransaction, loadDeletedTransactionsPage, refreshDeletedTransactionsFromCloud, TransactionPageCursor } from '../services/storage';
 import { generateReceiptPDF } from '../services/pdf';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { appendWhatsAppLog } from '../services/whatsappLogs';
@@ -55,6 +55,8 @@ type TransactionKpiKey =
   | 'cashReceivedOnCreditDue'
   | 'totalCashIn'
   | 'totalCashOut';
+
+type RevenueBreakdownTab = 'cash' | 'credit' | 'online' | 'grand_total';
 
 export default function Transactions() {
   const perfRunIdRef = useRef(createPerfRunId('transactions'));
@@ -212,6 +214,7 @@ export default function Transactions() {
   }
   const initialData = initialDataRef.current;
   const [transactions, setTransactions] = useState<Transaction[]>(initialData.transactions);
+  const [storageHydration, setStorageHydration] = useState(() => getStorageHydrationState());
   const [expenses, setExpenses] = useState<Expense[]>(initialData.expenses);
   const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>(initialData.cashAdjustments);
   const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>(initialData.manualCashbookEntries);
@@ -230,6 +233,7 @@ export default function Transactions() {
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [selectedKpiTx, setSelectedKpiTx] = useState<Transaction | null>(null);
   const [selectedKpiKey, setSelectedKpiKey] = useState<TransactionKpiKey | null>(null);
+  const [selectedRevenueTab, setSelectedRevenueTab] = useState<RevenueBreakdownTab>('grand_total');
   const [viewMode, setViewMode] = useState<'default' | 'list' | 'list-details' | 'medium'>('list-details');
   const [useColoredTransactionRows, setUseColoredTransactionRows] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -284,6 +288,9 @@ export default function Transactions() {
   useEscapeLayer(isInvoiceOptionsOpen, () => { setIsInvoiceOptionsOpen(false); setTxToExport(null); }, { priority: 110 });
   useEscapeLayer(isEditingCustomerPickerOpen, () => setIsEditingCustomerPickerOpen(false), { priority: 115 });
   useEscapeLayer(isProductPickerOpen && editingTx?.type === 'sale', () => setIsProductPickerOpen(false), { priority: 115 });
+  useEffect(() => {
+    setSelectedRevenueTab('grand_total');
+  }, [selectedKpiKey]);
   const [deleteReason, setDeleteReason] = useState<'customer_cancelled' | 'created_by_mistake' | 'other'>('customer_cancelled');
   const [deleteReasonOther, setDeleteReasonOther] = useState('');
   const [deletedPage, setDeletedPage] = useState(1);
@@ -297,6 +304,10 @@ export default function Transactions() {
   const transactionWorkerRef = useRef<Worker | null>(null);
   const transactionWorkerBusyRef = useRef(false);
   const transactionsWorkerFailedRef = useRef(false);
+  const storageRefreshFrameRef = useRef<number | null>(null);
+  const queuedStorageEventTypesRef = useRef<string[]>([]);
+  const nonCriticalRefreshStartedRef = useRef(false);
+  const isTransactionsHydrating = storageHydration.isCloudConfigured && !storageHydration.hasCompletedInitialCloudLoad;
   const virtualSupplierPaymentTransactions = useMemo<Transaction[]>(() => (supplierPayments || [])
     .filter((payment) => !payment.deletedAt)
     .map((payment) => {
@@ -592,6 +603,7 @@ export default function Transactions() {
           setDeletedWindowCursor(deletedWindow.nextCursor);
           setHasMoreDeletedWindow(deletedWindow.hasMore);
           setIsDeletedWindowed(deletedWindow.hasMore);
+          setStorageHydration(getStorageHydrationState());
           setLoadError(null);
         } catch (error) {
           setLoadError('Unable to load transactions right now. Please try again.');
@@ -604,23 +616,47 @@ export default function Transactions() {
     if (loadError) {
       refreshData();
     }
-    void perfMeasureAsync('page.Transactions.refreshDeletedTransactionsBin.startup', () => refreshDeletedTransactionsBin(), {
-      runId: perfRunIdRef.current,
-    });
     const handleRefresh = (event: Event) => {
-      perfMeasureSync('page.Transactions.storage_event', () => refreshData(), {
-        runId: perfRunIdRef.current,
-        eventType: event.type,
+      queuedStorageEventTypesRef.current.push(event.type);
+      if (storageRefreshFrameRef.current !== null) return;
+      storageRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        const eventTypes = Array.from(new Set(queuedStorageEventTypesRef.current));
+        queuedStorageEventTypesRef.current = [];
+        storageRefreshFrameRef.current = null;
+        perfMeasureSync('page.Transactions.storage_event', () => refreshData(), {
+          runId: perfRunIdRef.current,
+          eventType: eventTypes.join(','),
+        });
       });
+    };
+    const handleCloudSyncStatus = () => {
+      setStorageHydration(getStorageHydrationState());
     };
     window.addEventListener('storage', handleRefresh);
     window.addEventListener('local-storage-update', handleRefresh);
+    window.addEventListener('cloud-sync-status', handleCloudSyncStatus);
     perfLog('page.Transactions.first_effect.complete', { runId: perfRunIdRef.current });
     return () => {
+        if (storageRefreshFrameRef.current !== null) {
+          window.cancelAnimationFrame(storageRefreshFrameRef.current);
+          storageRefreshFrameRef.current = null;
+        }
+        queuedStorageEventTypesRef.current = [];
         window.removeEventListener('storage', handleRefresh);
         window.removeEventListener('local-storage-update', handleRefresh);
+        window.removeEventListener('cloud-sync-status', handleCloudSyncStatus);
     };
   }, [loadError]);
+
+  useEffect(() => {
+    if (!isRouteActive) return;
+    if (isTransactionsHydrating) return;
+    if (nonCriticalRefreshStartedRef.current) return;
+    nonCriticalRefreshStartedRef.current = true;
+    void perfMeasureAsync('page.Transactions.refreshDeletedTransactionsBin.startup', () => refreshDeletedTransactionsBin(), {
+      runId: perfRunIdRef.current,
+    });
+  }, [isRouteActive, isTransactionsHydrating]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -757,6 +793,12 @@ export default function Transactions() {
   }, [searchTerm]);
 
   useEffect(() => {
+    if (isTransactionsHydrating) {
+      setFilteredTransactions([]);
+      setHasProcessedCurrentQuery(false);
+      setIsTransactionsProcessing(false);
+      return;
+    }
     const requestId = ++transactionProcessingRequestRef.current;
     let cancelled = false;
     setHasProcessedCurrentQuery(false);
@@ -927,7 +969,7 @@ export default function Transactions() {
         transactionProcessingLoaderTimeoutRef.current = null;
       }
     };
-  }, [searchableTransactionRows, transactionsById, filterType, customStart, customEnd, debouncedSearchTerm]);
+  }, [isTransactionsHydrating, searchableTransactionRows, transactionsById, filterType, customStart, customEnd, debouncedSearchTerm]);
 
   const matchesCurrentDateFilter = (rawDate?: string) => {
     const parsed = rawDate ? new Date(rawDate) : null;
@@ -2052,9 +2094,9 @@ export default function Transactions() {
       { key: 'totalCash' as const, label: 'Cash', value: transactionKpis.totalCash, cardClass: 'border-emerald-200 bg-emerald-50/60', labelClass: 'text-emerald-700', valueClass: 'text-emerald-600' },
       { key: 'totalCredit' as const, label: 'Credit', value: transactionKpis.totalCredit, cardClass: 'border-amber-200 bg-amber-50/70', labelClass: 'text-amber-700', valueClass: 'text-amber-500' },
       { key: 'totalOnline' as const, label: 'Online', value: transactionKpis.totalOnline, cardClass: 'border-violet-200 bg-violet-50/60', labelClass: 'text-violet-700', valueClass: 'text-violet-600' },
-      { key: 'cashReceivedOnCreditDue' as const, label: 'Cash Received on Credit Due', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-cyan-200 bg-cyan-50/60', labelClass: 'text-cyan-700', valueClass: 'text-emerald-600' },
-      { key: 'totalPurchaseCash' as const, label: 'Purchase in Cash', value: transactionKpis.totalPurchaseCash, cardClass: 'border-rose-200 bg-rose-50/60', labelClass: 'text-rose-700', valueClass: 'text-rose-500' },
-      { key: 'totalPurchaseCredit' as const, label: 'Purchase in Credit', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/60', labelClass: 'text-orange-700', valueClass: 'text-orange-500' },
+      { key: 'cashReceivedOnCreditDue' as const, label: 'Credit Received', value: transactionKpis.cashReceivedOnCreditDue, cardClass: 'border-cyan-200 bg-cyan-50/60', labelClass: 'text-cyan-700', valueClass: 'text-emerald-600' },
+      { key: 'totalPurchaseCash' as const, label: 'Cash Purchase', value: transactionKpis.totalPurchaseCash, cardClass: 'border-rose-200 bg-rose-50/60', labelClass: 'text-rose-700', valueClass: 'text-rose-500' },
+      { key: 'totalPurchaseCredit' as const, label: 'Credit Purchase', value: transactionKpis.totalPurchaseCredit, cardClass: 'border-orange-200 bg-orange-50/60', labelClass: 'text-orange-700', valueClass: 'text-orange-500' },
       { key: 'totalCashIn' as const, label: 'Cash In', value: transactionKpis.totalCashIn, cardClass: 'border-emerald-200 bg-emerald-50/60', labelClass: 'text-emerald-700', valueClass: 'text-emerald-600' },
       { key: 'totalCashOut' as const, label: 'Cash Out', value: transactionKpis.totalCashOut, cardClass: 'border-rose-200 bg-rose-50/60', labelClass: 'text-rose-700', valueClass: 'text-rose-500' },
       { key: 'totalRevenue' as const, label: 'Revenue', value: transactionKpis.totalRevenue, cardClass: 'border-blue-200 bg-blue-50/60', labelClass: 'text-blue-700', valueClass: 'text-blue-500' },
@@ -2257,6 +2299,78 @@ export default function Transactions() {
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [selectedKpiKey, filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments, virtualSupplierPaymentTransactions, virtualPurchaseOrderTransactions, productsById]);
 
+  const selectedRevenueDistribution = useMemo(() => {
+    if (selectedKpiKey !== 'totalRevenue') return null;
+
+    return {
+      cash: roundMoney(transactionKpis.totalCash),
+      credit: roundMoney(transactionKpis.totalCredit),
+      online: roundMoney(transactionKpis.totalOnline),
+      total: roundMoney(transactionKpis.totalRevenue),
+    };
+  }, [selectedKpiKey, transactionKpis]);
+
+  const selectedRevenueTabRows = useMemo(() => {
+    if (selectedKpiKey !== 'totalRevenue') return selectedKpiRows;
+    if (selectedRevenueTab === 'grand_total') return selectedKpiRows;
+
+    return filteredTransactions
+      .filter((tx) => isSaleLikeTransaction(tx))
+      .map((tx) => {
+        const settlement = getCanonicalSaleSettlement(tx);
+        const firstItem = normalizeTransactionItems(tx.items)[0];
+        const firstProduct = firstItem?.id ? productsById.get(firstItem.id) : null;
+        const amount =
+          selectedRevenueTab === 'cash'
+            ? roundMoney(Math.max(0, Number(settlement.cashPaid || 0)))
+            : selectedRevenueTab === 'credit'
+              ? roundMoney(Math.max(0, Number(settlement.creditDue || 0)))
+              : roundMoney(Math.max(0, Number(settlement.onlinePaid || 0)));
+
+        return {
+          id: `${tx.id}-${selectedRevenueTab}`,
+          date: getTransactionBusinessDate(tx) || tx.date,
+          type: getTransactionTypeUi(tx).typeLabel,
+          name: tx.customerName || 'Walk-in',
+          method:
+            selectedRevenueTab === 'cash'
+              ? 'Cash'
+              : selectedRevenueTab === 'credit'
+                ? 'Credit'
+                : 'Online',
+          amount,
+          cashSource: getTransactionCashSourceLabel(tx),
+          imageSrc: firstItem?.image || firstProduct?.image || null,
+          imageAlt: firstItem?.name || firstProduct?.name || 'Product',
+          productName: firstItem?.name || firstProduct?.name || null,
+          quantity: firstItem ? Math.max(0, Number(firstItem.quantity || 0)) : null,
+          unitPrice: firstItem ? Math.max(0, Number(firstItem.sellPrice || 0)) : null,
+          tx,
+        };
+      })
+      .filter((row) => row.amount > 0)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [filteredTransactions, productsById, selectedKpiKey, selectedKpiRows, selectedRevenueTab]);
+
+  const activeKpiRows = selectedKpiKey === 'totalRevenue' ? selectedRevenueTabRows : selectedKpiRows;
+
+  const activeKpiTotal = useMemo(() => {
+    if (selectedKpiKey !== 'totalRevenue' || !selectedRevenueDistribution) {
+      return selectedKpiCard?.value || 0;
+    }
+
+    switch (selectedRevenueTab) {
+      case 'cash':
+        return selectedRevenueDistribution.cash;
+      case 'credit':
+        return selectedRevenueDistribution.credit;
+      case 'online':
+        return selectedRevenueDistribution.online;
+      default:
+        return selectedRevenueDistribution.total;
+    }
+  }, [selectedKpiCard, selectedKpiKey, selectedRevenueDistribution, selectedRevenueTab]);
+
   const getSaleSettlementText = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) {
       return String(tx.notes || '').replace(/^Expense - /i, '');
@@ -2355,7 +2469,7 @@ export default function Transactions() {
           </div>
         </div>
       )}
-      {isInitialLoading && <LightweightLoader label="Loading data..." />}
+      {(isInitialLoading || isTransactionsHydrating) && <LightweightLoader label={isTransactionsHydrating ? "Loading transactions..." : "Loading data..."} />}
       {loadError && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
       )}
@@ -2445,80 +2559,64 @@ export default function Transactions() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-start gap-3">
+      <div className="overflow-x-auto">
+        <div className="grid min-w-full grid-cols-2 overflow-hidden rounded-[18px] border border-slate-200 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.06)] sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-9">
         {transactionKpiCards.map(({ key, label, value, cardClass, valueClass, labelClass }) => {
           const formattedValue = formatCurrencyWhole(value);
           const compactFormattedValue = formattedValue.replace(/₹\s?/g, '');
+          const isSelected = selectedKpiKey === key;
 
           return (
           <button
             key={key}
             type="button"
             onClick={() => setSelectedKpiKey(key)}
-            className="inline-block w-fit max-w-full text-left align-top"
+            className={`
+              min-w-0 text-left align-top transition
+              border-r border-b
+              ${isSelected ? 'bg-slate-50/90' : 'bg-white hover:bg-slate-50/70'}
+              ${cardClass.replace(/bg-[^ ]+/g, '')}
+            `}
           >
-            <Card
-              className={`
-                w-fit max-w-full
-                rounded-[14px]
-                border
-                bg-white
-                shadow-[0_6px_18px_rgba(15,23,42,0.05)]
-                transition
-                hover:-translate-y-0.5
-                hover:shadow-[0_10px_22px_rgba(15,23,42,0.08)]
-                ${cardClass.replace(/bg-[^ ]+/g, 'bg-white')}
-              `}
+            <div
+              className="
+                flex h-full min-w-0 flex-col justify-center
+                px-3 py-2.5 sm:px-4 sm:py-3
+              "
             >
-              <CardContent
-                className="
-                  inline-grid
-                  grid-cols-[max-content_1px_max-content_max-content]
-                  items-center
-                  gap-x-2.5
-                  px-3.5
-                  py-3
-                "
+              <p
+                className={`
+                  min-h-[28px]
+                  text-[11px]
+                  font-semibold
+                  uppercase
+                  leading-[1.15]
+                  tracking-[0.04em]
+                  ${labelClass}
+                `}
               >
-                <p
-                  className={`
-                    w-max
-                    max-w-[168px]
-                    text-[13px]
-                    font-semibold
-                    uppercase
-                    leading-[1.15]
-                    tracking-[0.03em]
-                    line-clamp-2
-                    ${labelClass}
-                  `}
-                >
-                  {label}
-                </p>
+                {label}
+              </p>
 
-                <div className="h-7 w-px bg-slate-200" />
+              <div className="mt-2 h-px w-full bg-slate-200" />
 
-                <p
-                  className={`
-                    whitespace-nowrap
-                    text-[22px]
-                    font-bold
-                    leading-none
-                    tracking-tight
-                    ${valueClass}
-                  `}
-                  title={compactFormattedValue}
-                >
-                  {compactFormattedValue}
-                </p>
-
-                <span className="whitespace-nowrap text-[19px] font-light leading-none text-slate-300">
-                  -
-                </span>
-              </CardContent>
-            </Card>
+              <p
+                className={`
+                  mt-2 whitespace-nowrap
+                  text-[22px]
+                  font-bold
+                  leading-none
+                  tracking-tight
+                  ${valueClass}
+                `}
+                title={compactFormattedValue}
+              >
+                {compactFormattedValue}
+              </p>
+            </div>
           </button>
         )})}
+        </div>
       </div>
 
       <div className="hidden grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4">
@@ -2668,10 +2766,10 @@ export default function Transactions() {
                 )}
               </Card>
             )
-        ) : isTransactionsProcessing || shouldShowPendingTransactionsState ? (
+        ) : isTransactionsHydrating || isTransactionsProcessing || shouldShowPendingTransactionsState ? (
             <Card className="border-none shadow-sm">
               <CardContent className="p-8">
-                <LightweightLoader label="Loading transactions..." />
+                <LightweightLoader label={isTransactionsHydrating ? "Loading transactions..." : "Preparing transactions..."} />
               </CardContent>
             </Card>
         ) : hasProcessedCurrentQuery && filteredTransactions.length === 0 ? (
@@ -3145,10 +3243,10 @@ export default function Transactions() {
                   <div className="flex items-center gap-5">
                     <CardTitle>{selectedKpiCard.label}</CardTitle>
                     <div className="text-xl font-medium text-slate-600">
-                      {selectedKpiRows.length} entr{selectedKpiRows.length === 1 ? 'y' : 'ies'}
+                      {activeKpiRows.length} entr{activeKpiRows.length === 1 ? 'y' : 'ies'}
                     </div>
                     <div className="text-xl font-semibold text-sky-700">
-                      {formatCurrencyWhole(selectedKpiCard.value)}
+                      {formatCurrencyWhole(activeKpiTotal)}
                     </div>
                   </div>
                 </div>
@@ -3166,12 +3264,89 @@ export default function Transactions() {
               </div>
             </CardHeader>
             <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
-              {selectedKpiRows.length === 0 ? (
-                <div className="p-8 text-center text-sm text-muted-foreground">No rows found for this KPI in the current filter.</div>
-              ) : (
-                <>
+              <div className="flex h-full min-h-0 flex-col">
+                {selectedRevenueDistribution && (
+                  <div className="border-b border-slate-200 bg-slate-50/80 px-4 pt-4">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRevenueTab('cash')}
+                        className={`rounded-t-xl border border-b-0 px-4 py-3 text-left transition ${
+                          selectedRevenueTab === 'cash'
+                            ? 'border-emerald-300 bg-white text-emerald-700 shadow-[0_-1px_0_0_rgba(16,185,129,0.1)]'
+                            : 'border-transparent bg-emerald-50/70 text-emerald-700 hover:bg-emerald-50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.04em]">
+                          Cash Revenue
+                        </div>
+                        <div className="mt-1 text-2xl font-bold tracking-tight">
+                          {formatCurrencyWhole(selectedRevenueDistribution.cash)}
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRevenueTab('credit')}
+                        className={`rounded-t-xl border border-b-0 px-4 py-3 text-left transition ${
+                          selectedRevenueTab === 'credit'
+                            ? 'border-amber-300 bg-white text-amber-700 shadow-[0_-1px_0_0_rgba(245,158,11,0.1)]'
+                            : 'border-transparent bg-amber-50/70 text-amber-700 hover:bg-amber-50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.04em]">
+                          Credit Revenue
+                        </div>
+                        <div className="mt-1 text-2xl font-bold tracking-tight">
+                          {formatCurrencyWhole(selectedRevenueDistribution.credit)}
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRevenueTab('online')}
+                        className={`rounded-t-xl border border-b-0 px-4 py-3 text-left transition ${
+                          selectedRevenueTab === 'online'
+                            ? 'border-violet-300 bg-white text-violet-700 shadow-[0_-1px_0_0_rgba(139,92,246,0.1)]'
+                            : 'border-transparent bg-violet-50/70 text-violet-700 hover:bg-violet-50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.04em]">
+                          Online Revenue
+                        </div>
+                        <div className="mt-1 text-2xl font-bold tracking-tight">
+                          {formatCurrencyWhole(selectedRevenueDistribution.online)}
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRevenueTab('grand_total')}
+                        className={`rounded-t-xl border border-b-0 px-4 py-3 text-left transition ${
+                          selectedRevenueTab === 'grand_total'
+                            ? 'border-sky-300 bg-white text-sky-700 shadow-[0_-1px_0_0_rgba(14,165,233,0.1)]'
+                            : 'border-transparent bg-sky-50/70 text-sky-700 hover:bg-sky-50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.04em]">
+                          Grand Total
+                        </div>
+                        <div className="mt-1 text-2xl font-bold tracking-tight">
+                          {formatCurrencyWhole(selectedRevenueDistribution.total)}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeKpiRows.length === 0 ? (
+                  <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">
+                    No rows found for this KPI in the current filter.
+                  </div>
+                ) : (
+                  <>
                 <div className="hidden space-y-3 p-4">
-                  {selectedKpiRows.map((row) => (
+                  {activeKpiRows.map((row) => (
                     <div key={row.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div className="grid gap-4 xl:grid-cols-[120px_72px_minmax(0,1.3fr)_auto] xl:items-start">
                         <div className="space-y-1">
@@ -3229,7 +3404,7 @@ export default function Transactions() {
                     </div>
                   ))}
                 </div>
-                <div className="h-full max-h-[calc(90vh-110px)] overflow-x-auto overflow-y-auto">
+                <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto">
                 <table className="min-w-[1320px] w-full text-[17px] text-left">
                   <thead className="sticky top-0 z-10 bg-slate-100 text-[15px] font-bold uppercase text-slate-600 shadow-[0_1px_0_0_rgba(226,232,240,1)]">
                     <tr>
@@ -3247,7 +3422,7 @@ export default function Transactions() {
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {selectedKpiRows.map((row) => (
+                    {activeKpiRows.map((row) => (
                       <tr key={row.id} className="hover:bg-muted/30">
                         <td className="px-4 py-3 font-medium whitespace-nowrap">{formatDateDisplay(row.date)}</td>
                         <td className="px-4 py-3 whitespace-nowrap">
@@ -3281,8 +3456,9 @@ export default function Transactions() {
                   </tbody>
                 </table>
                 </div>
-                </>
-              )}
+                  </>
+                )}
+              </div>
             </CardContent>
           </Card>
         </div>

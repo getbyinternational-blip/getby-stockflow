@@ -4655,6 +4655,13 @@ export const loadData = (): AppState => {
   });
 };
 
+export const getStorageHydrationState = () => ({
+  hasCompletedInitialCloudLoad,
+  cloudSyncStatus,
+  isCloudConfigured: Boolean(db),
+  activeSyncUid,
+});
+
 export type TransactionPageCursor = { lastId: string; lastDate: string } | null;
 
 type TransactionPageOptions = {

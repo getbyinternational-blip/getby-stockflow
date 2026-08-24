@@ -4,7 +4,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { Customer, RepairHistoryEntry, Transaction, Product, UpfrontOrder } from '../types';
-import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, allocateCustomerPaymentAgainstCompositeReceivable, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, loadData, processTransaction, deleteCustomer, addCustomer, addUpfrontOrder, updateUpfrontOrder, collectUpfrontPayment, updateCustomer, updateTransaction, auditCustomerPaymentAllocations, previewCustomerRepairedAllocationView, applyCustomerLedgerBalanceSnapshotPatch, appendRepairHistoryEntry, deleteTransaction, deleteUpfrontOrder, updateUpfrontOrderPayment, deleteUpfrontOrderPayment, recomputeUpfrontOrderPaymentState, getUpfrontOrderAccountingMode, getUpfrontOrderAdvancePaidAmount, getUpfrontOrderCurrentDueImpact, getUpfrontOrderLegacyDueImpact, getUpfrontOrderTotalAmount, buildReceivableOnlyRepairAdvanceEntries } from '../services/storage';
+import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, allocateCustomerPaymentAgainstCompositeReceivable, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, getStorageHydrationState, loadData, processTransaction, deleteCustomer, addCustomer, addUpfrontOrder, updateUpfrontOrder, collectUpfrontPayment, updateCustomer, updateTransaction, auditCustomerPaymentAllocations, previewCustomerRepairedAllocationView, applyCustomerLedgerBalanceSnapshotPatch, appendRepairHistoryEntry, deleteTransaction, deleteUpfrontOrder, updateUpfrontOrderPayment, deleteUpfrontOrderPayment, recomputeUpfrontOrderPaymentState, getUpfrontOrderAccountingMode, getUpfrontOrderAdvancePaidAmount, getUpfrontOrderCurrentDueImpact, getUpfrontOrderLegacyDueImpact, getUpfrontOrderTotalAmount, buildReceivableOnlyRepairAdvanceEntries } from '../services/storage';
 import { generateLedgerStatementPDF, generateReceiptPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay } from '../services/ledgerStatements';
 import { auth } from '../services/firebase';
@@ -698,6 +698,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const [transactions, setTransactions] = useState<Transaction[]>(initialData.transactions);
   const [upfrontOrders, setUpfrontOrders] = useState<UpfrontOrder[]>(initialData.upfrontOrders);
   const [products, setProducts] = useState<Product[]>(initialData.products);
+  const [storageHydration, setStorageHydration] = useState(() => getStorageHydrationState());
   
   // Modal States
   const [viewingCustomer, setViewingCustomer] = useState<Customer | null>(null);
@@ -815,7 +816,8 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const shellPainted = routeReady?.shellPainted ?? true;
   const isRouteActive = routeReady?.isRouteActive ?? true;
   const [isCustomerSecondaryReady, setIsCustomerSecondaryReady] = useState(false);
-  const isCustomerSecondaryPending = !isCustomerSecondaryReady;
+  const isCustomersHydrating = storageHydration.isCloudConfigured && !storageHydration.hasCompletedInitialCloudLoad;
+  const isCustomerSecondaryPending = !isCustomerSecondaryReady || isCustomersHydrating;
   useEscapeLayer(isDeleteModalOpen && !!viewingCustomer, () => setIsDeleteModalOpen(false), { priority: 120 });
   useEscapeLayer(paymentAuditOpen && !!viewingCustomer && !!paymentAuditResult, () => setPaymentAuditOpen(false), { priority: 110 });
   useEscapeLayer(updatedViewOpen && !!viewingCustomer && !!updatedViewPreview, () => setUpdatedViewOpen(false), { priority: 110 });
@@ -854,6 +856,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       setTransactions(data.transactions);
       setUpfrontOrders(data.upfrontOrders || []);
       setProducts(data.products || []);
+      setStorageHydration(getStorageHydrationState());
       setLoadError(null);
 
       if (viewingCustomer) {
@@ -920,8 +923,12 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         refreshData();
       });
     };
+    const handleCloudSyncStatus = () => {
+      setStorageHydration(getStorageHydrationState());
+    };
     window.addEventListener('storage', handleStorageRefresh);
     window.addEventListener('local-storage-update', handleStorageRefresh);
+    window.addEventListener('cloud-sync-status', handleCloudSyncStatus);
     return () => {
         if (storageRefreshFrameRef.current !== null) {
           window.cancelAnimationFrame(storageRefreshFrameRef.current);
@@ -930,6 +937,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         queuedStorageEventTypesRef.current = [];
         window.removeEventListener('storage', handleStorageRefresh);
         window.removeEventListener('local-storage-update', handleStorageRefresh);
+        window.removeEventListener('cloud-sync-status', handleCloudSyncStatus);
     };
   }, [loadError, refreshData]);
 
@@ -2289,7 +2297,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
 
   return (
     <div className="space-y-6 pb-24 md:pb-0 relative">
-      {isInitialLoading && <LightweightLoader label="Loading data..." />}
+      {(isInitialLoading || isCustomersHydrating) && <LightweightLoader label={isCustomersHydrating ? "Loading customers..." : "Loading data..."} />}
       {loadError && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
       )}

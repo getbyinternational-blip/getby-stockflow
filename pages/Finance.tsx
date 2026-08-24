@@ -1,36 +1,113 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
-import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, LightweightLoader } from '../components/ui';
-import { appendRepairHistoryEntry, buildUpfrontOrderLedgerEffects, getCanonicalCustomerBalanceSnapshot, getCanonicalReturnAllocation, loadData, safeFinancePersistState, processTransaction, getSaleSettlementBreakdown, saveExpenseToSubcollection, saveExpenseActivityToSubcollection, deleteExpenseFromSubcollection, isExpenseStoredInSubcollection, refreshDeletedTransactionsFromCloud, refreshExpenseActivitiesFromCloud } from '../services/storage';
-import { financeLog } from '../services/financeLogger';
-import { AppState, CartItem, CashAdjustment, CashSession, CashSource, Customer, DeleteCompensationRecord, DeletedTransactionRecord, Expense as CanonicalExpense, ExpenseActivity, ManualCashbookEntry, PurchaseOrder, RepairHistoryEntry, Transaction, UpdatedTransactionRecord, UpfrontOrder } from '../types';
-import { AlertCircle, DollarSign, Wallet, ReceiptIndianRupee, BarChart3, Lock, Unlock } from 'lucide-react';
-import { getCurrentUser } from '../services/auth';
-import { formatINRPrecise, formatINRWhole } from '../services/numberFormat';
-import { getCanonicalCustomerBalanceView } from '../services/customerBalanceView';
-import { normalizeTransactionItems } from '../utils/transactionItems';
-import { getFriendlyErrorMessage } from '../services/errorMessages';
-import { useRoleSession } from '../src/auth/roleSession';
-import { can, getCurrentRole } from '../src/auth/simplePermissions';
-import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
-import { auth } from '../services/firebase';
-import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
-import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
-import { useRouteReady } from '../src/routing/routeReady';
+import React, { useEffect, useMemo, useState } from "react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
+import {
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Input,
+  Label,
+  LightweightLoader,
+} from "../components/ui";
+import {
+  appendRepairHistoryEntry,
+  buildUpfrontOrderLedgerEffects,
+  getCanonicalCustomerBalanceSnapshot,
+  getCanonicalReturnAllocation,
+  getStorageHydrationState,
+  loadData,
+  safeFinancePersistState,
+  processTransaction,
+  getSaleSettlementBreakdown,
+  saveExpenseToSubcollection,
+  saveExpenseActivityToSubcollection,
+  deleteExpenseFromSubcollection,
+  isExpenseStoredInSubcollection,
+  refreshDeletedTransactionsFromCloud,
+  refreshExpenseActivitiesFromCloud,
+} from "../services/storage";
+import { financeLog } from "../services/financeLogger";
+import {
+  AppState,
+  CartItem,
+  CashAdjustment,
+  CashSession,
+  CashSource,
+  Customer,
+  DeleteCompensationRecord,
+  DeletedTransactionRecord,
+  Expense as CanonicalExpense,
+  ExpenseActivity,
+  ManualCashbookEntry,
+  PurchaseOrder,
+  RepairHistoryEntry,
+  Transaction,
+  UpdatedTransactionRecord,
+  UpfrontOrder,
+} from "../types";
+import {
+  AlertCircle,
+  DollarSign,
+  Wallet,
+  ReceiptIndianRupee,
+  BarChart3,
+  Lock,
+  Unlock,
+} from "lucide-react";
+import { getCurrentUser } from "../services/auth";
+import { formatINRPrecise, formatINRWhole } from "../services/numberFormat";
+import { getCanonicalCustomerBalanceView } from "../services/customerBalanceView";
+import { normalizeTransactionItems } from "../utils/transactionItems";
+import { getFriendlyErrorMessage } from "../services/errorMessages";
+import { useRoleSession } from "../src/auth/roleSession";
+import { can, getCurrentRole } from "../src/auth/simplePermissions";
+import { useEscapeLayer } from "../src/hooks/useEscapeLayer";
+import { auth } from "../services/firebase";
+import {
+  formatDateDisplay,
+  formatDateTimeDisplay,
+} from "../src/utils/dateFormat";
+import {
+  createPerfRunId,
+  perfLog,
+  perfMeasureAsync,
+  perfMeasureSync,
+} from "../services/perf";
+import { useRouteReady } from "../src/routing/routeReady";
 
 type Expense = CanonicalExpense;
 
-type FinanceTabKey = 'cash' | 'expense';
-type ExpenseDatePreset = 'today' | '7d' | '15d' | 'month' | 'custom';
+type FinanceTabKey = "cash" | "expense";
+type ExpenseDatePreset = "today" | "7d" | "15d" | "month" | "custom";
 
 type CashbookRow = {
   id: string;
   date: string;
   billNo: string;
-  type: 'sale' | 'payment' | 'return' | 'expense' | 'delete_reversal' | 'delete_compensation' | 'update_correction' | 'supplier_payment' | 'cash_adjustment' | 'manual_cash_in' | 'manual_cash_out' | 'customer_cash_out';
-  eventType?: 'transaction' | 'delete_reversal' | 'delete_compensation' | 'update_correction' | 'supplier_payment' | 'cash_adjustment' | 'manual_cash_entry';
+  type:
+    | "sale"
+    | "payment"
+    | "return"
+    | "expense"
+    | "delete_reversal"
+    | "delete_compensation"
+    | "update_correction"
+    | "supplier_payment"
+    | "cash_adjustment"
+    | "manual_cash_in"
+    | "manual_cash_out"
+    | "customer_cash_out";
+  eventType?:
+    | "transaction"
+    | "delete_reversal"
+    | "delete_compensation"
+    | "update_correction"
+    | "supplier_payment"
+    | "cash_adjustment"
+    | "manual_cash_entry";
   isSynthetic?: boolean;
   sourceTxId?: string;
   customer: string;
@@ -53,11 +130,11 @@ type CashbookRow = {
   netProfitEffect: number;
   effectSummary: string;
   auditFlags?: string[];
-  riskLevel?: 'low' | 'medium' | 'high';
-  layerType?: 'operational' | 'adjustment';
+  riskLevel?: "low" | "medium" | "high";
+  layerType?: "operational" | "adjustment";
   isCorrectionImpact?: boolean;
   isRealActivity?: boolean;
-  correctionImpactClass?: 'financial' | 'metadata_only' | 'n/a';
+  correctionImpactClass?: "financial" | "metadata_only" | "n/a";
 };
 
 const normalizeCashbookRowMoney = (row: CashbookRow): CashbookRow => ({
@@ -82,8 +159,8 @@ const normalizeCashbookRowMoney = (row: CashbookRow): CashbookRow => ({
 
 const dateKeyFromDate = (date: Date) => {
   const yyyy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 };
 
@@ -91,29 +168,29 @@ const todayISO = () => dateKeyFromDate(new Date());
 
 const toDateTimeLocalNow = () => {
   const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
+  const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
 const toDateTimeLocalValue = (iso?: string) => {
   const d = iso ? new Date(iso) : new Date();
   if (Number.isNaN(d.getTime())) return toDateTimeLocalNow();
-  const p = (n: number) => String(n).padStart(2, '0');
+  const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
 const formatMonthDayTimeNoYear = (value?: string) => {
   const parsed = value ? new Date(value) : null;
-  if (!parsed || Number.isNaN(parsed.getTime())) return '';
+  if (!parsed || Number.isNaN(parsed.getTime())) return "";
 
-  const monthDay = parsed.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
+  const monthDay = parsed.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
   });
 
-  const time = parsed.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
+  const time = parsed.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
   });
 
   return `${monthDay}, ${time}`;
@@ -126,10 +203,10 @@ const parseDateTimeInput = (value: string) => {
 };
 
 const getTxType = (tx: Transaction) =>
-  String((tx as Transaction & { type?: string }).type || '').toLowerCase();
+  String((tx as Transaction & { type?: string }).type || "").toLowerCase();
 
 const isSaleLikeTx = (tx: Transaction) =>
-  getTxType(tx) === 'sale' || getTxType(tx) === 'historical_reference';
+  getTxType(tx) === "sale" || getTxType(tx) === "historical_reference";
 
 const isSameDay = (iso: string, dateKey: string) =>
   dateKeyFromDate(new Date(iso)) === dateKey;
@@ -137,7 +214,7 @@ const isSameDay = (iso: string, dateKey: string) =>
 const monthKeyOf = (iso: string) => {
   const d = new Date(iso);
   const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
   return `${yyyy}-${mm}`;
 };
 
@@ -147,38 +224,51 @@ const getExpenseEffectiveDate = (expense: CanonicalExpense) =>
 const formatINR = (value: number) => formatINRPrecise(value);
 const formatINRSummary = (value: number) => formatINRWhole(value);
 const formatPlainAmount = (value: number) =>
-  formatINRPrecise(value).replace(/₹\s*/g, '');
+  formatINRPrecise(value).replace(/₹\s*/g, "");
 
 const formatEditableAmount = (value: number) => {
-  if (!Number.isFinite(value) || Math.abs(value) < 0.000001) return '';
+  if (!Number.isFinite(value) || Math.abs(value) < 0.000001) return "";
   return String(roundMoney(value))
-    .replace(/\.0+$/, '')
-    .replace(/(\.\d*?)0+$/, '$1');
+    .replace(/\.0+$/, "")
+    .replace(/(\.\d*?)0+$/, "$1");
 };
 
-const PDF_CURRENCY_PREFIX = '';
-const PDF_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
-const PDF_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+const PDF_CURRENCY_PREFIX = "";
+const PDF_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const PDF_MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
 
 const formatPdfAmount = (value: number) =>
-  `${PDF_CURRENCY_PREFIX}${Number(value || 0).toLocaleString('en-IN', {
+  `${PDF_CURRENCY_PREFIX}${Number(value || 0).toLocaleString("en-IN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
 
 const forcePdfStandardText = (doc: jsPDF) => {
-  doc.setFont('helvetica', 'normal');
+  doc.setFont("helvetica", "normal");
   (doc as any).setCharSpace?.(0);
 };
 
 const formatExpenseDateHeading = (iso: string) => {
   const date = new Date(iso);
-  return `${PDF_WEEKDAYS[date.getDay()]}, ${String(date.getDate()).padStart(2, '0')} ${PDF_MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+  return `${PDF_WEEKDAYS[date.getDay()]}, ${String(date.getDate()).padStart(2, "0")} ${PDF_MONTHS[date.getMonth()]} ${date.getFullYear()}`;
 };
 
 const formatExpenseDateCell = (iso: string) => {
   const date = new Date(iso);
-  return `${String(date.getDate()).padStart(2, '0')} ${PDF_MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+  return `${String(date.getDate()).padStart(2, "0")} ${PDF_MONTHS[date.getMonth()]} ${date.getFullYear()}`;
 };
 
 const toFiniteMoney = (value: unknown) => {
@@ -189,74 +279,68 @@ const toFiniteMoney = (value: unknown) => {
 const roundMoney = (value: unknown) =>
   Math.round((toFiniteMoney(value) + Number.EPSILON) * 100) / 100;
 
-const isExplicitDeleteRefund = (record: DeleteCompensationRecord) => (
-  record?.isExplicitRefund === true
-  || record?.refundConfirmed === true
-  || record?.source === 'explicit_refund'
-);
+const isExplicitDeleteRefund = (record: DeleteCompensationRecord) =>
+  record?.isExplicitRefund === true ||
+  record?.refundConfirmed === true ||
+  record?.source === "explicit_refund";
 
-const isCorrectionRowType = (type: CashbookRow['type']) =>
-  type === 'delete_reversal'
-  || type === 'delete_compensation'
-  || type === 'update_correction';
+const isCorrectionRowType = (type: CashbookRow["type"]) =>
+  type === "delete_reversal" ||
+  type === "delete_compensation" ||
+  type === "update_correction";
 
-const isSyntheticCorrectionRow = (row: CashbookRow) => (
-  row.isSynthetic === true
-  && (
-    row.eventType === 'delete_reversal'
-    || row.eventType === 'delete_compensation'
-    || row.eventType === 'update_correction'
-    || isCorrectionRowType(row.type)
-  )
-);
+const isSyntheticCorrectionRow = (row: CashbookRow) =>
+  row.isSynthetic === true &&
+  (row.eventType === "delete_reversal" ||
+    row.eventType === "delete_compensation" ||
+    row.eventType === "update_correction" ||
+    isCorrectionRowType(row.type));
 
 const classifyCashbookLayer = (
-  row: CashbookRow
-): 'operational' | 'adjustment' => (
-  isSyntheticCorrectionRow(row) ? 'adjustment' : 'operational'
-);
+  row: CashbookRow,
+): "operational" | "adjustment" =>
+  isSyntheticCorrectionRow(row) ? "adjustment" : "operational";
 
 const hasMaterialFinancialImpact = (
   row: Pick<
     CashbookRow,
-    | 'grossSales'
-    | 'netSales'
-    | 'currentDueEffect'
-    | 'currentStoreCreditEffect'
-    | 'cashIn'
-    | 'cashOut'
-    | 'onlineIn'
-    | 'onlineOut'
-    | 'grossProfitEffect'
-    | 'netProfitEffect'
+    | "grossSales"
+    | "netSales"
+    | "currentDueEffect"
+    | "currentStoreCreditEffect"
+    | "cashIn"
+    | "cashOut"
+    | "onlineIn"
+    | "onlineOut"
+    | "grossProfitEffect"
+    | "netProfitEffect"
   >,
-  eps = 0.01
-) => (
-  Math.abs(row.grossSales) > eps
-  || Math.abs(row.netSales) > eps
-  || Math.abs(row.currentDueEffect) > eps
-  || Math.abs(row.currentStoreCreditEffect) > eps
-  || Math.abs(row.cashIn) > eps
-  || Math.abs(row.cashOut) > eps
-  || Math.abs(row.onlineIn) > eps
-  || Math.abs(row.onlineOut) > eps
-  || Math.abs(row.grossProfitEffect) > eps
-  || Math.abs(row.netProfitEffect) > eps
-);
+  eps = 0.01,
+) =>
+  Math.abs(row.grossSales) > eps ||
+  Math.abs(row.netSales) > eps ||
+  Math.abs(row.currentDueEffect) > eps ||
+  Math.abs(row.currentStoreCreditEffect) > eps ||
+  Math.abs(row.cashIn) > eps ||
+  Math.abs(row.cashOut) > eps ||
+  Math.abs(row.onlineIn) > eps ||
+  Math.abs(row.onlineOut) > eps ||
+  Math.abs(row.grossProfitEffect) > eps ||
+  Math.abs(row.netProfitEffect) > eps;
 
 const getCorrectionImpactClass = (
-  row: CashbookRow
-): 'financial' | 'metadata_only' | 'n/a' => {
-  if (!isSyntheticCorrectionRow(row)) return 'n/a';
-  return hasMaterialFinancialImpact(row) ? 'financial' : 'metadata_only';
+  row: CashbookRow,
+): "financial" | "metadata_only" | "n/a" => {
+  if (!isSyntheticCorrectionRow(row)) return "n/a";
+  return hasMaterialFinancialImpact(row) ? "financial" : "metadata_only";
 };
 
 const CASHBOOK_ROWS_PER_PAGE = 25;
 
 const getCashbookAuditSignals = (
   row: CashbookRow,
-  context: { avgReturnValue: number; avgBalanceMovement: number }
-): { flags: string[]; riskLevel: 'low' | 'medium' | 'high' } => {
+  context: { avgReturnValue: number; avgBalanceMovement: number },
+): { flags: string[]; riskLevel: "low" | "medium" | "high" } => {
   const flags: string[] = [];
 
   const absBalanceMovement =
@@ -270,22 +354,22 @@ const getCashbookAuditSignals = (
   ].filter(Boolean).length;
 
   const touchesRevenue =
-    Math.abs(row.grossSales) > 0.01
-    || Math.abs(row.salesReturn) > 0.01
-    || Math.abs(row.netSales) > 0.01;
+    Math.abs(row.grossSales) > 0.01 ||
+    Math.abs(row.salesReturn) > 0.01 ||
+    Math.abs(row.netSales) > 0.01;
 
   const touchesBalance = absBalanceMovement > 0.01;
 
   const touchesCashbook =
-    Math.abs(row.cashIn) > 0.01
-    || Math.abs(row.cashOut) > 0.01
-    || Math.abs(row.onlineIn) > 0.01
-    || Math.abs(row.onlineOut) > 0.01;
+    Math.abs(row.cashIn) > 0.01 ||
+    Math.abs(row.cashOut) > 0.01 ||
+    Math.abs(row.onlineIn) > 0.01 ||
+    Math.abs(row.onlineOut) > 0.01;
 
   const touchesPnL =
-    Math.abs(row.grossProfitEffect) > 0.01
-    || Math.abs(row.netProfitEffect) > 0.01
-    || Math.abs(row.cogsEffect) > 0.01;
+    Math.abs(row.grossProfitEffect) > 0.01 ||
+    Math.abs(row.netProfitEffect) > 0.01 ||
+    Math.abs(row.cogsEffect) > 0.01;
 
   const mechanismCount = [
     touchesRevenue,
@@ -295,173 +379,158 @@ const getCashbookAuditSignals = (
   ].filter(Boolean).length;
 
   if (isSyntheticCorrectionRow(row)) {
-    if (row.correctionImpactClass === 'metadata_only') {
-      flags.push('Metadata-only correction event');
+    if (row.correctionImpactClass === "metadata_only") {
+      flags.push("Metadata-only correction event");
     } else {
-      flags.push('Manual correction event');
+      flags.push("Manual correction event");
     }
   }
 
   if (
-    row.type === 'return'
-    && row.salesReturn >= Math.max(1000, context.avgReturnValue * 1.5)
+    row.type === "return" &&
+    row.salesReturn >= Math.max(1000, context.avgReturnValue * 1.5)
   ) {
-    flags.push('High return value');
+    flags.push("High return value");
   }
 
-  if (row.type === 'return' && returnTouchCount >= 3) {
-    flags.push('Complex return allocation');
+  if (row.type === "return" && returnTouchCount >= 3) {
+    flags.push("Complex return allocation");
   }
 
-  if (row.type === 'return' && row.currentStoreCreditEffect > 0.01) {
-    flags.push('Store credit created');
+  if (row.type === "return" && row.currentStoreCreditEffect > 0.01) {
+    flags.push("Store credit created");
   }
 
   if (
-    row.type === 'return'
-    && row.cashOut > 0.01
-    && Math.abs(row.currentDueEffect) > 0.01
+    row.type === "return" &&
+    row.cashOut > 0.01 &&
+    Math.abs(row.currentDueEffect) > 0.01
   ) {
-    flags.push('Mixed refund and due adjustment');
+    flags.push("Mixed refund and due adjustment");
   }
 
   if (
-    (row.type === 'sale' && row.grossProfitEffect <= 0)
-    || (row.type !== 'return' && row.grossProfitEffect < -1000)
+    (row.type === "sale" && row.grossProfitEffect <= 0) ||
+    (row.type !== "return" && row.grossProfitEffect < -1000)
   ) {
-    flags.push('Check profit impact');
+    flags.push("Check profit impact");
   }
 
-  if (
-    absBalanceMovement >= Math.max(
-      2000,
-      context.avgBalanceMovement * 2
-    )
-  ) {
-    flags.push('Large balance movement');
+  if (absBalanceMovement >= Math.max(2000, context.avgBalanceMovement * 2)) {
+    flags.push("Large balance movement");
   }
 
   if (mechanismCount >= 3) {
-    flags.push('Multi-effect transaction');
+    flags.push("Multi-effect transaction");
   }
 
   const highPriorityFlags = [
-    'Manual correction event',
-    'Mixed refund and due adjustment',
-    'Large balance movement',
-    'High return value',
+    "Manual correction event",
+    "Mixed refund and due adjustment",
+    "Large balance movement",
+    "High return value",
   ];
 
-  const hasHighPriority = flags.some(flag =>
-    highPriorityFlags.includes(flag)
+  const hasHighPriority = flags.some((flag) =>
+    highPriorityFlags.includes(flag),
   );
 
   if (flags.length === 0) {
-    return { flags, riskLevel: 'low' };
+    return { flags, riskLevel: "low" };
   }
 
-  if (
-    flags.length === 1
-    && flags[0] === 'Metadata-only correction event'
-  ) {
-    return { flags, riskLevel: 'low' };
+  if (flags.length === 1 && flags[0] === "Metadata-only correction event") {
+    return { flags, riskLevel: "low" };
   }
 
   if (hasHighPriority && flags.length >= 2) {
-    return { flags, riskLevel: 'high' };
+    return { flags, riskLevel: "high" };
   }
 
   if (flags.length >= 3) {
-    return { flags, riskLevel: 'high' };
+    return { flags, riskLevel: "high" };
   }
 
-  return { flags, riskLevel: 'medium' };
+  return { flags, riskLevel: "medium" };
 };
 
 const FINANCE_DIAGNOSTIC_DEBUG_ENABLED =
   String(
-    (import.meta as any).env?.VITE_FINANCE_DIAGNOSTIC_DEBUG || ''
-  ).toLowerCase() === 'true';
+    (import.meta as any).env?.VITE_FINANCE_DIAGNOSTIC_DEBUG || "",
+  ).toLowerCase() === "true";
 
 const FINANCE_SHIFT_RECON_DEBUG_ENABLED =
-  Boolean((import.meta as any).env?.DEV)
-  && String(
-    (import.meta as any).env?.VITE_FINANCE_SHIFT_DEBUG || ''
-  ).toLowerCase() === 'true';
+  Boolean((import.meta as any).env?.DEV) &&
+  String(
+    (import.meta as any).env?.VITE_FINANCE_SHIFT_DEBUG || "",
+  ).toLowerCase() === "true";
 
 const getSupplierPaymentMethodForDrawer = (
-  rawMethod: unknown
-): 'cash' | 'non_cash' => {
-  const method = String(rawMethod || '').trim().toLowerCase();
+  rawMethod: unknown,
+): "cash" | "non_cash" => {
+  const method = String(rawMethod || "")
+    .trim()
+    .toLowerCase();
 
-  if (method === 'cash') return 'cash';
-  if (method === 'online' || method === 'bank') return 'non_cash';
+  if (method === "cash") return "cash";
+  if (method === "online" || method === "bank") return "non_cash";
 
-  return 'cash';
+  return "cash";
 };
 
 const getSupplierPaymentTimestamp = (payment: any): number => {
   const at = new Date(
-    payment?.paidAt
-    || payment?.paymentDate
-    || payment?.date
-    || payment?.createdAt
+    payment?.paidAt ||
+      payment?.paymentDate ||
+      payment?.date ||
+      payment?.createdAt,
   ).getTime();
 
   return Number.isFinite(at) ? at : Number.NaN;
 };
 
 const normalizeCashSource = (rawSource: unknown): CashSource =>
-  String(rawSource || '').trim().toLowerCase() === 'reserve'
-    ? 'reserve'
-    : 'drawer';
+  String(rawSource || "")
+    .trim()
+    .toLowerCase() === "reserve"
+    ? "reserve"
+    : "drawer";
 
 const shouldAffectActiveDrawerFromSource = (rawSource: unknown) =>
-  normalizeCashSource(rawSource) !== 'reserve';
+  normalizeCashSource(rawSource) !== "reserve";
 
 const formatCashSourceLabel = (rawSource: unknown) =>
-  normalizeCashSource(rawSource) === 'reserve'
-    ? 'Reserve Cash'
-    : 'Active Cash';
+  normalizeCashSource(rawSource) === "reserve" ? "Reserve Cash" : "Active Cash";
 
 const withCashSourceLabel = (text: string, rawSource: unknown) =>
   `${text} - ${formatCashSourceLabel(rawSource)}`;
 
 const shouldReduceReserveFromSource = (rawSource: unknown) => {
-  const normalized = String(rawSource || '').trim().toLowerCase();
+  const normalized = String(rawSource || "")
+    .trim()
+    .toLowerCase();
 
-  if (normalized === 'drawer') return false;
-  if (normalized === 'reserve') return true;
+  if (normalized === "drawer") return false;
+  if (normalized === "reserve") return true;
 
   return false;
 };
 
-const financeShiftDiag = (
-  tag: string,
-  payload: Record<string, unknown>
-) => {
+const financeShiftDiag = (tag: string, payload: Record<string, unknown>) => {
   if (!FINANCE_DIAGNOSTIC_DEBUG_ENABLED) return;
 };
 
-const getStorageKeysSafely = (
-  storageKind: 'local' | 'session'
-) => {
-  if (typeof window === 'undefined') return [];
+const getStorageKeysSafely = (storageKind: "local" | "session") => {
+  if (typeof window === "undefined") return [];
 
   try {
     const target =
-      storageKind === 'local'
-        ? window.localStorage
-        : window.sessionStorage;
+      storageKind === "local" ? window.localStorage : window.sessionStorage;
 
     return Object.keys(target).slice(0, 20);
   } catch (error) {
     return [
-      `unavailable:${
-        error instanceof Error
-          ? error.message
-          : String(error)
-      }`,
+      `unavailable:${error instanceof Error ? error.message : String(error)}`,
     ];
   }
 };
@@ -478,40 +547,31 @@ const getStateEntityCounts = (state: AppState) => ({
 
 const scanSessionHistory = (sessions: CashSession[]) => {
   const sorted = [...sessions].sort(
-    (a, b) =>
-      new Date(b.startTime).getTime()
-      - new Date(a.startTime).getTime()
+    (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
   );
 
   const skippedInvalidClosed = sorted.filter(
-    session =>
-      session.status === 'closed'
-      && !Number.isFinite(session.closingBalance)
+    (session) =>
+      session.status === "closed" && !Number.isFinite(session.closingBalance),
   ).length;
 
   const skippedInvalidStartTime = sorted.filter(
-    session =>
-      !Number.isFinite(new Date(session.startTime).getTime())
+    (session) => !Number.isFinite(new Date(session.startTime).getTime()),
   ).length;
 
-  const topCandidates = sorted.slice(0, 5).map(session => ({
+  const topCandidates = sorted.slice(0, 5).map((session) => ({
     id: session.id,
     status: session.status,
     startTime: session.startTime,
-    startTimeValid: Number.isFinite(
-      new Date(session.startTime).getTime()
-    ),
+    startTimeValid: Number.isFinite(new Date(session.startTime).getTime()),
     closingBalance: session.closingBalance ?? null,
-    closingBalanceFinite: Number.isFinite(
-      session.closingBalance
-    ),
+    closingBalanceFinite: Number.isFinite(session.closingBalance),
   }));
 
   return {
     totalSessions: sessions.length,
-    closedSessions: sessions.filter(
-      session => session.status === 'closed'
-    ).length,
+    closedSessions: sessions.filter((session) => session.status === "closed")
+      .length,
     skippedInvalidClosed,
     skippedInvalidStartTime,
     topCandidates,
@@ -519,24 +579,24 @@ const scanSessionHistory = (sessions: CashSession[]) => {
 };
 
 const evaluateCarryForwardSession = (session: CashSession) => {
-  if (session.status !== 'closed') {
+  if (session.status !== "closed") {
     return {
       valid: false,
-      reason: 'not_closed' as const,
+      reason: "not_closed" as const,
     };
   }
 
   if (!Number.isFinite(session.closingBalance)) {
     return {
       valid: false,
-      reason: 'closing_not_finite' as const,
+      reason: "closing_not_finite" as const,
     };
   }
 
   if ((session.closingBalance ?? 0) < 0) {
     return {
       valid: false,
-      reason: 'closing_negative' as const,
+      reason: "closing_negative" as const,
     };
   }
 
@@ -552,47 +612,41 @@ const evaluateCarryForwardSession = (session: CashSession) => {
 
   const expected = opening + system;
 
-  const startMs = Number.isFinite(
-    new Date(session.startTime).getTime()
-  )
+  const startMs = Number.isFinite(new Date(session.startTime).getTime())
     ? new Date(session.startTime).getTime()
     : Number.NaN;
 
   const endMs =
-    session.endTime
-    && Number.isFinite(new Date(session.endTime).getTime())
+    session.endTime && Number.isFinite(new Date(session.endTime).getTime())
       ? new Date(session.endTime).getTime()
       : Number.NaN;
 
   const durationMs =
-    Number.isFinite(startMs)
-    && Number.isFinite(endMs)
+    Number.isFinite(startMs) && Number.isFinite(endMs)
       ? Math.max(0, endMs - startMs)
       : null;
 
   const difference = Number.isFinite(session.difference)
     ? (session.difference as number)
-    : (closing - expected);
+    : closing - expected;
 
   const suspiciousZeroClose =
-    closing === 0
-    && expected > 1
-    && (
-      durationMs === null
-      || durationMs < (15 * 60 * 1000)
-      || Math.abs(difference) > 1
-    );
+    closing === 0 &&
+    expected > 1 &&
+    (durationMs === null ||
+      durationMs < 15 * 60 * 1000 ||
+      Math.abs(difference) > 1);
 
   if (suspiciousZeroClose) {
     return {
       valid: false,
-      reason: 'suspicious_zero_close' as const,
+      reason: "suspicious_zero_close" as const,
     };
   }
 
   return {
     valid: true,
-    reason: 'ok' as const,
+    reason: "ok" as const,
   };
 };
 
@@ -606,34 +660,21 @@ const getSessionReservedCash = (session: CashSession) => {
   return roundMoney(reserved);
 };
 
-const getSessionCarryForwardBalance = (
-  session: CashSession
-) => {
-  const explicitCarryForward = Number(
-    session.carryForwardBalance
-  );
+const getSessionCarryForwardBalance = (session: CashSession) => {
+  const explicitCarryForward = Number(session.carryForwardBalance);
 
-  if (
-    Number.isFinite(explicitCarryForward)
-    && explicitCarryForward >= 0
-  ) {
+  if (Number.isFinite(explicitCarryForward) && explicitCarryForward >= 0) {
     return roundMoney(explicitCarryForward);
   }
 
   const countedClosing = Number(session.closingBalance);
 
-  if (
-    !Number.isFinite(countedClosing)
-    || countedClosing < 0
-  ) {
+  if (!Number.isFinite(countedClosing) || countedClosing < 0) {
     return 0;
   }
 
   return roundMoney(
-    Math.max(
-      0,
-      countedClosing - getSessionReservedCash(session)
-    )
+    Math.max(0, countedClosing - getSessionReservedCash(session)),
   );
 };
 
@@ -663,13 +704,9 @@ const EMPTY_FINANCE_SESSION_TOTALS = {
   activeSystemCashTotal: 0,
 };
 
-const getLastValidClosingSession = (
-  sessions: CashSession[]
-) => {
+const getLastValidClosingSession = (sessions: CashSession[]) => {
   const sorted = [...sessions].sort(
-    (a, b) =>
-      new Date(b.startTime).getTime()
-      - new Date(a.startTime).getTime()
+    (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
   );
 
   for (const session of sorted) {
@@ -683,9 +720,7 @@ const getLastValidClosingSession = (
   return null;
 };
 
-const getTimestampFromTransactionId = (
-  transactionId: string
-) => {
+const getTimestampFromTransactionId = (transactionId: string) => {
   const asNumber = Number(transactionId);
 
   if (!Number.isFinite(asNumber)) {
@@ -693,38 +728,27 @@ const getTimestampFromTransactionId = (
   }
 
   // treat pure numeric ids in plausible unix-ms range as creation-time hints
-  if (
-    asNumber < 946684800000
-    || asNumber > 4102444800000
-  ) {
+  if (asNumber < 946684800000 || asNumber > 4102444800000) {
     return Number.NaN;
   }
 
   return asNumber;
 };
 
-const resolveTransactionTimeForSession = (
-  transaction: Transaction
-) => {
-  const effectiveMs = new Date(
-    transaction.effectiveAt || ''
-  ).getTime();
+const resolveTransactionTimeForSession = (transaction: Transaction) => {
+  const effectiveMs = new Date(transaction.effectiveAt || "").getTime();
 
   if (Number.isFinite(effectiveMs)) {
     return effectiveMs;
   }
 
-  const transactionDateMs = new Date(
-    transaction.date || ''
-  ).getTime();
+  const transactionDateMs = new Date(transaction.date || "").getTime();
 
   if (Number.isFinite(transactionDateMs)) {
     return transactionDateMs;
   }
 
-  const idMs = getTimestampFromTransactionId(
-    transaction.id
-  );
+  const idMs = getTimestampFromTransactionId(transaction.id);
 
   if (Number.isFinite(idMs)) {
     return idMs;
@@ -733,15 +757,9 @@ const resolveTransactionTimeForSession = (
   return Number.NaN;
 };
 
-const getReturnFinancialEffectsForFinance = (
-  transaction: Transaction
-) => {
+const getReturnFinancialEffectsForFinance = (transaction: Transaction) => {
   try {
-    const allocation = getCanonicalReturnAllocation(
-      transaction,
-      [],
-      0
-    );
+    const allocation = getCanonicalReturnAllocation(transaction, [], 0);
 
     return {
       affectsCash: allocation.cashRefund > 0,
@@ -760,11 +778,8 @@ const getReturnFinancialEffectsForFinance = (
   }
 };
 
-const getSaleSettlementContribution = (
-  transaction: Transaction
-) => {
-  const settlement =
-    getSaleSettlementBreakdown(transaction);
+const getSaleSettlementContribution = (transaction: Transaction) => {
+  const settlement = getSaleSettlementBreakdown(transaction);
 
   return {
     cashPaid: settlement.cashPaid,
@@ -774,70 +789,59 @@ const getSaleSettlementContribution = (
   };
 };
 
-const aggregateSaleSettlementContributions = (
-  sales: Transaction[]
-) => sales.reduce((acc, tx) => {
-  const contribution =
-    getSaleSettlementContribution(tx);
+const aggregateSaleSettlementContributions = (sales: Transaction[]) =>
+  sales.reduce(
+    (acc, tx) => {
+      const contribution = getSaleSettlementContribution(tx);
 
-  acc.cashPaid = roundMoney(
-    acc.cashPaid + contribution.cashPaid
+      acc.cashPaid = roundMoney(acc.cashPaid + contribution.cashPaid);
+
+      acc.onlinePaid = roundMoney(acc.onlinePaid + contribution.onlinePaid);
+
+      acc.creditDue = roundMoney(acc.creditDue + contribution.creditDue);
+
+      acc.totalSales = roundMoney(acc.totalSales + contribution.totalSales);
+
+      return acc;
+    },
+    {
+      cashPaid: 0,
+      onlinePaid: 0,
+      creditDue: 0,
+      totalSales: 0,
+    },
   );
 
-  acc.onlinePaid = roundMoney(
-    acc.onlinePaid + contribution.onlinePaid
+const getCustomerCashOutBreakdown = (transactions: Transaction[]) =>
+  transactions.reduce(
+    (acc, tx) => {
+      if (tx.type !== "customer_cash_out") {
+        return acc;
+      }
+
+      const amount = Math.abs(Number(tx.total || 0));
+
+      if (!(amount > 0)) {
+        return acc;
+      }
+
+      if (tx.paymentMethod === "Online") {
+        acc.onlineOutflow = roundMoney(acc.onlineOutflow + amount);
+      } else {
+        acc.cashOutflow = roundMoney(acc.cashOutflow + amount);
+      }
+
+      return acc;
+    },
+    {
+      cashOutflow: 0,
+      onlineOutflow: 0,
+    },
   );
-
-  acc.creditDue = roundMoney(
-    acc.creditDue + contribution.creditDue
-  );
-
-  acc.totalSales = roundMoney(
-    acc.totalSales + contribution.totalSales
-  );
-
-  return acc;
-}, {
-  cashPaid: 0,
-  onlinePaid: 0,
-  creditDue: 0,
-  totalSales: 0,
-});
-
-const getCustomerCashOutBreakdown = (
-  transactions: Transaction[]
-) => transactions.reduce((acc, tx) => {
-  if (tx.type !== 'customer_cash_out') {
-    return acc;
-  }
-
-  const amount = Math.abs(
-    Number(tx.total || 0)
-  );
-
-  if (!(amount > 0)) {
-    return acc;
-  }
-
-  if (tx.paymentMethod === 'Online') {
-    acc.onlineOutflow = roundMoney(
-      acc.onlineOutflow + amount
-    );
-  } else {
-    acc.cashOutflow = roundMoney(
-      acc.cashOutflow + amount
-    );
-  }
-
-  return acc;
-}, {
-  cashOutflow: 0,
-  onlineOutflow: 0,
-});
 
 const accumulateCanonicalReturnEffects = (
   transactionsAsc: Transaction[],
-  scopedReturnIds: Set<string>
+  scopedReturnIds: Set<string>,
 ) => {
   let runningDue = 0;
   let runningStoreCredit = 0;
@@ -845,90 +849,60 @@ const accumulateCanonicalReturnEffects = (
   return transactionsAsc.reduce(
     (acc, tx, index) => {
       const amount = Math.abs(tx.total || 0);
-      const historical =
-        transactionsAsc.slice(0, index);
+      const historical = transactionsAsc.slice(0, index);
 
       if (isSaleLikeTx(tx)) {
-        const settlement =
-          getSaleSettlementBreakdown(tx);
+        const settlement = getSaleSettlementBreakdown(tx);
 
-        const storeCreditUsed = Math.max(
-          0,
-          Number(tx.storeCreditUsed || 0)
-        );
+        const storeCreditUsed = Math.max(0, Number(tx.storeCreditUsed || 0));
 
-        runningDue = Math.max(
-          0,
-          runningDue + settlement.creditDue
-        );
+        runningDue = Math.max(0, runningDue + settlement.creditDue);
+
+        runningStoreCredit = Math.max(0, runningStoreCredit - storeCreditUsed);
+
+        return acc;
+      }
+
+      if (tx.type === "payment") {
+        const paymentToDue = Math.min(runningDue, amount);
+
+        runningDue = Math.max(0, runningDue - paymentToDue);
 
         runningStoreCredit = Math.max(
           0,
-          runningStoreCredit - storeCreditUsed
+          runningStoreCredit + Math.max(0, amount - paymentToDue),
         );
 
         return acc;
       }
 
-      if (tx.type === 'payment') {
-        const paymentToDue = Math.min(
-          runningDue,
-          amount
-        );
-
-        runningDue = Math.max(
-          0,
-          runningDue - paymentToDue
-        );
-
-        runningStoreCredit = Math.max(
-          0,
-          runningStoreCredit
-          + Math.max(0, amount - paymentToDue)
-        );
-
-        return acc;
-      }
-
-      const allocation =
-        getCanonicalReturnAllocation(
-          tx,
-          historical,
-          runningDue
-        );
-
-      runningDue = Math.max(
-        0,
-        runningDue - allocation.dueReduction
+      const allocation = getCanonicalReturnAllocation(
+        tx,
+        historical,
+        runningDue,
       );
+
+      runningDue = Math.max(0, runningDue - allocation.dueReduction);
 
       runningStoreCredit = Math.max(
         0,
-        runningStoreCredit
-        + allocation.storeCreditIncrease
+        runningStoreCredit + allocation.storeCreditIncrease,
       );
 
       if (scopedReturnIds.has(tx.id)) {
-        acc.cashRefunds = roundMoney(
-          acc.cashRefunds
-          + allocation.cashRefund
-        );
+        acc.cashRefunds = roundMoney(acc.cashRefunds + allocation.cashRefund);
 
         acc.onlineRefunds = roundMoney(
-          acc.onlineRefunds
-          + allocation.onlineRefund
+          acc.onlineRefunds + allocation.onlineRefund,
         );
 
         acc.dueReductionFromReturns = roundMoney(
-          acc.dueReductionFromReturns
-          + allocation.dueReduction
+          acc.dueReductionFromReturns + allocation.dueReduction,
         );
 
-        acc.storeCreditCreatedFromReturns =
-          roundMoney(
-            acc.storeCreditCreatedFromReturns
-            + allocation.storeCreditIncrease
-          );
+        acc.storeCreditCreatedFromReturns = roundMoney(
+          acc.storeCreditCreatedFromReturns + allocation.storeCreditIncrease,
+        );
       }
 
       return acc;
@@ -938,7 +912,7 @@ const accumulateCanonicalReturnEffects = (
       onlineRefunds: 0,
       dueReductionFromReturns: 0,
       storeCreditCreatedFromReturns: 0,
-    }
+    },
   );
 };
 
@@ -948,336 +922,194 @@ const buildCanonicalFinanceBreakdown = (
   deleteCompensations: DeleteCompensationRecord[],
   deletedTransactions: DeletedTransactionRecord[],
   windowStart: number,
-  windowEnd: number
+  windowEnd: number,
 ) => {
-  const scopedTransactions = transactions.filter(
-    transaction => {
-      const txTime =
-        resolveTransactionTimeForSession(
-          transaction
-        );
+  const scopedTransactions = transactions.filter((transaction) => {
+    const txTime = resolveTransactionTimeForSession(transaction);
 
-      return (
-        Number.isFinite(txTime)
-        && txTime >= windowStart
-        && txTime <= windowEnd
-      );
-    }
-  );
+    return (
+      Number.isFinite(txTime) && txTime >= windowStart && txTime <= windowEnd
+    );
+  });
 
-  const sales = scopedTransactions.filter(
-    t => isSaleLikeTx(t)
-  );
+  const sales = scopedTransactions.filter((t) => isSaleLikeTx(t));
 
-  const returns = scopedTransactions.filter(
-    t => t.type === 'return'
-  );
+  const returns = scopedTransactions.filter((t) => t.type === "return");
 
-  const sortedTransactionsAsc = [
-    ...transactions,
-  ].sort(
+  const sortedTransactionsAsc = [...transactions].sort(
     (a, b) =>
-      resolveTransactionTimeForSession(a)
-      - resolveTransactionTimeForSession(b)
+      resolveTransactionTimeForSession(a) - resolveTransactionTimeForSession(b),
   );
 
-  const saleSettlementTotals =
-    aggregateSaleSettlementContributions(sales);
+  const saleSettlementTotals = aggregateSaleSettlementContributions(sales);
 
-  const saleCashReceipts = roundMoney(
-    saleSettlementTotals.cashPaid
-  );
+  const saleCashReceipts = roundMoney(saleSettlementTotals.cashPaid);
 
-  const cashCollections =
-    scopedTransactions
-      .filter(
-        t =>
-          t.type === 'payment'
-          && t.paymentMethod === 'Cash'
-      )
-      .reduce(
-        (s, t) =>
-          roundMoney(
-            s + Math.abs(t.total)
-          ),
-        0
-      );
+  const cashCollections = scopedTransactions
+    .filter((t) => t.type === "payment" && t.paymentMethod === "Cash")
+    .reduce((s, t) => roundMoney(s + Math.abs(t.total)), 0);
 
-  const onlineCollections =
-    scopedTransactions
-      .filter(
-        t =>
-          t.type === 'payment'
-          && t.paymentMethod === 'Online'
-      )
-      .reduce(
-        (s, t) =>
-          roundMoney(
-            s + Math.abs(t.total)
-          ),
-        0
-      );
+  const onlineCollections = scopedTransactions
+    .filter((t) => t.type === "payment" && t.paymentMethod === "Online")
+    .reduce((s, t) => roundMoney(s + Math.abs(t.total)), 0);
 
-  const creditSales = roundMoney(
-    saleSettlementTotals.creditDue
-  );
+  const creditSales = roundMoney(saleSettlementTotals.creditDue);
 
-  const onlineSales = roundMoney(
-    saleSettlementTotals.onlinePaid
-  );
+  const onlineSales = roundMoney(saleSettlementTotals.onlinePaid);
 
   const salesReturns = returns.reduce(
-    (s, t) =>
-      roundMoney(
-        s + Math.abs(t.total)
-      ),
-    0
+    (s, t) => roundMoney(s + Math.abs(t.total)),
+    0,
   );
 
-  const scopedReturnIds = new Set<string>(
-    returns.map(t => t.id)
+  const scopedReturnIds = new Set<string>(returns.map((t) => t.id));
+
+  const returnEffects = accumulateCanonicalReturnEffects(
+    sortedTransactionsAsc,
+    scopedReturnIds,
   );
 
-  const returnEffects =
-    accumulateCanonicalReturnEffects(
-      sortedTransactionsAsc,
-      scopedReturnIds
-    );
-
-  const grossSales = roundMoney(
-    saleSettlementTotals.totalSales
-  );
+  const grossSales = roundMoney(saleSettlementTotals.totalSales);
 
   const cogsFromSales = sales.reduce(
     (sum, t) =>
       roundMoney(
-        sum
-        + normalizeTransactionItems(
-          t.items
-        ).reduce(
-          (itemSum, item) =>
-            itemSum
-            + (
-              (item.buyPrice || 0)
-              * item.quantity
-            ),
-          0
-        )
+        sum +
+          normalizeTransactionItems(t.items).reduce(
+            (itemSum, item) => itemSum + (item.buyPrice || 0) * item.quantity,
+            0,
+          ),
       ),
-    0
+    0,
   );
 
-  const cogsReversalFromReturns =
-    returns.reduce(
-      (sum, t) =>
-        roundMoney(
-          sum
-          + normalizeTransactionItems(
-            t.items
-          ).reduce(
-            (itemSum, item) =>
-              itemSum
-              + (
-                (item.buyPrice || 0)
-                * item.quantity
-              ),
-            0
-          )
-        ),
-      0
+  const cogsReversalFromReturns = returns.reduce(
+    (sum, t) =>
+      roundMoney(
+        sum +
+          normalizeTransactionItems(t.items).reduce(
+            (itemSum, item) => itemSum + (item.buyPrice || 0) * item.quantity,
+            0,
+          ),
+      ),
+    0,
+  );
+
+  const salesReturnsNormalized = roundMoney(salesReturns);
+
+  const netSales = roundMoney(grossSales - salesReturnsNormalized);
+
+  const cogs = roundMoney(cogsFromSales - cogsReversalFromReturns);
+
+  const grossProfit = roundMoney(netSales - cogs);
+
+  const scopedExpenses = expenses.filter((e) => {
+    const expenseTime = new Date(getExpenseEffectiveDate(e)).getTime();
+
+    return (
+      Number.isFinite(expenseTime) &&
+      expenseTime >= windowStart &&
+      expenseTime <= windowEnd
     );
+  });
 
-  const salesReturnsNormalized =
-    roundMoney(salesReturns);
-
-  const netSales = roundMoney(
-    grossSales - salesReturnsNormalized
+  const deletedByOriginalId = new Map<string, DeletedTransactionRecord>(
+    (deletedTransactions || []).map((record) => [
+      String(
+        record.originalTransactionId || record.originalTransaction?.id || "",
+      ),
+      record,
+    ]),
   );
 
-  const cogs = roundMoney(
-    cogsFromSales
-    - cogsReversalFromReturns
-  );
+  const explicitDeletedSaleCashIncluded = (deleteCompensations || [])
+    .filter((record) => isExplicitDeleteRefund(record))
+    .reduce((sum, record) => {
+      const eventTime = new Date(record.createdAt).getTime();
 
-  const grossProfit = roundMoney(
-    netSales - cogs
-  );
+      if (
+        !Number.isFinite(eventTime) ||
+        eventTime < windowStart ||
+        eventTime > windowEnd
+      ) {
+        return sum;
+      }
 
-  const scopedExpenses = expenses.filter(
-    e => {
-      const expenseTime = new Date(
-        getExpenseEffectiveDate(e)
-      ).getTime();
+      const linkedDeleted = deletedByOriginalId.get(
+        String(record.transactionId || ""),
+      );
+
+      const original = linkedDeleted?.originalTransaction;
+
+      if (!original || !isSaleLikeTx(original)) {
+        return sum;
+      }
+
+      const settlement = getSaleSettlementBreakdown(original);
+
+      return roundMoney(sum + Math.max(0, Number(settlement.cashPaid || 0)));
+    }, 0);
+
+  const scopedDeleteCompensationOutflow = (deleteCompensations || [])
+    .filter((record) => {
+      const eventTime = new Date(record.createdAt).getTime();
 
       return (
-        Number.isFinite(expenseTime)
-        && expenseTime >= windowStart
-        && expenseTime <= windowEnd
-      );
-    }
-  );
-
-  const deletedByOriginalId =
-    new Map<
-      string,
-      DeletedTransactionRecord
-    >(
-      (deletedTransactions || []).map(
-        record => [
-          String(
-            record.originalTransactionId
-            || record.originalTransaction?.id
-            || ''
-          ),
-          record,
-        ]
-      )
-    );
-
-  const explicitDeletedSaleCashIncluded =
-    (deleteCompensations || [])
-      .filter(record =>
+        Number.isFinite(eventTime) &&
+        eventTime >= windowStart &&
+        eventTime <= windowEnd &&
         isExplicitDeleteRefund(record)
-      )
-      .reduce((sum, record) => {
-        const eventTime = new Date(
-          record.createdAt
-        ).getTime();
-
-        if (
-          !Number.isFinite(eventTime)
-          || eventTime < windowStart
-          || eventTime > windowEnd
-        ) {
-          return sum;
-        }
-
-        const linkedDeleted =
-          deletedByOriginalId.get(
-            String(
-              record.transactionId || ''
-            )
-          );
-
-        const original =
-          linkedDeleted?.originalTransaction;
-
-        if (
-          !original
-          || !isSaleLikeTx(original)
-        ) {
-          return sum;
-        }
-
-        const settlement =
-          getSaleSettlementBreakdown(
-            original
-          );
-
-        return roundMoney(
-          sum
-          + Math.max(
-            0,
-            Number(
-              settlement.cashPaid || 0
-            )
-          )
-        );
-      }, 0);
-
-  const scopedDeleteCompensationOutflow =
-    (deleteCompensations || [])
-      .filter(record => {
-        const eventTime = new Date(
-          record.createdAt
-        ).getTime();
-
-        return (
-          Number.isFinite(eventTime)
-          && eventTime >= windowStart
-          && eventTime <= windowEnd
-          && isExplicitDeleteRefund(record)
-        );
-      })
-      .reduce(
-        (sum, record) =>
-          roundMoney(
-            sum
-            + Math.max(
-              0,
-              Number(record.amount) || 0
-            )
-          ),
-        0
       );
-
-  const todayExpenses =
-    scopedExpenses.reduce(
-      (s, e) =>
-        roundMoney(
-          s + e.amount
-        ),
-      0
+    })
+    .reduce(
+      (sum, record) =>
+        roundMoney(sum + Math.max(0, Number(record.amount) || 0)),
+      0,
     );
 
-  const netProfit = roundMoney(
-    grossProfit - todayExpenses
+  const todayExpenses = scopedExpenses.reduce(
+    (s, e) => roundMoney(s + e.amount),
+    0,
   );
 
-  const cashInflowOperational =
-    roundMoney(
-      saleCashReceipts
-      + explicitDeletedSaleCashIncluded
-      + cashCollections
-    );
+  const netProfit = roundMoney(grossProfit - todayExpenses);
 
-  const cashMovementAfterExpenses =
-    roundMoney(
-      cashInflowOperational
-      - returnEffects.cashRefunds
-      - scopedDeleteCompensationOutflow
-      - todayExpenses
-    );
+  const cashInflowOperational = roundMoney(
+    saleCashReceipts + explicitDeletedSaleCashIncluded + cashCollections,
+  );
+
+  const cashMovementAfterExpenses = roundMoney(
+    cashInflowOperational -
+      returnEffects.cashRefunds -
+      scopedDeleteCompensationOutflow -
+      todayExpenses,
+  );
 
   return {
     grossSales,
-    salesReturns:
-      salesReturnsNormalized,
+    salesReturns: salesReturnsNormalized,
     netSales,
-    creditSalesCreated:
-      creditSales,
-    onlineSalesAtSale:
-      onlineSales,
+    creditSalesCreated: creditSales,
+    onlineSalesAtSale: onlineSales,
     cogs,
     grossProfit,
     netProfit,
     saleCashReceipts,
-    deletedSaleCashIncluded:
-      explicitDeletedSaleCashIncluded,
+    deletedSaleCashIncluded: explicitDeletedSaleCashIncluded,
     cashCollections,
     onlineCollections,
     cashRefunds: roundMoney(
-      returnEffects.cashRefunds
-      + scopedDeleteCompensationOutflow
+      returnEffects.cashRefunds + scopedDeleteCompensationOutflow,
     ),
-    onlineRefunds: roundMoney(
-      returnEffects.onlineRefunds
+    onlineRefunds: roundMoney(returnEffects.onlineRefunds),
+    dueReductionFromReturns: roundMoney(returnEffects.dueReductionFromReturns),
+    storeCreditCreatedFromReturns: roundMoney(
+      returnEffects.storeCreditCreatedFromReturns,
     ),
-    dueReductionFromReturns:
-      roundMoney(
-        returnEffects
-          .dueReductionFromReturns
-      ),
-    storeCreditCreatedFromReturns:
-      roundMoney(
-        returnEffects
-          .storeCreditCreatedFromReturns
-      ),
     cashMovementAfterExpenses,
     todayExpenses,
     txCount: scopedTransactions.length,
-    expenseCount:
-      scopedExpenses.length,
+    expenseCount: scopedExpenses.length,
   };
 };
 
@@ -1293,824 +1125,425 @@ const getSessionCashTotals = (
   sessionEndIso?: string,
   sessionId?: string,
   upfrontOrdersInput?: UpfrontOrder[],
-  supplierPaymentsInput?: any[]
+  supplierPaymentsInput?: any[],
 ) => {
-  const upfrontOrders =
-    Array.isArray(upfrontOrdersInput)
-      ? upfrontOrdersInput
-      : [];
+  const upfrontOrders = Array.isArray(upfrontOrdersInput)
+    ? upfrontOrdersInput
+    : [];
 
-  const supplierPayments =
-    Array.isArray(supplierPaymentsInput)
-      ? supplierPaymentsInput
-      : [];
+  const supplierPayments = Array.isArray(supplierPaymentsInput)
+    ? supplierPaymentsInput
+    : [];
 
-  const start =
-    new Date(sessionStartIso).getTime();
+  const start = new Date(sessionStartIso).getTime();
 
   const end = sessionEndIso
     ? new Date(sessionEndIso).getTime()
     : Number.POSITIVE_INFINITY;
 
-  const scopedTransactions =
-    transactions.filter(t => {
-      const txTime =
-        resolveTransactionTimeForSession(t);
+  const scopedTransactions = transactions.filter((t) => {
+    const txTime = resolveTransactionTimeForSession(t);
 
-      return (
-        txTime >= start
-        && txTime <= end
+    return txTime >= start && txTime <= end;
+  });
+
+  const windowExpenses = expenses.filter((e) => {
+    const expTime = new Date(getExpenseEffectiveDate(e)).getTime();
+
+    return expTime >= start && expTime <= end;
+  });
+
+  const saleSettlementTotals = aggregateSaleSettlementContributions(
+    scopedTransactions.filter((t) => isSaleLikeTx(t)),
+  );
+
+  const deletedByOriginalId = new Map<string, DeletedTransactionRecord>(
+    (deletedTransactions || []).map((record) => [
+      String(
+        record.originalTransactionId || record.originalTransaction?.id || "",
+      ),
+      record,
+    ]),
+  );
+
+  const explicitDeletedSaleCashIncluded = (deleteCompensations || [])
+    .filter((record) => isExplicitDeleteRefund(record))
+    .reduce((sum, record) => {
+      const eventTime = new Date(record.createdAt).getTime();
+
+      if (!Number.isFinite(eventTime) || eventTime < start || eventTime > end) {
+        return sum;
+      }
+
+      const linkedDeleted = deletedByOriginalId.get(
+        String(record.transactionId || ""),
       );
-    });
 
-  const windowExpenses =
-    expenses.filter(e => {
-      const expTime =
-        new Date(
-          getExpenseEffectiveDate(e)
-        ).getTime();
+      const original = linkedDeleted?.originalTransaction;
 
-      return (
-        expTime >= start
-        && expTime <= end
-      );
-    });
+      if (!original || !isSaleLikeTx(original)) {
+        return sum;
+      }
 
-  const saleSettlementTotals =
-    aggregateSaleSettlementContributions(
-      scopedTransactions.filter(
-        t => isSaleLikeTx(t)
-      )
-    );
+      const settlement = getSaleSettlementBreakdown(original);
 
-  const deletedByOriginalId =
-    new Map<
-      string,
-      DeletedTransactionRecord
-    >(
-      (deletedTransactions || []).map(
-        record => [
-          String(
-            record.originalTransactionId
-            || record.originalTransaction?.id
-            || ''
-          ),
-          record,
-        ]
-      )
-    );
-
-  const explicitDeletedSaleCashIncluded =
-    (deleteCompensations || [])
-      .filter(record =>
-        isExplicitDeleteRefund(record)
-      )
-      .reduce((sum, record) => {
-        const eventTime =
-          new Date(
-            record.createdAt
-          ).getTime();
-
-        if (
-          !Number.isFinite(eventTime)
-          || eventTime < start
-          || eventTime > end
-        ) {
-          return sum;
-        }
-
-        const linkedDeleted =
-          deletedByOriginalId.get(
-            String(
-              record.transactionId || ''
-            )
-          );
-
-        const original =
-          linkedDeleted
-            ?.originalTransaction;
-
-        if (
-          !original
-          || !isSaleLikeTx(original)
-        ) {
-          return sum;
-        }
-
-        const settlement =
-          getSaleSettlementBreakdown(
-            original
-          );
-
-        return sum
-          + Math.max(
-            0,
-            Number(
-              settlement.cashPaid || 0
-            )
-          );
-      }, 0);
+      return sum + Math.max(0, Number(settlement.cashPaid || 0));
+    }, 0);
 
   const cashSales =
-    saleSettlementTotals.cashPaid
-    + explicitDeletedSaleCashIncluded;
+    saleSettlementTotals.cashPaid + explicitDeletedSaleCashIncluded;
 
-  const sortedTransactionsAsc =
-    [...transactions].sort(
-      (a, b) =>
-        resolveTransactionTimeForSession(a)
-        - resolveTransactionTimeForSession(b)
-    );
+  const sortedTransactionsAsc = [...transactions].sort(
+    (a, b) =>
+      resolveTransactionTimeForSession(a) - resolveTransactionTimeForSession(b),
+  );
 
-  const scopedReturnIds =
-    new Set<string>(
-      scopedTransactions
-        .filter(
-          t => t.type === 'return'
-        )
-        .map(t => t.id)
-    );
+  const scopedReturnIds = new Set<string>(
+    scopedTransactions.filter((t) => t.type === "return").map((t) => t.id),
+  );
 
-  const returnEffects =
-    accumulateCanonicalReturnEffects(
-      sortedTransactionsAsc,
-      scopedReturnIds
-    );
+  const returnEffects = accumulateCanonicalReturnEffects(
+    sortedTransactionsAsc,
+    scopedReturnIds,
+  );
 
-  const activeScopedReturnIds =
-    new Set<string>(
-      scopedTransactions
-        .filter(
-          t => t.type === 'return'
-        )
-        .filter(t =>
-          shouldAffectActiveDrawerFromSource(
-            (t as any).cashSource
-          )
-        )
-        .map(t => t.id)
-    );
-
-  const activeReturnEffects =
-    accumulateCanonicalReturnEffects(
-      sortedTransactionsAsc,
-      activeScopedReturnIds
-    );
-
-  const cashRefunds =
-    returnEffects.cashRefunds;
-
-  const activeCashRefunds =
-    activeReturnEffects.cashRefunds;
-
-  const customerCashOutflow =
-    getCustomerCashOutBreakdown(
-      scopedTransactions
-    );
-
-  const activeCustomerCashOutflow =
+  const activeScopedReturnIds = new Set<string>(
     scopedTransactions
-      .filter(
-        tx =>
-          tx.type === 'customer_cash_out'
-      )
-      .filter(tx =>
-        shouldAffectActiveDrawerFromSource(
-          (tx as any).cashSource
-        )
-      )
-      .reduce((sum, tx) => {
-        const amount = Math.abs(
-          Number(tx.total || 0)
-        );
+      .filter((t) => t.type === "return")
+      .filter((t) => shouldAffectActiveDrawerFromSource((t as any).cashSource))
+      .map((t) => t.id),
+  );
 
-        if (!(amount > 0)) {
-          return sum;
-        }
+  const activeReturnEffects = accumulateCanonicalReturnEffects(
+    sortedTransactionsAsc,
+    activeScopedReturnIds,
+  );
 
-        if (
-          tx.paymentMethod === 'Online'
-        ) {
-          return sum;
-        }
+  const cashRefunds = returnEffects.cashRefunds;
 
-        return roundMoney(
-          sum + amount
-        );
-      }, 0);
+  const activeCashRefunds = activeReturnEffects.cashRefunds;
 
-  const cashCollections =
-    scopedTransactions
-      .filter(
-        t =>
-          t.type === 'payment'
-          && t.paymentMethod === 'Cash'
-      )
-      .reduce(
-        (sum, t) =>
-          sum + Math.abs(t.total),
-        0
+  const customerCashOutflow = getCustomerCashOutBreakdown(scopedTransactions);
+
+  const activeCustomerCashOutflow = scopedTransactions
+    .filter((tx) => tx.type === "customer_cash_out")
+    .filter((tx) => shouldAffectActiveDrawerFromSource((tx as any).cashSource))
+    .reduce((sum, tx) => {
+      const amount = Math.abs(Number(tx.total || 0));
+
+      if (!(amount > 0)) {
+        return sum;
+      }
+
+      if (tx.paymentMethod === "Online") {
+        return sum;
+      }
+
+      return roundMoney(sum + amount);
+    }, 0);
+
+  const cashCollections = scopedTransactions
+    .filter((t) => t.type === "payment" && t.paymentMethod === "Cash")
+    .reduce((sum, t) => sum + Math.abs(t.total), 0);
+
+  const expenseTotal = windowExpenses.reduce((sum, e) => sum + e.amount, 0);
+
+  const activeExpenseTotal = windowExpenses
+    .filter((e) =>
+      shouldAffectActiveDrawerFromSource((e as Expense).cashSource),
+    )
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  const deleteCompensationOutflow = (deleteCompensations || [])
+    .filter((record) => {
+      const eventTime = new Date(record.createdAt).getTime();
+
+      return (
+        eventTime >= start && eventTime <= end && isExplicitDeleteRefund(record)
       );
-
-  const expenseTotal =
-    windowExpenses.reduce(
-      (sum, e) =>
-        sum + e.amount,
-      0
-    );
-
-  const activeExpenseTotal =
-    windowExpenses
-      .filter(e =>
-        shouldAffectActiveDrawerFromSource(
-          (e as Expense).cashSource
-        )
-      )
-      .reduce(
-        (sum, e) =>
-          sum + e.amount,
-        0
-      );
-
-  const deleteCompensationOutflow =
-    (deleteCompensations || [])
-      .filter(record => {
-        const eventTime =
-          new Date(
-            record.createdAt
-          ).getTime();
-
-        return (
-          eventTime >= start
-          && eventTime <= end
-          && isExplicitDeleteRefund(
-            record
-          )
-        );
-      })
-      .reduce(
-        (sum, record) =>
-          sum
-          + Math.max(
-            0,
-            Number(record.amount) || 0
-          ),
-        0
-      );
+    })
+    .reduce((sum, record) => sum + Math.max(0, Number(record.amount) || 0), 0);
 
   // ACTIVE RECOMPUTE MODEL:
   // Prefer active supplierPayments ledger for cash-out; fallback to legacy PO paymentHistory rows
   // only when no supplierPaymentId exists.
-  const supplierCashPaymentsFromLedger =
-    supplierPayments.reduce(
-      (sum, payment) => {
-        const rawAmount =
-          (payment as any)?.amount
-          ?? (payment as any)?.total
-          ?? (payment as any)?.paidAmount
-          ?? (payment as any)?.paymentAmount
-          ?? 0;
+  const supplierCashPaymentsFromLedger = supplierPayments.reduce(
+    (sum, payment) => {
+      const rawAmount =
+        (payment as any)?.amount ??
+        (payment as any)?.total ??
+        (payment as any)?.paidAmount ??
+        (payment as any)?.paymentAmount ??
+        0;
 
-        const normalizedAmount =
-          Math.max(
-            0,
-            Number(rawAmount) || 0
-          );
+      const normalizedAmount = Math.max(0, Number(rawAmount) || 0);
 
-        const selectedDate =
-          (payment as any)?.paidAt
-          || (payment as any)?.paymentDate
-          || (payment as any)?.date
-          || (payment as any)?.createdAt
-          || null;
+      const selectedDate =
+        (payment as any)?.paidAt ||
+        (payment as any)?.paymentDate ||
+        (payment as any)?.date ||
+        (payment as any)?.createdAt ||
+        null;
 
-        const paidAt =
-          getSupplierPaymentTimestamp(
-            payment
-          );
+      const paidAt = getSupplierPaymentTimestamp(payment);
 
-        const normalizedMethod =
-          getSupplierPaymentMethodForDrawer(
-            (payment as any)?.method
-          );
+      const normalizedMethod = getSupplierPaymentMethodForDrawer(
+        (payment as any)?.method,
+      );
 
-        const isDeleted =
-          Boolean(
-            (payment as any)?.deletedAt
-            || (payment as any)?.isDeleted === true
-          );
+      const isDeleted = Boolean(
+        (payment as any)?.deletedAt || (payment as any)?.isDeleted === true,
+      );
 
-        const isCash =
-          normalizedMethod === 'cash';
+      const isCash = normalizedMethod === "cash";
 
-        const isInSession =
-          Number.isFinite(paidAt)
-          && paidAt >= start
-          && paidAt <= end;
+      const isInSession =
+        Number.isFinite(paidAt) && paidAt >= start && paidAt <= end;
 
-        let excludedReason = '';
+      let excludedReason = "";
 
-        if (!Number.isFinite(paidAt)) {
-          excludedReason =
-            'invalid_date';
-        } else if (!isInSession) {
-          excludedReason =
-            'outside_session_window';
-        } else if (isDeleted) {
-          excludedReason =
-            'deleted';
-        } else if (!isCash) {
-          excludedReason =
-            'non_cash_method';
-        } else if (
-          normalizedAmount <= 0
-        ) {
-          excludedReason =
-            'non_positive_amount';
+      if (!Number.isFinite(paidAt)) {
+        excludedReason = "invalid_date";
+      } else if (!isInSession) {
+        excludedReason = "outside_session_window";
+      } else if (isDeleted) {
+        excludedReason = "deleted";
+      } else if (!isCash) {
+        excludedReason = "non_cash_method";
+      } else if (normalizedAmount <= 0) {
+        excludedReason = "non_positive_amount";
+      }
+
+      const included = excludedReason === "";
+
+      if (FINANCE_SHIFT_RECON_DEBUG_ENABLED) {
+      }
+
+      return included ? sum + normalizedAmount : sum;
+    },
+    0,
+  );
+
+  const activeSupplierCashPaymentsFromLedger = supplierPayments.reduce(
+    (sum, payment) => {
+      const rawAmount =
+        (payment as any)?.amount ??
+        (payment as any)?.total ??
+        (payment as any)?.paidAmount ??
+        (payment as any)?.paymentAmount ??
+        0;
+
+      const normalizedAmount = Math.max(0, Number(rawAmount) || 0);
+
+      const paidAt = getSupplierPaymentTimestamp(payment);
+
+      const normalizedMethod = getSupplierPaymentMethodForDrawer(
+        (payment as any)?.method,
+      );
+
+      const isDeleted = Boolean(
+        (payment as any)?.deletedAt || (payment as any)?.isDeleted === true,
+      );
+
+      const isCash = normalizedMethod === "cash";
+
+      const isInSession =
+        Number.isFinite(paidAt) && paidAt >= start && paidAt <= end;
+
+      if (
+        !Number.isFinite(paidAt) ||
+        !isInSession ||
+        isDeleted ||
+        !isCash ||
+        normalizedAmount <= 0
+      ) {
+        return sum;
+      }
+
+      if (!shouldAffectActiveDrawerFromSource((payment as any)?.cashSource)) {
+        return sum;
+      }
+
+      return sum + normalizedAmount;
+    },
+    0,
+  );
+
+  const legacySupplierCashPayments = (purchaseOrders || []).reduce(
+    (sum, order) =>
+      sum +
+      (order.paymentHistory || []).reduce((inner, payment: any) => {
+        if (payment?.supplierPaymentId) {
+          return inner;
         }
 
-        const included =
-          excludedReason === '';
+        const paidAt = new Date(payment.paidAt).getTime();
 
-        if (
-          FINANCE_SHIFT_RECON_DEBUG_ENABLED
-        ) {
+        if (!Number.isFinite(paidAt) || paidAt < start || paidAt > end) {
+          return inner;
         }
 
-        return included
-          ? (
-            sum
-            + normalizedAmount
-          )
-          : sum;
-      },
-      0
-    );
-
-  const activeSupplierCashPaymentsFromLedger =
-    supplierPayments.reduce(
-      (sum, payment) => {
-        const rawAmount =
-          (payment as any)?.amount
-          ?? (payment as any)?.total
-          ?? (payment as any)?.paidAmount
-          ?? (payment as any)?.paymentAmount
-          ?? 0;
-
-        const normalizedAmount =
-          Math.max(
-            0,
-            Number(rawAmount) || 0
-          );
-
-        const paidAt =
-          getSupplierPaymentTimestamp(
-            payment
-          );
-
-        const normalizedMethod =
-          getSupplierPaymentMethodForDrawer(
-            (payment as any)?.method
-          );
-
-        const isDeleted =
-          Boolean(
-            (payment as any)?.deletedAt
-            || (payment as any)?.isDeleted === true
-          );
-
-        const isCash =
-          normalizedMethod === 'cash';
-
-        const isInSession =
-          Number.isFinite(paidAt)
-          && paidAt >= start
-          && paidAt <= end;
-
-        if (
-          !Number.isFinite(paidAt)
-          || !isInSession
-          || isDeleted
-          || !isCash
-          || normalizedAmount <= 0
-        ) {
-          return sum;
+        if (getSupplierPaymentMethodForDrawer(payment.method) !== "cash") {
+          return inner;
         }
 
-        if (
-          !shouldAffectActiveDrawerFromSource(
-            (payment as any)?.cashSource
-          )
-        ) {
-          return sum;
+        return inner + Math.max(0, Number(payment.amount) || 0);
+      }, 0),
+    0,
+  );
+
+  const activeLegacySupplierCashPayments = (purchaseOrders || []).reduce(
+    (sum, order) =>
+      sum +
+      (order.paymentHistory || []).reduce((inner, payment: any) => {
+        if (payment?.supplierPaymentId) {
+          return inner;
         }
 
-        return sum
-          + normalizedAmount;
-      },
-      0
-    );
+        const paidAt = new Date(payment.paidAt).getTime();
 
-  const legacySupplierCashPayments =
-    (purchaseOrders || []).reduce(
-      (sum, order) =>
-        sum
-        + (
-          order.paymentHistory || []
-        ).reduce(
-          (
-            inner,
-            payment: any
-          ) => {
-            if (
-              payment?.supplierPaymentId
-            ) {
-              return inner;
-            }
+        if (!Number.isFinite(paidAt) || paidAt < start || paidAt > end) {
+          return inner;
+        }
 
-            const paidAt =
-              new Date(
-                payment.paidAt
-              ).getTime();
+        if (getSupplierPaymentMethodForDrawer(payment.method) !== "cash") {
+          return inner;
+        }
 
-            if (
-              !Number.isFinite(paidAt)
-              || paidAt < start
-              || paidAt > end
-            ) {
-              return inner;
-            }
+        if (!shouldAffectActiveDrawerFromSource(payment.cashSource)) {
+          return inner;
+        }
 
-            if (
-              getSupplierPaymentMethodForDrawer(
-                payment.method
-              ) !== 'cash'
-            ) {
-              return inner;
-            }
-
-            return inner
-              + Math.max(
-                0,
-                Number(
-                  payment.amount
-                ) || 0
-              );
-          },
-          0
-        ),
-      0
-    );
-
-  const activeLegacySupplierCashPayments =
-    (purchaseOrders || []).reduce(
-      (sum, order) =>
-        sum
-        + (
-          order.paymentHistory || []
-        ).reduce(
-          (
-            inner,
-            payment: any
-          ) => {
-            if (
-              payment?.supplierPaymentId
-            ) {
-              return inner;
-            }
-
-            const paidAt =
-              new Date(
-                payment.paidAt
-              ).getTime();
-
-            if (
-              !Number.isFinite(paidAt)
-              || paidAt < start
-              || paidAt > end
-            ) {
-              return inner;
-            }
-
-            if (
-              getSupplierPaymentMethodForDrawer(
-                payment.method
-              ) !== 'cash'
-            ) {
-              return inner;
-            }
-
-            if (
-              !shouldAffectActiveDrawerFromSource(
-                payment.cashSource
-              )
-            ) {
-              return inner;
-            }
-
-            return inner
-              + Math.max(
-                0,
-                Number(
-                  payment.amount
-                ) || 0
-              );
-          },
-          0
-        ),
-      0
-    );
+        return inner + Math.max(0, Number(payment.amount) || 0);
+      }, 0),
+    0,
+  );
 
   const supplierCashPayments =
-    supplierCashPaymentsFromLedger
-    + legacySupplierCashPayments;
+    supplierCashPaymentsFromLedger + legacySupplierCashPayments;
 
   const activeSupplierCashPayments =
-    activeSupplierCashPaymentsFromLedger
-    + activeLegacySupplierCashPayments;
+    activeSupplierCashPaymentsFromLedger + activeLegacySupplierCashPayments;
 
-  const scopedCashAdjustments =
-    (cashAdjustments || []).filter(
-      entry => {
-        const at = new Date(
-          entry.createdAt
-        ).getTime();
+  const scopedCashAdjustments = (cashAdjustments || []).filter((entry) => {
+    const at = new Date(entry.createdAt).getTime();
 
-        return (
-          Number.isFinite(at)
-          && at >= start
-          && at <= end
-        );
-      }
-    );
+    return Number.isFinite(at) && at >= start && at <= end;
+  });
 
-  const cashAdded =
-    scopedCashAdjustments
-      .filter(
-        entry =>
-          entry.type
-          === 'cash_addition'
-      )
-      .reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-            ) || 0
-          ),
-        0
-      );
+  const cashAdded = scopedCashAdjustments
+    .filter((entry) => entry.type === "cash_addition")
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
 
-  const cashWithdrawn =
-    scopedCashAdjustments
-      .filter(
-        entry =>
-          entry.type
-          === 'cash_withdrawal'
-      )
-      .reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-            ) || 0
-          ),
-        0
-      );
+  const cashWithdrawn = scopedCashAdjustments
+    .filter((entry) => entry.type === "cash_withdrawal")
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
 
-  const activeCashWithdrawn =
-    scopedCashAdjustments
-      .filter(
-        entry =>
-          entry.type
-          === 'cash_withdrawal'
-      )
-      .filter(entry =>
-        shouldAffectActiveDrawerFromSource(
-          entry.cashSource
-        )
-      )
-      .reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-            ) || 0
-          ),
-        0
-      );
+  const activeCashWithdrawn = scopedCashAdjustments
+    .filter((entry) => entry.type === "cash_withdrawal")
+    .filter((entry) => shouldAffectActiveDrawerFromSource(entry.cashSource))
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
 
-  const scopedManualEntries =
-    (
-      manualCashbookEntries || []
-    ).filter(entry => {
-      if (entry?.isDeleted) {
-        return false;
-      }
+  const scopedManualEntries = (manualCashbookEntries || []).filter((entry) => {
+    if (entry?.isDeleted) {
+      return false;
+    }
 
-      const at = new Date(
-        entry.date
-        || entry.createdAt
-      ).getTime();
+    const at = new Date(entry.date || entry.createdAt).getTime();
 
-      return (
-        Number.isFinite(at)
-        && at >= start
-        && at <= end
-      );
-    });
+    return Number.isFinite(at) && at >= start && at <= end;
+  });
 
-  const manualCashIn =
-    scopedManualEntries
-      .filter(
-        entry =>
-          entry.type === 'cash_in'
-      )
-      .reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-            ) || 0
-          ),
-        0
-      );
+  const manualCashIn = scopedManualEntries
+    .filter((entry) => entry.type === "cash_in")
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
 
-  const manualCashOut =
-    scopedManualEntries
-      .filter(
-        entry =>
-          entry.type === 'cash_out'
-      )
-      .reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-            ) || 0
-          ),
-        0
-      );
+  const manualCashOut = scopedManualEntries
+    .filter((entry) => entry.type === "cash_out")
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
 
-  const activeManualCashOut =
-    scopedManualEntries
-      .filter(
-        entry =>
-          entry.type === 'cash_out'
-      )
-      .filter(entry =>
-        shouldAffectActiveDrawerFromSource(
-          entry.cashSource
-        )
-      )
-      .reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-            ) || 0
-          ),
-        0
-      );
+  const activeManualCashOut = scopedManualEntries
+    .filter((entry) => entry.type === "cash_out")
+    .filter((entry) => shouldAffectActiveDrawerFromSource(entry.cashSource))
+    .reduce((sum, entry) => sum + Math.max(0, Number(entry.amount) || 0), 0);
 
   // Include custom-order cash receipts in shift/system cash. Online/unknown and legacy-info rows are excluded.
-  const customOrderCashIn =
-    buildUpfrontOrderLedgerEffects(
-      upfrontOrders
+  const customOrderCashIn = buildUpfrontOrderLedgerEffects(upfrontOrders)
+    .filter(
+      (effect) =>
+        effect.type === "custom_order_payment" &&
+        Math.max(0, Number(effect.cashIn || 0)) > 0,
     )
-      .filter(
-        effect =>
-          effect.type
-          === 'custom_order_payment'
-          && Math.max(
-            0,
-            Number(
-              effect.cashIn || 0
-            )
-          ) > 0
-      )
-      .filter(
-        effect =>
-          effect.isLegacyInfoOnly
-          !== true
-      )
-      .filter(effect => {
-        const at =
-          new Date(
-            effect.date
-          ).getTime();
+    .filter((effect) => effect.isLegacyInfoOnly !== true)
+    .filter((effect) => {
+      const at = new Date(effect.date).getTime();
 
-        return (
-          Number.isFinite(at)
-          && at >= start
-          && at <= end
-        );
-      })
-      .reduce(
-        (sum, effect) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              effect.cashIn || 0
-            )
-          ),
-        0
-      );
+      return Number.isFinite(at) && at >= start && at <= end;
+    })
+    .reduce((sum, effect) => sum + Math.max(0, Number(effect.cashIn || 0)), 0);
 
   const totals = {
     cashSales,
-    deletedSaleCashIncluded:
-      explicitDeletedSaleCashIncluded,
+    deletedSaleCashIncluded: explicitDeletedSaleCashIncluded,
     cashRefunds,
     activeCashRefunds,
-    deleteCompensationRefunds:
-      deleteCompensationOutflow,
-    customerCashOutflow:
-      customerCashOutflow.cashOutflow,
+    deleteCompensationRefunds: deleteCompensationOutflow,
+    customerCashOutflow: customerCashOutflow.cashOutflow,
     activeCustomerCashOutflow,
-    customerOnlineOutflow:
-      customerCashOutflow.onlineOutflow,
-    customerCashCollections:
-      cashCollections,
-    customOrderCashCollections:
-      customOrderCashIn,
-    cashCollections:
-      cashCollections
-      + customOrderCashIn,
-    cashAdditions:
-      cashAdded
-      + manualCashIn,
+    customerOnlineOutflow: customerCashOutflow.onlineOutflow,
+    customerCashCollections: cashCollections,
+    customOrderCashCollections: customOrderCashIn,
+    cashCollections: cashCollections + customOrderCashIn,
+    cashAdditions: cashAdded + manualCashIn,
     supplierCashPayments,
     activeSupplierCashPayments,
     expenses: expenseTotal,
     activeExpenseTotal,
     cashWithdrawals:
-      cashWithdrawn
-      + manualCashOut
-      + customerCashOutflow.cashOutflow,
+      cashWithdrawn + manualCashOut + customerCashOutflow.cashOutflow,
     activeCashWithdrawals:
-      activeCashWithdrawn
-      + activeManualCashOut
-      + activeCustomerCashOutflow,
+      activeCashWithdrawn + activeManualCashOut + activeCustomerCashOutflow,
     expenseTotal,
     manualCashIn,
     manualCashOut,
 
     systemCashTotal:
-      cashSales
-      + cashCollections
-      + customOrderCashIn
-      + cashAdded
-      + manualCashIn
-      - cashRefunds
-      - deleteCompensationOutflow
-      - supplierCashPayments
-      - expenseTotal
-      - cashWithdrawn
-      - manualCashOut
-      - customerCashOutflow.cashOutflow,
+      cashSales +
+      cashCollections +
+      customOrderCashIn +
+      cashAdded +
+      manualCashIn -
+      cashRefunds -
+      deleteCompensationOutflow -
+      supplierCashPayments -
+      expenseTotal -
+      cashWithdrawn -
+      manualCashOut -
+      customerCashOutflow.cashOutflow,
 
     activeSystemCashTotal:
-      cashSales
-      + cashCollections
-      + customOrderCashIn
-      + cashAdded
-      + manualCashIn
-      - activeCashRefunds
-      - deleteCompensationOutflow
-      - activeSupplierCashPayments
-      - activeExpenseTotal
-      - activeCashWithdrawn
-      - activeManualCashOut
-      - activeCustomerCashOutflow,
+      cashSales +
+      cashCollections +
+      customOrderCashIn +
+      cashAdded +
+      manualCashIn -
+      activeCashRefunds -
+      deleteCompensationOutflow -
+      activeSupplierCashPayments -
+      activeExpenseTotal -
+      activeCashWithdrawn -
+      activeManualCashOut -
+      activeCustomerCashOutflow,
   };
 
-  if (
-    FINANCE_SHIFT_RECON_DEBUG_ENABLED
-  ) {
+  if (FINANCE_SHIFT_RECON_DEBUG_ENABLED) {
   }
 
-  financeLog.cash('RESULT', {
+  financeLog.cash("RESULT", {
     sessionId: sessionId || null,
-    windowType: sessionId
-      ? 'session'
-      : 'adhoc_window',
+    windowType: sessionId ? "session" : "adhoc_window",
     sessionStartIso,
-    sessionEndIso:
-      sessionEndIso || null,
+    sessionEndIso: sessionEndIso || null,
     ...totals,
   });
 
@@ -2121,7 +1554,7 @@ type ShiftMovementRow = {
   id: string;
   date: string;
   type: string;
-  direction: 'in' | 'out';
+  direction: "in" | "out";
   name: string;
   ref: string;
   description: string;
@@ -2133,684 +1566,351 @@ type ShiftMovementRow = {
 const buildShiftCashMovementBreakdown = (
   state: AppState,
   session: CashSession,
-  computedTotals:
-    ReturnType<
-      typeof getSessionCashTotals
-    >
+  computedTotals: ReturnType<typeof getSessionCashTotals>,
 ) => {
-  const start =
-    new Date(
-      session.startTime
-    ).getTime();
+  const start = new Date(session.startTime).getTime();
 
-  const end =
-    session.endTime
-      ? new Date(
-        session.endTime
-      ).getTime()
-      : Number.POSITIVE_INFINITY;
+  const end = session.endTime
+    ? new Date(session.endTime).getTime()
+    : Number.POSITIVE_INFINITY;
 
-  const cashInRows:
-    ShiftMovementRow[] = [];
+  const cashInRows: ShiftMovementRow[] = [];
 
-  const cashOutRows:
-    ShiftMovementRow[] = [];
+  const cashOutRows: ShiftMovementRow[] = [];
 
-  const pushRow = (
-    row: ShiftMovementRow
-  ) => (
-    row.direction === 'in'
-      ? cashInRows
-      : cashOutRows
-  ).push(row);
+  const pushRow = (row: ShiftMovementRow) =>
+    (row.direction === "in" ? cashInRows : cashOutRows).push(row);
 
-  const customerNameById =
-    new Map(
-      (state.customers || []).map(
-        customer => [
-          customer.id,
-          customer.name,
-        ]
-      )
-    );
-
-  (state.transactions || []).forEach(
-    tx => {
-      const at =
-        resolveTransactionTimeForSession(
-          tx
-        );
-
-      if (
-        !Number.isFinite(at)
-        || at < start
-        || at > end
-      ) {
-        return;
-      }
-
-      if (tx.type === 'sale') {
-        const s =
-          getSaleSettlementBreakdown(
-            tx
-          );
-
-        if (s.cashPaid > 0) {
-          pushRow({
-            id: `sale-${tx.id}`,
-            date: tx.date,
-            type: 'Cash Sale',
-            direction: 'in',
-            name:
-              tx.customerName
-              || 'Walk-in',
-            ref:
-              tx.id.slice(-6),
-            description:
-              'Cash from sale invoice',
-            amount:
-              s.cashPaid,
-            source:
-              'salesCash',
-            sourceTxId:
-              tx.id,
-          });
-        }
-      }
-
-      if (
-        tx.type === 'payment'
-        && tx.paymentMethod === 'Cash'
-      ) {
-        pushRow({
-          id: `pay-${tx.id}`,
-          date: tx.date,
-          type: 'Customer Collection',
-          direction: 'in',
-          name:
-            tx.customerName
-            || 'Customer',
-          ref:
-            tx.id.slice(-6),
-          description:
-            'Cash collection',
-          amount:
-            Math.abs(tx.total),
-          source:
-            'customerCollections',
-          sourceTxId:
-            tx.id,
-        });
-      }
-
-      if (
-        tx.type === 'customer_cash_out'
-        && tx.paymentMethod === 'Cash'
-      ) {
-        pushRow({
-          id: `cashout-${tx.id}`,
-          date: tx.date,
-          type: 'Cash Out',
-          direction: 'out',
-          name:
-            tx.customerName
-            || 'Customer',
-          ref:
-            (tx.receiptNo || tx.id)
-              .slice(-6),
-          description:
-            'Customer cash out / withdrawal',
-          amount:
-            Math.abs(tx.total),
-          source:
-            'customerCashOut',
-          sourceTxId:
-            tx.id,
-        });
-      }
-
-      if (tx.type === 'return') {
-        const effects =
-          getReturnFinancialEffectsForFinance(
-            tx
-          );
-
-        if (effects.affectsCash) {
-          pushRow({
-            id: `ret-${tx.id}`,
-            date: tx.date,
-            type: 'Cash Refund',
-            direction: 'out',
-            name:
-              tx.customerName
-              || 'Customer',
-            ref:
-              tx.id.slice(-6),
-            description:
-              'Cash refund / return',
-            amount:
-              Math.abs(tx.total),
-            source:
-              'refunds',
-            sourceTxId:
-              tx.id,
-          });
-        }
-      }
-    }
+  const customerNameById = new Map(
+    (state.customers || []).map((customer) => [customer.id, customer.name]),
   );
 
-  (state.cashAdjustments || []).forEach(
-    entry => {
-      const at =
-        new Date(
-          entry.createdAt
-        ).getTime();
+  (state.transactions || []).forEach((tx) => {
+    const at = resolveTransactionTimeForSession(tx);
 
-      if (
-        !Number.isFinite(at)
-        || at < start
-        || at > end
-      ) {
-        return;
-      }
+    if (!Number.isFinite(at) || at < start || at > end) {
+      return;
+    }
 
-      if (
-        entry.type
-        === 'cash_addition'
-      ) {
+    if (tx.type === "sale") {
+      const s = getSaleSettlementBreakdown(tx);
+
+      if (s.cashPaid > 0) {
         pushRow({
-          id:
-            `adj-in-${entry.id}`,
-          date:
-            entry.createdAt,
-          type:
-            'Cash Addition',
-          direction:
-            'in',
-          name:
-            'Manual',
-          ref:
-            entry.id.slice(-6),
-          description:
-            entry.note
-            || 'Cash addition',
-          amount:
-            Math.max(
-              0,
-              Number(
-                entry.amount
-              ) || 0
-            ),
-          source:
-            'cashAdditions',
-        });
-      }
-
-      if (
-        entry.type
-        === 'cash_withdrawal'
-      ) {
-        pushRow({
-          id:
-            `adj-out-${entry.id}`,
-          date:
-            entry.createdAt,
-          type:
-            'Cash Withdrawal',
-          direction:
-            'out',
-          name:
-            'Manual',
-          ref:
-            entry.id.slice(-6),
-          description:
-            withCashSourceLabel(
-              entry.note
-              || 'Cash withdrawal',
-              entry.cashSource
-            ),
-          amount:
-            Math.max(
-              0,
-              Number(
-                entry.amount
-              ) || 0
-            ),
-          source:
-            'cashWithdrawals',
+          id: `sale-${tx.id}`,
+          date: tx.date,
+          type: "Cash Sale",
+          direction: "in",
+          name: tx.customerName || "Walk-in",
+          ref: tx.id.slice(-6),
+          description: "Cash from sale invoice",
+          amount: s.cashPaid,
+          source: "salesCash",
+          sourceTxId: tx.id,
         });
       }
     }
-  );
 
-  (
-    (
-      (state as any)
-        .manualCashbookEntries
-      || []
-    ) as ManualCashbookEntry[]
-  )
-    .filter(
-      entry =>
-        !entry?.isDeleted
-    )
-    .forEach(entry => {
-      const at =
-        new Date(
-          entry.date
-          || entry.createdAt
-        ).getTime();
+    if (tx.type === "payment" && tx.paymentMethod === "Cash") {
+      pushRow({
+        id: `pay-${tx.id}`,
+        date: tx.date,
+        type: "Customer Collection",
+        direction: "in",
+        name: tx.customerName || "Customer",
+        ref: tx.id.slice(-6),
+        description: "Cash collection",
+        amount: Math.abs(tx.total),
+        source: "customerCollections",
+        sourceTxId: tx.id,
+      });
+    }
 
-      if (
-        !Number.isFinite(at)
-        || at < start
-        || at > end
-      ) {
+    if (tx.type === "customer_cash_out" && tx.paymentMethod === "Cash") {
+      pushRow({
+        id: `cashout-${tx.id}`,
+        date: tx.date,
+        type: "Cash Out",
+        direction: "out",
+        name: tx.customerName || "Customer",
+        ref: (tx.receiptNo || tx.id).slice(-6),
+        description: "Customer cash out / withdrawal",
+        amount: Math.abs(tx.total),
+        source: "customerCashOut",
+        sourceTxId: tx.id,
+      });
+    }
+
+    if (tx.type === "return") {
+      const effects = getReturnFinancialEffectsForFinance(tx);
+
+      if (effects.affectsCash) {
+        pushRow({
+          id: `ret-${tx.id}`,
+          date: tx.date,
+          type: "Cash Refund",
+          direction: "out",
+          name: tx.customerName || "Customer",
+          ref: tx.id.slice(-6),
+          description: "Cash refund / return",
+          amount: Math.abs(tx.total),
+          source: "refunds",
+          sourceTxId: tx.id,
+        });
+      }
+    }
+  });
+
+  (state.cashAdjustments || []).forEach((entry) => {
+    const at = new Date(entry.createdAt).getTime();
+
+    if (!Number.isFinite(at) || at < start || at > end) {
+      return;
+    }
+
+    if (entry.type === "cash_addition") {
+      pushRow({
+        id: `adj-in-${entry.id}`,
+        date: entry.createdAt,
+        type: "Cash Addition",
+        direction: "in",
+        name: "Manual",
+        ref: entry.id.slice(-6),
+        description: entry.note || "Cash addition",
+        amount: Math.max(0, Number(entry.amount) || 0),
+        source: "cashAdditions",
+      });
+    }
+
+    if (entry.type === "cash_withdrawal") {
+      pushRow({
+        id: `adj-out-${entry.id}`,
+        date: entry.createdAt,
+        type: "Cash Withdrawal",
+        direction: "out",
+        name: "Manual",
+        ref: entry.id.slice(-6),
+        description: withCashSourceLabel(
+          entry.note || "Cash withdrawal",
+          entry.cashSource,
+        ),
+        amount: Math.max(0, Number(entry.amount) || 0),
+        source: "cashWithdrawals",
+      });
+    }
+  });
+
+  (((state as any).manualCashbookEntries || []) as ManualCashbookEntry[])
+    .filter((entry) => !entry?.isDeleted)
+    .forEach((entry) => {
+      const at = new Date(entry.date || entry.createdAt).getTime();
+
+      if (!Number.isFinite(at) || at < start || at > end) {
         return;
       }
 
       pushRow({
-        id:
-          `manual-${entry.id}`,
-        date:
-          entry.date
-          || entry.createdAt,
-        type:
-          entry.type
-          === 'cash_out'
-            ? 'Manual Cash Out'
-            : 'Manual Cash In',
-        direction:
-          entry.type
-          === 'cash_out'
-            ? 'out'
-            : 'in',
-        name:
-          'Cash Drawer',
-        ref:
-          entry.id.slice(-6),
+        id: `manual-${entry.id}`,
+        date: entry.date || entry.createdAt,
+        type: entry.type === "cash_out" ? "Manual Cash Out" : "Manual Cash In",
+        direction: entry.type === "cash_out" ? "out" : "in",
+        name: "Cash Drawer",
+        ref: entry.id.slice(-6),
         description:
-          entry.type
-          === 'cash_out'
+          entry.type === "cash_out"
             ? withCashSourceLabel(
-                entry.details
-                || 'Manual cash out',
-                entry.cashSource
+                entry.details || "Manual cash out",
+                entry.cashSource,
               )
-            : (
-              entry.details
-              || 'Manual cash in'
-            ),
-        amount:
-          Math.max(
-            0,
-            Number(
-              entry.amount || 0
-            )
-          ),
-        source:
-          'manualCashbookEntries',
+            : entry.details || "Manual cash in",
+        amount: Math.max(0, Number(entry.amount || 0)),
+        source: "manualCashbookEntries",
       });
     });
 
-  (state.expenses || []).forEach(
-    e => {
-      const at =
-        new Date(
-          getExpenseEffectiveDate(e)
-        ).getTime();
+  (state.expenses || []).forEach((e) => {
+    const at = new Date(getExpenseEffectiveDate(e)).getTime();
 
-      if (
-        !Number.isFinite(at)
-        || at < start
-        || at > end
-      ) {
+    if (!Number.isFinite(at) || at < start || at > end) {
+      return;
+    }
+
+    pushRow({
+      id: `exp-${e.id}`,
+      date: getExpenseEffectiveDate(e),
+      type: "Expense",
+      direction: "out",
+      name: e.title,
+      ref: e.id.slice(-6),
+      description: withCashSourceLabel(e.note || "Expense", e.cashSource),
+      amount: Math.max(0, Number(e.amount) || 0),
+      source: "expenses",
+    });
+  });
+
+  (state.deleteCompensations || []).forEach((d) => {
+    const at = new Date(d.createdAt).getTime();
+
+    if (
+      !Number.isFinite(at) ||
+      at < start ||
+      at > end ||
+      !isExplicitDeleteRefund(d)
+    ) {
+      return;
+    }
+
+    pushRow({
+      id: `del-${d.id}`,
+      date: d.createdAt,
+      type: "Delete Compensation",
+      direction: "out",
+      name: d.customerName || "Customer",
+      ref: d.transactionId.slice(-6),
+      description: "Explicit cash refund compensation",
+      amount: Math.max(0, Number(d.amount) || 0),
+      source: "deleteCompensations",
+    });
+  });
+
+  const supplierPayments = ((state as any).supplierPayments || []) as any[];
+
+  supplierPayments.forEach((p) => {
+    const at = getSupplierPaymentTimestamp(p);
+
+    const normalizedMethod = getSupplierPaymentMethodForDrawer(p.method);
+
+    if (
+      !Number.isFinite(at) ||
+      at < start ||
+      at > end ||
+      p.deletedAt ||
+      normalizedMethod !== "cash"
+    ) {
+      return;
+    }
+
+    pushRow({
+      id: `sp-${p.id}`,
+      date: p.paidAt || p.paymentDate || p.date || p.createdAt,
+      type: "Party Payment",
+      direction: "out",
+      name: p.partyName || "Supplier",
+      ref: p.voucherNo || p.id.slice(-6),
+      description: withCashSourceLabel(
+        p.note || "Cash supplier payment",
+        p.cashSource,
+      ),
+      amount: Math.max(0, Number(p.amount) || 0),
+      source: "supplierPayments",
+    });
+  });
+
+  const legacySupplierMap = new Map<
+    string,
+    {
+      date: string;
+      party: string;
+      note: string;
+      amount: number;
+    }
+  >();
+
+  (state.purchaseOrders || []).forEach((o) =>
+    (o.paymentHistory || []).forEach((ph: any) => {
+      if (ph.supplierPaymentId || (ph.method || "cash") !== "cash") {
         return;
       }
 
-      pushRow({
-        id:
-          `exp-${e.id}`,
-        date:
-          getExpenseEffectiveDate(e),
-        type:
-          'Expense',
-        direction:
-          'out',
-        name:
-          e.title,
-        ref:
-          e.id.slice(-6),
-        description:
-          withCashSourceLabel(
-            e.note || 'Expense',
-            e.cashSource
-          ),
-        amount:
-          Math.max(
-            0,
-            Number(
-              e.amount
-            ) || 0
-          ),
-        source:
-          'expenses',
-      });
-    }
-  );
+      const at = new Date(ph.paidAt).getTime();
 
-  (
-    state.deleteCompensations
-    || []
-  ).forEach(d => {
-    const at =
-      new Date(
-        d.createdAt
-      ).getTime();
-
-    if (
-      !Number.isFinite(at)
-      || at < start
-      || at > end
-      || !isExplicitDeleteRefund(d)
-    ) {
-      return;
-    }
-
-    pushRow({
-      id:
-        `del-${d.id}`,
-      date:
-        d.createdAt,
-      type:
-        'Delete Compensation',
-      direction:
-        'out',
-      name:
-        d.customerName
-        || 'Customer',
-      ref:
-        d.transactionId
-          .slice(-6),
-      description:
-        'Explicit cash refund compensation',
-      amount:
-        Math.max(
-          0,
-          Number(
-            d.amount
-          ) || 0
-        ),
-      source:
-        'deleteCompensations',
-    });
-  });
-
-  const supplierPayments =
-    (
-      (state as any)
-        .supplierPayments
-      || []
-    ) as any[];
-
-  supplierPayments.forEach(p => {
-    const at =
-      getSupplierPaymentTimestamp(p);
-
-    const normalizedMethod =
-      getSupplierPaymentMethodForDrawer(
-        p.method
-      );
-
-    if (
-      !Number.isFinite(at)
-      || at < start
-      || at > end
-      || p.deletedAt
-      || normalizedMethod !== 'cash'
-    ) {
-      return;
-    }
-
-    pushRow({
-      id:
-        `sp-${p.id}`,
-      date:
-        p.paidAt
-        || p.paymentDate
-        || p.date
-        || p.createdAt,
-      type:
-        'Party Payment',
-      direction:
-        'out',
-      name:
-        p.partyName
-        || 'Supplier',
-      ref:
-        p.voucherNo
-        || p.id.slice(-6),
-      description:
-        withCashSourceLabel(
-          p.note
-          || 'Cash supplier payment',
-          p.cashSource
-        ),
-      amount:
-        Math.max(
-          0,
-          Number(
-            p.amount
-          ) || 0
-        ),
-      source:
-        'supplierPayments',
-    });
-  });
-
-  const legacySupplierMap =
-    new Map<
-      string,
-      {
-        date: string;
-        party: string;
-        note: string;
-        amount: number;
+      if (!Number.isFinite(at) || at < start || at > end) {
+        return;
       }
-    >();
 
-  (state.purchaseOrders || []).forEach(
-    o =>
-      (o.paymentHistory || []).forEach(
-        (ph: any) => {
-          if (
-            ph.supplierPaymentId
-            || (ph.method || 'cash')
-              !== 'cash'
-          ) {
-            return;
-          }
+      const bucket = new Date(Math.floor(at / 60000) * 60000)
+        .toISOString()
+        .slice(0, 16);
 
-          const at =
-            new Date(
-              ph.paidAt
-            ).getTime();
+      const key = `${o.partyId}|${(ph.note || "").trim().toLowerCase()}|${bucket}`;
 
-          if (
-            !Number.isFinite(at)
-            || at < start
-            || at > end
-          ) {
-            return;
-          }
+      const ex = legacySupplierMap.get(key) || {
+        date: ph.paidAt,
+        party: o.partyName,
+        note: ph.note || "",
+        amount: 0,
+      };
 
-          const bucket =
-            new Date(
-              Math.floor(
-                at / 60000
-              ) * 60000
-            )
-              .toISOString()
-              .slice(0, 16);
+      ex.amount = roundMoney(ex.amount + Math.max(0, Number(ph.amount) || 0));
 
-          const key =
-            `${o.partyId}|${(ph.note || '').trim().toLowerCase()}|${bucket}`;
-
-          const ex =
-            legacySupplierMap.get(
-              key
-            ) || {
-              date: ph.paidAt,
-              party: o.partyName,
-              note: ph.note || '',
-              amount: 0,
-            };
-
-          ex.amount =
-            roundMoney(
-              ex.amount
-              + Math.max(
-                0,
-                Number(
-                  ph.amount
-                ) || 0
-              )
-            );
-
-          legacySupplierMap.set(
-            key,
-            ex
-          );
-        }
-      )
+      legacySupplierMap.set(key, ex);
+    }),
   );
 
-  legacySupplierMap.forEach(
-    (g, key) =>
-      pushRow({
-        id:
-          `legacy-${key}`,
-        date:
-          g.date,
-        type:
-          'Party Payment',
-        direction:
-          'out',
-        name:
-          g.party,
-        ref:
-          'LEGACY',
-        description:
-          g.note
-          || 'Cash supplier payment allocated across POs',
-        amount:
-          g.amount,
-        source:
-          'legacySupplierPayments',
-      })
+  legacySupplierMap.forEach((g, key) =>
+    pushRow({
+      id: `legacy-${key}`,
+      date: g.date,
+      type: "Party Payment",
+      direction: "out",
+      name: g.party,
+      ref: "LEGACY",
+      description: g.note || "Cash supplier payment allocated across POs",
+      amount: g.amount,
+      source: "legacySupplierPayments",
+    }),
   );
 
   buildUpfrontOrderLedgerEffects(
     state.upfrontOrders || [],
-    state.customers || []
+    state.customers || [],
   )
     .filter(
-      effect =>
-        effect.type
-        === 'custom_order_payment'
-        && Math.max(
-          0,
-          Number(
-            effect.cashIn || 0
-          )
-        ) > 0
+      (effect) =>
+        effect.type === "custom_order_payment" &&
+        Math.max(0, Number(effect.cashIn || 0)) > 0,
     )
-    .filter(
-      effect =>
-        effect.isLegacyInfoOnly
-        !== true
-    )
-    .forEach(effect => {
-      const at =
-        new Date(
-          effect.date
-        ).getTime();
+    .filter((effect) => effect.isLegacyInfoOnly !== true)
+    .forEach((effect) => {
+      const at = new Date(effect.date).getTime();
 
-      if (
-        !Number.isFinite(at)
-        || at < start
-        || at > end
-      ) {
+      if (!Number.isFinite(at) || at < start || at > end) {
         return;
       }
 
       const customerName =
-        effect.customerName
-        || customerNameById.get(
-          effect.customerId || ''
-        )
-        || 'Customer';
+        effect.customerName ||
+        customerNameById.get(effect.customerId || "") ||
+        "Customer";
 
       pushRow({
-        id:
-          `upfront-${effect.id}`,
-        date:
-          effect.date,
-        type:
-          'Custom Order Payment',
-        direction:
-          'in',
-        name:
-          customerName,
-        ref:
-          effect.orderId?.slice(-6)
-          || effect.id.slice(-6),
-        description:
-          effect.productName
-            ? `${effect.productName} • ${customerName}`
-            : `Custom order payment • ${customerName}`,
-        amount:
-          Math.max(
-            0,
-            Number(
-              effect.cashIn || 0
-            )
-          ),
-        source:
-          'customOrderCashCollections',
+        id: `upfront-${effect.id}`,
+        date: effect.date,
+        type: "Custom Order Payment",
+        direction: "in",
+        name: customerName,
+        ref: effect.orderId?.slice(-6) || effect.id.slice(-6),
+        description: effect.productName
+          ? `${effect.productName} • ${customerName}`
+          : `Custom order payment • ${customerName}`,
+        amount: Math.max(0, Number(effect.cashIn || 0)),
+        source: "customOrderCashCollections",
       });
     });
 
   cashInRows.sort(
-    (a, b) =>
-      new Date(a.date).getTime()
-      - new Date(b.date).getTime()
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
   );
 
   cashOutRows.sort(
-    (a, b) =>
-      new Date(a.date).getTime()
-      - new Date(b.date).getTime()
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
   );
 
-  const cashInTotal =
-    roundMoney(
-      cashInRows.reduce(
-        (s, r) =>
-          s + r.amount,
-        0
-      )
-    );
+  const cashInTotal = roundMoney(cashInRows.reduce((s, r) => s + r.amount, 0));
 
-  const cashOutTotal =
-    roundMoney(
-      cashOutRows.reduce(
-        (s, r) =>
-          s + r.amount,
-        0
-      )
-    );
+  const cashOutTotal = roundMoney(
+    cashOutRows.reduce((s, r) => s + r.amount, 0),
+  );
 
   return {
     cashInRows,
@@ -2818,38 +1918,16 @@ const buildShiftCashMovementBreakdown = (
     cashInTotal,
     cashOutTotal,
     expectedCash: roundMoney(
-      session.openingBalance
-      + computedTotals.systemCashTotal
+      session.openingBalance + computedTotals.systemCashTotal,
     ),
   };
 };
 
-const CLOSING_DENOMS = [
-  500,
-  200,
-  100,
-  50,
-  20,
-  10,
-  5,
-  2,
-  1,
-] as const;
+const CLOSING_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1] as const;
 
-const HIGH_DENOMS = [
-  500,
-  200,
-  100,
-  50,
-  20,
-] as const;
+const HIGH_DENOMS = [500, 200, 100, 50, 20] as const;
 
-const LOW_DENOMS = [
-  10,
-  5,
-  2,
-  1,
-] as const;
+const LOW_DENOMS = [10, 5, 2, 1] as const;
 
 const buildEmptyCounts = () =>
   CLOSING_DENOMS.reduce(
@@ -2857,41 +1935,39 @@ const buildEmptyCounts = () =>
       acc[denom] = 0;
       return acc;
     },
-    {} as Record<number, number>
+    {} as Record<number, number>,
   );
 
 function StatCard({
   label,
   value,
-  tone = 'neutral',
+  tone = "neutral",
   interactive = false,
   hint,
 }: {
   label: string;
   value: string;
-  tone?: 'neutral' | 'good' | 'bad';
+  tone?: "neutral" | "good" | "bad";
   interactive?: boolean;
   hint?: string;
 }) {
   const toneClasses =
-    tone === 'good'
-      ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-      : tone === 'bad'
-        ? 'border-red-200 bg-red-50 text-red-900'
-        : 'border-border bg-muted/30';
+    tone === "good"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+      : tone === "bad"
+        ? "border-red-200 bg-red-50 text-red-900"
+        : "border-border bg-muted/30";
 
   return (
     <div
       className={`rounded-lg border p-3 ${toneClasses} ${
         interactive
-          ? 'cursor-pointer transition hover:shadow-sm hover:ring-1 hover:ring-slate-300'
-          : ''
+          ? "cursor-pointer transition hover:shadow-sm hover:ring-1 hover:ring-slate-300"
+          : ""
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="text-xs text-muted-foreground">
-          {label}
-        </p>
+        <p className="text-xs text-muted-foreground">{label}</p>
 
         {interactive ? (
           <span
@@ -2903,32 +1979,26 @@ function StatCard({
         ) : null}
       </div>
 
-      <p className="text-lg font-semibold">
-        {value}
-      </p>
+      <p className="text-lg font-semibold">{value}</p>
     </div>
   );
 }
 
 function Pill({
   children,
-  tone = 'neutral',
+  tone = "neutral",
 }: {
   children: React.ReactNode;
-  tone?:
-    | 'neutral'
-    | 'emerald'
-    | 'amber'
-    | 'rose';
+  tone?: "neutral" | "emerald" | "amber" | "rose";
 }) {
   const cls =
-    tone === 'emerald'
-      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-      : tone === 'amber'
-        ? 'bg-amber-50 text-amber-700 ring-amber-200'
-        : tone === 'rose'
-          ? 'bg-rose-50 text-rose-700 ring-rose-200'
-          : 'bg-slate-100 text-slate-700 ring-slate-200';
+    tone === "emerald"
+      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+      : tone === "amber"
+        ? "bg-amber-50 text-amber-700 ring-amber-200"
+        : tone === "rose"
+          ? "bg-rose-50 text-rose-700 ring-rose-200"
+          : "bg-slate-100 text-slate-700 ring-slate-200";
 
   return (
     <span
@@ -2942,51 +2012,38 @@ function Pill({
 function MoneyTile({
   label,
   value,
-  tone = 'neutral',
+  tone = "neutral",
 }: {
   label: string;
   value: string;
-  tone?:
-    | 'neutral'
-    | 'emerald'
-    | 'rose';
+  tone?: "neutral" | "emerald" | "rose";
 }) {
   const theme =
-    tone === 'emerald'
-      ? 'border-emerald-200 bg-emerald-50'
-      : tone === 'rose'
-        ? 'border-rose-200 bg-rose-50'
-        : 'border-slate-200 bg-slate-50';
+    tone === "emerald"
+      ? "border-emerald-200 bg-emerald-50"
+      : tone === "rose"
+        ? "border-rose-200 bg-rose-50"
+        : "border-slate-200 bg-slate-50";
 
   const labelCls =
-    tone === 'emerald'
-      ? 'text-emerald-700'
-      : tone === 'rose'
-        ? 'text-rose-700'
-        : 'text-slate-500';
+    tone === "emerald"
+      ? "text-emerald-700"
+      : tone === "rose"
+        ? "text-rose-700"
+        : "text-slate-500";
 
   const valueCls =
-    tone === 'emerald'
-      ? 'text-emerald-800'
-      : tone === 'rose'
-        ? 'text-rose-800'
-        : 'text-slate-900';
+    tone === "emerald"
+      ? "text-emerald-800"
+      : tone === "rose"
+        ? "text-rose-800"
+        : "text-slate-900";
 
   return (
-    <div
-      className={`rounded-lg border px-3 py-2 ${theme}`}
-    >
-      <div
-        className={`text-[11px] font-medium ${labelCls}`}
-      >
-        {label}
-      </div>
+    <div className={`rounded-lg border px-3 py-2 ${theme}`}>
+      <div className={`text-[11px] font-medium ${labelCls}`}>{label}</div>
 
-      <div
-        className={`mt-0.5 text-sm font-semibold ${valueCls}`}
-      >
-        {value}
-      </div>
+      <div className={`mt-0.5 text-sm font-semibold ${valueCls}`}>{value}</div>
     </div>
   );
 }
@@ -2999,10 +2056,7 @@ type FinanceProps = {
   embeddedWithdrawalRepair?: boolean;
 };
 
-type ExpenseRepairDraftKind =
-  | 'add_expense'
-  | 'edit_expense'
-  | 'delete_expense';
+type ExpenseRepairDraftKind = "add_expense" | "edit_expense" | "delete_expense";
 
 type ExpenseRepairDraft = {
   kind: ExpenseRepairDraftKind;
@@ -3019,9 +2073,9 @@ type ExpenseRepairPreview = {
 };
 
 type WithdrawalRepairDraftKind =
-  | 'add_cash_withdrawal'
-  | 'edit_cash_withdrawal'
-  | 'delete_cash_withdrawal';
+  | "add_cash_withdrawal"
+  | "edit_cash_withdrawal"
+  | "delete_cash_withdrawal";
 
 type WithdrawalRepairDraft = {
   kind: WithdrawalRepairDraftKind;
@@ -3040,182 +2094,121 @@ type WithdrawalRepairPreview = {
 
 export default function Finance({
   repairMode = false,
-  initialTab = 'cash',
+  initialTab = "cash",
   lockedTab,
   embeddedExpenseRepair = false,
   embeddedWithdrawalRepair = false,
 }: FinanceProps) {
-  const perfRunIdRef =
-    React.useRef(
-      createPerfRunId('finance')
-    );
+  const perfRunIdRef = React.useRef(createPerfRunId("finance"));
 
-  const renderStartLoggedRef =
-    React.useRef(false);
+  const renderStartLoggedRef = React.useRef(false);
 
-  const firstEffectLoggedRef =
-    React.useRef(false);
+  const firstEffectLoggedRef = React.useRef(false);
 
-  const readyLoggedRef =
-    React.useRef(false);
+  const readyLoggedRef = React.useRef(false);
 
-  const dataReadyLoggedRef =
-    React.useRef(false);
+  const dataReadyLoggedRef = React.useRef(false);
 
-  const detailedCashbookFrameRef =
-    React.useRef<{
-      first: number | null;
-      second: number | null;
-    }>({
-      first: null,
-      second: null,
-    });
+  const detailedCashbookFrameRef = React.useRef<{
+    first: number | null;
+    second: number | null;
+  }>({
+    first: null,
+    second: null,
+  });
 
-  const storageRefreshFrameRef =
-    React.useRef<number | null>(
-      null
-    );
+  const storageRefreshFrameRef = React.useRef<number | null>(null);
 
-  const queuedStorageEventTypesRef =
-    React.useRef<string[]>([]);
+  const queuedStorageEventTypesRef = React.useRef<string[]>([]);
+
+  const nonCriticalRefreshStartedRef = React.useRef(false);
 
   if (!renderStartLoggedRef.current) {
     renderStartLoggedRef.current = true;
 
-    perfLog(
-      'page.Finance.render.start',
-      {
-        runId:
-          perfRunIdRef.current,
-      }
-    );
+    perfLog("page.Finance.render.start", {
+      runId: perfRunIdRef.current,
+    });
   }
 
-  const {
-    session: roleSession,
-    requestAdminOverride,
-  } = useRoleSession();
+  const { session: roleSession, requestAdminOverride } = useRoleSession();
 
-  const routeReady =
-    useRouteReady();
+  const routeReady = useRouteReady();
 
-  const shellPainted =
-    routeReady?.shellPainted ?? true;
+  const shellPainted = routeReady?.shellPainted ?? true;
 
-  const isRouteActive =
-    routeReady?.isRouteActive ?? true;
+  const isRouteActive = routeReady?.isRouteActive ?? true;
 
-  const formatExpenseLoggedDate = (
-    expense: Expense
-  ) => {
-    const rawExpense =
-      expense as Expense & {
-        date?: unknown;
-        timestamp?: unknown;
-        expenseDate?: unknown;
-      };
+  const formatExpenseLoggedDate = (expense: Expense) => {
+    const rawExpense = expense as Expense & {
+      date?: unknown;
+      timestamp?: unknown;
+      expenseDate?: unknown;
+    };
 
     const pick =
-      rawExpense.effectiveAt
-      ?? rawExpense.createdAt
-      ?? rawExpense.date
-      ?? rawExpense.timestamp
-      ?? rawExpense.expenseDate;
+      rawExpense.effectiveAt ??
+      rawExpense.createdAt ??
+      rawExpense.date ??
+      rawExpense.timestamp ??
+      rawExpense.expenseDate;
 
     if (!pick) {
-      return 'Date not available';
+      return "Date not available";
     }
 
-    const normalize = (
-      value: unknown
-    ): Date | null => {
+    const normalize = (value: unknown): Date | null => {
       if (!value) {
         return null;
       }
 
       if (value instanceof Date) {
-        return Number.isNaN(
-          value.getTime()
-        )
-          ? null
-          : value;
+        return Number.isNaN(value.getTime()) ? null : value;
       }
 
-      if (
-        typeof value === 'string'
-        || typeof value === 'number'
-      ) {
-        const d =
-          new Date(value);
+      if (typeof value === "string" || typeof value === "number") {
+        const d = new Date(value);
 
-        return Number.isNaN(
-          d.getTime()
-        )
-          ? null
-          : d;
+        return Number.isNaN(d.getTime()) ? null : d;
       }
 
-      if (
-        typeof value === 'object'
-      ) {
-        const anyValue =
-          value as any;
+      if (typeof value === "object") {
+        const anyValue = value as any;
 
-        if (
-          typeof anyValue?.toDate
-          === 'function'
-        ) {
-          const d =
-            anyValue.toDate();
+        if (typeof anyValue?.toDate === "function") {
+          const d = anyValue.toDate();
 
-          return (
-            d instanceof Date
-            && !Number.isNaN(
-              d.getTime()
-            )
-          )
-            ? d
-            : null;
+          return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
         }
 
-        if (
-          typeof anyValue?.seconds
-          === 'number'
-        ) {
+        if (typeof anyValue?.seconds === "number") {
           const ms =
-            anyValue.seconds * 1000
-            + (
-              typeof anyValue?.nanoseconds
-              === 'number'
-                ? anyValue.nanoseconds
-                  / 1_000_000
-                : 0
-            );
+            anyValue.seconds * 1000 +
+            (typeof anyValue?.nanoseconds === "number"
+              ? anyValue.nanoseconds / 1_000_000
+              : 0);
 
-          const d =
-            new Date(ms);
+          const d = new Date(ms);
 
-          return Number.isNaN(
-            d.getTime()
-          )
-            ? null
-            : d;
+          return Number.isNaN(d.getTime()) ? null : d;
         }
       }
 
       return null;
     };
 
-    const parsed =
-      normalize(pick);
+    const parsed = normalize(pick);
 
-    return parsed
-      ? formatDateDisplay(parsed)
-      : 'Date not available';
+    return parsed ? formatDateDisplay(parsed) : "Date not available";
   };
-    const [data, setData] = useState<AppState>(loadData());
+  const [data, setData] = useState<AppState>(loadData());
+  const [storageHydration, setStorageHydration] = useState(() =>
+    getStorageHydrationState(),
+  );
   const [errors, setErrors] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<FinanceTabKey>(lockedTab || initialTab);
+  const [activeTab, setActiveTab] = useState<FinanceTabKey>(
+    lockedTab || initialTab,
+  );
   const [isDetailedCashbookReady, setIsDetailedCashbookReady] = useState(false);
 
   useEffect(() => {
@@ -3224,7 +2217,7 @@ export default function Finance({
       return;
     }
 
-    if (!['cash', 'expense'].includes(activeTab)) {
+    if (!["cash", "expense"].includes(activeTab)) {
       setActiveTab(lockedTab || initialTab);
     }
   }, [activeTab, initialTab, lockedTab]);
@@ -3232,27 +2225,22 @@ export default function Finance({
   // Cash tab summary cards depend on the same canonical cashbook rows used by cashbook/profit tabs.
   // Keep derivation gated to tabs that actually render those metrics so other tabs stay lightweight.
   const shouldComputeDetailedCashbook =
-    activeTab === 'cash' && isDetailedCashbookReady;
+    activeTab === "cash" && isDetailedCashbookReady;
 
   const isDetailedCashbookPending =
-    activeTab === 'cash' && !isDetailedCashbookReady;
+    activeTab === "cash" && !isDetailedCashbookReady;
 
-  const shouldComputeExpenseTabDerives =
-    activeTab === 'expense';
+  const shouldComputeExpenseTabDerives = activeTab === "expense";
 
   useEffect(() => {
     if (detailedCashbookFrameRef.current.first !== null) {
-      window.cancelAnimationFrame(
-        detailedCashbookFrameRef.current.first
-      );
+      window.cancelAnimationFrame(detailedCashbookFrameRef.current.first);
 
       detailedCashbookFrameRef.current.first = null;
     }
 
     if (detailedCashbookFrameRef.current.second !== null) {
-      window.cancelAnimationFrame(
-        detailedCashbookFrameRef.current.second
-      );
+      window.cancelAnimationFrame(detailedCashbookFrameRef.current.second);
 
       detailedCashbookFrameRef.current.second = null;
     }
@@ -3261,7 +2249,7 @@ export default function Finance({
       return;
     }
 
-    if (activeTab !== 'cash') {
+    if (activeTab !== "cash") {
       if (isDetailedCashbookReady) {
         setIsDetailedCashbookReady(false);
       }
@@ -3274,214 +2262,229 @@ export default function Finance({
     }
 
     if (!shellPainted) {
-      perfLog(
-        'page.Finance.secondary.waiting_for_shell_paint',
-        {
-          runId: perfRunIdRef.current,
-          activeTab,
-        }
-      );
+      perfLog("page.Finance.secondary.waiting_for_shell_paint", {
+        runId: perfRunIdRef.current,
+        activeTab,
+      });
 
       return;
     }
 
-    perfLog(
-      'page.Finance.secondary.schedule',
-      {
-        runId: perfRunIdRef.current,
-        activeTab,
-        shellPainted,
-      }
-    );
+    perfLog("page.Finance.secondary.schedule", {
+      runId: perfRunIdRef.current,
+      activeTab,
+      shellPainted,
+    });
 
-    detailedCashbookFrameRef.current.first =
-      window.requestAnimationFrame(() => {
+    detailedCashbookFrameRef.current.first = window.requestAnimationFrame(
+      () => {
         detailedCashbookFrameRef.current.first = null;
 
-        detailedCashbookFrameRef.current.second =
-          window.requestAnimationFrame(() => {
+        detailedCashbookFrameRef.current.second = window.requestAnimationFrame(
+          () => {
             detailedCashbookFrameRef.current.second = null;
 
-            perfLog(
-              'page.Finance.secondary.ready',
-              {
-                runId: perfRunIdRef.current,
-                activeTab,
-                shellPainted,
-              }
-            );
+            perfLog("page.Finance.secondary.ready", {
+              runId: perfRunIdRef.current,
+              activeTab,
+              shellPainted,
+            });
 
             setIsDetailedCashbookReady(true);
-          });
-      });
+          },
+        );
+      },
+    );
 
     return () => {
       if (detailedCashbookFrameRef.current.first !== null) {
-        window.cancelAnimationFrame(
-          detailedCashbookFrameRef.current.first
-        );
+        window.cancelAnimationFrame(detailedCashbookFrameRef.current.first);
 
         detailedCashbookFrameRef.current.first = null;
       }
 
       if (detailedCashbookFrameRef.current.second !== null) {
-        window.cancelAnimationFrame(
-          detailedCashbookFrameRef.current.second
-        );
+        window.cancelAnimationFrame(detailedCashbookFrameRef.current.second);
 
         detailedCashbookFrameRef.current.second = null;
       }
     };
-  }, [
-    activeTab,
-    isDetailedCashbookReady,
-    isRouteActive,
-    shellPainted,
-  ]);
+  }, [activeTab, isDetailedCashbookReady, isRouteActive, shellPainted]);
 
-  const [openingBalance, setOpeningBalance] = useState('');
-  const [openingBalanceAutoFilled, setOpeningBalanceAutoFilled] = useState(false);
+  const [openingBalance, setOpeningBalance] = useState("");
+  const [openingBalanceAutoFilled, setOpeningBalanceAutoFilled] =
+    useState(false);
   const [editingOpeningBalance, setEditingOpeningBalance] = useState(false);
-  const [openingBalanceEditValue, setOpeningBalanceEditValue] = useState('');
-  const [closingBalance, setClosingBalance] = useState('');
-  const [closingBalanceManuallySet, setClosingBalanceManuallySet] = useState(false);
-  const [activeReserveAmount, setActiveReserveAmount] = useState('');
-  const [isReserveAmountEditorOpen, setIsReserveAmountEditorOpen] = useState(false);
-  const [cashHistoryRange, setCashHistoryRange] = useState<'today' | '7d' | '30d' | 'all'>('today');
-  const [closingCounts, setClosingCounts] = useState<Record<number, number>>(() => buildEmptyCounts());
-  const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] = useState(false);
-  const [unlockPinInput, setUnlockPinInput] = useState('');
+  const [openingBalanceEditValue, setOpeningBalanceEditValue] = useState("");
+  const [closingBalance, setClosingBalance] = useState("");
+  const [closingBalanceManuallySet, setClosingBalanceManuallySet] =
+    useState(false);
+  const [activeReserveAmount, setActiveReserveAmount] = useState("");
+  const [isReserveAmountEditorOpen, setIsReserveAmountEditorOpen] =
+    useState(false);
+  const [cashHistoryRange, setCashHistoryRange] = useState<
+    "today" | "7d" | "30d" | "all"
+  >("today");
+  const [closingCounts, setClosingCounts] = useState<Record<number, number>>(
+    () => buildEmptyCounts(),
+  );
+  const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] =
+    useState(false);
+  const [unlockPinInput, setUnlockPinInput] = useState("");
   const [openingUnlocked, setOpeningUnlocked] = useState(false);
   const [isReserveLedgerOpen, setIsReserveLedgerOpen] = useState(false);
-  const [activeHistoryDetailSessionId, setActiveHistoryDetailSessionId] = useState<string | null>(null);
-  const [editingClosingSessionId, setEditingClosingSessionId] = useState<string | null>(null);
-  const [editingClosingAmount, setEditingClosingAmount] = useState('');
-  const [editingClosingReserveAmount, setEditingClosingReserveAmount] = useState('');
-  const [editingClosingNote, setEditingClosingNote] = useState('');
-  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
-  const [deleteSessionReason, setDeleteSessionReason] = useState('');
+  const [activeHistoryDetailSessionId, setActiveHistoryDetailSessionId] =
+    useState<string | null>(null);
+  const [editingClosingSessionId, setEditingClosingSessionId] = useState<
+    string | null
+  >(null);
+  const [editingClosingAmount, setEditingClosingAmount] = useState("");
+  const [editingClosingReserveAmount, setEditingClosingReserveAmount] =
+    useState("");
+  const [editingClosingNote, setEditingClosingNote] = useState("");
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(
+    null,
+  );
+  const [deleteSessionReason, setDeleteSessionReason] = useState("");
 
-  const [expenseTitle, setExpenseTitle] = useState('');
-  const [expenseAmount, setExpenseAmount] = useState('');
-  const [expenseCategory, setExpenseCategory] = useState('General');
-  const [expenseNote, setExpenseNote] = useState('');
-  const [expenseCashSource, setExpenseCashSource] = useState<CashSource>('drawer');
+  const [expenseTitle, setExpenseTitle] = useState("");
+  const [expenseAmount, setExpenseAmount] = useState("");
+  const [expenseCategory, setExpenseCategory] = useState("General");
+  const [expenseNote, setExpenseNote] = useState("");
+  const [expenseCashSource, setExpenseCashSource] =
+    useState<CashSource>("drawer");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
-  const [expenseFinancialDate, setExpenseFinancialDate] = useState(toDateTimeLocalNow());
-  const [expenseRepairReason, setExpenseRepairReason] = useState('');
-  const [expenseRepairDraft, setExpenseRepairDraft] = useState<ExpenseRepairDraft | null>(null);
-  const [expenseRepairPreview, setExpenseRepairPreview] = useState<ExpenseRepairPreview | null>(null);
-  const [expenseRepairConfirmOpen, setExpenseRepairConfirmOpen] = useState(false);
+  const [expenseFinancialDate, setExpenseFinancialDate] =
+    useState(toDateTimeLocalNow());
+  const [expenseRepairReason, setExpenseRepairReason] = useState("");
+  const [expenseRepairDraft, setExpenseRepairDraft] =
+    useState<ExpenseRepairDraft | null>(null);
+  const [expenseRepairPreview, setExpenseRepairPreview] =
+    useState<ExpenseRepairPreview | null>(null);
+  const [expenseRepairConfirmOpen, setExpenseRepairConfirmOpen] =
+    useState(false);
   const [expenseRepairSubmitting, setExpenseRepairSubmitting] = useState(false);
-  const [embeddedExpenseEditorOpen, setEmbeddedExpenseEditorOpen] = useState(false);
-  const [newCategory, setNewCategory] = useState('');
+  const [embeddedExpenseEditorOpen, setEmbeddedExpenseEditorOpen] =
+    useState(false);
+  const [newCategory, setNewCategory] = useState("");
   const [expenseDateFilter] = useState(todayISO());
-  const [expensePreset, setExpensePreset] = useState<ExpenseDatePreset>('today');
-  const [expenseCustomFrom, setExpenseCustomFrom] = useState('');
-  const [expenseCustomTo, setExpenseCustomTo] = useState('');
-  const [expenseSearchQuery, setExpenseSearchQuery] = useState('');
-  const [expenseCategoryFilter, setExpenseCategoryFilter] = useState<'all' | string>('all');
-  const [cashAddAmount, setCashAddAmount] = useState('');
-  const [cashAddNote, setCashAddNote] = useState('');
-  const [cashWithdrawAmount, setCashWithdrawAmount] = useState('');
-  const [cashWithdrawNote, setCashWithdrawNote] = useState('');
-  const [withdrawalCashSource, setWithdrawalCashSource] = useState<CashSource>('drawer');
-  const [editingWithdrawalId, setEditingWithdrawalId] = useState<string | null>(null);
-  const [withdrawalFinancialDate, setWithdrawalFinancialDate] = useState(toDateTimeLocalNow());
-  const [withdrawalRepairReason, setWithdrawalRepairReason] = useState('');
-  const [withdrawalMethod, setWithdrawalMethod] = useState('Cash');
-  const [withdrawalTitle, setWithdrawalTitle] = useState('');
-  const [withdrawalPaidTo, setWithdrawalPaidTo] = useState('');
-  const [withdrawalReference, setWithdrawalReference] = useState('');
-  const [withdrawalRepairDraft, setWithdrawalRepairDraft] = useState<WithdrawalRepairDraft | null>(null);
-  const [withdrawalRepairPreview, setWithdrawalRepairPreview] = useState<WithdrawalRepairPreview | null>(null);
-  const [withdrawalRepairConfirmOpen, setWithdrawalRepairConfirmOpen] = useState(false);
-  const [withdrawalRepairSubmitting, setWithdrawalRepairSubmitting] = useState(false);
-  const [embeddedWithdrawalEditorOpen, setEmbeddedWithdrawalEditorOpen] = useState(false);
+  const [expensePreset, setExpensePreset] =
+    useState<ExpenseDatePreset>("today");
+  const [expenseCustomFrom, setExpenseCustomFrom] = useState("");
+  const [expenseCustomTo, setExpenseCustomTo] = useState("");
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState("");
+  const [expenseCategoryFilter, setExpenseCategoryFilter] = useState<
+    "all" | string
+  >("all");
+  const [cashAddAmount, setCashAddAmount] = useState("");
+  const [cashAddNote, setCashAddNote] = useState("");
+  const [cashWithdrawAmount, setCashWithdrawAmount] = useState("");
+  const [cashWithdrawNote, setCashWithdrawNote] = useState("");
+  const [withdrawalCashSource, setWithdrawalCashSource] =
+    useState<CashSource>("drawer");
+  const [editingWithdrawalId, setEditingWithdrawalId] = useState<string | null>(
+    null,
+  );
+  const [withdrawalFinancialDate, setWithdrawalFinancialDate] =
+    useState(toDateTimeLocalNow());
+  const [withdrawalRepairReason, setWithdrawalRepairReason] = useState("");
+  const [withdrawalMethod, setWithdrawalMethod] = useState("Cash");
+  const [withdrawalTitle, setWithdrawalTitle] = useState("");
+  const [withdrawalPaidTo, setWithdrawalPaidTo] = useState("");
+  const [withdrawalReference, setWithdrawalReference] = useState("");
+  const [withdrawalRepairDraft, setWithdrawalRepairDraft] =
+    useState<WithdrawalRepairDraft | null>(null);
+  const [withdrawalRepairPreview, setWithdrawalRepairPreview] =
+    useState<WithdrawalRepairPreview | null>(null);
+  const [withdrawalRepairConfirmOpen, setWithdrawalRepairConfirmOpen] =
+    useState(false);
+  const [withdrawalRepairSubmitting, setWithdrawalRepairSubmitting] =
+    useState(false);
+  const [embeddedWithdrawalEditorOpen, setEmbeddedWithdrawalEditorOpen] =
+    useState(false);
 
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Online'>('Cash');
-  const [collectingCustomer, setCollectingCustomer] = useState<Customer | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"Cash" | "Online">("Cash");
+  const [collectingCustomer, setCollectingCustomer] = useState<Customer | null>(
+    null,
+  );
 
   const [profitDate, setProfitDate] = useState(todayISO());
   const [profitMonth, setProfitMonth] = useState(
-    new Date().toISOString().slice(0, 7)
+    new Date().toISOString().slice(0, 7),
   );
 
-  const [reportingLayerMode, setReportingLayerMode] =
-    useState<'operational' | 'adjustment' | 'final'>('operational');
+  const [reportingLayerMode, setReportingLayerMode] = useState<
+    "operational" | "adjustment" | "final"
+  >("operational");
 
-  const [cashbookFromDate, setCashbookFromDate] = useState('');
-  const [cashbookToDate, setCashbookToDate] = useState('');
+  const [cashbookFromDate, setCashbookFromDate] = useState("");
+  const [cashbookToDate, setCashbookToDate] = useState("");
 
-  const [cashbookTypeFilter, setCashbookTypeFilter] =
-    useState<
-      | 'all'
-      | 'sale'
-      | 'payment'
-      | 'return'
-      | 'expense'
-      | 'delete_reversal'
-      | 'delete_compensation'
-      | 'update_correction'
-    >('all');
+  const [cashbookTypeFilter, setCashbookTypeFilter] = useState<
+    | "all"
+    | "sale"
+    | "payment"
+    | "return"
+    | "expense"
+    | "delete_reversal"
+    | "delete_compensation"
+    | "update_correction"
+  >("all");
 
-  const [cashbookAuditFilter, setCashbookAuditFilter] =
-    useState<
-      | 'all'
-      | 'needs_review'
-      | 'corrections_only'
-    >('all');
+  const [cashbookAuditFilter, setCashbookAuditFilter] = useState<
+    "all" | "needs_review" | "corrections_only"
+  >("all");
 
-  const [cashbookCustomerQuery, setCashbookCustomerQuery] = useState('');
+  const [cashbookCustomerQuery, setCashbookCustomerQuery] = useState("");
   const [cashbookPage, setCashbookPage] = useState(1);
-  const [cashbookScope, setCashbookScope] = useState<'recent_90d' | 'all'>('recent_90d');
+  const [cashbookScope, setCashbookScope] = useState<"recent_90d" | "all">(
+    "recent_90d",
+  );
   const [showReturnEffectDetails, setShowReturnEffectDetails] = useState(false);
   const [showFullCashbookColumns, setShowFullCashbookColumns] = useState(false);
-  const [isExpectedClosingBreakdownOpen, setIsExpectedClosingBreakdownOpen] = useState(false);
-  const [isCurrentClosingBreakdownOpen, setIsCurrentClosingBreakdownOpen] = useState(false);
+  const [isExpectedClosingBreakdownOpen, setIsExpectedClosingBreakdownOpen] =
+    useState(false);
+  const [isCurrentClosingBreakdownOpen, setIsCurrentClosingBreakdownOpen] =
+    useState(false);
 
   useEscapeLayer(
     Boolean(activeHistoryDetailSessionId),
     () => setActiveHistoryDetailSessionId(null),
-    { priority: 110 }
+    { priority: 110 },
   );
 
   useEscapeLayer(
     isOpeningUnlockModalOpen,
     () => setIsOpeningUnlockModalOpen(false),
-    { priority: 100 }
+    { priority: 100 },
   );
 
   useEscapeLayer(
     Boolean(editingClosingSessionId),
     () => setEditingClosingSessionId(null),
-    { priority: 100 }
+    { priority: 100 },
   );
 
-  useEscapeLayer(
-    Boolean(deletingSessionId),
-    () => setDeletingSessionId(null),
-    { priority: 100 }
-  );
+  useEscapeLayer(Boolean(deletingSessionId), () => setDeletingSessionId(null), {
+    priority: 100,
+  });
 
   useEscapeLayer(
     isExpectedClosingBreakdownOpen,
     () => setIsExpectedClosingBreakdownOpen(false),
-    { priority: 100 }
+    { priority: 100 },
   );
 
   useEscapeLayer(
     isCurrentClosingBreakdownOpen,
     () => setIsCurrentClosingBreakdownOpen(false),
-    { priority: 101 }
+    { priority: 101 },
   );
 
-  useEscapeLayer(
-    isReserveLedgerOpen,
-    () => setIsReserveLedgerOpen(false),
-    { priority: 102 }
-  );
+  useEscapeLayer(isReserveLedgerOpen, () => setIsReserveLedgerOpen(false), {
+    priority: 102,
+  });
 
   useEscapeLayer(
     Boolean(expenseRepairDraft),
@@ -3490,19 +2493,19 @@ export default function Finance({
       setExpenseRepairPreview(null);
       setExpenseRepairConfirmOpen(false);
     },
-    { priority: 105 }
+    { priority: 105 },
   );
 
   useEscapeLayer(
     expenseRepairConfirmOpen,
     () => setExpenseRepairConfirmOpen(false),
-    { priority: 106 }
+    { priority: 106 },
   );
 
   useEscapeLayer(
     embeddedExpenseEditorOpen,
     () => setEmbeddedExpenseEditorOpen(false),
-    { priority: 104 }
+    { priority: 104 },
   );
 
   useEscapeLayer(
@@ -3512,33 +2515,36 @@ export default function Finance({
       setWithdrawalRepairPreview(null);
       setWithdrawalRepairConfirmOpen(false);
     },
-    { priority: 103 }
+    { priority: 103 },
   );
 
   useEscapeLayer(
     withdrawalRepairConfirmOpen,
     () => setWithdrawalRepairConfirmOpen(false),
-    { priority: 104 }
+    { priority: 104 },
   );
 
   useEscapeLayer(
     embeddedWithdrawalEditorOpen,
     () => setEmbeddedWithdrawalEditorOpen(false),
-    { priority: 102 }
+    { priority: 102 },
   );
 
   const refreshData = () =>
     perfMeasureSync(
-      'page.Finance.refreshData',
-      () => setData(loadData()),
+      "page.Finance.refreshData",
+      () => {
+        setData(loadData());
+        setStorageHydration(getStorageHydrationState());
+      },
       {
         runId: perfRunIdRef.current,
-      }
+      },
     );
 
   const refreshFinanceNonCriticalData = async () => {
     await perfMeasureAsync(
-      'page.Finance.refreshFinanceNonCriticalData',
+      "page.Finance.refreshFinanceNonCriticalData",
       async () => {
         try {
           await Promise.all([
@@ -3547,26 +2553,21 @@ export default function Finance({
           ]);
 
           setData(loadData());
+          setStorageHydration(getStorageHydrationState());
           setErrors(null);
 
-          perfLog(
-            'page.Finance.secondary_calculations_complete',
-            {
-              runId: perfRunIdRef.current,
-            }
-          );
+          perfLog("page.Finance.secondary_calculations_complete", {
+            runId: perfRunIdRef.current,
+          });
         } catch (error) {
           setErrors(
-            getFriendlyErrorMessage(
-              error,
-              'finance.refresh_non_critical'
-            )
+            getFriendlyErrorMessage(error, "finance.refresh_non_critical"),
           );
         }
       },
       {
         runId: perfRunIdRef.current,
-      }
+      },
     );
   };
 
@@ -3574,710 +2575,434 @@ export default function Finance({
     if (!firstEffectLoggedRef.current) {
       firstEffectLoggedRef.current = true;
 
-      perfLog(
-        'page.Finance.first_effect.start',
-        {
-          runId: perfRunIdRef.current,
-        }
-      );
+      perfLog("page.Finance.first_effect.start", {
+        runId: perfRunIdRef.current,
+      });
     }
 
-    void refreshFinanceNonCriticalData();
-
-    perfLog(
-      'page.Finance.first_effect.complete',
-      {
-        runId: perfRunIdRef.current,
-      }
-    );
+    perfLog("page.Finance.first_effect.complete", {
+      runId: perfRunIdRef.current,
+    });
   }, []);
 
-  const cashSessions: CashSession[] =
-    useMemo(
-      () =>
-        Array.isArray(data.cashSessions)
-          ? data.cashSessions
-          : [],
-      [data]
-    );
+  const isFinanceHydrating =
+    storageHydration.isCloudConfigured &&
+    !storageHydration.hasCompletedInitialCloudLoad;
 
-  const expenses: Expense[] =
-    useMemo(
-      () =>
-        Array.isArray(data.expenses)
-          ? data.expenses
-          : [],
-      [data]
-    );
+  useEffect(() => {
+    if (!isRouteActive) return;
+    if (nonCriticalRefreshStartedRef.current) return;
+    if (isFinanceHydrating) return;
 
-  const cashAdjustments: CashAdjustment[] =
-    useMemo(
-      () =>
-        Array.isArray(data.cashAdjustments)
-          ? data.cashAdjustments
-          : [],
-      [data]
-    );
+    nonCriticalRefreshStartedRef.current = true;
+    void refreshFinanceNonCriticalData();
+  }, [isFinanceHydrating, isRouteActive]);
 
-  const upfrontOrders: UpfrontOrder[] =
-    useMemo(
-      () =>
-        Array.isArray(data.upfrontOrders)
-          ? data.upfrontOrders
-          : [],
-      [data]
-    );
+  const cashSessions: CashSession[] = useMemo(
+    () => (Array.isArray(data.cashSessions) ? data.cashSessions : []),
+    [data],
+  );
 
-  const expenseCategories: string[] =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.expenseCategories',
-          () => {
-            const defaults = ['General'];
+  const expenses: Expense[] = useMemo(
+    () => (Array.isArray(data.expenses) ? data.expenses : []),
+    [data],
+  );
 
-            const existing =
-              Array.isArray(data.expenseCategories)
-                ? data.expenseCategories
-                : [];
+  const cashAdjustments: CashAdjustment[] = useMemo(
+    () => (Array.isArray(data.cashAdjustments) ? data.cashAdjustments : []),
+    [data],
+  );
 
-            const usedByExpenses =
-              expenses
-                .map(expense => expense.category)
-                .filter(Boolean);
+  const upfrontOrders: UpfrontOrder[] = useMemo(
+    () => (Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []),
+    [data],
+  );
 
-            return Array.from(
-              new Set([
-                ...defaults,
-                ...existing,
-                ...usedByExpenses,
-              ])
-            );
-          },
-          {
-            runId: perfRunIdRef.current,
-            existingCategories:
-              Array.isArray(data.expenseCategories)
-                ? data.expenseCategories.length
-                : 0,
-            expenses: expenses.length,
-          }
-        ),
-      [
-        data.expenseCategories,
-        expenses,
-      ]
-    );
+  const expenseCategories: string[] = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.expenseCategories",
+        () => {
+          const defaults = ["General"];
 
-  const productsById =
-    useMemo(
-      () =>
-        new Map(
-          data.products.map(
-            product => [
-              product.id,
-              product,
-            ]
-          )
-        ),
-      [data.products]
-    );
+          const existing = Array.isArray(data.expenseCategories)
+            ? data.expenseCategories
+            : [];
 
-  const resolveBuyPriceForFinanceItem = (
-    item: CartItem,
-    txDate: string
-  ) => {
-    const direct =
-      Number.isFinite(item.buyPrice)
-        ? Number(item.buyPrice)
-        : 0;
+          const usedByExpenses = expenses
+            .map((expense) => expense.category)
+            .filter(Boolean);
+
+          return Array.from(
+            new Set([...defaults, ...existing, ...usedByExpenses]),
+          );
+        },
+        {
+          runId: perfRunIdRef.current,
+          existingCategories: Array.isArray(data.expenseCategories)
+            ? data.expenseCategories.length
+            : 0,
+          expenses: expenses.length,
+        },
+      ),
+    [data.expenseCategories, expenses],
+  );
+
+  const productsById = useMemo(
+    () => new Map(data.products.map((product) => [product.id, product])),
+    [data.products],
+  );
+
+  const resolveBuyPriceForFinanceItem = (item: CartItem, txDate: string) => {
+    const direct = Number.isFinite(item.buyPrice) ? Number(item.buyPrice) : 0;
 
     if (direct > 0) {
       return direct;
     }
 
-    const product =
-      productsById.get(item.id);
+    const product = productsById.get(item.id);
 
     if (!product) {
       return 0;
     }
 
-    const txTime =
-      new Date(txDate).getTime();
+    const txTime = new Date(txDate).getTime();
 
-    const historical =
-      (product.purchaseHistory || [])
-        .filter(
-          entry =>
-            Number.isFinite(
-              new Date(entry.date).getTime()
-            )
-            && new Date(entry.date).getTime()
-              <= txTime
-        )
-        .sort(
-          (a, b) =>
-            new Date(b.date).getTime()
-            - new Date(a.date).getTime()
-        )[0];
+    const historical = (product.purchaseHistory || [])
+      .filter(
+        (entry) =>
+          Number.isFinite(new Date(entry.date).getTime()) &&
+          new Date(entry.date).getTime() <= txTime,
+      )
+      .sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      )[0];
 
-    const historicalBuy =
-      historical
-        ? Number(
-            historical.nextBuyPrice
-            ?? historical.unitPrice
-            ?? 0
-          )
-        : 0;
+    const historicalBuy = historical
+      ? Number(historical.nextBuyPrice ?? historical.unitPrice ?? 0)
+      : 0;
 
-    if (
-      Number.isFinite(historicalBuy)
-      && historicalBuy > 0
-    ) {
+    if (Number.isFinite(historicalBuy) && historicalBuy > 0) {
       return historicalBuy;
     }
 
-    const fallback =
-      Number.isFinite(product.buyPrice)
-        ? Number(product.buyPrice)
-        : 0;
-
-    return fallback > 0
-      ? fallback
+    const fallback = Number.isFinite(product.buyPrice)
+      ? Number(product.buyPrice)
       : 0;
+
+    return fallback > 0 ? fallback : 0;
   };
 
-  const getTxCogs = (
-    tx: Transaction
-  ) =>
-    normalizeTransactionItems(
-      tx.items
-    ).reduce(
+  const getTxCogs = (tx: Transaction) =>
+    normalizeTransactionItems(tx.items).reduce(
       (sum, item) =>
-        sum
-        + (
-          resolveBuyPriceForFinanceItem(
-            item,
-            tx.date
-          )
-          * item.quantity
-        ),
-      0
+        sum + resolveBuyPriceForFinanceItem(item, tx.date) * item.quantity,
+      0,
     );
 
-  const openSession =
-    cashSessions.find(
-      s => s.status === 'open'
-    );
+  const openSession = cashSessions.find((s) => s.status === "open");
 
-  const visibleCashSessions =
-    useMemo(
-      () =>
-        cashSessions.filter(
-          session =>
-            !session.deletedAt
-        ),
-      [cashSessions]
-    );
+  const visibleCashSessions = useMemo(
+    () => cashSessions.filter((session) => !session.deletedAt),
+    [cashSessions],
+  );
 
-  const cashHistory =
-    [...visibleCashSessions].sort(
-      (a, b) =>
-        new Date(b.startTime).getTime()
-        - new Date(a.startTime).getTime()
-    );
+  const cashHistory = [...visibleCashSessions].sort(
+    (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
+  );
 
-  const filteredCashHistory =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.filteredCashHistory',
-          () => {
-            const now = new Date();
+  const filteredCashHistory = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.filteredCashHistory",
+        () => {
+          const now = new Date();
 
-            if (
-              cashHistoryRange === 'all'
-            ) {
-              return cashHistory;
-            }
-
-            if (
-              cashHistoryRange === 'today'
-            ) {
-              return cashHistory.filter(
-                session =>
-                  isSameDay(
-                    session.startTime,
-                    todayISO()
-                  )
-              );
-            }
-
-            const daysBack =
-              cashHistoryRange === '7d'
-                ? 7
-                : 30;
-
-            const cutoff =
-              new Date(now);
-
-            cutoff.setHours(
-              0,
-              0,
-              0,
-              0
-            );
-
-            cutoff.setDate(
-              cutoff.getDate()
-              - (daysBack - 1)
-            );
-
-            return cashHistory.filter(
-              session =>
-                new Date(
-                  session.startTime
-                ) >= cutoff
-            );
-          },
-          {
-            runId: perfRunIdRef.current,
-            cashHistory: cashHistory.length,
-            cashHistoryRange,
+          if (cashHistoryRange === "all") {
+            return cashHistory;
           }
-        ),
-      [
-        cashHistory,
-        cashHistoryRange,
-      ]
-    );
 
-  const activeHistorySession =
-    useMemo(
-      () =>
-        filteredCashHistory.find(
-          session =>
-            session.id
-            === activeHistoryDetailSessionId
-        ) ?? null,
-      [
-        filteredCashHistory,
-        activeHistoryDetailSessionId,
-      ]
-    );
+          if (cashHistoryRange === "today") {
+            return cashHistory.filter((session) =>
+              isSameDay(session.startTime, todayISO()),
+            );
+          }
 
-  const editingClosingSession =
-    useMemo(
-      () =>
-        cashSessions.find(
-          session =>
-            session.id
-            === editingClosingSessionId
-        ) ?? null,
-      [
-        cashSessions,
-        editingClosingSessionId,
-      ]
-    );
+          const daysBack = cashHistoryRange === "7d" ? 7 : 30;
+
+          const cutoff = new Date(now);
+
+          cutoff.setHours(0, 0, 0, 0);
+
+          cutoff.setDate(cutoff.getDate() - (daysBack - 1));
+
+          return cashHistory.filter(
+            (session) => new Date(session.startTime) >= cutoff,
+          );
+        },
+        {
+          runId: perfRunIdRef.current,
+          cashHistory: cashHistory.length,
+          cashHistoryRange,
+        },
+      ),
+    [cashHistory, cashHistoryRange],
+  );
+
+  const activeHistorySession = useMemo(
+    () =>
+      filteredCashHistory.find(
+        (session) => session.id === activeHistoryDetailSessionId,
+      ) ?? null,
+    [filteredCashHistory, activeHistoryDetailSessionId],
+  );
+
+  const editingClosingSession = useMemo(
+    () =>
+      cashSessions.find((session) => session.id === editingClosingSessionId) ??
+      null,
+    [cashSessions, editingClosingSessionId],
+  );
 
   useEffect(() => {
-    if (
-      activeHistoryDetailSessionId
-      && !activeHistorySession
-    ) {
-      setActiveHistoryDetailSessionId(
-        null
-      );
+    if (activeHistoryDetailSessionId && !activeHistorySession) {
+      setActiveHistoryDetailSessionId(null);
     }
-  }, [
-    activeHistoryDetailSessionId,
-    activeHistorySession,
-  ]);
+  }, [activeHistoryDetailSessionId, activeHistorySession]);
 
-  const cashHistorySummary =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.cashHistorySummary',
-          () => {
-            if (
-              activeTab === 'cash'
-              && !isDetailedCashbookReady
-            ) {
-              return {
-                matched: 0,
-                short: 0,
-                over: 0,
-              };
-            }
+  const cashHistorySummary = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.cashHistorySummary",
+        () => {
+          if (activeTab === "cash" && !isDetailedCashbookReady) {
+            return {
+              matched: 0,
+              short: 0,
+              over: 0,
+            };
+          }
 
-            const closed =
-              filteredCashHistory.filter(
-                session =>
-                  session.status
-                  === 'closed'
-              );
+          const closed = filteredCashHistory.filter(
+            (session) => session.status === "closed",
+          );
 
-            let matched = 0;
-            let short = 0;
-            let over = 0;
+          let matched = 0;
+          let short = 0;
+          let over = 0;
 
-            closed.forEach(
-              session => {
-                const computedTotals =
-                  getSessionCashTotals(
-                    data.transactions,
-                    expenses,
-                    cashAdjustments,
-                    data.deleteCompensations || [],
-                    data.deletedTransactions || [],
-                    data.purchaseOrders || [],
-                    data.manualCashbookEntries || [],
-                    session.startTime,
-                    session.endTime,
-                    session.id,
-                    upfrontOrders,
-                    data.supplierPayments || []
-                  );
-
-                const systemCashTotal =
-                  session.systemCashTotal
-                  ?? computedTotals.systemCashTotal;
-
-                const difference =
-                  session.difference
-                  ?? (
-                    (session.closingBalance ?? 0)
-                    - (
-                      session.openingBalance
-                      + systemCashTotal
-                    )
-                  );
-
-                if (difference === 0) {
-                  matched += 1;
-                } else if (difference < 0) {
-                  short += 1;
-                } else {
-                  over += 1;
-                }
-              }
+          closed.forEach((session) => {
+            const computedTotals = getSessionCashTotals(
+              data.transactions,
+              expenses,
+              cashAdjustments,
+              data.deleteCompensations || [],
+              data.deletedTransactions || [],
+              data.purchaseOrders || [],
+              data.manualCashbookEntries || [],
+              session.startTime,
+              session.endTime,
+              session.id,
+              upfrontOrders,
+              data.supplierPayments || [],
             );
 
-            return {
-              matched,
-              short,
-              over,
-            };
-          },
-          {
-            runId: perfRunIdRef.current,
-            filteredCashHistory:
-              filteredCashHistory.length,
-            transactions:
-              data.transactions.length,
-            expenses:
-              expenses.length,
-            activeTab,
-            isDetailedCashbookReady,
-          }
-        ),
-      [
-        filteredCashHistory,
-        data.transactions,
-        expenses,
-        activeTab,
-        isDetailedCashbookReady,
-      ]
-    );
+            const systemCashTotal =
+              session.systemCashTotal ?? computedTotals.systemCashTotal;
 
-  const currentUserEmail =
-    (getCurrentUser() || '')
-      .trim()
-      .toLowerCase();
+            const difference =
+              session.difference ??
+              (session.closingBalance ?? 0) -
+                (session.openingBalance + systemCashTotal);
+
+            if (difference === 0) {
+              matched += 1;
+            } else if (difference < 0) {
+              short += 1;
+            } else {
+              over += 1;
+            }
+          });
+
+          return {
+            matched,
+            short,
+            over,
+          };
+        },
+        {
+          runId: perfRunIdRef.current,
+          filteredCashHistory: filteredCashHistory.length,
+          transactions: data.transactions.length,
+          expenses: expenses.length,
+          activeTab,
+          isDetailedCashbookReady,
+        },
+      ),
+    [
+      filteredCashHistory,
+      data.transactions,
+      expenses,
+      activeTab,
+      isDetailedCashbookReady,
+    ],
+  );
+
+  const currentUserEmail = (getCurrentUser() || "").trim().toLowerCase();
 
   const todayKey = todayISO();
 
   const isOpenSessionToday =
-    !!openSession
-    && isSameDay(
-      openSession.startTime,
-      todayKey
+    !!openSession && isSameDay(openSession.startTime, todayKey);
+
+  const cashierName = getCurrentUser() || "Cashier";
+
+  const shiftDurationLabel = useMemo(() => {
+    if (!openSession) {
+      return "0m";
+    }
+
+    const minutes = Math.max(
+      1,
+      Math.floor(
+        (Date.now() - new Date(openSession.startTime).getTime()) / 60000,
+      ),
     );
 
-  const cashierName =
-    getCurrentUser()
-    || 'Cashier';
+    if (minutes < 60) {
+      return `${minutes}m`;
+    }
 
-  const shiftDurationLabel =
-    useMemo(() => {
-      if (!openSession) {
-        return '0m';
+    const hrs = Math.floor(minutes / 60);
+
+    const rem = minutes % 60;
+
+    return rem ? `${hrs}h ${rem}m` : `${hrs}h`;
+  }, [openSession]);
+
+  const latestCarryForwardSession = useMemo(() => {
+    const sorted = [...cashHistory];
+
+    for (const session of sorted) {
+      const evaluation = evaluateCarryForwardSession(session);
+
+      if (evaluation.valid) {
+        financeShiftDiag("[FIN][SHIFT][CARRY_PICK]", {
+          sessionId: session.id,
+          status: session.status,
+          opening: session.openingBalance,
+          systemCash: session.systemCashTotal ?? null,
+          closingBalance: session.closingBalance ?? null,
+          reservedCash: getSessionReservedCash(session),
+          carryForwardBalance: getSessionCarryForwardBalance(session),
+          difference: session.difference ?? null,
+        });
+
+        return session;
       }
 
-      const minutes =
-        Math.max(
-          1,
-          Math.floor(
-            (
-              Date.now()
-              - new Date(
-                openSession.startTime
-              ).getTime()
-            )
-            / 60000
-          )
-        );
-
-      if (minutes < 60) {
-        return `${minutes}m`;
+      if (session.status === "closed") {
+        financeShiftDiag("[FIN][SHIFT][CARRY_SKIP]", {
+          sessionId: session.id,
+          status: session.status,
+          reasonSkipped: evaluation.reason,
+          opening: session.openingBalance,
+          systemCash: session.systemCashTotal ?? null,
+          closingBalance: session.closingBalance ?? null,
+          reservedCash: getSessionReservedCash(session),
+          carryForwardBalance: getSessionCarryForwardBalance(session),
+          difference: session.difference ?? null,
+        });
       }
+    }
 
-      const hrs =
-        Math.floor(
-          minutes / 60
-        );
-
-      const rem =
-        minutes % 60;
-
-      return rem
-        ? `${hrs}h ${rem}m`
-        : `${hrs}h`;
-    }, [openSession]);
-
-  const latestCarryForwardSession =
-    useMemo(() => {
-      const sorted =
-        [...cashHistory];
-
-      for (
-        const session of sorted
-      ) {
-        const evaluation =
-          evaluateCarryForwardSession(
-            session
-          );
-
-        if (evaluation.valid) {
-          financeShiftDiag(
-            '[FIN][SHIFT][CARRY_PICK]',
-            {
-              sessionId: session.id,
-              status: session.status,
-              opening: session.openingBalance,
-              systemCash:
-                session.systemCashTotal
-                ?? null,
-              closingBalance:
-                session.closingBalance
-                ?? null,
-              reservedCash:
-                getSessionReservedCash(
-                  session
-                ),
-              carryForwardBalance:
-                getSessionCarryForwardBalance(
-                  session
-                ),
-              difference:
-                session.difference
-                ?? null,
-            }
-          );
-
-          return session;
-        }
-
-        if (
-          session.status
-          === 'closed'
-        ) {
-          financeShiftDiag(
-            '[FIN][SHIFT][CARRY_SKIP]',
-            {
-              sessionId: session.id,
-              status: session.status,
-              reasonSkipped:
-                evaluation.reason,
-              opening:
-                session.openingBalance,
-              systemCash:
-                session.systemCashTotal
-                ?? null,
-              closingBalance:
-                session.closingBalance
-                ?? null,
-              reservedCash:
-                getSessionReservedCash(
-                  session
-                ),
-              carryForwardBalance:
-                getSessionCarryForwardBalance(
-                  session
-                ),
-              difference:
-                session.difference
-                ?? null,
-            }
-          );
-        }
-      }
-
-      return null;
-    }, [cashHistory]);
+    return null;
+  }, [cashHistory]);
 
   useEffect(() => {
     const fresh = loadData();
 
-    financeShiftDiag(
-      '[FIN][SHIFT][LOAD]',
-      {
-        mountedAt:
-          new Date().toISOString(),
+    financeShiftDiag("[FIN][SHIFT][LOAD]", {
+      mountedAt: new Date().toISOString(),
 
-        route:
-          typeof window !== 'undefined'
-            ? window.location.hash
-              || window.location.pathname
-            : 'unknown',
+      route:
+        typeof window !== "undefined"
+          ? window.location.hash || window.location.pathname
+          : "unknown",
 
-        online:
-          typeof navigator !== 'undefined'
-            ? navigator.onLine
-            : null,
+      online: typeof navigator !== "undefined" ? navigator.onLine : null,
 
-        counts:
-          getStateEntityCounts(fresh),
+      counts: getStateEntityCounts(fresh),
 
-        openSessionId:
-          fresh.cashSessions.find(
-            s => s.status === 'open'
-          )?.id || null,
+      openSessionId:
+        fresh.cashSessions.find((s) => s.status === "open")?.id || null,
 
-        hasLatestClosedSession:
-          Boolean(
-            [...fresh.cashSessions]
-              .sort(
-                (a, b) =>
-                  new Date(
-                    b.startTime
-                  ).getTime()
-                  - new Date(
-                    a.startTime
-                  ).getTime()
-              )
-              .find(
-                session =>
-                  session.status
-                  === 'closed'
-                  && Number.isFinite(
-                    session.closingBalance
-                  )
-              )
+      hasLatestClosedSession: Boolean(
+        [...fresh.cashSessions]
+          .sort(
+            (a, b) =>
+              new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
+          )
+          .find(
+            (session) =>
+              session.status === "closed" &&
+              Number.isFinite(session.closingBalance),
           ),
+      ),
 
-        latestClosedBalance:
-          (
-            [...fresh.cashSessions]
-              .sort(
-                (a, b) =>
-                  new Date(
-                    b.startTime
-                  ).getTime()
-                  - new Date(
-                    a.startTime
-                  ).getTime()
-              )
-              .find(
-                session =>
-                  session.status
-                  === 'closed'
-                  && Number.isFinite(
-                    session.closingBalance
-                  )
-              )?.closingBalance
-            ?? null
-          ),
+      latestClosedBalance:
+        [...fresh.cashSessions]
+          .sort(
+            (a, b) =>
+              new Date(b.startTime).getTime() - new Date(a.startTime).getTime(),
+          )
+          .find(
+            (session) =>
+              session.status === "closed" &&
+              Number.isFinite(session.closingBalance),
+          )?.closingBalance ?? null,
 
-        openingFieldValue:
-          openingBalance || '',
+      openingFieldValue: openingBalance || "",
 
-        openingFieldMode:
-          openingBalance.trim()
-            ? 'manual_or_prefilled'
-            : 'blank',
-      }
-    );
+      openingFieldMode: openingBalance.trim() ? "manual_or_prefilled" : "blank",
+    });
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    financeShiftDiag(
-      '[FIN][SHIFT][SESSION_SCAN]',
-      {
-        scannedAt:
-          new Date().toISOString(),
+    financeShiftDiag("[FIN][SHIFT][SESSION_SCAN]", {
+      scannedAt: new Date().toISOString(),
 
-        ...scanSessionHistory(
-          cashSessions
-        ),
+      ...scanSessionHistory(cashSessions),
 
-        latestClosedSessionId:
-          latestCarryForwardSession?.id
-          ?? null,
+      latestClosedSessionId: latestCarryForwardSession?.id ?? null,
 
-        latestClosedBalance:
-          latestCarryForwardSession
-            ?.closingBalance
-          ?? null,
+      latestClosedBalance: latestCarryForwardSession?.closingBalance ?? null,
 
-        latestCarryForwardBalance:
-          latestCarryForwardSession
-            ? getSessionCarryForwardBalance(
-                latestCarryForwardSession
-              )
-            : null,
+      latestCarryForwardBalance: latestCarryForwardSession
+        ? getSessionCarryForwardBalance(latestCarryForwardSession)
+        : null,
 
-        openSessionId:
-          openSession?.id
-          ?? null,
-      }
-    );
-  }, [
-    cashSessions,
-    latestCarryForwardSession,
-    openSession,
-  ]);
+      openSessionId: openSession?.id ?? null,
+    });
+  }, [cashSessions, latestCarryForwardSession, openSession]);
 
   useEffect(() => {
-    if (
-      dataReadyLoggedRef.current
-    ) {
+    if (dataReadyLoggedRef.current) {
       return;
     }
 
     dataReadyLoggedRef.current = true;
 
-    perfLog(
-      'page.Finance.data_ready',
-      {
-        runId:
-          perfRunIdRef.current,
-        transactions:
-          data.transactions.length,
-        cashSessions:
-          data.cashSessions.length,
-        expenses:
-          data.expenses.length,
-        products:
-          data.products.length,
-        customers:
-          data.customers.length,
-      }
-    );
+    perfLog("page.Finance.data_ready", {
+      runId: perfRunIdRef.current,
+      transactions: data.transactions.length,
+      cashSessions: data.cashSessions.length,
+      expenses: data.expenses.length,
+      products: data.products.length,
+      customers: data.customers.length,
+    });
   }, [
     data.cashSessions.length,
     data.customers.length,
@@ -4287,252 +3012,146 @@ export default function Finance({
   ]);
 
   useEffect(() => {
-    const handleStorageEvent =
-      (event: Event) => {
-        queuedStorageEventTypesRef
-          .current
-          .push(
-            event.type
-          );
+    const handleStorageEvent = (event: Event) => {
+      queuedStorageEventTypesRef.current.push(event.type);
 
-        if (
-          storageRefreshFrameRef.current
-          !== null
-        ) {
-          return;
-        }
+      if (storageRefreshFrameRef.current !== null) {
+        return;
+      }
 
-        storageRefreshFrameRef.current =
-          window.requestAnimationFrame(
-            () => {
-              const eventTypes =
-                Array.from(
-                  new Set(
-                    queuedStorageEventTypesRef
-                      .current
-                  )
-                );
-
-              queuedStorageEventTypesRef
-                .current = [];
-
-              storageRefreshFrameRef
-                .current = null;
-
-              perfMeasureSync(
-                'page.Finance.storage_event',
-                () => {
-                  const fresh =
-                    loadData();
-
-                  financeShiftDiag(
-                    '[FIN][SHIFT][STORAGE_EVENT]',
-                    {
-                      type:
-                        eventTypes.join(','),
-
-                      firedAt:
-                        new Date()
-                          .toISOString(),
-
-                      route:
-                        typeof window
-                        !== 'undefined'
-                          ? window.location
-                              .hash
-                            || window.location
-                              .pathname
-                          : 'unknown',
-
-                      localCounts:
-                        getStateEntityCounts(
-                          data
-                        ),
-
-                      freshCounts:
-                        getStateEntityCounts(
-                          fresh
-                        ),
-
-                      localCashSessions:
-                        (
-                          data.cashSessions
-                          || []
-                        ).length,
-
-                      freshCashSessions:
-                        (
-                          fresh.cashSessions
-                          || []
-                        ).length,
-                    }
-                  );
-
-                  financeShiftDiag(
-                    '[FIN][SHIFT][FRESHNESS_CHECK]',
-                    {
-                      source:
-                        `event:${eventTypes.join(',')}`,
-
-                      staleProducts:
-                        data.products.length
-                        !== fresh.products.length,
-
-                      staleCustomers:
-                        data.customers.length
-                        !== fresh.customers.length,
-
-                      staleTransactions:
-                        data.transactions.length
-                        !== fresh.transactions.length,
-
-                      staleCashSessions:
-                        (
-                          data.cashSessions
-                          || []
-                        ).length
-                        !== (
-                          fresh.cashSessions
-                          || []
-                        ).length,
-
-                      staleManualCashbookEntries:
-                        (
-                          data.manualCashbookEntries
-                          || []
-                        ).length
-                        !== (
-                          fresh.manualCashbookEntries
-                          || []
-                        ).length,
-                    }
-                  );
-
-                  setData(fresh);
-                },
-                {
-                  runId:
-                    perfRunIdRef.current,
-                  eventTypes,
-                }
-              );
-            }
-          );
-      };
-
-    const handleCloudSyncStatus =
-      (event: Event) => {
-        const detail =
-          (
-            event as CustomEvent<{
-              status: string;
-              message?: string;
-            }>
-          ).detail;
-
-        financeShiftDiag(
-          '[FIN][SHIFT][STORAGE_EVENT]',
-          {
-            type:
-              'cloud-sync-status',
-
-            firedAt:
-              new Date().toISOString(),
-
-            status:
-              detail?.status
-              || null,
-
-            message:
-              detail?.message
-              || null,
-          }
+      storageRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        const eventTypes = Array.from(
+          new Set(queuedStorageEventTypesRef.current),
         );
-      };
+
+        queuedStorageEventTypesRef.current = [];
+
+        storageRefreshFrameRef.current = null;
+
+        perfMeasureSync(
+          "page.Finance.storage_event",
+          () => {
+            const fresh = loadData();
+
+            financeShiftDiag("[FIN][SHIFT][STORAGE_EVENT]", {
+              type: eventTypes.join(","),
+
+              firedAt: new Date().toISOString(),
+
+              route:
+                typeof window !== "undefined"
+                  ? window.location.hash || window.location.pathname
+                  : "unknown",
+
+              localCounts: getStateEntityCounts(data),
+
+              freshCounts: getStateEntityCounts(fresh),
+
+              localCashSessions: (data.cashSessions || []).length,
+
+              freshCashSessions: (fresh.cashSessions || []).length,
+            });
+
+            financeShiftDiag("[FIN][SHIFT][FRESHNESS_CHECK]", {
+              source: `event:${eventTypes.join(",")}`,
+
+              staleProducts: data.products.length !== fresh.products.length,
+
+              staleCustomers: data.customers.length !== fresh.customers.length,
+
+              staleTransactions:
+                data.transactions.length !== fresh.transactions.length,
+
+              staleCashSessions:
+                (data.cashSessions || []).length !==
+                (fresh.cashSessions || []).length,
+
+              staleManualCashbookEntries:
+                (data.manualCashbookEntries || []).length !==
+                (fresh.manualCashbookEntries || []).length,
+            });
+
+            setData(fresh);
+            setStorageHydration(getStorageHydrationState());
+          },
+          {
+            runId: perfRunIdRef.current,
+            eventTypes,
+          },
+        );
+      });
+    };
+
+    const handleCloudSyncStatus = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          status: string;
+          message?: string;
+        }>
+      ).detail;
+
+      financeShiftDiag("[FIN][SHIFT][STORAGE_EVENT]", {
+        type: "cloud-sync-status",
+
+        firedAt: new Date().toISOString(),
+
+        status: detail?.status || null,
+
+        message: detail?.message || null,
+      });
+
+      setStorageHydration(getStorageHydrationState());
+    };
+
+    window.addEventListener("storage", handleStorageEvent);
+
+    window.addEventListener("local-storage-update", handleStorageEvent);
 
     window.addEventListener(
-      'storage',
-      handleStorageEvent
-    );
-
-    window.addEventListener(
-      'local-storage-update',
-      handleStorageEvent
-    );
-
-    window.addEventListener(
-      'cloud-sync-status',
-      handleCloudSyncStatus as EventListener
+      "cloud-sync-status",
+      handleCloudSyncStatus as EventListener,
     );
 
     return () => {
-      if (
-        storageRefreshFrameRef.current
-        !== null
-      ) {
-        window.cancelAnimationFrame(
-          storageRefreshFrameRef.current
-        );
+      if (storageRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(storageRefreshFrameRef.current);
       }
 
-      window.removeEventListener(
-        'storage',
-        handleStorageEvent
-      );
+      window.removeEventListener("storage", handleStorageEvent);
+
+      window.removeEventListener("local-storage-update", handleStorageEvent);
 
       window.removeEventListener(
-        'local-storage-update',
-        handleStorageEvent
-      );
-
-      window.removeEventListener(
-        'cloud-sync-status',
-        handleCloudSyncStatus as EventListener
+        "cloud-sync-status",
+        handleCloudSyncStatus as EventListener,
       );
     };
   }, [data]);
 
   useEffect(() => {
-    if (
-      readyLoggedRef.current
-    ) {
+    if (readyLoggedRef.current) {
       return;
     }
 
-    const frame =
-      window.requestAnimationFrame(
-        () => {
-          if (
-            readyLoggedRef.current
-          ) {
-            return;
-          }
+    const frame = window.requestAnimationFrame(() => {
+      if (readyLoggedRef.current) {
+        return;
+      }
 
-          readyLoggedRef.current = true;
+      readyLoggedRef.current = true;
 
-          perfLog(
-            'page.Finance.ready_for_first_useful_paint',
-            {
-              runId:
-                perfRunIdRef.current,
+      perfLog("page.Finance.ready_for_first_useful_paint", {
+        runId: perfRunIdRef.current,
 
-              transactions:
-                data.transactions.length,
+        transactions: data.transactions.length,
 
-              cashSessions:
-                data.cashSessions.length,
+        cashSessions: data.cashSessions.length,
 
-              expenses:
-                data.expenses.length,
-            }
-          );
-        }
-      );
+        expenses: data.expenses.length,
+      });
+    });
 
-    return () =>
-      window.cancelAnimationFrame(
-        frame
-      );
+    return () => window.cancelAnimationFrame(frame);
   }, [
     data.transactions.length,
     data.cashSessions.length,
@@ -4541,169 +3160,90 @@ export default function Finance({
 
   useEffect(() => {
     if (
-      openSession
-      || openingBalance.trim()
-      || editingOpeningBalance
+      isFinanceHydrating ||
+      openSession ||
+      openingBalance.trim() ||
+      editingOpeningBalance
     ) {
       return;
     }
 
-    const carryForwardBalance =
-      latestCarryForwardSession
-        ? getSessionCarryForwardBalance(
-            latestCarryForwardSession
-          )
-        : undefined;
+    const carryForwardBalance = latestCarryForwardSession
+      ? getSessionCarryForwardBalance(latestCarryForwardSession)
+      : undefined;
 
-    if (
-      carryForwardBalance
-      !== undefined
-    ) {
-      financeShiftDiag(
-        '[FIN][SHIFT][AUTOFILL]',
-        {
-          updatedAt:
-            new Date().toISOString(),
+    if (carryForwardBalance !== undefined) {
+      financeShiftDiag("[FIN][SHIFT][AUTOFILL]", {
+        updatedAt: new Date().toISOString(),
 
-          mode:
-            'autofill-last-carry-forward',
+        mode: "autofill-last-carry-forward",
 
-          latestClosedSessionId:
-            latestCarryForwardSession.id,
+        latestClosedSessionId: latestCarryForwardSession.id,
 
-          latestClosedBalance:
-            latestCarryForwardSession
-              .closingBalance,
+        latestClosedBalance: latestCarryForwardSession.closingBalance,
 
-          latestCarryForwardBalance:
-            carryForwardBalance,
+        latestCarryForwardBalance: carryForwardBalance,
 
-          previousOpeningField:
-            openingBalance || '',
-        }
-      );
+        previousOpeningField: openingBalance || "",
+      });
 
-      setOpeningBalance(
-        carryForwardBalance.toFixed(2)
-      );
+      setOpeningBalance(carryForwardBalance.toFixed(2));
 
-      setOpeningBalanceAutoFilled(
-        true
-      );
+      setOpeningBalanceAutoFilled(true);
 
       return;
     }
 
-    financeShiftDiag(
-      '[FIN][SHIFT][AUTOFILL]',
-      {
-        updatedAt:
-          new Date().toISOString(),
+    financeShiftDiag("[FIN][SHIFT][AUTOFILL]", {
+      updatedAt: new Date().toISOString(),
 
-        mode:
-          'no-latest-closed-session',
+      mode: "no-latest-closed-session",
 
-        latestClosedSessionId:
-          null,
+      latestClosedSessionId: null,
 
-        latestClosedBalance:
-          null,
+      latestClosedBalance: null,
 
-        latestCarryForwardBalance:
-          null,
+      latestCarryForwardBalance: null,
 
-        openingFieldValue:
-          openingBalance || '',
+      openingFieldValue: openingBalance || "",
 
-        fallbackPreview:
-          (
-            latestCarryForwardSession
-              ? getSessionCarryForwardBalance(
-                  latestCarryForwardSession
-                )
-              : 0
-          ).toFixed(0),
-      }
-    );
+      fallbackPreview: (latestCarryForwardSession
+        ? getSessionCarryForwardBalance(latestCarryForwardSession)
+        : 0
+      ).toFixed(0),
+    });
 
-    setOpeningBalanceAutoFilled(
-      false
-    );
+    setOpeningBalanceAutoFilled(false);
   }, [
     openSession,
     openingBalance,
     latestCarryForwardSession,
     editingOpeningBalance,
+    isFinanceHydrating,
   ]);
 
-  const buildCashSessionId = (
-    sessions: CashSession[]
-  ) => {
-    const existingIds =
-      new Set(
-        sessions.map(
-          session => session.id
-        )
-      );
+  const buildCashSessionId = (sessions: CashSession[]) => {
+    const existingIds = new Set(sessions.map((session) => session.id));
 
-    let candidate =
-      `${Date.now()}-${Math.floor(
-        Math.random()
-        * 1000000
-      )}`;
+    let candidate = `${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
 
-    while (
-      existingIds.has(candidate)
-    ) {
-      candidate =
-        `${Date.now()}-${Math.floor(
-          Math.random()
-          * 1000000
-        )}`;
+    while (existingIds.has(candidate)) {
+      candidate = `${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
     }
 
     return candidate;
   };
 
-  const dailyCashTotals =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.dailyCashTotals',
-          () => {
-            if (
-              activeTab === 'cash'
-              && !isDetailedCashbookReady
-            ) {
-              return EMPTY_FINANCE_SESSION_TOTALS;
-            }
+  const dailyCashTotals = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.dailyCashTotals",
+        () => {
+          if (activeTab === "cash" && !isDetailedCashbookReady) {
+            return EMPTY_FINANCE_SESSION_TOTALS;
+          }
 
-            if (openSession) {
-              return getSessionCashTotals(
-                data.transactions,
-                expenses,
-                cashAdjustments,
-                data.deleteCompensations || [],
-                data.deletedTransactions || [],
-                data.purchaseOrders || [],
-                data.manualCashbookEntries || [],
-                openSession.startTime,
-                undefined,
-                openSession.id,
-                upfrontOrders,
-                data.supplierPayments || []
-              );
-            }
-
-            const key =
-              todayISO();
-
-            const startOfTodayIso =
-              `${key}T00:00:00`;
-
-            const endOfTodayIso =
-              `${key}T23:59:59`;
-
+          if (openSession) {
             return getSessionCashTotals(
               data.transactions,
               expenses,
@@ -4712,947 +3252,542 @@ export default function Finance({
               data.deletedTransactions || [],
               data.purchaseOrders || [],
               data.manualCashbookEntries || [],
-              startOfTodayIso,
-              endOfTodayIso,
+              openSession.startTime,
               undefined,
+              openSession.id,
               upfrontOrders,
-              data.supplierPayments || []
+              data.supplierPayments || [],
             );
-          },
-          {
-            runId:
-              perfRunIdRef.current,
-
-            activeTab,
-
-            isDetailedCashbookReady,
-
-            openSessionId:
-              openSession?.id
-              || null,
-
-            transactions:
-              data.transactions.length,
-
-            expenses:
-              expenses.length,
-
-            purchaseOrders:
-              (
-                data.purchaseOrders
-                || []
-              ).length,
-
-            supplierPayments:
-              (
-                data.supplierPayments
-                || []
-              ).length,
           }
-        ),
-      [
-        openSession?.id,
-        openSession?.startTime,
-        data.transactions,
-        data.manualCashbookEntries,
-        expenses,
-        cashAdjustments,
-        data.deleteCompensations,
-        data.deletedTransactions,
-        data.purchaseOrders,
-        data.supplierPayments,
-        upfrontOrders,
-        activeTab,
-        isDetailedCashbookReady,
-      ]
-    );
 
-  const closingCountTotal =
-    useMemo(() => {
-      return CLOSING_DENOMS.reduce(
-        (sum, denom) =>
-          sum
-          + (
-            denom
-            * (
-              closingCounts[denom]
-              || 0
-            )
-          ),
-        0
-      );
-    }, [closingCounts]);
+          const key = todayISO();
 
-  const closingCountPieces =
-    useMemo(() => {
-      return CLOSING_DENOMS.reduce(
-        (sum, denom) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              closingCounts[denom]
-              || 0
-            )
-          ),
-        0
-      );
-    }, [closingCounts]);
+          const startOfTodayIso = `${key}T00:00:00`;
 
-  const closingCountActiveDenoms =
-    useMemo(() => {
-      return CLOSING_DENOMS.filter(
-        denom =>
-          (
-            closingCounts[denom]
-            || 0
-          ) > 0
-      ).length;
-    }, [closingCounts]);
+          const endOfTodayIso = `${key}T23:59:59`;
 
-  const cashManagementKpis =
-    useMemo(() => {
-      const cashAtSale =
-        dailyCashTotals.cashSales;
-
-      const customerCashCollections =
-        dailyCashTotals.customerCashCollections
-        ?? Math.max(
-          0,
-          dailyCashTotals.cashCollections
-          - (
-            dailyCashTotals.customOrderCashCollections
-            || 0
-          )
-        );
-
-      const customOrderCashCollections =
-        dailyCashTotals.customOrderCashCollections
-        || 0;
-
-      const cashCollections =
-        customerCashCollections
-        + customOrderCashCollections;
-
-      const cashRefunds =
-        dailyCashTotals.activeCashRefunds
-        ?? dailyCashTotals.cashRefunds
-        ?? 0;
-
-      const deleteCompensationRefunds =
-        dailyCashTotals.deleteCompensationRefunds
-        || 0;
-
-      const supplierCashPayments =
-        dailyCashTotals.activeSupplierCashPayments
-        ?? dailyCashTotals.supplierCashPayments
-        ?? 0;
-
-      const expenseCashOutflow =
-        dailyCashTotals.activeExpenseTotal
-        ?? dailyCashTotals.expenses
-        ?? dailyCashTotals.expenseTotal
-        ?? 0;
-
-      const cashWithdrawals =
-        dailyCashTotals.activeCashWithdrawals
-        ?? dailyCashTotals.cashWithdrawals
-        ?? 0;
-
-      const netCashMovementAfterExpenses =
-        cashAtSale
-        + cashCollections
-        + (
-          dailyCashTotals.cashAdditions
-          || 0
-        )
-        - cashRefunds
-        - deleteCompensationRefunds
-        - supplierCashPayments
-        - expenseCashOutflow
-        - cashWithdrawals;
-
-      return {
-        cashAtSale,
-        customerCashCollections,
-        customOrderCashCollections,
-        cashCollections,
-        cashRefunds,
-        deleteCompensationRefunds,
-        supplierCashPayments,
-        expenseCashOutflow,
-        cashWithdrawals,
-        netCashMovementAfterExpenses,
-      };
-    }, [dailyCashTotals]);
-
-  const expectedClosingForOpenSession =
-    openSession
-      ? (
-        openSession.openingBalance
-        + dailyCashTotals.systemCashTotal
-      )
-      : 0;
-
-  const activeClosingForOpenSession =
-    openSession
-      ? (
-        openSession.openingBalance
-        + (
-          (
-            dailyCashTotals as
-              typeof dailyCashTotals
-              & {
-                activeSystemCashTotal?: number;
-              }
-          ).activeSystemCashTotal
-          ?? dailyCashTotals.systemCashTotal
-        )
-      )
-      : 0;
-
-  const currentShiftTotalCash =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            activeClosingForOpenSession
-          )
-        ),
-      [
-        activeClosingForOpenSession,
-      ]
-    );
-
-  const activeReserveBase =
-    useMemo(
-      () => {
-        if (!openSession) {
-          return 0;
-        }
-
-        const currentSessionReserve =
-          getSessionReservedCash(
-            openSession
+          return getSessionCashTotals(
+            data.transactions,
+            expenses,
+            cashAdjustments,
+            data.deleteCompensations || [],
+            data.deletedTransactions || [],
+            data.purchaseOrders || [],
+            data.manualCashbookEntries || [],
+            startOfTodayIso,
+            endOfTodayIso,
+            undefined,
+            upfrontOrders,
+            data.supplierPayments || [],
           );
+        },
+        {
+          runId: perfRunIdRef.current,
 
-        if (
-          currentSessionReserve > 0
-        ) {
-          return currentSessionReserve;
-        }
+          activeTab,
 
-        return latestCarryForwardSession
-          ? getSessionReservedCash(
-              latestCarryForwardSession
-            )
-          : 0;
-      },
-      [
-        openSession,
-        latestCarryForwardSession,
-      ]
+          isDetailedCashbookReady,
+
+          openSessionId: openSession?.id || null,
+
+          transactions: data.transactions.length,
+
+          expenses: expenses.length,
+
+          purchaseOrders: (data.purchaseOrders || []).length,
+
+          supplierPayments: (data.supplierPayments || []).length,
+        },
+      ),
+    [
+      openSession?.id,
+      openSession?.startTime,
+      data.transactions,
+      data.manualCashbookEntries,
+      expenses,
+      cashAdjustments,
+      data.deleteCompensations,
+      data.deletedTransactions,
+      data.purchaseOrders,
+      data.supplierPayments,
+      upfrontOrders,
+      activeTab,
+      isDetailedCashbookReady,
+    ],
+  );
+
+  const closingCountTotal = useMemo(() => {
+    return CLOSING_DENOMS.reduce(
+      (sum, denom) => sum + denom * (closingCounts[denom] || 0),
+      0,
     );
+  }, [closingCounts]);
 
-  const activeReserveSavedAt =
-    useMemo(() => {
-      if (!openSession) {
-        return null;
-      }
+  const closingCountPieces = useMemo(() => {
+    return CLOSING_DENOMS.reduce(
+      (sum, denom) => sum + Math.max(0, Number(closingCounts[denom] || 0)),
+      0,
+    );
+  }, [closingCounts]);
 
-      if (
-        openSession.reservedCashSavedAt
-      ) {
-        return openSession.reservedCashSavedAt;
-      }
+  const closingCountActiveDenoms = useMemo(() => {
+    return CLOSING_DENOMS.filter((denom) => (closingCounts[denom] || 0) > 0)
+      .length;
+  }, [closingCounts]);
 
-      const priorReserve =
-        latestCarryForwardSession
-          ? getSessionReservedCash(
-              latestCarryForwardSession
+  const cashManagementKpis = useMemo(() => {
+    const cashAtSale = dailyCashTotals.cashSales;
+
+    const customerCashCollections =
+      dailyCashTotals.customerCashCollections ??
+      Math.max(
+        0,
+        dailyCashTotals.cashCollections -
+          (dailyCashTotals.customOrderCashCollections || 0),
+      );
+
+    const customOrderCashCollections =
+      dailyCashTotals.customOrderCashCollections || 0;
+
+    const cashCollections =
+      customerCashCollections + customOrderCashCollections;
+
+    const cashRefunds =
+      dailyCashTotals.activeCashRefunds ?? dailyCashTotals.cashRefunds ?? 0;
+
+    const deleteCompensationRefunds =
+      dailyCashTotals.deleteCompensationRefunds || 0;
+
+    const supplierCashPayments =
+      dailyCashTotals.activeSupplierCashPayments ??
+      dailyCashTotals.supplierCashPayments ??
+      0;
+
+    const expenseCashOutflow =
+      dailyCashTotals.activeExpenseTotal ??
+      dailyCashTotals.expenses ??
+      dailyCashTotals.expenseTotal ??
+      0;
+
+    const cashWithdrawals =
+      dailyCashTotals.activeCashWithdrawals ??
+      dailyCashTotals.cashWithdrawals ??
+      0;
+
+    const netCashMovementAfterExpenses =
+      cashAtSale +
+      cashCollections +
+      (dailyCashTotals.cashAdditions || 0) -
+      cashRefunds -
+      deleteCompensationRefunds -
+      supplierCashPayments -
+      expenseCashOutflow -
+      cashWithdrawals;
+
+    return {
+      cashAtSale,
+      customerCashCollections,
+      customOrderCashCollections,
+      cashCollections,
+      cashRefunds,
+      deleteCompensationRefunds,
+      supplierCashPayments,
+      expenseCashOutflow,
+      cashWithdrawals,
+      netCashMovementAfterExpenses,
+    };
+  }, [dailyCashTotals]);
+
+  const expectedClosingForOpenSession = openSession
+    ? openSession.openingBalance + dailyCashTotals.systemCashTotal
+    : 0;
+
+  const activeClosingForOpenSession = openSession
+    ? openSession.openingBalance +
+      ((
+        dailyCashTotals as typeof dailyCashTotals & {
+          activeSystemCashTotal?: number;
+        }
+      ).activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)
+    : 0;
+
+  const currentShiftTotalCash = useMemo(
+    () => roundMoney(Math.max(0, activeClosingForOpenSession)),
+    [activeClosingForOpenSession],
+  );
+
+  const activeReserveBase = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const currentSessionReserve = getSessionReservedCash(openSession);
+
+    if (currentSessionReserve > 0) {
+      return currentSessionReserve;
+    }
+
+    return latestCarryForwardSession
+      ? getSessionReservedCash(latestCarryForwardSession)
+      : 0;
+  }, [openSession, latestCarryForwardSession]);
+
+  const activeReserveSavedAt = useMemo(() => {
+    if (!openSession) {
+      return null;
+    }
+
+    if (openSession.reservedCashSavedAt) {
+      return openSession.reservedCashSavedAt;
+    }
+
+    const priorReserve = latestCarryForwardSession
+      ? getSessionReservedCash(latestCarryForwardSession)
+      : 0;
+
+    if (priorReserve > 0) {
+      return (
+        latestCarryForwardSession?.reservedCashSavedAt ||
+        latestCarryForwardSession?.endTime ||
+        latestCarryForwardSession?.startTime ||
+        openSession.startTime
+      );
+    }
+
+    return openSession.startTime;
+  }, [openSession, latestCarryForwardSession]);
+
+  const activeReserveWindowStart = useMemo(() => {
+    if (!openSession) return null;
+
+    const sessionStartMs = new Date(openSession.startTime).getTime();
+
+    const reserveSavedMs = activeReserveSavedAt
+      ? new Date(activeReserveSavedAt).getTime()
+      : Number.NaN;
+
+    if (Number.isFinite(reserveSavedMs) && reserveSavedMs > sessionStartMs) {
+      return activeReserveSavedAt;
+    }
+
+    return openSession.startTime;
+  }, [openSession, activeReserveSavedAt]);
+
+  const activeReserveOutflowSinceSave = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.activeReserveOutflowSinceSave",
+        () => {
+          if (activeTab === "cash" && !isDetailedCashbookReady) {
+            return 0;
+          }
+
+          if (!openSession || activeReserveBase <= 0) {
+            return 0;
+          }
+
+          const savedAt =
+            activeReserveWindowStart ||
+            activeReserveSavedAt ||
+            openSession.startTime;
+
+          const savedAtMs = new Date(savedAt).getTime();
+
+          if (!Number.isFinite(savedAtMs)) {
+            return 0;
+          }
+
+          const inWindow = (iso?: string) => {
+            const at = new Date(iso || "").getTime();
+
+            return Number.isFinite(at) && at >= savedAtMs;
+          };
+
+          const reserveExpenses = expenses
+            .filter(
+              (expense) =>
+                inWindow(getExpenseEffectiveDate(expense)) &&
+                shouldReduceReserveFromSource((expense as Expense).cashSource),
             )
-          : 0;
+            .reduce(
+              (sum, expense) => sum + Math.max(0, Number(expense.amount || 0)),
+              0,
+            );
 
-      if (priorReserve > 0) {
-        return (
-          latestCarryForwardSession
-            ?.reservedCashSavedAt
-          || latestCarryForwardSession
-            ?.endTime
-          || latestCarryForwardSession
-            ?.startTime
-          || openSession.startTime
-        );
-      }
+          const reserveTransactionCashOut = (data.transactions || [])
+            .filter((tx) => {
+              const type = String((tx as any).type || "")
+                .trim()
+                .toLowerCase();
 
-      return openSession.startTime;
-    }, [
-      openSession,
-      latestCarryForwardSession,
-    ]);
+              const returnMode = String((tx as any).returnHandlingMode || "")
+                .trim()
+                .toLowerCase();
 
-  const activeReserveWindowStart =
-    useMemo(() => {
-      if (!openSession) return null;
+              const isCashReturn =
+                type === "return" &&
+                (returnMode === "refund_cash" ||
+                  (tx as any).paymentMethod === "Cash");
 
-      const sessionStartMs =
-        new Date(openSession.startTime).getTime();
+              const isCustomerCashOut =
+                type === "customer_cash_out" &&
+                (tx as any).paymentMethod === "Cash";
 
-      const reserveSavedMs =
-        activeReserveSavedAt
-          ? new Date(activeReserveSavedAt).getTime()
-          : Number.NaN;
+              return (
+                (isCashReturn || isCustomerCashOut) &&
+                inWindow((tx as any).financialDate || tx.date) &&
+                shouldReduceReserveFromSource((tx as any).cashSource)
+              );
+            })
+            .reduce(
+              (sum, tx) =>
+                sum + Math.max(0, Math.abs(Number((tx as any).total || 0))),
+              0,
+            );
 
-      if (
-        Number.isFinite(reserveSavedMs)
-        && reserveSavedMs > sessionStartMs
-      ) {
-        return activeReserveSavedAt;
-      }
+          const reserveSupplierPayments = (
+            (data.supplierPayments || []) as Array<{
+              amount?: unknown;
+              method?: unknown;
+              cashSource?: unknown;
+              paidAt?: string;
+              paymentDate?: string;
+              date?: string;
+              createdAt?: string;
+              deletedAt?: string;
+            }>
+          )
+            .filter((payment) => !payment.deletedAt)
+            .filter(
+              (payment) =>
+                getSupplierPaymentMethodForDrawer(payment.method) === "cash",
+            )
+            .filter((payment) =>
+              inWindow(
+                payment.paidAt ||
+                  payment.paymentDate ||
+                  payment.date ||
+                  payment.createdAt,
+              ),
+            )
+            .filter((payment) =>
+              shouldReduceReserveFromSource(payment.cashSource),
+            )
+            .reduce(
+              (sum, payment) => sum + Math.max(0, Number(payment.amount || 0)),
+              0,
+            );
 
-      return openSession.startTime;
-    }, [
-      openSession,
-      activeReserveSavedAt,
-    ]);
-
-  const activeReserveOutflowSinceSave =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.activeReserveOutflowSinceSave',
-          () => {
-            if (
-              activeTab === 'cash'
-              && !isDetailedCashbookReady
-            ) {
-              return 0;
-            }
-
-            if (
-              !openSession
-              || activeReserveBase <= 0
-            ) {
-              return 0;
-            }
-
-            const savedAt =
-              activeReserveWindowStart
-              || activeReserveSavedAt
-              || openSession.startTime;
-
-            const savedAtMs =
-              new Date(
-                savedAt
-              ).getTime();
-
-            if (
-              !Number.isFinite(savedAtMs)
-            ) {
-              return 0;
-            }
-
-            const inWindow =
-              (iso?: string) => {
-                const at =
-                  new Date(
-                    iso || ''
-                  ).getTime();
-
-                return (
-                  Number.isFinite(at)
-                  && at >= savedAtMs
-                );
-              };
-
-            const reserveExpenses =
-              expenses
-                .filter(
-                  expense =>
-                    inWindow(
-                      getExpenseEffectiveDate(
-                        expense
-                      )
-                    )
-                    && shouldReduceReserveFromSource(
-                      (
-                        expense as Expense
-                      ).cashSource
-                    )
-                )
-                .reduce(
-                  (sum, expense) =>
-                    sum
-                    + Math.max(
-                      0,
-                      Number(
-                        expense.amount
-                        || 0
-                      )
-                    ),
-                  0
-                );
-
-            const reserveTransactionCashOut =
+          const reserveDirectPurchasePayments = (
+            data.purchaseOrders || []
+          ).reduce(
+            (sum, order) =>
+              sum +
               (
-                data.transactions
-                || []
-              )
-                .filter(tx => {
-                  const type =
-                    String(
-                      (
-                        tx as any
-                      ).type
-                      || ''
-                    )
-                      .trim()
-                      .toLowerCase();
-
-                  const returnMode =
-                    String(
-                      (
-                        tx as any
-                      ).returnHandlingMode
-                      || ''
-                    )
-                      .trim()
-                      .toLowerCase();
-
-                  const isCashReturn =
-                    type === 'return'
-                    && (
-                      returnMode
-                      === 'refund_cash'
-                      || (
-                        tx as any
-                      ).paymentMethod
-                      === 'Cash'
-                    );
-
-                  const isCustomerCashOut =
-                    type
-                    === 'customer_cash_out'
-                    && (
-                      tx as any
-                    ).paymentMethod
-                    === 'Cash';
-
-                  return (
-                    (
-                      isCashReturn
-                      || isCustomerCashOut
-                    )
-                    && inWindow(
-                      (
-                        tx as any
-                      ).financialDate
-                      || tx.date
-                    )
-                    && shouldReduceReserveFromSource(
-                      (
-                        tx as any
-                      ).cashSource
-                    )
-                  );
-                })
-                .reduce(
-                  (sum, tx) =>
-                    sum
-                    + Math.max(
-                      0,
-                      Math.abs(
-                        Number(
-                          (
-                            tx as any
-                          ).total
-                          || 0
-                        )
-                      )
-                    ),
-                  0
-                );
-
-            const reserveSupplierPayments =
-              (
-                (
-                  data.supplierPayments
-                  || []
-                ) as Array<{
+                (order.paymentHistory || []) as Array<{
                   amount?: unknown;
                   method?: unknown;
                   cashSource?: unknown;
                   paidAt?: string;
-                  paymentDate?: string;
-                  date?: string;
-                  createdAt?: string;
-                  deletedAt?: string;
+                  supplierPaymentId?: string;
                 }>
               )
+                .filter((payment) => !payment.supplierPaymentId)
                 .filter(
-                  payment =>
-                    !payment.deletedAt
+                  (payment) =>
+                    String(payment.method || "cash")
+                      .trim()
+                      .toLowerCase() === "cash",
                 )
-                .filter(
-                  payment =>
-                    getSupplierPaymentMethodForDrawer(
-                      payment.method
-                    ) === 'cash'
-                )
-                .filter(
-                  payment =>
-                    inWindow(
-                      payment.paidAt
-                      || payment.paymentDate
-                      || payment.date
-                      || payment.createdAt
-                    )
-                )
-                .filter(
-                  payment =>
-                    shouldReduceReserveFromSource(
-                      payment.cashSource
-                    )
+                .filter((payment) => {
+                  const effectiveAt = [
+                    payment.paidAt,
+                    order.updatedAt,
+                    order.effectiveAt,
+                    order.orderDate,
+                    order.createdAt,
+                  ]
+                    .map((value) => new Date(value || "").getTime())
+                    .filter(Number.isFinite)
+                    .sort((a, b) => b - a)[0];
+
+                  return inWindow(
+                    Number.isFinite(effectiveAt)
+                      ? new Date(effectiveAt).toISOString()
+                      : undefined,
+                  );
+                })
+                .filter((payment) =>
+                  shouldReduceReserveFromSource(payment.cashSource),
                 )
                 .reduce(
-                  (sum, payment) =>
-                    sum
-                    + Math.max(
-                      0,
-                      Number(
-                        payment.amount
-                        || 0
-                      )
-                    ),
-                  0
-                );
+                  (inner, payment) =>
+                    inner + Math.max(0, Number(payment.amount || 0)),
+                  0,
+                ),
+            0,
+          );
 
-            const reserveDirectPurchasePayments =
-              (
-                data.purchaseOrders
-                || []
-              ).reduce(
-                (sum, order) =>
-                  sum
-                  + (
-                    (
-                      order.paymentHistory
-                      || []
-                    ) as Array<{
-                      amount?: unknown;
-                      method?: unknown;
-                      cashSource?: unknown;
-                      paidAt?: string;
-                      supplierPaymentId?: string;
-                    }>
-                  )
-                    .filter(
-                      payment =>
-                        !payment.supplierPaymentId
-                    )
-                    .filter(
-                      payment =>
-                        String(
-                          payment.method
-                          || 'cash'
-                        )
-                          .trim()
-                          .toLowerCase()
-                        === 'cash'
-                    )
-                    .filter(payment => {
-                      const effectiveAt =
-                        [
-                          payment.paidAt,
-                          order.updatedAt,
-                          order.effectiveAt,
-                          order.orderDate,
-                          order.createdAt,
-                        ]
-                          .map(
-                            value =>
-                              new Date(
-                                value || ''
-                              ).getTime()
-                          )
-                          .filter(
-                            Number.isFinite
-                          )
-                          .sort(
-                            (a, b) =>
-                              b - a
-                          )[0];
-
-                      return inWindow(
-                        Number.isFinite(
-                          effectiveAt
-                        )
-                          ? new Date(
-                              effectiveAt
-                            ).toISOString()
-                          : undefined
-                      );
-                    })
-                    .filter(
-                      payment =>
-                        shouldReduceReserveFromSource(
-                          payment.cashSource
-                        )
-                    )
-                    .reduce(
-                      (
-                        inner,
-                        payment
-                      ) =>
-                        inner
-                        + Math.max(
-                          0,
-                          Number(
-                            payment.amount
-                            || 0
-                          )
-                        ),
-                      0
-                    ),
-                0
-              );
-
-            const reserveWithdrawals =
-              cashAdjustments
-                .filter(
-                  entry =>
-                    entry.type
-                    === 'cash_withdrawal'
-                )
-                .filter(
-                  entry =>
-                    inWindow(
-                      entry.effectiveAt
-                      || entry.createdAt
-                    )
-                )
-                .filter(
-                  entry =>
-                    shouldReduceReserveFromSource(
-                      entry.cashSource
-                    )
-                )
-                .reduce(
-                  (sum, entry) =>
-                    sum
-                    + Math.max(
-                      0,
-                      Number(
-                        entry.amount
-                        || 0
-                      )
-                    ),
-                  0
-                );
-
-            const reserveManualCashOut =
-              (
-                data.manualCashbookEntries
-                || []
-              )
-                .filter(
-                  entry =>
-                    !entry?.isDeleted
-                    && entry.type
-                    === 'cash_out'
-                )
-                .filter(
-                  entry =>
-                    inWindow(
-                      entry.date
-                      || entry.createdAt
-                    )
-                )
-                .filter(
-                  entry =>
-                    shouldReduceReserveFromSource(
-                      entry.cashSource
-                    )
-                )
-                .reduce(
-                  (sum, entry) =>
-                    sum
-                    + Math.max(
-                      0,
-                      Number(
-                        entry.amount
-                        || 0
-                      )
-                    ),
-                  0
-                );
-
-            return roundMoney(
-              reserveTransactionCashOut
-              + reserveSupplierPayments
-              + reserveDirectPurchasePayments
-              + reserveExpenses
-              + reserveWithdrawals
-              + reserveManualCashOut
+          const reserveWithdrawals = cashAdjustments
+            .filter((entry) => entry.type === "cash_withdrawal")
+            .filter((entry) => inWindow(entry.effectiveAt || entry.createdAt))
+            .filter((entry) => shouldReduceReserveFromSource(entry.cashSource))
+            .reduce(
+              (sum, entry) => sum + Math.max(0, Number(entry.amount || 0)),
+              0,
             );
-          },
-          {
-            runId:
-              perfRunIdRef.current,
 
-            activeTab,
+          const reserveManualCashOut = (data.manualCashbookEntries || [])
+            .filter((entry) => !entry?.isDeleted && entry.type === "cash_out")
+            .filter((entry) => inWindow(entry.date || entry.createdAt))
+            .filter((entry) => shouldReduceReserveFromSource(entry.cashSource))
+            .reduce(
+              (sum, entry) => sum + Math.max(0, Number(entry.amount || 0)),
+              0,
+            );
 
-            isDetailedCashbookReady,
+          return roundMoney(
+            reserveTransactionCashOut +
+              reserveSupplierPayments +
+              reserveDirectPurchasePayments +
+              reserveExpenses +
+              reserveWithdrawals +
+              reserveManualCashOut,
+          );
+        },
+        {
+          runId: perfRunIdRef.current,
 
-            openSessionId:
-              openSession?.id
-              || null,
+          activeTab,
 
-            transactions:
-              data.transactions.length,
+          isDetailedCashbookReady,
 
-            expenses:
-              expenses.length,
+          openSessionId: openSession?.id || null,
 
-            supplierPayments:
-              (
-                data.supplierPayments
-                || []
-              ).length,
-          }
-        ),
-      [
-        openSession,
-        activeReserveBase,
-        activeReserveSavedAt,
-        activeReserveWindowStart,
-        data.transactions,
-        data.manualCashbookEntries,
-        data.purchaseOrders,
-        data.supplierPayments,
-        expenses,
-        cashAdjustments,
-        activeTab,
-        isDetailedCashbookReady,
-      ]
-    );
+          transactions: data.transactions.length,
 
-  const activeCashInHand =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            activeReserveBase
-            - activeReserveOutflowSinceSave
-          )
-        ),
-      [
-        activeReserveBase,
-        activeReserveOutflowSinceSave,
-      ]
-    );
+          expenses: expenses.length,
 
-  const currentOperationalCash =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            currentShiftTotalCash
-          )
-        ),
-      [
-        currentShiftTotalCash,
-      ]
-    );
-
-  const totalAccessibleCash =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            currentOperationalCash
-            + activeCashInHand
-          )
-        ),
-      [
-        currentOperationalCash,
-        activeCashInHand,
-      ]
-    );
-
-  const activeReserveInputMax =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            currentOperationalCash
-          )
-        ),
-      [
-        currentOperationalCash,
-      ]
-    );
-
-  const reserveDraftValue =
-    useMemo(() => {
-      if (!openSession) {
-        return 0;
-      }
-
-      const trimmed =
-        activeReserveAmount.trim();
-
-      if (!trimmed) {
-        return 0;
-      }
-
-      const parsed =
-        Number(trimmed);
-
-      if (
-        !Number.isFinite(parsed)
-      ) {
-        return 0;
-      }
-
-      return roundMoney(
-        Math.max(
-          0,
-          Math.min(
-            currentOperationalCash,
-            parsed
-          )
-        )
-      );
-    }, [
+          supplierPayments: (data.supplierPayments || []).length,
+        },
+      ),
+    [
       openSession,
-      activeReserveAmount,
-      currentOperationalCash,
-    ]);
+      activeReserveBase,
+      activeReserveSavedAt,
+      activeReserveWindowStart,
+      data.transactions,
+      data.manualCashbookEntries,
+      data.purchaseOrders,
+      data.supplierPayments,
+      expenses,
+      cashAdjustments,
+      activeTab,
+      isDetailedCashbookReady,
+    ],
+  );
 
-  const reserveDraftDelta =
-    useMemo(
-      () =>
-        roundMoney(
-          reserveDraftValue
-        ),
-      [reserveDraftValue]
-    );
+  const activeCashInHand = useMemo(
+    () =>
+      roundMoney(
+        Math.max(0, activeReserveBase - activeReserveOutflowSinceSave),
+      ),
+    [activeReserveBase, activeReserveOutflowSinceSave],
+  );
 
-  const liveRemainingReserveCash =
-    useMemo(
-      () =>
-        openSession
-          ? roundMoney(
-              Math.max(
-                0,
-                activeReserveBase
-                - activeReserveOutflowSinceSave
-              )
-            )
-          : 0,
-      [
-        openSession,
-        activeReserveBase,
-        activeReserveOutflowSinceSave,
-      ]
-    );
+  const currentOperationalCash = useMemo(
+    () => roundMoney(Math.max(0, currentShiftTotalCash)),
+    [currentShiftTotalCash],
+  );
 
-  const displayedReservedCash =
-    useMemo(
-      () =>
-        openSession
-          ? roundMoney(
-              liveRemainingReserveCash
-              + reserveDraftValue
-            )
-          : 0,
-      [
-        openSession,
-        liveRemainingReserveCash,
-        reserveDraftValue,
-      ]
-    );
+  const totalAccessibleCash = useMemo(
+    () => roundMoney(Math.max(0, currentOperationalCash + activeCashInHand)),
+    [currentOperationalCash, activeCashInHand],
+  );
 
-  const displayedUsableCash =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            totalAccessibleCash
-            - displayedReservedCash
+  const activeReserveInputMax = useMemo(
+    () => roundMoney(Math.max(0, currentOperationalCash)),
+    [currentOperationalCash],
+  );
+
+  const reserveDraftValue = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const trimmed = activeReserveAmount.trim();
+
+    if (!trimmed) {
+      return 0;
+    }
+
+    const parsed = Number(trimmed);
+
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+
+    return roundMoney(Math.max(0, Math.min(currentOperationalCash, parsed)));
+  }, [openSession, activeReserveAmount, currentOperationalCash]);
+
+  const reserveDraftDelta = useMemo(
+    () => roundMoney(reserveDraftValue),
+    [reserveDraftValue],
+  );
+
+  const liveRemainingReserveCash = useMemo(
+    () =>
+      openSession
+        ? roundMoney(
+            Math.max(0, activeReserveBase - activeReserveOutflowSinceSave),
           )
-        ),
-      [
-        totalAccessibleCash,
-        displayedReservedCash,
-      ]
-    );
+        : 0,
+    [openSession, activeReserveBase, activeReserveOutflowSinceSave],
+  );
 
-  const reserveAfterSavePreview =
-    useMemo(
-      () =>
-        openSession
-          ? roundMoney(
-              liveRemainingReserveCash
-              + reserveDraftValue
-            )
-          : 0,
-      [
-        openSession,
-        liveRemainingReserveCash,
-        reserveDraftValue,
-      ]
-    );
+  const displayedReservedCash = useMemo(
+    () =>
+      openSession
+        ? roundMoney(liveRemainingReserveCash + reserveDraftValue)
+        : 0,
+    [openSession, liveRemainingReserveCash, reserveDraftValue],
+  );
 
-  const usableAfterSavePreview =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            totalAccessibleCash
-            - reserveAfterSavePreview
-          )
-        ),
-      [
-        totalAccessibleCash,
-        reserveAfterSavePreview,
-      ]
-    );
+  const displayedUsableCash = useMemo(
+    () => roundMoney(Math.max(0, totalAccessibleCash - displayedReservedCash)),
+    [totalAccessibleCash, displayedReservedCash],
+  );
 
-  const getAvailableCashBySource =
-    (source: CashSource) => (
-      normalizeCashSource(source)
-      === 'reserve'
-        ? activeCashInHand
-        : currentOperationalCash
-    );
+  const reserveAfterSavePreview = useMemo(
+    () =>
+      openSession
+        ? roundMoney(liveRemainingReserveCash + reserveDraftValue)
+        : 0,
+    [openSession, liveRemainingReserveCash, reserveDraftValue],
+  );
 
-  const closingReserveValue =
-    useMemo(
-      () =>
-        openSession
-          ? displayedReservedCash
-          : 0,
-      [
-        openSession,
-        displayedReservedCash,
-      ]
-    );
+  const usableAfterSavePreview = useMemo(
+    () =>
+      roundMoney(Math.max(0, totalAccessibleCash - reserveAfterSavePreview)),
+    [totalAccessibleCash, reserveAfterSavePreview],
+  );
+
+  const getAvailableCashBySource = (source: CashSource) =>
+    normalizeCashSource(source) === "reserve"
+      ? activeCashInHand
+      : currentOperationalCash;
+
+  const closingReserveValue = useMemo(
+    () => (openSession ? displayedReservedCash : 0),
+    [openSession, displayedReservedCash],
+  );
   type ReserveLedgerRow = {
     id: string;
     date: string;
     type: string;
     details: string;
     amount: number;
-    direction: 'in' | 'out';
+    direction: "in" | "out";
 
     partyName?: string;
     reference?: string;
@@ -5669,12 +3804,9 @@ export default function Finance({
   const reserveLedgerRows = useMemo(
     () =>
       perfMeasureSync(
-        'page.Finance.derive.reserveLedgerRows',
+        "page.Finance.derive.reserveLedgerRows",
         () => {
-          if (
-            activeTab === 'cash'
-            && !isDetailedCashbookReady
-          ) {
+          if (activeTab === "cash" && !isDetailedCashbookReady) {
             return [] as ReserveLedgerRow[];
           }
 
@@ -5696,184 +3828,142 @@ export default function Finance({
            * remain visible without subtracting them again from
            * the current saved reserve snapshot.
            */
-          const ledgerStartMs =
-            new Date(
-              openSession.startTime
-            ).getTime();
+          const ledgerStartMs = new Date(openSession.startTime).getTime();
 
           if (!Number.isFinite(ledgerStartMs)) {
             return [] as ReserveLedgerRow[];
           }
 
           const inWindow = (iso?: string) => {
-            const at =
-              new Date(iso || '').getTime();
+            const at = new Date(iso || "").getTime();
 
-            return (
-              Number.isFinite(at)
-              && at >= ledgerStartMs
-            );
+            return Number.isFinite(at) && at >= ledgerStartMs;
           };
 
           const rows: ReserveLedgerRow[] = [];
 
-          const purchaseOrderList =
-            (data.purchaseOrders || []) as any[];
+          const purchaseOrderList = (data.purchaseOrders || []) as any[];
 
-          const purchaseOrderById =
-            new Map<string, any>(
-              purchaseOrderList
-                .filter(order => order?.id)
-                .map(order => [
-                  String(order.id),
-                  order,
-                ])
-            );
+          const purchaseOrderById = new Map<string, any>(
+            purchaseOrderList
+              .filter((order) => order?.id)
+              .map((order) => [String(order.id), order]),
+          );
 
           const resolveReserveOrder = (
             rawOrderId?: unknown,
-            rawOrderRef?: unknown
+            rawOrderRef?: unknown,
           ) => {
-            const orderId =
-              String(rawOrderId || '').trim();
+            const orderId = String(rawOrderId || "").trim();
 
-            if (
-              orderId
-              && purchaseOrderById.has(orderId)
-            ) {
-              return purchaseOrderById.get(
-                orderId
-              );
+            if (orderId && purchaseOrderById.has(orderId)) {
+              return purchaseOrderById.get(orderId);
             }
 
-            const orderRef =
-              String(rawOrderRef || '').trim();
+            const orderRef = String(rawOrderRef || "").trim();
 
             if (!orderRef) {
               return undefined;
             }
 
-            return purchaseOrderList.find(
-              order => {
-                const possibleRefs = [
-                  order?.id,
-                  order?.orderRef,
-                  order?.reference,
-                  order?.poNumber,
-                  order?.orderNo,
-                  order?.orderNumber,
-                ];
+            return purchaseOrderList.find((order) => {
+              const possibleRefs = [
+                order?.id,
+                order?.orderRef,
+                order?.reference,
+                order?.poNumber,
+                order?.orderNo,
+                order?.orderNumber,
+              ];
 
-                return possibleRefs.some(
-                  value =>
-                    String(value || '').trim()
-                    === orderRef
-                );
-              }
-            );
+              return possibleRefs.some(
+                (value) => String(value || "").trim() === orderRef,
+              );
+            });
           };
 
           const buildReserveOrderDetail = (
             allocation: any,
             fallbackOrder: any,
             fallbackAmount: number,
-            index: number
+            index: number,
           ) => {
             const order =
-              fallbackOrder
-              || resolveReserveOrder(
-                allocation?.orderId
-                || allocation?.purchaseOrderId,
-                allocation?.orderRef
+              fallbackOrder ||
+              resolveReserveOrder(
+                allocation?.orderId || allocation?.purchaseOrderId,
+                allocation?.orderRef,
               );
 
-            const orderItems =
-              Array.isArray(order?.items)
-                ? order.items
-                : Array.isArray(order?.products)
-                  ? order.products
-                  : [];
+            const orderItems = Array.isArray(order?.items)
+              ? order.items
+              : Array.isArray(order?.products)
+                ? order.products
+                : [];
 
-            const firstItem =
-              orderItems[0] || null;
+            const firstItem = orderItems[0] || null;
 
             const productId =
-              allocation?.productId
-              || firstItem?.productId
-              || firstItem?.id
-              || order?.productId
-              || order?.itemId
-              || '';
+              allocation?.productId ||
+              firstItem?.productId ||
+              firstItem?.id ||
+              order?.productId ||
+              order?.itemId ||
+              "";
 
-            const product =
-              productId
-                ? productsById.get(
-                    String(productId)
-                  )
-                : undefined;
+            const product = productId
+              ? productsById.get(String(productId))
+              : undefined;
 
-            const reference =
-              String(
-                allocation?.orderRef
-                || order?.orderRef
-                || order?.reference
-                || order?.poNumber
-                || order?.orderNo
-                || order?.orderNumber
-                || order?.id
-                || ''
-              ).trim();
+            const reference = String(
+              allocation?.orderRef ||
+                order?.orderRef ||
+                order?.reference ||
+                order?.poNumber ||
+                order?.orderNo ||
+                order?.orderNumber ||
+                order?.id ||
+                "",
+            ).trim();
 
-            const name =
-              String(
-                allocation?.productName
-                || allocation?.name
-                || firstItem?.name
-                || order?.productName
-                || order?.itemName
-                || order?.title
-                || product?.name
-                || (
-                  reference
-                    ? `Purchase Order ${reference}`
-                    : 'Purchase order'
-                )
-              ).trim();
+            const name = String(
+              allocation?.productName ||
+                allocation?.name ||
+                firstItem?.name ||
+                order?.productName ||
+                order?.itemName ||
+                order?.title ||
+                product?.name ||
+                (reference ? `Purchase Order ${reference}` : "Purchase order"),
+            ).trim();
 
-            const image =
-              String(
-                allocation?.thumbnailImage
-                || allocation?.image
-                || allocation?.productImage
-                || firstItem?.thumbnailImage
-                || firstItem?.image
-                || order?.thumbnailImage
-                || order?.image
-                || order?.productImage
-                || product?.thumbnailImage
-                || product?.image
-                || ''
-              );
+            const image = String(
+              allocation?.thumbnailImage ||
+                allocation?.image ||
+                allocation?.productImage ||
+                firstItem?.thumbnailImage ||
+                firstItem?.image ||
+                order?.thumbnailImage ||
+                order?.image ||
+                order?.productImage ||
+                product?.thumbnailImage ||
+                product?.image ||
+                "",
+            );
 
-            const amount =
-              Math.max(
-                0,
-                Number(
-                  allocation?.amount
-                  ?? fallbackAmount
-                  ?? 0
-                ) || 0
-              );
+            const amount = Math.max(
+              0,
+              Number(allocation?.amount ?? fallbackAmount ?? 0) || 0,
+            );
 
             return {
-              id:
-                String(
-                  allocation?.id
-                  || allocation?.orderId
-                  || order?.id
-                  || reference
-                  || `reserve-detail-${index}`
-                ),
+              id: String(
+                allocation?.id ||
+                  allocation?.orderId ||
+                  order?.id ||
+                  reference ||
+                  `reserve-detail-${index}`,
+              ),
 
               name,
               reference,
@@ -5882,223 +3972,121 @@ export default function Finance({
             };
           };
 
-
           // --------------------------------------------------
           // MANUAL RESERVE LEDGER
           // --------------------------------------------------
 
-          const persistedLedger =
-            Array.isArray(
-              openSession.reserveCashLedger
-            )
-              ? openSession.reserveCashLedger
-              : [];
+          const persistedLedger = Array.isArray(openSession.reserveCashLedger)
+            ? openSession.reserveCashLedger
+            : [];
 
-          const isReserveReconstructionPlaceholder =
-            (entry: any) => {
-              const note =
-                String(
-                  entry?.note || ''
-                )
-                  .trim()
-                  .toLowerCase();
+          const isReserveReconstructionPlaceholder = (entry: any) => {
+            const note = String(entry?.note || "")
+              .trim()
+              .toLowerCase();
 
-              return (
-                note.includes(
-                  'testing adjustment: missing reserve movement'
-                )
-                || note.includes(
-                  'missing reserve movement needed to match saved reservedcashonhand'
-                )
-              );
-            };
-
-          const visiblePersistedLedger =
-            persistedLedger.filter(
-              entry =>
-                !isReserveReconstructionPlaceholder(
-                  entry
-                )
+            return (
+              note.includes("testing adjustment: missing reserve movement") ||
+              note.includes(
+                "missing reserve movement needed to match saved reservedcashonhand",
+              )
             );
+          };
 
-          visiblePersistedLedger.forEach(
-            (entry, index) => {
-              const amount =
-                Math.max(
-                  0,
-                  Number(entry.amount || 0)
-                );
-
-              if (
-                !amount
-                || !inWindow(entry.date)
-              ) {
-                return;
-              }
-
-              rows.push({
-                id:
-                  `reserve-ledger-${
-                    entry.id || index
-                  }`,
-
-                date:
-                  entry.date,
-
-                type:
-                  entry.type === 'in'
-                    ? 'Reserve Added'
-                    : 'Reserve Removed',
-
-                details:
-                  entry.note
-                  || (
-                    entry.type === 'in'
-                      ? 'Reserve cash added'
-                      : 'Reserve cash moved out'
-                  ),
-
-                amount,
-
-                direction:
-                  entry.type === 'in'
-                    ? 'in'
-                    : 'out',
-              });
-            }
+          const visiblePersistedLedger = persistedLedger.filter(
+            (entry) => !isReserveReconstructionPlaceholder(entry),
           );
 
+          visiblePersistedLedger.forEach((entry, index) => {
+            const amount = Math.max(0, Number(entry.amount || 0));
+
+            if (!amount || !inWindow(entry.date)) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-ledger-${entry.id || index}`,
+
+              date: entry.date,
+
+              type: entry.type === "in" ? "Reserve Added" : "Reserve Removed",
+
+              details:
+                entry.note ||
+                (entry.type === "in"
+                  ? "Reserve cash added"
+                  : "Reserve cash moved out"),
+
+              amount,
+
+              direction: entry.type === "in" ? "in" : "out",
+            });
+          });
 
           // --------------------------------------------------
           // OPENING RESERVE
           // --------------------------------------------------
 
-          const persistedLedgerNetChange =
-            roundMoney(
-              visiblePersistedLedger.reduce(
-                (sum, entry) => {
-                  const amount =
-                    Math.max(
-                      0,
-                      Number(
-                        entry.amount || 0
-                      )
-                    );
+          const persistedLedgerNetChange = roundMoney(
+            visiblePersistedLedger.reduce((sum, entry) => {
+              const amount = Math.max(0, Number(entry.amount || 0));
 
-                  return (
-                    sum
-                    + (
-                      entry.type === 'in'
-                        ? amount
-                        : -amount
-                    )
-                  );
-                },
-                0
-              )
-            );
-// --------------------------------------------------
+              return sum + (entry.type === "in" ? amount : -amount);
+            }, 0),
+          );
+          // --------------------------------------------------
           // CUSTOMER RESERVE TRANSACTIONS
           // --------------------------------------------------
 
-          (data.transactions || []).forEach(
-            tx => {
-              const type =
-                String(
-                  (tx as any).type || ''
-                )
-                  .trim()
-                  .toLowerCase();
+          (data.transactions || []).forEach((tx) => {
+            const type = String((tx as any).type || "")
+              .trim()
+              .toLowerCase();
 
-              const returnMode =
-                String(
-                  (tx as any)
-                    .returnHandlingMode
-                  || ''
-                )
-                  .trim()
-                  .toLowerCase();
+            const returnMode = String((tx as any).returnHandlingMode || "")
+              .trim()
+              .toLowerCase();
 
-              const isCashReturn =
-                type === 'return'
-                && (
-                  returnMode === 'refund_cash'
-                  || (
-                    tx as any
-                  ).paymentMethod === 'Cash'
-                );
+            const isCashReturn =
+              type === "return" &&
+              (returnMode === "refund_cash" ||
+                (tx as any).paymentMethod === "Cash");
 
-              const isCustomerCashOut =
-                type === 'customer_cash_out'
-                && (
-                  tx as any
-                ).paymentMethod === 'Cash';
+            const isCustomerCashOut =
+              type === "customer_cash_out" &&
+              (tx as any).paymentMethod === "Cash";
 
-              if (
-                !(
-                  isCashReturn
-                  || isCustomerCashOut
-                )
-              ) {
-                return;
-              }
-
-              if (
-                !inWindow(
-                  (tx as any).financialDate
-                  || tx.date
-                )
-                || !shouldReduceReserveFromSource(
-                  (tx as any).cashSource
-                )
-              ) {
-                return;
-              }
-
-              rows.push({
-                id:
-                  `reserve-tx-${tx.id}`,
-
-                date:
-                  (tx as any).financialDate
-                  || tx.date,
-
-                type:
-                  isCashReturn
-                    ? 'Return Refund'
-                    : 'Customer Cash Out',
-
-                details:
-                  `${
-                    (tx as any).customerName
-                    || 'Customer'
-                  } • ${
-                    (tx as any).id || ''
-                  }`.trim(),
-
-                partyName:
-                  (tx as any).customerName
-                  || 'Customer',
-
-                reference:
-                  String(tx.id || ''),
-
-                amount:
-                  Math.max(
-                    0,
-                    Math.abs(
-                      Number(
-                        (tx as any).total || 0
-                      )
-                    )
-                  ),
-
-                direction:
-                  'out',
-              });
+            if (!(isCashReturn || isCustomerCashOut)) {
+              return;
             }
-          );
 
+            if (
+              !inWindow((tx as any).financialDate || tx.date) ||
+              !shouldReduceReserveFromSource((tx as any).cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-tx-${tx.id}`,
+
+              date: (tx as any).financialDate || tx.date,
+
+              type: isCashReturn ? "Return Refund" : "Customer Cash Out",
+
+              details: `${(tx as any).customerName || "Customer"} • ${
+                (tx as any).id || ""
+              }`.trim(),
+
+              partyName: (tx as any).customerName || "Customer",
+
+              reference: String(tx.id || ""),
+
+              amount: Math.max(0, Math.abs(Number((tx as any).total || 0))),
+
+              direction: "out",
+            });
+          });
 
           // --------------------------------------------------
           // SUPPLIER PAYMENTS FROM RESERVE
@@ -6135,206 +4123,125 @@ export default function Finance({
                 amount?: unknown;
               }>;
             }>
-          ).forEach(
-            (payment, paymentIndex) => {
-              if (payment.deletedAt) {
-                return;
-              }
-
-              if (
-                getSupplierPaymentMethodForDrawer(
-                  payment.method
-                ) !== 'cash'
-              ) {
-                return;
-              }
-
-              const paymentDate =
-                payment.paidAt
-                || payment.paymentDate
-                || payment.date
-                || payment.createdAt
-                || '';
-
-              const reserveFundingPaymentId =
-                String(
-                  payment.id || ''
-                );
-
-              const reserveFundingHistoryRows =
-                purchaseOrderList.flatMap(
-                  order =>
-                    (
-                      (
-                        order.paymentHistory
-                        || []
-                      ) as any[]
-                    )
-                      .filter(
-                        history =>
-                          reserveFundingPaymentId
-                          && String(
-                            history
-                              ?.supplierPaymentId
-                            || ''
-                          ) === reserveFundingPaymentId
-                      )
-                      .map(
-                        history => ({
-                          order,
-                          history,
-                        })
-                      )
-                );
-
-              const isReserveFundedSupplierPayment =
-                shouldReduceReserveFromSource(
-                  payment.cashSource
-                )
-                || reserveFundingHistoryRows.some(
-                  ({ history }) =>
-                    shouldReduceReserveFromSource(
-                      history?.cashSource
-                    )
-                );
-
-              if (
-                !inWindow(paymentDate)
-                || !isReserveFundedSupplierPayment
-              ) {
-                return;
-              }
-
-              const paymentAmount =
-                Math.max(
-                  0,
-                  Number(
-                    payment.amount || 0
-                  )
-                );
-
-              const explicitAllocations =
-                Array.isArray(
-                  payment.allocations
-                )
-                  ? payment.allocations
-                  : [];
-
-              /*
-               * Older payment records may not expose
-               * allocations directly. In that case,
-               * recover linked PO payment-history rows
-               * by supplierPaymentId.
-               */
-              const paymentId =
-                String(
-                  payment.id || ''
-                );
-
-              const linkedAllocations =
-                explicitAllocations.length
-                  ? []
-                  : purchaseOrderList.flatMap(
-                      order =>
-                        (
-                          (
-                            order.paymentHistory
-                            || []
-                          ) as any[]
-                        )
-                          .filter(
-                            history =>
-                              paymentId
-                              && String(
-                                history
-                                  ?.supplierPaymentId
-                                || ''
-                              ) === paymentId
-                          )
-                          .map(
-                            history => ({
-                              orderId:
-                                order.id,
-
-                              orderRef:
-                                order.orderRef
-                                || order.reference
-                                || order.poNumber
-                                || order.orderNo
-                                || order.orderNumber
-                                || order.id,
-
-                              amount:
-                                history.amount,
-                            })
-                          )
-                    );
-
-              const allocationSource =
-                explicitAllocations.length
-                  ? explicitAllocations
-                  : linkedAllocations;
-
-              const detailItems =
-                allocationSource.map(
-                  (allocation, index) => {
-                    const linkedOrder =
-                      resolveReserveOrder(
-                        allocation?.orderId
-                        || allocation
-                          ?.purchaseOrderId,
-
-                        allocation?.orderRef
-                      );
-
-                    return buildReserveOrderDetail(
-                      allocation,
-                      linkedOrder,
-                      0,
-                      index
-                    );
-                  }
-                );
-
-              rows.push({
-                id:
-                  `reserve-supplier-${
-                    payment.id
-                    || paymentIndex
-                  }`,
-
-                date:
-                  paymentDate,
-
-                type:
-                  'Supplier Payment',
-
-                details:
-                  payment.note
-                  || 'Paid from Reserve Cash',
-
-                partyName:
-                  payment.partyName
-                  || 'Supplier',
-
-                reference:
-                  payment.voucherNo
-                    ? `Voucher ${payment.voucherNo}`
-                    : payment.id
-                      ? `Payment ${payment.id}`
-                      : undefined,
-
-                amount:
-                  paymentAmount,
-
-                direction:
-                  'out',
-
-                detailItems,
-              });
+          ).forEach((payment, paymentIndex) => {
+            if (payment.deletedAt) {
+              return;
             }
-          );
 
+            if (getSupplierPaymentMethodForDrawer(payment.method) !== "cash") {
+              return;
+            }
+
+            const paymentDate =
+              payment.paidAt ||
+              payment.paymentDate ||
+              payment.date ||
+              payment.createdAt ||
+              "";
+
+            const reserveFundingPaymentId = String(payment.id || "");
+
+            const reserveFundingHistoryRows = purchaseOrderList.flatMap(
+              (order) =>
+                ((order.paymentHistory || []) as any[])
+                  .filter(
+                    (history) =>
+                      reserveFundingPaymentId &&
+                      String(history?.supplierPaymentId || "") ===
+                        reserveFundingPaymentId,
+                  )
+                  .map((history) => ({
+                    order,
+                    history,
+                  })),
+            );
+
+            const isReserveFundedSupplierPayment =
+              shouldReduceReserveFromSource(payment.cashSource) ||
+              reserveFundingHistoryRows.some(({ history }) =>
+                shouldReduceReserveFromSource(history?.cashSource),
+              );
+
+            if (!inWindow(paymentDate) || !isReserveFundedSupplierPayment) {
+              return;
+            }
+
+            const paymentAmount = Math.max(0, Number(payment.amount || 0));
+
+            const explicitAllocations = Array.isArray(payment.allocations)
+              ? payment.allocations
+              : [];
+
+            /*
+             * Older payment records may not expose
+             * allocations directly. In that case,
+             * recover linked PO payment-history rows
+             * by supplierPaymentId.
+             */
+            const paymentId = String(payment.id || "");
+
+            const linkedAllocations = explicitAllocations.length
+              ? []
+              : purchaseOrderList.flatMap((order) =>
+                  ((order.paymentHistory || []) as any[])
+                    .filter(
+                      (history) =>
+                        paymentId &&
+                        String(history?.supplierPaymentId || "") === paymentId,
+                    )
+                    .map((history) => ({
+                      orderId: order.id,
+
+                      orderRef:
+                        order.orderRef ||
+                        order.reference ||
+                        order.poNumber ||
+                        order.orderNo ||
+                        order.orderNumber ||
+                        order.id,
+
+                      amount: history.amount,
+                    })),
+                );
+
+            const allocationSource = explicitAllocations.length
+              ? explicitAllocations
+              : linkedAllocations;
+
+            const detailItems = allocationSource.map((allocation, index) => {
+              const linkedOrder = resolveReserveOrder(
+                allocation?.orderId || allocation?.purchaseOrderId,
+
+                allocation?.orderRef,
+              );
+
+              return buildReserveOrderDetail(allocation, linkedOrder, 0, index);
+            });
+
+            rows.push({
+              id: `reserve-supplier-${payment.id || paymentIndex}`,
+
+              date: paymentDate,
+
+              type: "Supplier Payment",
+
+              details: payment.note || "Paid from Reserve Cash",
+
+              partyName: payment.partyName || "Supplier",
+
+              reference: payment.voucherNo
+                ? `Voucher ${payment.voucherNo}`
+                : payment.id
+                  ? `Payment ${payment.id}`
+                  : undefined,
+
+              amount: paymentAmount,
+
+              direction: "out",
+
+              detailItems,
+            });
+          });
 
           // --------------------------------------------------
           // DIRECT PURCHASE PAYMENTS FROM RESERVE
@@ -6343,411 +4250,245 @@ export default function Finance({
           // supplier payment above is already the canonical row.
           // --------------------------------------------------
 
-          purchaseOrderList.forEach(
-            order => {
-              (
-                (
-                  order.paymentHistory
-                  || []
-                ) as Array<{
-                  id?: string;
-                  amount?: unknown;
-                  method?: unknown;
-                  cashSource?: unknown;
-                  paidAt?: string;
-                  supplierPaymentId?: string;
-                  note?: string;
-                }>
-              ).forEach(
-                payment => {
-                  if (
-                    payment.supplierPaymentId
-                  ) {
-                    return;
-                  }
+          purchaseOrderList.forEach((order) => {
+            (
+              (order.paymentHistory || []) as Array<{
+                id?: string;
+                amount?: unknown;
+                method?: unknown;
+                cashSource?: unknown;
+                paidAt?: string;
+                supplierPaymentId?: string;
+                note?: string;
+              }>
+            ).forEach((payment) => {
+              if (payment.supplierPaymentId) {
+                return;
+              }
 
-                  if (
-                    String(
-                      payment.method
-                      || 'cash'
-                    )
-                      .trim()
-                      .toLowerCase()
-                    !== 'cash'
-                  ) {
-                    return;
-                  }
+              if (
+                String(payment.method || "cash")
+                  .trim()
+                  .toLowerCase() !== "cash"
+              ) {
+                return;
+              }
 
-                  const effectiveAt = [
-                    payment.paidAt,
-                    order.updatedAt,
-                    order.effectiveAt,
-                    order.orderDate,
-                    order.createdAt,
-                  ]
-                    .map(
-                      value =>
-                        new Date(
-                          value || ''
-                        ).getTime()
-                    )
-                    .filter(Number.isFinite)
-                    .sort(
-                      (a, b) =>
-                        b - a
-                    )[0];
+              const effectiveAt = [
+                payment.paidAt,
+                order.updatedAt,
+                order.effectiveAt,
+                order.orderDate,
+                order.createdAt,
+              ]
+                .map((value) => new Date(value || "").getTime())
+                .filter(Number.isFinite)
+                .sort((a, b) => b - a)[0];
 
-                  const effectiveDate =
-                    Number.isFinite(
-                      effectiveAt
-                    )
-                      ? new Date(
-                          effectiveAt
-                        ).toISOString()
-                      : (
-                          payment.paidAt
-                          || order.updatedAt
-                          || order.effectiveAt
-                          || order.orderDate
-                          || order.createdAt
-                        );
+              const effectiveDate = Number.isFinite(effectiveAt)
+                ? new Date(effectiveAt).toISOString()
+                : payment.paidAt ||
+                  order.updatedAt ||
+                  order.effectiveAt ||
+                  order.orderDate ||
+                  order.createdAt;
 
-                  if (
-                    !inWindow(
-                      effectiveDate
-                    )
-                    || !shouldReduceReserveFromSource(
-                      payment.cashSource
-                    )
-                  ) {
-                    return;
-                  }
+              if (
+                !inWindow(effectiveDate) ||
+                !shouldReduceReserveFromSource(payment.cashSource)
+              ) {
+                return;
+              }
 
-                  const amount =
-                    Math.max(
-                      0,
-                      Number(
-                        payment.amount || 0
-                      )
-                    );
+              const amount = Math.max(0, Number(payment.amount || 0));
 
-                  const detailItem =
-                    buildReserveOrderDetail(
-                      {
-                        id:
-                          payment.id,
+              const detailItem = buildReserveOrderDetail(
+                {
+                  id: payment.id,
 
-                        orderId:
-                          order.id,
+                  orderId: order.id,
 
-                        orderRef:
-                          order.orderRef
-                          || order.reference
-                          || order.poNumber
-                          || order.orderNo
-                          || order.orderNumber
-                          || order.id,
+                  orderRef:
+                    order.orderRef ||
+                    order.reference ||
+                    order.poNumber ||
+                    order.orderNo ||
+                    order.orderNumber ||
+                    order.id,
 
-                        amount,
-                      },
-                      order,
-                      amount,
-                      0
-                    );
-
-                  rows.push({
-                    id:
-                      `reserve-purchase-${
-                        payment.id
-                        || order.id
-                      }`,
-
-                    date:
-                      effectiveDate,
-
-                    type:
-                      'Purchase Payment',
-
-                    details:
-                      payment.note
-                      || 'Paid from Reserve Cash',
-
-                    partyName:
-                      order.partyName
-                      || 'Supplier',
-
-                    reference:
-                      detailItem.reference,
-
-                    amount,
-
-                    direction:
-                      'out',
-
-                    detailItems:
-                      [detailItem],
-                  });
-                }
+                  amount,
+                },
+                order,
+                amount,
+                0,
               );
-            }
-          );
 
+              rows.push({
+                id: `reserve-purchase-${payment.id || order.id}`,
+
+                date: effectiveDate,
+
+                type: "Purchase Payment",
+
+                details: payment.note || "Paid from Reserve Cash",
+
+                partyName: order.partyName || "Supplier",
+
+                reference: detailItem.reference,
+
+                amount,
+
+                direction: "out",
+
+                detailItems: [detailItem],
+              });
+            });
+          });
 
           // --------------------------------------------------
           // CASH WITHDRAWALS
           // --------------------------------------------------
 
-          cashAdjustments.forEach(
-            entry => {
-              if (
-                entry.type
-                !== 'cash_withdrawal'
-              ) {
-                return;
-              }
-
-              if (
-                !inWindow(
-                  entry.effectiveAt
-                  || entry.createdAt
-                )
-                || !shouldReduceReserveFromSource(
-                  entry.cashSource
-                )
-              ) {
-                return;
-              }
-
-              rows.push({
-                id:
-                  `reserve-withdrawal-${
-                    entry.id
-                  }`,
-
-                date:
-                  entry.effectiveAt
-                  || entry.createdAt,
-
-                type:
-                  'Cash Withdrawal',
-
-                details:
-                  entry.note
-                  || entry.title
-                  || entry.reference
-                  || 'Manual withdrawal',
-
-                reference:
-                  entry.reference,
-
-                amount:
-                  Math.max(
-                    0,
-                    Number(
-                      entry.amount || 0
-                    )
-                  ),
-
-                direction:
-                  'out',
-              });
+          cashAdjustments.forEach((entry) => {
+            if (entry.type !== "cash_withdrawal") {
+              return;
             }
-          );
 
+            if (
+              !inWindow(entry.effectiveAt || entry.createdAt) ||
+              !shouldReduceReserveFromSource(entry.cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-withdrawal-${entry.id}`,
+
+              date: entry.effectiveAt || entry.createdAt,
+
+              type: "Cash Withdrawal",
+
+              details:
+                entry.note ||
+                entry.title ||
+                entry.reference ||
+                "Manual withdrawal",
+
+              reference: entry.reference,
+
+              amount: Math.max(0, Number(entry.amount || 0)),
+
+              direction: "out",
+            });
+          });
 
           // --------------------------------------------------
           // MANUAL CASH OUT
           // --------------------------------------------------
 
-          (
-            data.manualCashbookEntries
-            || []
-          ).forEach(
-            entry => {
-              if (
-                entry?.isDeleted
-                || entry.type
-                  !== 'cash_out'
-              ) {
-                return;
-              }
-
-              if (
-                !inWindow(
-                  entry.date
-                  || entry.createdAt
-                )
-                || !shouldReduceReserveFromSource(
-                  entry.cashSource
-                )
-              ) {
-                return;
-              }
-
-              rows.push({
-                id:
-                  `reserve-manual-${
-                    entry.id
-                  }`,
-
-                date:
-                  entry.date
-                  || entry.createdAt,
-
-                type:
-                  'Manual Cash Out',
-
-                details:
-                  entry.details
-                  || 'Manual cash out',
-
-                amount:
-                  Math.max(
-                    0,
-                    Number(
-                      entry.amount || 0
-                    )
-                  ),
-
-                direction:
-                  'out',
-              });
+          (data.manualCashbookEntries || []).forEach((entry) => {
+            if (entry?.isDeleted || entry.type !== "cash_out") {
+              return;
             }
-          );
 
+            if (
+              !inWindow(entry.date || entry.createdAt) ||
+              !shouldReduceReserveFromSource(entry.cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-manual-${entry.id}`,
+
+              date: entry.date || entry.createdAt,
+
+              type: "Manual Cash Out",
+
+              details: entry.details || "Manual cash out",
+
+              amount: Math.max(0, Number(entry.amount || 0)),
+
+              direction: "out",
+            });
+          });
 
           // --------------------------------------------------
           // EXPENSES FROM RESERVE
           // --------------------------------------------------
 
-          expenses.forEach(
-            expense => {
-              if (
-                !inWindow(
-                  getExpenseEffectiveDate(
-                    expense
-                  )
-                )
-                || !shouldReduceReserveFromSource(
-                  (
-                    expense as Expense
-                  ).cashSource
-                )
-              ) {
-                return;
-              }
-
-              rows.push({
-                id:
-                  `reserve-expense-${
-                    expense.id
-                  }`,
-
-                date:
-                  getExpenseEffectiveDate(
-                    expense
-                  ),
-
-                type:
-                  'Expense',
-
-                details:
-                  `${expense.title}${
-                    expense.category
-                      ? ` • ${expense.category}`
-                      : ''
-                  }`,
-
-                amount:
-                  Math.max(
-                    0,
-                    Number(
-                      expense.amount || 0
-                    )
-                  ),
-
-                direction:
-                  'out',
-              });
+          expenses.forEach((expense) => {
+            if (
+              !inWindow(getExpenseEffectiveDate(expense)) ||
+              !shouldReduceReserveFromSource((expense as Expense).cashSource)
+            ) {
+              return;
             }
+
+            rows.push({
+              id: `reserve-expense-${expense.id}`,
+
+              date: getExpenseEffectiveDate(expense),
+
+              type: "Expense",
+
+              details: `${expense.title}${
+                expense.category ? ` • ${expense.category}` : ""
+              }`,
+
+              amount: Math.max(0, Number(expense.amount || 0)),
+
+              direction: "out",
+            });
+          });
+
+          const visibleMovementNet = roundMoney(
+            rows.reduce(
+              (sum, row) =>
+                sum + (row.direction === "in" ? row.amount : -row.amount),
+              0,
+            ),
           );
 
-
-          const visibleMovementNet =
-            roundMoney(
-              rows.reduce(
-                (sum, row) =>
-                  sum
-                  + (
-                    row.direction === 'in'
-                      ? row.amount
-                      : -row.amount
-                  ),
-                0
-              )
-            );
-
-          const derivedOpeningReserve =
-            roundMoney(
-              Math.max(
-                0,
-                liveRemainingReserveCash
-                - visibleMovementNet
-              )
-            );
+          const derivedOpeningReserve = roundMoney(
+            Math.max(0, liveRemainingReserveCash - visibleMovementNet),
+          );
 
           if (derivedOpeningReserve > 0) {
             rows.push({
-              id:
-                'reserve-derived-opening-balance',
+              id: "reserve-derived-opening-balance",
 
-              date:
-                openSession.startTime,
+              date: openSession.startTime,
 
-              type:
-                'Opening Reserve',
+              type: "Opening Reserve",
 
-              details:
-                'Opening balance derived from reserve movements',
+              details: "Opening balance derived from reserve movements",
 
-              amount:
-                derivedOpeningReserve,
+              amount: derivedOpeningReserve,
 
-              direction:
-                'in',
+              direction: "in",
             });
           }
 
           return rows.sort(
-            (a, b) =>
-              new Date(b.date).getTime()
-              - new Date(a.date).getTime()
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
           );
         },
         {
-          runId:
-            perfRunIdRef.current,
+          runId: perfRunIdRef.current,
 
           activeTab,
 
           isDetailedCashbookReady,
 
-          openSessionId:
-            openSession?.id
-            || null,
+          openSessionId: openSession?.id || null,
 
-          transactions:
-            data.transactions.length,
+          transactions: data.transactions.length,
 
-          expenses:
-            expenses.length,
+          expenses: expenses.length,
 
-          supplierPayments:
-            (
-              data.supplierPayments
-              || []
-            ).length,
-        }
+          supplierPayments: (data.supplierPayments || []).length,
+        },
       ),
     [
       openSession,
@@ -6765,24 +4506,18 @@ export default function Finance({
       productsById,
       activeTab,
       isDetailedCashbookReady,
-    ]
+    ],
   );
 
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
 
-    const cashAtSale =
-      dailyCashTotals.cashSales || 0;
+    const cashAtSale = dailyCashTotals.cashSales || 0;
 
-    const activeCashSales =
-      Math.max(
-        0,
-        cashAtSale
-        - (
-          dailyCashTotals.deletedSaleCashIncluded
-          || 0
-        )
-      );
+    const activeCashSales = Math.max(
+      0,
+      cashAtSale - (dailyCashTotals.deletedSaleCashIncluded || 0),
+    );
 
     const deletedSaleCashIncludedForRefundOffset =
       dailyCashTotals.deletedSaleCashIncluded || 0;
@@ -6793,49 +4528,44 @@ export default function Finance({
     const customOrderCashCollections =
       dailyCashTotals.customOrderCashCollections || 0;
 
-    const cashAdditions =
-      dailyCashTotals.cashAdditions || 0;
+    const cashAdditions = dailyCashTotals.cashAdditions || 0;
 
     const cashRefunds =
-      dailyCashTotals.activeCashRefunds
-      ?? dailyCashTotals.cashRefunds
-      ?? 0;
+      dailyCashTotals.activeCashRefunds ?? dailyCashTotals.cashRefunds ?? 0;
 
     const deleteCompensationRefunds =
       dailyCashTotals.deleteCompensationRefunds || 0;
 
     const supplierCashPayments =
-      dailyCashTotals.activeSupplierCashPayments
-      ?? dailyCashTotals.supplierCashPayments
-      ?? 0;
+      dailyCashTotals.activeSupplierCashPayments ??
+      dailyCashTotals.supplierCashPayments ??
+      0;
 
     const expenses =
-      dailyCashTotals.activeExpenseTotal
-      ?? dailyCashTotals.expenses
-      ?? dailyCashTotals.expenseTotal
-      ?? 0;
+      dailyCashTotals.activeExpenseTotal ??
+      dailyCashTotals.expenses ??
+      dailyCashTotals.expenseTotal ??
+      0;
 
     const cashWithdrawals =
-      dailyCashTotals.activeCashWithdrawals
-      ?? dailyCashTotals.cashWithdrawals
-      ?? 0;
+      dailyCashTotals.activeCashWithdrawals ??
+      dailyCashTotals.cashWithdrawals ??
+      0;
 
     const grossCashEntered =
-      cashAtSale
-      + customerCashCollections
-      + customOrderCashCollections
-      + cashAdditions;
+      cashAtSale +
+      customerCashCollections +
+      customOrderCashCollections +
+      cashAdditions;
 
     const grossCashExited =
-      cashRefunds
-      + deleteCompensationRefunds
-      + supplierCashPayments
-      + expenses
-      + cashWithdrawals;
+      cashRefunds +
+      deleteCompensationRefunds +
+      supplierCashPayments +
+      expenses +
+      cashWithdrawals;
 
-    const netCashMovement =
-      grossCashEntered
-      - grossCashExited;
+    const netCashMovement = grossCashEntered - grossCashExited;
 
     return {
       openingCash: openSession.openingBalance,
@@ -6855,224 +4585,102 @@ export default function Finance({
       netCashMovement,
       expectedClosing: expectedClosingForOpenSession,
     };
-  }, [
-    openSession,
-    dailyCashTotals,
-    expectedClosingForOpenSession,
-  ]);
+  }, [openSession, dailyCashTotals, expectedClosingForOpenSession]);
 
   useEffect(() => {
     if (!openSession) {
-      setActiveReserveAmount('');
+      setActiveReserveAmount("");
       setIsReserveAmountEditorOpen(false);
       return;
     }
 
-    setActiveReserveAmount('');
+    setActiveReserveAmount("");
     setIsReserveAmountEditorOpen(false);
-  }, [
-    openSession?.id,
-    openSession?.reservedCashOnHand,
-  ]);
+  }, [openSession?.id, openSession?.reservedCashOnHand]);
 
-  const buildLayerFinanceBreakdown = (
-    rows: CashbookRow[]
-  ) => {
-    const grossSales =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.grossSales,
-          0
-        )
-      );
+  const buildLayerFinanceBreakdown = (rows: CashbookRow[]) => {
+    const grossSales = roundMoney(
+      rows.reduce((sum, row) => sum + row.grossSales, 0),
+    );
 
-    const salesReturns =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.salesReturn,
-          0
-        )
-      );
+    const salesReturns = roundMoney(
+      rows.reduce((sum, row) => sum + row.salesReturn, 0),
+    );
 
-    const netSales =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.netSales,
-          0
-        )
-      );
+    const netSales = roundMoney(
+      rows.reduce((sum, row) => sum + row.netSales, 0),
+    );
 
-    const creditSalesCreated =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.creditDueCreated,
-          0
-        )
-      );
+    const creditSalesCreated = roundMoney(
+      rows.reduce((sum, row) => sum + row.creditDueCreated, 0),
+    );
 
-    const onlineSalesAtSale =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.onlineSale,
-          0
-        )
-      );
+    const onlineSalesAtSale = roundMoney(
+      rows.reduce((sum, row) => sum + row.onlineSale, 0),
+    );
 
-    const cogs =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.cogsEffect,
-          0
-        )
-      );
+    const cogs = roundMoney(rows.reduce((sum, row) => sum + row.cogsEffect, 0));
 
-    const grossProfit =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.grossProfitEffect,
-          0
-        )
-      );
+    const grossProfit = roundMoney(
+      rows.reduce((sum, row) => sum + row.grossProfitEffect, 0),
+    );
 
-    const todayExpenses =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.expense,
-          0
-        )
-      );
+    const todayExpenses = roundMoney(
+      rows.reduce((sum, row) => sum + row.expense, 0),
+    );
 
-    const netProfit =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.netProfitEffect,
-          0
-        )
-      );
+    const netProfit = roundMoney(
+      rows.reduce((sum, row) => sum + row.netProfitEffect, 0),
+    );
 
-    const saleCashReceipts =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'sale'
-          )
-          .reduce(
-            (sum, row) =>
-              sum + row.cashIn,
-            0
-          )
-      );
+    const saleCashReceipts = roundMoney(
+      rows
+        .filter((row) => row.type === "sale")
+        .reduce((sum, row) => sum + row.cashIn, 0),
+    );
 
-    const cashCollections =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'payment'
-          )
-          .reduce(
-            (sum, row) =>
-              sum + row.cashIn,
-            0
-          )
-      );
+    const cashCollections = roundMoney(
+      rows
+        .filter((row) => row.type === "payment")
+        .reduce((sum, row) => sum + row.cashIn, 0),
+    );
 
-    const onlineCollections =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'payment'
-          )
-          .reduce(
-            (sum, row) =>
-              sum + row.onlineIn,
-            0
-          )
-      );
+    const onlineCollections = roundMoney(
+      rows
+        .filter((row) => row.type === "payment")
+        .reduce((sum, row) => sum + row.onlineIn, 0),
+    );
 
-    const cashRefunds =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'return'
-          )
-          .reduce(
-            (sum, row) =>
-              sum + row.cashOut,
-            0
-          )
-      );
+    const cashRefunds = roundMoney(
+      rows
+        .filter((row) => row.type === "return")
+        .reduce((sum, row) => sum + row.cashOut, 0),
+    );
 
-    const onlineRefunds =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'return'
-          )
-          .reduce(
-            (sum, row) =>
-              sum + row.onlineOut,
-            0
-          )
-      );
+    const onlineRefunds = roundMoney(
+      rows
+        .filter((row) => row.type === "return")
+        .reduce((sum, row) => sum + row.onlineOut, 0),
+    );
 
-    const dueReductionFromReturns =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'return'
-          )
-          .reduce(
-            (sum, row) =>
-              sum
-              + Math.max(
-                0,
-                -row.currentDueEffect
-              ),
-            0
-          )
-      );
+    const dueReductionFromReturns = roundMoney(
+      rows
+        .filter((row) => row.type === "return")
+        .reduce((sum, row) => sum + Math.max(0, -row.currentDueEffect), 0),
+    );
 
-    const storeCreditCreatedFromReturns =
-      roundMoney(
-        rows
-          .filter(
-            row =>
-              row.type === 'return'
-          )
-          .reduce(
-            (sum, row) =>
-              sum
-              + Math.max(
-                0,
-                row.currentStoreCreditEffect
-              ),
-            0
-          )
-      );
+    const storeCreditCreatedFromReturns = roundMoney(
+      rows
+        .filter((row) => row.type === "return")
+        .reduce(
+          (sum, row) => sum + Math.max(0, row.currentStoreCreditEffect),
+          0,
+        ),
+    );
 
-    const cashMovementAfterExpenses =
-      roundMoney(
-        rows.reduce(
-          (sum, row) =>
-            sum + row.netCashEffect,
-          0
-        )
-      );
+    const cashMovementAfterExpenses = roundMoney(
+      rows.reduce((sum, row) => sum + row.netCashEffect, 0),
+    );
 
     return {
       grossSales,
@@ -7095,14 +4703,10 @@ export default function Finance({
     };
   };
 
-  const expenseActivities: ExpenseActivity[] =
-    useMemo(
-      () =>
-        Array.isArray(data.expenseActivities)
-          ? data.expenseActivities
-          : [],
-      [data]
-    );
+  const expenseActivities: ExpenseActivity[] = useMemo(
+    () => (Array.isArray(data.expenseActivities) ? data.expenseActivities : []),
+    [data],
+  );
 
   const filterExpensesCollection = (
     sourceExpenses: Expense[],
@@ -7111,31 +4715,22 @@ export default function Finance({
       categoryFilter?: string;
     },
   ) => {
-    const normalizedSearch =
-      (
-        options?.searchQuery
-        ?? expenseSearchQuery
-      )
-        .trim()
-        .toLowerCase();
+    const normalizedSearch = (options?.searchQuery ?? expenseSearchQuery)
+      .trim()
+      .toLowerCase();
 
-    const normalizedCategory =
-      (
-        options?.categoryFilter
-        ?? expenseCategoryFilter
-      )
-        .trim()
-        .toLowerCase();
+    const normalizedCategory = (
+      options?.categoryFilter ?? expenseCategoryFilter
+    )
+      .trim()
+      .toLowerCase();
 
     return [...sourceExpenses]
       .filter((expense) => {
         if (
-          normalizedCategory
-          && normalizedCategory !== 'all'
-          && expense.category
-            .trim()
-            .toLowerCase()
-          !== normalizedCategory
+          normalizedCategory &&
+          normalizedCategory !== "all" &&
+          expense.category.trim().toLowerCase() !== normalizedCategory
         ) {
           return false;
         }
@@ -7146,302 +4741,232 @@ export default function Finance({
 
         const haystack = [
           expense.title,
-          expense.note || '',
-          expense.category || '',
+          expense.note || "",
+          expense.category || "",
           expense.id,
         ]
-          .join(' ')
+          .join(" ")
           .toLowerCase();
 
-        return haystack.includes(
-          normalizedSearch
-        );
+        return haystack.includes(normalizedSearch);
       })
       .sort(
         (a, b) =>
-          new Date(
-            getExpenseEffectiveDate(b)
-          ).getTime()
-          - new Date(
-            getExpenseEffectiveDate(a)
-          ).getTime()
+          new Date(getExpenseEffectiveDate(b)).getTime() -
+          new Date(getExpenseEffectiveDate(a)).getTime(),
       );
   };
 
-  const filteredExpenses =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.filteredExpenses',
-          () => {
-            if (
-              !shouldComputeExpenseTabDerives
-            ) {
-              return [] as Expense[];
-            }
-
-            return filterExpensesCollection(
-              expenses
-            );
-          },
-          {
-            runId:
-              perfRunIdRef.current,
-            activeTab,
-            expenses:
-              expenses.length,
-            expensePreset,
-            expenseCategoryFilter,
-            hasSearchQuery:
-              expenseSearchQuery
-                .trim()
-                .length > 0,
+  const filteredExpenses = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.filteredExpenses",
+        () => {
+          if (!shouldComputeExpenseTabDerives) {
+            return [] as Expense[];
           }
-        ),
-      [
-        shouldComputeExpenseTabDerives,
-        expenses,
-        expenseSearchQuery,
-        expenseCategoryFilter,
-        expensePreset,
-        expenseCustomFrom,
-        expenseCustomTo,
-        activeTab,
-      ]
-    );
 
-  const expensesTotalForDate =
-    useMemo(
-      () =>
-        filteredExpenses.reduce(
-          (sum, e) =>
-            sum + e.amount,
-          0
-        ),
-      [filteredExpenses]
-    );
-
-  const expenseReportFilterLabel =
-    useMemo(() => {
-      const labels = [
-        'All expenses',
-      ];
-
-      if (
-        expenseCategoryFilter
-        !== 'all'
-      ) {
-        labels.push(
-          `Category: ${expenseCategoryFilter}`
-        );
-      }
-
-      if (
-        expenseSearchQuery.trim()
-      ) {
-        labels.push(
-          `Search: ${expenseSearchQuery.trim()}`
-        );
-      }
-
-      return labels.join(' | ');
-    }, [
-      expenseCategoryFilter,
-      expenseSearchQuery,
-    ]);
-
-  const expenseFilterLabel =
-    expenseReportFilterLabel;
-
-  const allExpensesTotal =
-    useMemo(
-      () =>
-        shouldComputeExpenseTabDerives
-          ? expenses.reduce(
-              (sum, expense) =>
-                sum
-                + Number(
-                  expense.amount
-                  || 0
-                ),
-              0
-            )
-          : 0,
-      [
-        shouldComputeExpenseTabDerives,
-        expenses,
-      ]
-    );
-
-  const thisMonthExpensesTotal =
-    useMemo(() => {
-      if (
-        !shouldComputeExpenseTabDerives
-      ) {
-        return 0;
-      }
-
-      const currentMonthKey =
-        monthKeyOf(
-          new Date().toISOString()
-        );
-
-      return expenses
-        .filter(
-          expense =>
-            monthKeyOf(
-              getExpenseEffectiveDate(
-                expense
-              )
-            ) === currentMonthKey
-        )
-        .reduce(
-          (sum, expense) =>
-            sum
-            + Number(
-              expense.amount
-              || 0
-            ),
-          0
-        );
-    }, [
+          return filterExpensesCollection(expenses);
+        },
+        {
+          runId: perfRunIdRef.current,
+          activeTab,
+          expenses: expenses.length,
+          expensePreset,
+          expenseCategoryFilter,
+          hasSearchQuery: expenseSearchQuery.trim().length > 0,
+        },
+      ),
+    [
       shouldComputeExpenseTabDerives,
       expenses,
-    ]);
+      expenseSearchQuery,
+      expenseCategoryFilter,
+      expensePreset,
+      expenseCustomFrom,
+      expenseCustomTo,
+      activeTab,
+    ],
+  );
 
-  const latestExpenseLoggedAt =
-    filteredExpenses[0]
-      ? getExpenseEffectiveDate(
-          filteredExpenses[0]
-        )
-      : '';
+  const expensesTotalForDate = useMemo(
+    () => filteredExpenses.reduce((sum, e) => sum + e.amount, 0),
+    [filteredExpenses],
+  );
 
-  const canonicalCustomerBalanceById =
-    useMemo(
-      () =>
-        perfMeasureSync(
-          'page.Finance.derive.canonicalCustomerBalanceById',
-          () => {
-            if (
-              !shouldComputeExpenseTabDerives
-            ) {
-              return new Map<
-                string,
-                ReturnType<
-                  typeof getCanonicalCustomerBalanceView
-                >
-              >();
-            }
+  const expenseReportFilterLabel = useMemo(() => {
+    const labels = ["All expenses"];
 
-            const map =
-              new Map<
-                string,
-                ReturnType<
-                  typeof getCanonicalCustomerBalanceView
-                >
-              >();
+    if (expenseCategoryFilter !== "all") {
+      labels.push(`Category: ${expenseCategoryFilter}`);
+    }
 
-            data.customers.forEach(
-              (customer) => {
-                const view =
-                  getCanonicalCustomerBalanceView(
-                    customer,
-                    data.customers,
-                    data.transactions,
-                    data.upfrontOrders || []
-                  );
+    if (expenseSearchQuery.trim()) {
+      labels.push(`Search: ${expenseSearchQuery.trim()}`);
+    }
 
-                map.set(
-                  customer.id,
-                  view
-                );
-              }
+    return labels.join(" | ");
+  }, [expenseCategoryFilter, expenseSearchQuery]);
+
+  const expenseFilterLabel = expenseReportFilterLabel;
+
+  const allExpensesTotal = useMemo(
+    () =>
+      shouldComputeExpenseTabDerives
+        ? expenses.reduce(
+            (sum, expense) => sum + Number(expense.amount || 0),
+            0,
+          )
+        : 0,
+    [shouldComputeExpenseTabDerives, expenses],
+  );
+
+  const thisMonthExpensesTotal = useMemo(() => {
+    if (!shouldComputeExpenseTabDerives) {
+      return 0;
+    }
+
+    const currentMonthKey = monthKeyOf(new Date().toISOString());
+
+    return expenses
+      .filter(
+        (expense) =>
+          monthKeyOf(getExpenseEffectiveDate(expense)) === currentMonthKey,
+      )
+      .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  }, [shouldComputeExpenseTabDerives, expenses]);
+
+  const latestExpenseLoggedAt = filteredExpenses[0]
+    ? getExpenseEffectiveDate(filteredExpenses[0])
+    : "";
+
+  const canonicalCustomerBalanceById = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.canonicalCustomerBalanceById",
+        () => {
+          if (!shouldComputeExpenseTabDerives) {
+            return new Map<
+              string,
+              ReturnType<typeof getCanonicalCustomerBalanceView>
+            >();
+          }
+
+          const map = new Map<
+            string,
+            ReturnType<typeof getCanonicalCustomerBalanceView>
+          >();
+
+          data.customers.forEach((customer) => {
+            const view = getCanonicalCustomerBalanceView(
+              customer,
+              data.customers,
+              data.transactions,
+              data.upfrontOrders || [],
             );
 
-            return map;
-          },
-          {
-            runId:
-              perfRunIdRef.current,
-            activeTab,
-            customers:
-              data.customers.length,
-            transactions:
-              data.transactions.length,
-            upfrontOrders:
-              (
-                data.upfrontOrders
-                || []
-              ).length,
-          }
-        ),
-      [
-        shouldComputeExpenseTabDerives,
-        data.customers,
-        data.transactions,
-        data.upfrontOrders,
-        activeTab,
-      ]
-    );
+            map.set(customer.id, view);
+          });
 
-  const creditCustomers =
-    useMemo(
-      () =>
-        shouldComputeExpenseTabDerives
-          ? data.customers
-              .filter(
-                c =>
-                  (
-                    canonicalCustomerBalanceById
-                      .get(c.id)
-                      ?.currentDue
-                    || 0
-                  ) > 0
-              )
-              .sort(
-                (a, b) =>
-                  (
-                    canonicalCustomerBalanceById
-                      .get(b.id)
-                      ?.currentDue
-                    || 0
-                  )
-                  - (
-                    canonicalCustomerBalanceById
-                      .get(a.id)
-                      ?.currentDue
-                    || 0
-                  )
-              )
-          : [],
-      [
-        shouldComputeExpenseTabDerives,
-        data.customers,
-        canonicalCustomerBalanceById,
-      ]
-    );
-      const dueStoreCreditSummary = useMemo(() => perfMeasureSync('page.Finance.derive.dueStoreCreditSummary', () => {
-    if (!shouldComputeExpenseTabDerives) {
-      return { status: 'idle' as const, totalDue: 0, totalStoreCredit: 0, errorMessage: '' };
-    }
-    try {
-      const snapshot = getCanonicalCustomerBalanceSnapshot(data.customers, data.transactions, data.upfrontOrders || []);
-      return { status: 'ok' as const, totalDue: snapshot.totalDue, totalStoreCredit: snapshot.totalStoreCredit, errorMessage: '' };
-    } catch (error) {
-      return { status: 'error' as const, totalDue: 0, totalStoreCredit: 0, errorMessage: error instanceof Error ? error.message : 'Ledger calculation unavailable.' };
-    }
-  }, {
-    runId: perfRunIdRef.current,
-    activeTab,
-    customers: data.customers.length,
-    transactions: data.transactions.length,
-    upfrontOrders: (data.upfrontOrders || []).length,
-  }), [shouldComputeExpenseTabDerives, data.customers, data.transactions, data.upfrontOrders, activeTab]);
+          return map;
+        },
+        {
+          runId: perfRunIdRef.current,
+          activeTab,
+          customers: data.customers.length,
+          transactions: data.transactions.length,
+          upfrontOrders: (data.upfrontOrders || []).length,
+        },
+      ),
+    [
+      shouldComputeExpenseTabDerives,
+      data.customers,
+      data.transactions,
+      data.upfrontOrders,
+      activeTab,
+    ],
+  );
+
+  const creditCustomers = useMemo(
+    () =>
+      shouldComputeExpenseTabDerives
+        ? data.customers
+            .filter(
+              (c) =>
+                (canonicalCustomerBalanceById.get(c.id)?.currentDue || 0) > 0,
+            )
+            .sort(
+              (a, b) =>
+                (canonicalCustomerBalanceById.get(b.id)?.currentDue || 0) -
+                (canonicalCustomerBalanceById.get(a.id)?.currentDue || 0),
+            )
+        : [],
+    [
+      shouldComputeExpenseTabDerives,
+      data.customers,
+      canonicalCustomerBalanceById,
+    ],
+  );
+  const dueStoreCreditSummary = useMemo(
+    () =>
+      perfMeasureSync(
+        "page.Finance.derive.dueStoreCreditSummary",
+        () => {
+          if (!shouldComputeExpenseTabDerives) {
+            return {
+              status: "idle" as const,
+              totalDue: 0,
+              totalStoreCredit: 0,
+              errorMessage: "",
+            };
+          }
+          try {
+            const snapshot = getCanonicalCustomerBalanceSnapshot(
+              data.customers,
+              data.transactions,
+              data.upfrontOrders || [],
+            );
+            return {
+              status: "ok" as const,
+              totalDue: snapshot.totalDue,
+              totalStoreCredit: snapshot.totalStoreCredit,
+              errorMessage: "",
+            };
+          } catch (error) {
+            return {
+              status: "error" as const,
+              totalDue: 0,
+              totalStoreCredit: 0,
+              errorMessage:
+                error instanceof Error
+                  ? error.message
+                  : "Ledger calculation unavailable.",
+            };
+          }
+        },
+        {
+          runId: perfRunIdRef.current,
+          activeTab,
+          customers: data.customers.length,
+          transactions: data.transactions.length,
+          upfrontOrders: (data.upfrontOrders || []).length,
+        },
+      ),
+    [
+      shouldComputeExpenseTabDerives,
+      data.customers,
+      data.transactions,
+      data.upfrontOrders,
+      activeTab,
+    ],
+  );
 
   const scopedCashbookTransactions = useMemo(() => {
-    if (cashbookScope === 'all') return data.transactions;
-    const cutoff = Date.now() - (90 * 24 * 60 * 60 * 1000);
-    return data.transactions.filter((tx) => new Date(tx.date).getTime() >= cutoff);
+    if (cashbookScope === "all") return data.transactions;
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    return data.transactions.filter(
+      (tx) => new Date(tx.date).getTime() >= cutoff,
+    );
   }, [data.transactions, cashbookScope]);
 
   const cashbookRows = useMemo(() => {
@@ -7455,14 +4980,14 @@ export default function Finance({
     const events: Array<{
       date: string;
       kind:
-        | 'tx'
-        | 'expense'
-        | 'deleted'
-        | 'delete_compensation'
-        | 'updated'
-        | 'supplier_payment'
-        | 'cash_adjustment'
-        | 'manual_cash_entry';
+        | "tx"
+        | "expense"
+        | "deleted"
+        | "delete_compensation"
+        | "updated"
+        | "supplier_payment"
+        | "cash_adjustment"
+        | "manual_cash_entry";
       tx?: Transaction;
       expense?: Expense;
       deleted?: DeletedTransactionRecord;
@@ -7472,125 +4997,102 @@ export default function Finance({
       cashAdjustment?: CashAdjustment;
       manualCashEntry?: ManualCashbookEntry;
     }> = [
-      ...scopedCashbookTransactions.map(tx => ({
+      ...scopedCashbookTransactions.map((tx) => ({
         date: tx.date,
-        kind: 'tx' as const,
+        kind: "tx" as const,
         tx,
       })),
 
-      ...expenses.map(expense => ({
+      ...expenses.map((expense) => ({
         date: getExpenseEffectiveDate(expense),
-        kind: 'expense' as const,
+        kind: "expense" as const,
         expense,
       })),
 
-      ...((data.deletedTransactions || []).map(deleted => ({
+      ...(data.deletedTransactions || []).map((deleted) => ({
         date: deleted.deletedAt,
-        kind: 'deleted' as const,
+        kind: "deleted" as const,
         deleted,
-      }))),
+      })),
 
-      ...((data.deleteCompensations || []).map(compensation => ({
+      ...(data.deleteCompensations || []).map((compensation) => ({
         date: compensation.createdAt,
-        kind: 'delete_compensation' as const,
+        kind: "delete_compensation" as const,
         compensation,
-      }))),
+      })),
 
-      ...((data.updatedTransactionEvents || []).map(updated => ({
+      ...(data.updatedTransactionEvents || []).map((updated) => ({
         date: updated.updatedAt,
-        kind: 'updated' as const,
+        kind: "updated" as const,
         updated,
-      }))),
+      })),
 
-      ...((data.supplierPayments || []).map(supplierPayment => ({
+      ...(data.supplierPayments || []).map((supplierPayment) => ({
         date:
-          supplierPayment.paidAt
-          || supplierPayment.paymentDate
-          || supplierPayment.date
-          || supplierPayment.createdAt,
-        kind: 'supplier_payment' as const,
+          supplierPayment.paidAt ||
+          supplierPayment.paymentDate ||
+          supplierPayment.date ||
+          supplierPayment.createdAt,
+        kind: "supplier_payment" as const,
         supplierPayment,
-      }))),
+      })),
 
-      ...((cashAdjustments || []).map(cashAdjustment => ({
-        date:
-          cashAdjustment.effectiveAt
-          || cashAdjustment.createdAt,
-        kind: 'cash_adjustment' as const,
+      ...(cashAdjustments || []).map((cashAdjustment) => ({
+        date: cashAdjustment.effectiveAt || cashAdjustment.createdAt,
+        kind: "cash_adjustment" as const,
         cashAdjustment,
-      }))),
+      })),
 
-      ...((data.manualCashbookEntries || [])
+      ...(data.manualCashbookEntries || [])
         .filter((entry) => !entry?.isDeleted)
-        .map(manualCashEntry => ({
-          date:
-            manualCashEntry.date
-            || manualCashEntry.createdAt,
-          kind: 'manual_cash_entry' as const,
+        .map((manualCashEntry) => ({
+          date: manualCashEntry.date || manualCashEntry.createdAt,
+          kind: "manual_cash_entry" as const,
           manualCashEntry,
-        }))),
+        })),
     ].sort((a, b) => parseTime(a.date) - parseTime(b.date));
 
     let runningDue = 0;
     const rows: CashbookRow[] = [];
 
     events.forEach((event) => {
-      if (
-        event.kind === 'supplier_payment'
-        && event.supplierPayment
-      ) {
+      if (event.kind === "supplier_payment" && event.supplierPayment) {
         const supplierPayment = event.supplierPayment;
 
         if (supplierPayment.deletedAt) return;
 
-        const normalizedMethod =
-          getSupplierPaymentMethodForDrawer(
-            supplierPayment.method
-          );
+        const normalizedMethod = getSupplierPaymentMethodForDrawer(
+          supplierPayment.method,
+        );
 
-        const amount =
-          Math.max(
-            0,
-            Number(
-              supplierPayment.amount || 0
-            )
-          );
+        const amount = Math.max(0, Number(supplierPayment.amount || 0));
 
         if (!(amount > 0)) return;
 
         rows.push({
-          id:
-            `supplier-payment-${supplierPayment.id}`,
+          id: `supplier-payment-${supplierPayment.id}`,
 
           date:
-            supplierPayment.paidAt
-            || supplierPayment.paymentDate
-            || supplierPayment.date
-            || supplierPayment.createdAt,
+            supplierPayment.paidAt ||
+            supplierPayment.paymentDate ||
+            supplierPayment.date ||
+            supplierPayment.createdAt,
 
-          billNo:
-            supplierPayment.voucherNo
-            || supplierPayment.id,
+          billNo: supplierPayment.voucherNo || supplierPayment.id,
 
-          type: 'supplier_payment',
-          eventType: 'supplier_payment',
+          type: "supplier_payment",
+          eventType: "supplier_payment",
           isSynthetic: true,
 
-          customer:
-            supplierPayment.partyName
-            || 'Supplier',
+          customer: supplierPayment.partyName || "Supplier",
 
           notes:
-            normalizedMethod === 'cash'
+            normalizedMethod === "cash"
               ? withCashSourceLabel(
-                  supplierPayment.note
-                  || 'Cash supplier payment',
-                  supplierPayment.cashSource
+                  supplierPayment.note || "Cash supplier payment",
+                  supplierPayment.cashSource,
                 )
-              : (
-                supplierPayment.note
-                || 'Online supplier payment'
-              ),
+              : supplierPayment.note || "Online supplier payment",
 
           grossSales: 0,
           salesReturn: 0,
@@ -7601,22 +5103,13 @@ export default function Finance({
           currentStoreCreditEffect: 0,
           cashIn: 0,
 
-          cashOut:
-            normalizedMethod === 'cash'
-              ? amount
-              : 0,
+          cashOut: normalizedMethod === "cash" ? amount : 0,
 
           onlineIn: 0,
 
-          onlineOut:
-            normalizedMethod === 'online'
-              ? amount
-              : 0,
+          onlineOut: normalizedMethod === "online" ? amount : 0,
 
-          netCashEffect:
-            normalizedMethod === 'cash'
-              ? -amount
-              : 0,
+          netCashEffect: normalizedMethod === "cash" ? -amount : 0,
 
           cogsEffect: 0,
           grossProfitEffect: 0,
@@ -7624,72 +5117,47 @@ export default function Finance({
           netProfitEffect: 0,
 
           effectSummary:
-            normalizedMethod === 'cash'
+            normalizedMethod === "cash"
               ? withCashSourceLabel(
-                  'Supplier cash payment',
-                  supplierPayment.cashSource
+                  "Supplier cash payment",
+                  supplierPayment.cashSource,
                 )
-              : 'Supplier online payment',
+              : "Supplier online payment",
         });
 
         return;
       }
 
-      if (
-        event.kind === 'cash_adjustment'
-        && event.cashAdjustment
-      ) {
-        const cashAdjustment =
-          event.cashAdjustment;
+      if (event.kind === "cash_adjustment" && event.cashAdjustment) {
+        const cashAdjustment = event.cashAdjustment;
 
-        const amount =
-          Math.max(
-            0,
-            Number(
-              cashAdjustment.amount
-              || 0
-            )
-          );
+        const amount = Math.max(0, Number(cashAdjustment.amount || 0));
 
         if (!(amount > 0)) return;
 
-        const isWithdrawal =
-          cashAdjustment.type
-          === 'cash_withdrawal';
+        const isWithdrawal = cashAdjustment.type === "cash_withdrawal";
 
         rows.push({
-          id:
-            `cash-adjustment-${cashAdjustment.id}`,
+          id: `cash-adjustment-${cashAdjustment.id}`,
 
-          date:
-            cashAdjustment.effectiveAt
-            || cashAdjustment.createdAt,
+          date: cashAdjustment.effectiveAt || cashAdjustment.createdAt,
 
-          billNo:
-            cashAdjustment.reference
-            || cashAdjustment.id,
+          billNo: cashAdjustment.reference || cashAdjustment.id,
 
-          type: 'cash_adjustment',
-          eventType: 'cash_adjustment',
+          type: "cash_adjustment",
+          eventType: "cash_adjustment",
           isSynthetic: true,
 
-          customer:
-            cashAdjustment.paidTo
-            || 'Cash Drawer',
+          customer: cashAdjustment.paidTo || "Cash Drawer",
 
-          notes:
-            isWithdrawal
-              ? withCashSourceLabel(
-                  cashAdjustment.note
-                  || cashAdjustment.title
-                  || 'Cash withdrawal',
-                  cashAdjustment.cashSource
-                )
-              : (
-                cashAdjustment.note
-                || cashAdjustment.title
-                || 'Cash addition'
-              ),
+          notes: isWithdrawal
+            ? withCashSourceLabel(
+                cashAdjustment.note ||
+                  cashAdjustment.title ||
+                  "Cash withdrawal",
+                cashAdjustment.cashSource,
+              )
+            : cashAdjustment.note || cashAdjustment.title || "Cash addition",
 
           grossSales: 0,
           salesReturn: 0,
@@ -7699,94 +5167,55 @@ export default function Finance({
           currentDueEffect: 0,
           currentStoreCreditEffect: 0,
 
-          cashIn:
-            isWithdrawal
-              ? 0
-              : amount,
+          cashIn: isWithdrawal ? 0 : amount,
 
-          cashOut:
-            isWithdrawal
-              ? amount
-              : 0,
+          cashOut: isWithdrawal ? amount : 0,
 
           onlineIn: 0,
           onlineOut: 0,
 
-          netCashEffect:
-            isWithdrawal
-              ? -amount
-              : amount,
+          netCashEffect: isWithdrawal ? -amount : amount,
 
           cogsEffect: 0,
           grossProfitEffect: 0,
           expense: 0,
           netProfitEffect: 0,
 
-          effectSummary:
-            isWithdrawal
-              ? withCashSourceLabel(
-                  'Cash withdrawal',
-                  cashAdjustment.cashSource
-                )
-              : 'Cash addition',
+          effectSummary: isWithdrawal
+            ? withCashSourceLabel("Cash withdrawal", cashAdjustment.cashSource)
+            : "Cash addition",
         });
 
         return;
       }
 
-      if (
-        event.kind === 'manual_cash_entry'
-        && event.manualCashEntry
-      ) {
-        const manualCashEntry =
-          event.manualCashEntry;
+      if (event.kind === "manual_cash_entry" && event.manualCashEntry) {
+        const manualCashEntry = event.manualCashEntry;
 
-        const amount =
-          Math.max(
-            0,
-            Number(
-              manualCashEntry.amount
-              || 0
-            )
-          );
+        const amount = Math.max(0, Number(manualCashEntry.amount || 0));
 
         if (!(amount > 0)) return;
 
-        const isCashOut =
-          manualCashEntry.type
-          === 'cash_out';
+        const isCashOut = manualCashEntry.type === "cash_out";
 
         rows.push({
-          id:
-            `manual-cash-entry-${manualCashEntry.id}`,
+          id: `manual-cash-entry-${manualCashEntry.id}`,
 
-          date:
-            manualCashEntry.date
-            || manualCashEntry.createdAt,
+          date: manualCashEntry.date || manualCashEntry.createdAt,
 
-          billNo:
-            manualCashEntry.id,
+          billNo: manualCashEntry.id,
 
-          type:
-            isCashOut
-              ? 'manual_cash_out'
-              : 'manual_cash_in',
+          type: isCashOut ? "manual_cash_out" : "manual_cash_in",
 
-          eventType:
-            'manual_cash_entry',
+          eventType: "manual_cash_entry",
 
           isSynthetic: true,
 
-          customer:
-            'Cash Drawer',
+          customer: "Cash Drawer",
 
           notes:
-            manualCashEntry.details
-            || (
-              isCashOut
-                ? 'Manual cash out'
-                : 'Manual cash in'
-            ),
+            manualCashEntry.details ||
+            (isCashOut ? "Manual cash out" : "Manual cash in"),
 
           grossSales: 0,
           salesReturn: 0,
@@ -7796,72 +5225,47 @@ export default function Finance({
           currentDueEffect: 0,
           currentStoreCreditEffect: 0,
 
-          cashIn:
-            isCashOut
-              ? 0
-              : amount,
+          cashIn: isCashOut ? 0 : amount,
 
-          cashOut:
-            isCashOut
-              ? amount
-              : 0,
+          cashOut: isCashOut ? amount : 0,
 
           onlineIn: 0,
           onlineOut: 0,
 
-          netCashEffect:
-            isCashOut
-              ? -amount
-              : amount,
+          netCashEffect: isCashOut ? -amount : amount,
 
           cogsEffect: 0,
           grossProfitEffect: 0,
           expense: 0,
           netProfitEffect: 0,
 
-          effectSummary:
-            isCashOut
-              ? 'Manual cash out'
-              : 'Manual cash in',
+          effectSummary: isCashOut ? "Manual cash out" : "Manual cash in",
         });
 
         return;
       }
 
-      if (
-        event.kind === 'delete_compensation'
-        && event.compensation
-      ) {
-        const compensation =
-          event.compensation;
+      if (event.kind === "delete_compensation" && event.compensation) {
+        const compensation = event.compensation;
 
         rows.push({
-          id:
-            `delete-compensation-${compensation.id}`,
+          id: `delete-compensation-${compensation.id}`,
 
-          date:
-            compensation.createdAt,
+          date: compensation.createdAt,
 
-          billNo:
-            compensation.transactionId,
+          billNo: compensation.transactionId,
 
-          type:
-            'delete_compensation',
+          type: "delete_compensation",
 
-          eventType:
-            'delete_compensation',
+          eventType: "delete_compensation",
 
           isSynthetic: true,
 
-          sourceTxId:
-            compensation.transactionId,
+          sourceTxId: compensation.transactionId,
 
-          customer:
-            compensation.customerName
-            || '—',
+          customer: compensation.customerName || "—",
 
-          notes:
-            `Mode: ${compensation.mode} • Reason: ${compensation.reason || 'Delete compensation'}`,
+          notes: `Mode: ${compensation.mode} • Reason: ${compensation.reason || "Delete compensation"}`,
 
           grossSales: 0,
           salesReturn: 0,
@@ -7872,14 +5276,12 @@ export default function Finance({
           currentStoreCreditEffect: 0,
           cashIn: 0,
 
-          cashOut:
-            compensation.amount,
+          cashOut: compensation.amount,
 
           onlineIn: 0,
           onlineOut: 0,
 
-          netCashEffect:
-            -compensation.amount,
+          netCashEffect: -compensation.amount,
 
           cogsEffect: 0,
           grossProfitEffect: 0,
@@ -7887,326 +5289,206 @@ export default function Finance({
           netProfitEffect: 0,
 
           effectSummary:
-            compensation.mode
-            === 'cash_refund'
-              ? 'Delete compensation cash out'
-              : 'Delete compensation',
+            compensation.mode === "cash_refund"
+              ? "Delete compensation cash out"
+              : "Delete compensation",
         });
 
         return;
       }
 
-      if (
-        event.kind === 'updated'
-        && event.updated
-      ) {
-        const updatedEvent =
-          event.updated;
+      if (event.kind === "updated" && event.updated) {
+        const updatedEvent = event.updated;
 
-        const delta =
-          updatedEvent.cashbookDelta
-          || {
-            grossSales: 0,
-            salesReturn: 0,
-            netSales: 0,
-            creditDueCreated: 0,
-            onlineSale: 0,
-            currentDueEffect: 0,
-            currentStoreCreditEffect: 0,
-            cashIn: 0,
-            cashOut: 0,
-            onlineIn: 0,
-            onlineOut: 0,
-            netCashEffect: 0,
-            cogsEffect: 0,
-            grossProfitEffect: 0,
-            expense: 0,
-            netProfitEffect: 0,
-          };
+        const delta = updatedEvent.cashbookDelta || {
+          grossSales: 0,
+          salesReturn: 0,
+          netSales: 0,
+          creditDueCreated: 0,
+          onlineSale: 0,
+          currentDueEffect: 0,
+          currentStoreCreditEffect: 0,
+          cashIn: 0,
+          cashOut: 0,
+          onlineIn: 0,
+          onlineOut: 0,
+          netCashEffect: 0,
+          cogsEffect: 0,
+          grossProfitEffect: 0,
+          expense: 0,
+          netProfitEffect: 0,
+        };
 
-        const updatedType =
-          updatedEvent
-            .updatedTransaction
-            ?.type
-          || 'sale';
+        const updatedType = updatedEvent.updatedTransaction?.type || "sale";
 
-        const hasFinancialDelta =
-          hasMaterialFinancialImpact({
-            grossSales:
-              delta.grossSales,
+        const hasFinancialDelta = hasMaterialFinancialImpact({
+          grossSales: delta.grossSales,
 
-            netSales:
-              delta.netSales,
+          netSales: delta.netSales,
 
-            currentDueEffect:
-              delta.currentDueEffect,
+          currentDueEffect: delta.currentDueEffect,
 
-            currentStoreCreditEffect:
-              delta.currentStoreCreditEffect,
+          currentStoreCreditEffect: delta.currentStoreCreditEffect,
 
-            cashIn:
-              delta.cashIn,
+          cashIn: delta.cashIn,
 
-            cashOut:
-              delta.cashOut,
+          cashOut: delta.cashOut,
 
-            onlineIn:
-              delta.onlineIn,
+          onlineIn: delta.onlineIn,
 
-            onlineOut:
-              delta.onlineOut,
+          onlineOut: delta.onlineOut,
 
-            grossProfitEffect:
-              delta.grossProfitEffect,
+          grossProfitEffect: delta.grossProfitEffect,
 
-            netProfitEffect:
-              delta.netProfitEffect,
-          });
+          netProfitEffect: delta.netProfitEffect,
+        });
 
-        const customerChanged =
-          (
-            updatedEvent.changeTags
-            || []
-          ).some(
-            tag =>
-              /customer/i.test(tag)
-          );
+        const customerChanged = (updatedEvent.changeTags || []).some((tag) =>
+          /customer/i.test(tag),
+        );
 
         const effectSummary =
-          updatedEvent.changeSummary
-          || (
-            updatedType === 'return'
-              ? 'Updated return correction'
-              : updatedType === 'payment'
-                ? 'Updated payment correction'
-                : 'Updated sale correction'
-          );
+          updatedEvent.changeSummary ||
+          (updatedType === "return"
+            ? "Updated return correction"
+            : updatedType === "payment"
+              ? "Updated payment correction"
+              : "Updated sale correction");
 
         const changeTagsLabel =
-          (
-            updatedEvent.changeTags
-            || []
-          ).length > 0
-            ? ` • Changes: ${(updatedEvent.changeTags || []).join(', ')}`
-            : '';
+          (updatedEvent.changeTags || []).length > 0
+            ? ` • Changes: ${(updatedEvent.changeTags || []).join(", ")}`
+            : "";
 
         rows.push({
-          id:
-            `update-correction-${updatedEvent.id}`,
+          id: `update-correction-${updatedEvent.id}`,
 
-          date:
-            updatedEvent.updatedAt,
+          date: updatedEvent.updatedAt,
 
-          billNo:
-            updatedEvent.updatedTransactionId,
+          billNo: updatedEvent.updatedTransactionId,
 
-          type:
-            'update_correction',
+          type: "update_correction",
 
-          eventType:
-            'update_correction',
+          eventType: "update_correction",
 
-          isSynthetic:
-            true,
+          isSynthetic: true,
 
-          sourceTxId:
-            updatedEvent.updatedTransactionId,
+          sourceTxId: updatedEvent.updatedTransactionId,
 
           customer:
-            updatedEvent.customerName
-            || updatedEvent
-              .updatedTransaction
-              ?.customerName
-            || '—',
+            updatedEvent.customerName ||
+            updatedEvent.updatedTransaction?.customerName ||
+            "—",
 
-          notes:
-            `Original Tx: ${updatedEvent.originalTransactionId} • Updated Tx: ${updatedEvent.updatedTransactionId}${changeTagsLabel}`,
+          notes: `Original Tx: ${updatedEvent.originalTransactionId} • Updated Tx: ${updatedEvent.updatedTransactionId}${changeTagsLabel}`,
 
-          grossSales:
-            delta.grossSales,
+          grossSales: delta.grossSales,
 
-          salesReturn:
-            delta.salesReturn,
+          salesReturn: delta.salesReturn,
 
-          netSales:
-            delta.netSales,
+          netSales: delta.netSales,
 
-          creditDueCreated:
-            delta.creditDueCreated,
+          creditDueCreated: delta.creditDueCreated,
 
-          onlineSale:
-            delta.onlineSale,
+          onlineSale: delta.onlineSale,
 
-          currentDueEffect:
-            delta.currentDueEffect,
+          currentDueEffect: delta.currentDueEffect,
 
-          currentStoreCreditEffect:
-            delta.currentStoreCreditEffect,
+          currentStoreCreditEffect: delta.currentStoreCreditEffect,
 
-          cashIn:
-            delta.cashIn,
+          cashIn: delta.cashIn,
 
-          cashOut:
-            delta.cashOut,
+          cashOut: delta.cashOut,
 
-          onlineIn:
-            delta.onlineIn,
+          onlineIn: delta.onlineIn,
 
-          onlineOut:
-            delta.onlineOut,
+          onlineOut: delta.onlineOut,
 
-          netCashEffect:
-            delta.netCashEffect,
+          netCashEffect: delta.netCashEffect,
 
-          cogsEffect:
-            delta.cogsEffect,
+          cogsEffect: delta.cogsEffect,
 
-          grossProfitEffect:
-            delta.grossProfitEffect,
+          grossProfitEffect: delta.grossProfitEffect,
 
-          expense:
-            delta.expense,
+          expense: delta.expense,
 
-          netProfitEffect:
-            delta.netProfitEffect,
+          netProfitEffect: delta.netProfitEffect,
 
           effectSummary:
-            (
-              !hasFinancialDelta
-              && customerChanged
-            )
-              ? 'Metadata update — customer changed'
+            !hasFinancialDelta && customerChanged
+              ? "Metadata update — customer changed"
               : effectSummary,
         });
 
         return;
       }
 
-      if (
-        event.kind === 'deleted'
-        && event.deleted
-      ) {
-        const deleted =
-          event.deleted;
+      if (event.kind === "deleted" && event.deleted) {
+        const deleted = event.deleted;
 
-        const original =
-          deleted.originalTransaction;
+        const original = deleted.originalTransaction;
 
-        const amount =
-          Math.abs(
-            deleted.amount
-            || original.total
-            || 0
-          );
+        const amount = Math.abs(deleted.amount || original.total || 0);
 
-        const cogsAmount =
-          getTxCogs(original);
+        const cogsAmount = getTxCogs(original);
 
         const dueDelta =
-          (
-            deleted.afterImpact
-              ?.customerDue
-            || 0
-          )
-          - (
-            deleted.beforeImpact
-              ?.customerDue
-            || 0
-          );
+          (deleted.afterImpact?.customerDue || 0) -
+          (deleted.beforeImpact?.customerDue || 0);
 
         const storeCreditDelta =
-          (
-            deleted.afterImpact
-              ?.customerStoreCredit
-            || 0
+          (deleted.afterImpact?.customerStoreCredit || 0) -
+          (deleted.beforeImpact?.customerStoreCredit || 0);
+
+        const settlement = isSaleLikeTx(original)
+          ? getSaleSettlementBreakdown(original)
+          : {
+              cashPaid: 0,
+              onlinePaid: 0,
+              creditDue: 0,
+            };
+
+        const historicalTransactions = scopedCashbookTransactions
+          .filter(
+            (candidate) =>
+              resolveTransactionTimeForSession(candidate) <
+                resolveTransactionTimeForSession(original) ||
+              (resolveTransactionTimeForSession(candidate) ===
+                resolveTransactionTimeForSession(original) &&
+                candidate.id !== original.id),
           )
-          - (
-            deleted.beforeImpact
-              ?.customerStoreCredit
-            || 0
+          .sort(
+            (a, b) =>
+              resolveTransactionTimeForSession(a) -
+              resolveTransactionTimeForSession(b),
           );
 
-        const settlement =
-          isSaleLikeTx(original)
-            ? getSaleSettlementBreakdown(
-                original
-              )
-            : {
-                cashPaid: 0,
-                onlinePaid: 0,
-                creditDue: 0,
-              };
-
-        const historicalTransactions =
-          scopedCashbookTransactions
-            .filter(
-              candidate =>
-                resolveTransactionTimeForSession(
-                  candidate
-                )
-                < resolveTransactionTimeForSession(
-                  original
-                )
-                || (
-                  resolveTransactionTimeForSession(
-                    candidate
-                  )
-                  === resolveTransactionTimeForSession(
-                    original
-                  )
-                  && candidate.id
-                  !== original.id
-                )
-            )
-            .sort(
-              (a, b) =>
-                resolveTransactionTimeForSession(a)
-                - resolveTransactionTimeForSession(b)
-            );
-
         const returnAllocation =
-          original.type === 'return'
+          original.type === "return"
             ? getCanonicalReturnAllocation(
                 original,
                 historicalTransactions,
-                Math.max(
-                  0,
-                  deleted.beforeImpact
-                    ?.customerDue
-                  || 0
-                )
+                Math.max(0, deleted.beforeImpact?.customerDue || 0),
               )
             : {
                 cashRefund: 0,
                 onlineRefund: 0,
               };
 
-        const deleteCompensationAmount =
-          roundMoney(
-            Math.max(
-              0,
-              Number(
-                deleted.deleteCompensationAmount
-                || 0
-              )
-            )
-          );
+        const deleteCompensationAmount = roundMoney(
+          Math.max(0, Number(deleted.deleteCompensationAmount || 0)),
+        );
 
-        const deleteCompensationMode =
-          deleted.deleteCompensationMode;
+        const deleteCompensationMode = deleted.deleteCompensationMode;
 
         const storeCreditCompensationDelta =
-          deleteCompensationMode
-          === 'store_credit'
+          deleteCompensationMode === "store_credit"
             ? deleteCompensationAmount
             : 0;
 
-        const saleReversal =
-          isSaleLikeTx(original);
+        const saleReversal = isSaleLikeTx(original);
 
-        const returnReversal =
-          original.type
-          === 'return';
+        const returnReversal = original.type === "return";
 
         // Deleted transaction records are audit/history rows.
         // They must not create additional drawer movement because the original
@@ -8214,67 +5496,38 @@ export default function Finance({
         // Real cash payout on delete is represented separately by explicit
         // delete compensation records (event.kind === 'delete_compensation').
         rows.push({
-          id:
-            `deleted-${deleted.id}`,
+          id: `deleted-${deleted.id}`,
 
-          date:
-            deleted.deletedAt,
+          date: deleted.deletedAt,
 
-          billNo:
-            deleted.originalTransactionId,
+          billNo: deleted.originalTransactionId,
 
-          type:
-            'delete_reversal',
+          type: "delete_reversal",
 
-          eventType:
-            'delete_reversal',
+          eventType: "delete_reversal",
 
-          isSynthetic:
-            true,
+          isSynthetic: true,
 
-          sourceTxId:
-            deleted.originalTransactionId,
+          sourceTxId: deleted.originalTransactionId,
 
-          customer:
-            deleted.customerName
-            || '—',
+          customer: deleted.customerName || "—",
 
-          notes:
-            `Deleted ${deleted.type} • Reason: ${deleted.deleteReason || '—'}${deleted.deleteReasonNote ? ` • Note: ${deleted.deleteReasonNote}` : ''}${deleteCompensationAmount > 0 ? ` • Compensation: ${deleteCompensationMode || 'cash_refund'} ${formatINRPrecise(deleteCompensationAmount)}` : ''}`,
+          notes: `Deleted ${deleted.type} • Reason: ${deleted.deleteReason || "—"}${deleted.deleteReasonNote ? ` • Note: ${deleted.deleteReasonNote}` : ""}${deleteCompensationAmount > 0 ? ` • Compensation: ${deleteCompensationMode || "cash_refund"} ${formatINRPrecise(deleteCompensationAmount)}` : ""}`,
 
-          grossSales:
-            saleReversal
-              ? -amount
-              : 0,
+          grossSales: saleReversal ? -amount : 0,
 
-          salesReturn:
-            returnReversal
-              ? -amount
-              : 0,
+          salesReturn: returnReversal ? -amount : 0,
 
-          netSales:
-            saleReversal
-              ? -amount
-              : returnReversal
-                ? amount
-                : 0,
+          netSales: saleReversal ? -amount : returnReversal ? amount : 0,
 
-          creditDueCreated:
-            saleReversal
-              ? -settlement.creditDue
-              : 0,
+          creditDueCreated: saleReversal ? -settlement.creditDue : 0,
 
-          onlineSale:
-            saleReversal
-              ? -settlement.onlinePaid
-              : 0,
+          onlineSale: saleReversal ? -settlement.onlinePaid : 0,
 
-          currentDueEffect:
-            dueDelta,
+          currentDueEffect: dueDelta,
 
           currentStoreCreditEffect:
-            storeCreditDelta
-            - storeCreditCompensationDelta,
+            storeCreditDelta - storeCreditCompensationDelta,
 
           cashIn: 0,
           cashOut: 0,
@@ -8282,83 +5535,55 @@ export default function Finance({
           onlineOut: 0,
           netCashEffect: 0,
 
-          cogsEffect:
-            saleReversal
-              ? -cogsAmount
-              : returnReversal
-                ? cogsAmount
-                : 0,
+          cogsEffect: saleReversal
+            ? -cogsAmount
+            : returnReversal
+              ? cogsAmount
+              : 0,
 
-          grossProfitEffect:
-            saleReversal
-              ? (
-                -amount
-                + cogsAmount
-              )
-              : returnReversal
-                ? (
-                  amount
-                  - cogsAmount
-                )
-                : 0,
+          grossProfitEffect: saleReversal
+            ? -amount + cogsAmount
+            : returnReversal
+              ? amount - cogsAmount
+              : 0,
 
-          expense:
-            0,
+          expense: 0,
 
-          netProfitEffect:
-            saleReversal
-              ? (
-                -amount
-                + cogsAmount
-              )
-              : returnReversal
-                ? (
-                  amount
-                  - cogsAmount
-                )
-                : 0,
+          netProfitEffect: saleReversal
+            ? -amount + cogsAmount
+            : returnReversal
+              ? amount - cogsAmount
+              : 0,
 
-          effectSummary:
-            saleReversal
-              ? 'Deleted sale reversal'
-              : returnReversal
-                ? 'Deleted return reversal'
-                : 'Deleted transaction reversal',
+          effectSummary: saleReversal
+            ? "Deleted sale reversal"
+            : returnReversal
+              ? "Deleted return reversal"
+              : "Deleted transaction reversal",
         });
 
         if (
-          deleteCompensationMode
-          === 'store_credit'
-          && deleteCompensationAmount > 0
+          deleteCompensationMode === "store_credit" &&
+          deleteCompensationAmount > 0
         ) {
           rows.push({
-            id:
-              `deleted-comp-store-credit-${deleted.id}`,
+            id: `deleted-comp-store-credit-${deleted.id}`,
 
-            date:
-              deleted.deletedAt,
+            date: deleted.deletedAt,
 
-            billNo:
-              deleted.originalTransactionId,
+            billNo: deleted.originalTransactionId,
 
-            type:
-              'delete_compensation',
+            type: "delete_compensation",
 
-            eventType:
-              'delete_compensation',
+            eventType: "delete_compensation",
 
-            isSynthetic:
-              true,
+            isSynthetic: true,
 
-            sourceTxId:
-              deleted.originalTransactionId,
+            sourceTxId: deleted.originalTransactionId,
 
-            customer:
-              deleted.customerName
-              || '—',
+            customer: deleted.customerName || "—",
 
-            notes:
-              `Mode: store_credit • Reason: ${deleted.deleteReason || 'Delete compensation'}${deleted.deleteReasonNote ? ` • Note: ${deleted.deleteReasonNote}` : ''}`,
+            notes: `Mode: store_credit • Reason: ${deleted.deleteReason || "Delete compensation"}${deleted.deleteReasonNote ? ` • Note: ${deleted.deleteReasonNote}` : ""}`,
 
             grossSales: 0,
             salesReturn: 0,
@@ -8367,8 +5592,7 @@ export default function Finance({
             onlineSale: 0,
             currentDueEffect: 0,
 
-            currentStoreCreditEffect:
-              deleteCompensationAmount,
+            currentStoreCreditEffect: deleteCompensationAmount,
 
             cashIn: 0,
             cashOut: 0,
@@ -8380,43 +5604,33 @@ export default function Finance({
             expense: 0,
             netProfitEffect: 0,
 
-            effectSummary:
-              'Delete compensation store credit',
+            effectSummary: "Delete compensation store credit",
           });
         }
 
         return;
       }
 
-      if (
-        event.kind === 'expense'
-        && event.expense
-      ) {
-        const expense =
-          event.expense;
+      if (event.kind === "expense" && event.expense) {
+        const expense = event.expense;
 
         rows.push({
-          id:
-            `expense-${expense.id}`,
+          id: `expense-${expense.id}`,
 
-          date:
-            getExpenseEffectiveDate(
-              expense
-            ),
+          date: getExpenseEffectiveDate(expense),
 
-          billNo:
-            expense.id,
+          billNo: expense.id,
 
-          type:
-            'expense',
+          type: "expense",
 
-          eventType:
-            'transaction',
+          eventType: "transaction",
 
-          isSynthetic:
-            false,
-                      customer: '—',
-          notes: withCashSourceLabel(`${expense.title} (${expense.category})`, expense.cashSource),
+          isSynthetic: false,
+          customer: "—",
+          notes: withCashSourceLabel(
+            `${expense.title} (${expense.category})`,
+            expense.cashSource,
+          ),
           grossSales: 0,
           salesReturn: 0,
           netSales: 0,
@@ -8433,7 +5647,10 @@ export default function Finance({
           grossProfitEffect: 0,
           expense: expense.amount,
           netProfitEffect: -expense.amount,
-          effectSummary: withCashSourceLabel('Expense cash out', expense.cashSource),
+          effectSummary: withCashSourceLabel(
+            "Expense cash out",
+            expense.cashSource,
+          ),
         });
 
         return;
@@ -8449,20 +5666,17 @@ export default function Finance({
         const settlement = getSaleSettlementBreakdown(tx);
         const storeCreditUsed = Math.max(0, Number(tx.storeCreditUsed || 0));
 
-        runningDue = Math.max(
-          0,
-          runningDue + settlement.creditDue
-        );
+        runningDue = Math.max(0, runningDue + settlement.creditDue);
 
         rows.push({
           id: `tx-${tx.id}`,
           date: tx.date,
           billNo: tx.id,
-          type: 'sale',
-          eventType: 'transaction',
+          type: "sale",
+          eventType: "transaction",
           isSynthetic: false,
           sourceTxId: tx.id,
-          customer: tx.customerName || 'Walk-in customer',
+          customer: tx.customerName || "Walk-in customer",
           notes: `Cash ${settlement.cashPaid.toFixed(2)} • Online ${settlement.onlinePaid.toFixed(2)} • Credit Due ${settlement.creditDue.toFixed(2)}`,
           grossSales: txAmount,
           salesReturn: 0,
@@ -8482,51 +5696,36 @@ export default function Finance({
           netProfitEffect: txAmount - cogsAmount,
           effectSummary:
             settlement.creditDue > 0
-              ? 'Credit sale created due'
+              ? "Credit sale created due"
               : settlement.onlinePaid > 0
-                ? 'Sale paid online/cash'
-                : 'Cash sale',
+                ? "Sale paid online/cash"
+                : "Cash sale",
         });
 
         return;
       }
 
-      if (tx.type === 'payment') {
-        const paymentToDue = Math.min(
-          runningDue,
-          txAmount
-        );
+      if (tx.type === "payment") {
+        const paymentToDue = Math.min(runningDue, txAmount);
 
-        const storeCreditIncrease = Math.max(
-          0,
-          txAmount - paymentToDue
-        );
+        const storeCreditIncrease = Math.max(0, txAmount - paymentToDue);
 
-        runningDue = Math.max(
-          0,
-          runningDue - paymentToDue
-        );
+        runningDue = Math.max(0, runningDue - paymentToDue);
 
-        const cashIn =
-          tx.paymentMethod === 'Cash'
-            ? txAmount
-            : 0;
+        const cashIn = tx.paymentMethod === "Cash" ? txAmount : 0;
 
-        const onlineIn =
-          tx.paymentMethod === 'Online'
-            ? txAmount
-            : 0;
+        const onlineIn = tx.paymentMethod === "Online" ? txAmount : 0;
 
         rows.push({
           id: `tx-${tx.id}`,
           date: tx.date,
           billNo: tx.id,
-          type: 'payment',
-          eventType: 'transaction',
+          type: "payment",
+          eventType: "transaction",
           isSynthetic: false,
           sourceTxId: tx.id,
-          customer: tx.customerName || '—',
-          notes: `${tx.paymentMethod || 'Cash'} collection`,
+          customer: tx.customerName || "—",
+          notes: `${tx.paymentMethod || "Cash"} collection`,
           grossSales: 0,
           salesReturn: 0,
           netSales: 0,
@@ -8543,57 +5742,37 @@ export default function Finance({
           grossProfitEffect: 0,
           expense: 0,
           netProfitEffect: 0,
-          effectSummary: 'Collection against due',
+          effectSummary: "Collection against due",
         });
 
         return;
       }
 
-      if (tx.type === 'customer_cash_out') {
-        const storeCreditUsed =
-          Math.max(
-            0,
-            Number(tx.storeCreditUsed || 0)
-          );
+      if (tx.type === "customer_cash_out") {
+        const storeCreditUsed = Math.max(0, Number(tx.storeCreditUsed || 0));
 
-        const receivableIncrease =
-          Math.max(
-            0,
-            Number(
-              (tx as any).receivableIncrease
-              || 0
-            )
-            || Math.max(
-              0,
-              txAmount - storeCreditUsed
-            )
-          );
-
-        const cashOut =
-          tx.paymentMethod === 'Cash'
-            ? txAmount
-            : 0;
-
-        const onlineOut =
-          tx.paymentMethod === 'Online'
-            ? txAmount
-            : 0;
-
-        runningDue = Math.max(
+        const receivableIncrease = Math.max(
           0,
-          runningDue + receivableIncrease
+          Number((tx as any).receivableIncrease || 0) ||
+            Math.max(0, txAmount - storeCreditUsed),
         );
+
+        const cashOut = tx.paymentMethod === "Cash" ? txAmount : 0;
+
+        const onlineOut = tx.paymentMethod === "Online" ? txAmount : 0;
+
+        runningDue = Math.max(0, runningDue + receivableIncrease);
 
         rows.push({
           id: `tx-${tx.id}`,
           date: tx.date,
           billNo: tx.id,
-          type: 'customer_cash_out',
-          eventType: 'transaction',
+          type: "customer_cash_out",
+          eventType: "transaction",
           isSynthetic: false,
           sourceTxId: tx.id,
-          customer: tx.customerName || '—',
-          notes: `${tx.paymentMethod || 'Cash'} cash out`,
+          customer: tx.customerName || "—",
+          notes: `${tx.paymentMethod || "Cash"} cash out`,
           grossSales: 0,
           salesReturn: 0,
           netSales: 0,
@@ -8611,53 +5790,44 @@ export default function Finance({
           expense: 0,
           netProfitEffect: 0,
           effectSummary:
-            cashOut > 0
-              ? 'Customer cash out'
-              : 'Customer online cash out',
+            cashOut > 0 ? "Customer cash out" : "Customer online cash out",
         });
 
         return;
       }
 
-      const historicalTransactions =
-        scopedCashbookTransactions
-          .filter(
-            candidate =>
-              resolveTransactionTimeForSession(candidate)
-              < resolveTransactionTimeForSession(tx)
-              || (
-                resolveTransactionTimeForSession(candidate)
-                === resolveTransactionTimeForSession(tx)
-                && candidate.id !== tx.id
-              )
-          )
-          .sort(
-            (a, b) =>
-              resolveTransactionTimeForSession(a)
-              - resolveTransactionTimeForSession(b)
-          );
-
-      const allocation =
-        getCanonicalReturnAllocation(
-          tx,
-          historicalTransactions,
-          runningDue
+      const historicalTransactions = scopedCashbookTransactions
+        .filter(
+          (candidate) =>
+            resolveTransactionTimeForSession(candidate) <
+              resolveTransactionTimeForSession(tx) ||
+            (resolveTransactionTimeForSession(candidate) ===
+              resolveTransactionTimeForSession(tx) &&
+              candidate.id !== tx.id),
+        )
+        .sort(
+          (a, b) =>
+            resolveTransactionTimeForSession(a) -
+            resolveTransactionTimeForSession(b),
         );
 
-      runningDue = Math.max(
-        0,
-        runningDue - allocation.dueReduction
+      const allocation = getCanonicalReturnAllocation(
+        tx,
+        historicalTransactions,
+        runningDue,
       );
+
+      runningDue = Math.max(0, runningDue - allocation.dueReduction);
 
       rows.push({
         id: `tx-${tx.id}`,
         date: tx.date,
         billNo: tx.id,
-        type: 'return',
-        eventType: 'transaction',
+        type: "return",
+        eventType: "transaction",
         isSynthetic: false,
         sourceTxId: tx.id,
-        customer: tx.customerName || '—',
+        customer: tx.customerName || "—",
         notes: `Mode: ${allocation.mode}`,
         grossSales: 0,
         salesReturn: txAmount,
@@ -8677,24 +5847,21 @@ export default function Finance({
         netProfitEffect: -txAmount + cogsAmount,
         effectSummary:
           allocation.cashRefund > 0
-            ? 'Return cash refund'
+            ? "Return cash refund"
             : allocation.onlineRefund > 0
-              ? 'Return online refund'
+              ? "Return online refund"
               : allocation.storeCreditIncrease > 0
-                ? 'Return created store credit'
-                : 'Return reduced due',
+                ? "Return created store credit"
+                : "Return reduced due",
       });
     });
 
     return rows.map((row) => {
-      const layerType =
-        classifyCashbookLayer(row);
+      const layerType = classifyCashbookLayer(row);
 
-      const isCorrectionImpact =
-        layerType === 'adjustment';
+      const isCorrectionImpact = layerType === "adjustment";
 
-      const correctionImpactClass =
-        getCorrectionImpactClass(row);
+      const correctionImpactClass = getCorrectionImpactClass(row);
 
       return normalizeCashbookRowMoney({
         ...row,
@@ -8716,812 +5883,388 @@ export default function Finance({
     shouldComputeDetailedCashbook,
   ]);
 
-  const cashbookRowsWithSignals =
-    useMemo(() => {
-      const returnRows =
-        cashbookRows.filter(
-          row =>
-            row.type === 'return'
-        );
+  const cashbookRowsWithSignals = useMemo(() => {
+    const returnRows = cashbookRows.filter((row) => row.type === "return");
 
-      const avgReturnValue =
+    const avgReturnValue = returnRows.length
+      ? returnRows.reduce((sum, row) => sum + Math.abs(row.salesReturn), 0) /
         returnRows.length
-          ? returnRows.reduce(
-              (sum, row) =>
-                sum
-                + Math.abs(
-                  row.salesReturn
-                ),
-              0
-            )
-            / returnRows.length
-          : 0;
+      : 0;
 
-      const avgBalanceMovement =
-        cashbookRows.length
-          ? cashbookRows.reduce(
-              (sum, row) =>
-                sum
-                + (
-                  Math.abs(
-                    row.currentDueEffect
-                  )
-                  + Math.abs(
-                    row.currentStoreCreditEffect
-                  )
-                ),
-              0
-            )
-            / cashbookRows.length
-          : 0;
+    const avgBalanceMovement = cashbookRows.length
+      ? cashbookRows.reduce(
+          (sum, row) =>
+            sum +
+            (Math.abs(row.currentDueEffect) +
+              Math.abs(row.currentStoreCreditEffect)),
+          0,
+        ) / cashbookRows.length
+      : 0;
 
-      return cashbookRows.map(
-        (row) => {
-          const signals =
-            getCashbookAuditSignals(
-              row,
-              {
-                avgReturnValue,
-                avgBalanceMovement,
-              }
-            );
-
-          return {
-            ...row,
-            auditFlags:
-              signals.flags,
-            riskLevel:
-              signals.riskLevel,
-          };
-        }
-      );
-    }, [cashbookRows]);
-
-  const currentClosingBreakdownRows =
-    useMemo(() => {
-      if (!openSession) {
-        return [] as Array<
-          CashbookRow & {
-            auditFlags?: string[];
-            riskLevel?:
-              | 'low'
-              | 'medium'
-              | 'high';
-          }
-        >;
-      }
-
-      const start =
-        new Date(
-          openSession.startTime
-        ).getTime();
-
-      const end =
-        openSession.endTime
-          ? new Date(
-              openSession.endTime
-            ).getTime()
-          : Number.POSITIVE_INFINITY;
-
-      return cashbookRowsWithSignals
-        .filter((row) => {
-          const at =
-            new Date(
-              row.date
-            ).getTime();
-
-          return (
-            Number.isFinite(at)
-            && at >= start
-            && at <= end
-          );
-        })
-        .sort(
-          (a, b) =>
-            new Date(b.date).getTime()
-            - new Date(a.date).getTime()
-        );
-    }, [
-      openSession,
-      cashbookRowsWithSignals,
-    ]);
-
-  const currentClosingBreakdownRollup =
-    useMemo(() => {
-      const rows =
-        currentClosingBreakdownRows;
+    return cashbookRows.map((row) => {
+      const signals = getCashbookAuditSignals(row, {
+        avgReturnValue,
+        avgBalanceMovement,
+      });
 
       return {
-        cashIn:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum + row.cashIn,
-              0
-            )
-          ),
-
-        cashOut:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum + row.cashOut,
-              0
-            )
-          ),
-
-        onlineIn:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum + row.onlineIn,
-              0
-            )
-          ),
-
-        onlineOut:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum + row.onlineOut,
-              0
-            )
-          ),
-
-        creditCreated:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + Math.max(
-                  0,
-                  row.creditDueCreated
-                ),
-              0
-            )
-          ),
-
-        dueMovement:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + row.currentDueEffect,
-              0
-            )
-          ),
-
-        storeCreditMovement:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + row.currentStoreCreditEffect,
-              0
-            )
-          ),
-
-        netCashEffect:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + row.netCashEffect,
-              0
-            )
-          ),
-
-        grossSales:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + row.grossSales,
-              0
-            )
-          ),
-
-        returns:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + row.salesReturn,
-              0
-            )
-          ),
-
-        expenses:
-          roundMoney(
-            rows.reduce(
-              (sum, row) =>
-                sum
-                + row.expense,
-              0
-            )
-          ),
+        ...row,
+        auditFlags: signals.flags,
+        riskLevel: signals.riskLevel,
       };
-    }, [
-      currentClosingBreakdownRows,
-    ]);
+    });
+  }, [cashbookRows]);
 
-  const currentClosingShiftMovement =
-    useMemo(() => {
-      if (!openSession) {
-        return null;
-      }
-
-      try {
-        return buildShiftCashMovementBreakdown(
-          data as AppState,
-          openSession,
-          dailyCashTotals
-        );
-      } catch {
-        return null;
-      }
-    }, [
-      openSession,
-      data,
-      dailyCashTotals,
-    ]);
-
-  const currentClosingShiftMovementDisplay =
-    useMemo(() => {
-      if (!currentClosingShiftMovement) {
-        return null;
-      }
-
-      const transactionMap =
-        new Map(
-          (
-            data.transactions
-            || []
-          ).map(
-            (tx) => [
-              tx.id,
-              tx,
-            ]
-          )
-        );
-
-      const productMap =
-        new Map(
-          (
-            (data as AppState)
-              .products
-            || []
-          ).map(
-            (product) => [
-              product.id,
-              product,
-            ]
-          )
-        );
-
-      const reserveCashLabel =
-        formatCashSourceLabel(
-          'reserve'
-        );
-
-      const enrichRow =
-        (
-          row:
-            ShiftMovementRow
-        ) => {
-          const tx =
-            row.sourceTxId
-              ? transactionMap.get(
-                  row.sourceTxId
-                )
-              : undefined;
-
-          const items =
-            tx
-              ? normalizeTransactionItems(
-                  tx.items
-                )
-                  .map((item) => {
-                    const product =
-                      productMap.get(
-                        item.id
-                      );
-
-                    return {
-                      id:
-                        item.id,
-
-                      name:
-                        item.name
-                        || product?.name
-                        || 'Item',
-
-                      quantity:
-                        item.quantity
-                        || 0,
-
-                      image:
-                        item.thumbnailImage
-                        || item.image
-                        || product
-                          ?.thumbnailImage
-                        || product?.image
-                        || '',
-                    };
-                  })
-                  .slice(
-                    0,
-                    2
-                  )
-              : [];
-
-          return {
-            ...row,
-            items,
-            usesReserveCash:
-              row.description.includes(
-                reserveCashLabel
-              ),
-          };
-        };
-
-      return {
-        cashInRows:
-          currentClosingShiftMovement
-            .cashInRows
-            .map(enrichRow),
-
-        cashOutRows:
-          currentClosingShiftMovement
-            .cashOutRows
-            .map(enrichRow),
-      };
-    }, [
-      currentClosingShiftMovement,
-      data,
-    ]);
-
-  const currentClosingBreakdownDisplayRows =
-    useMemo(() => {
-      const transactionMap =
-        new Map(
-          (
-            data.transactions
-            || []
-          ).map(
-            (tx) => [
-              tx.id,
-              tx,
-            ]
-          )
-        );
-
-      const productMap =
-        new Map(
-          (
-            (data as AppState)
-              .products
-            || []
-          ).map(
-            (product) => [
-              product.id,
-              product,
-            ]
-          )
-        );
-
-      return currentClosingBreakdownRows.map(
-        (row) => {
-          const paymentModes:
-            string[] = [];
-
-          if (
-            row.cashIn > 0
-            || row.cashOut > 0
-          ) {
-            paymentModes.push(
-              'cash'
-            );
-          }
-
-          if (
-            row.onlineIn > 0
-            || row.onlineOut > 0
-          ) {
-            paymentModes.push(
-              'online'
-            );
-          }
-
-          if (
-            row.creditDueCreated > 0
-          ) {
-            paymentModes.push(
-              'credit'
-            );
-          }
-
-          const baseTypeLabel =
-            row.type.replace(
-              /_/g,
-              ' '
-            );
-
-          const typeLabel =
-            paymentModes.length
-              ? `${baseTypeLabel} - ${paymentModes.join(' - ')}`
-              : baseTypeLabel;
-
-          const tx =
-            row.sourceTxId
-              ? transactionMap.get(
-                  row.sourceTxId
-                )
-              : undefined;
-
-          const itemRows =
-            tx
-              ? normalizeTransactionItems(
-                  tx.items
-                ).map((item) => {
-                  const product =
-                    productMap.get(
-                      item.id
-                    );
-
-                  return {
-                    id:
-                      item.id,
-
-                    name:
-                      item.name
-                      || product?.name
-                      || 'Item',
-
-                    quantity:
-                      item.quantity
-                      || 0,
-
-                    image:
-                      item.thumbnailImage
-                      || item.image
-                      || product
-                        ?.thumbnailImage
-                      || product?.image
-                      || '',
-
-                    description:
-                      item.description
-                      || product
-                        ?.description
-                      || '',
-                  };
-                })
-              : [];
-
-          const rawDescription =
-            itemRows
-              .map(
-                (item) =>
-                  item.description
-                    .trim()
-              )
-              .find(Boolean)
-            || row.effectSummary
-            || row.type;
-
-          const helpfulDescription =
-            rawDescription
-              .replace(
-                /\bcash sale\b/gi,
-                'Sale'
-              )
-              .replace(
-                /\bcash out\b/gi,
-                ''
-              )
-              .replace(
-                /\bcash in\b/gi,
-                ''
-              )
-              .replace(
-                /\bonline out\b/gi,
-                ''
-              )
-              .replace(
-                /\bonline in\b/gi,
-                ''
-              )
-              .replace(
-                /\bcredit\b/gi,
-                ''
-              )
-              .replace(
-                /\s{2,}/g,
-                ' '
-              )
-              .replace(
-                /\s+([,.-])/g,
-                '$1'
-              )
-              .trim()
-              .replace(
-                /[-,]\s*$/,
-                ''
-              );
-
-          return {
-            row,
-            typeLabel,
-            description:
-              helpfulDescription,
-
-            items:
-              itemRows.slice(
-                0,
-                3
-              ),
-
-            extraItemCount:
-              Math.max(
-                0,
-                itemRows.length
-                - 3
-              ),
-          };
+  const currentClosingBreakdownRows = useMemo(() => {
+    if (!openSession) {
+      return [] as Array<
+        CashbookRow & {
+          auditFlags?: string[];
+          riskLevel?: "low" | "medium" | "high";
         }
+      >;
+    }
+
+    const start = new Date(openSession.startTime).getTime();
+
+    const end = openSession.endTime
+      ? new Date(openSession.endTime).getTime()
+      : Number.POSITIVE_INFINITY;
+
+    return cashbookRowsWithSignals
+      .filter((row) => {
+        const at = new Date(row.date).getTime();
+
+        return Number.isFinite(at) && at >= start && at <= end;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [openSession, cashbookRowsWithSignals]);
+
+  const currentClosingBreakdownRollup = useMemo(() => {
+    const rows = currentClosingBreakdownRows;
+
+    return {
+      cashIn: roundMoney(rows.reduce((sum, row) => sum + row.cashIn, 0)),
+
+      cashOut: roundMoney(rows.reduce((sum, row) => sum + row.cashOut, 0)),
+
+      onlineIn: roundMoney(rows.reduce((sum, row) => sum + row.onlineIn, 0)),
+
+      onlineOut: roundMoney(rows.reduce((sum, row) => sum + row.onlineOut, 0)),
+
+      creditCreated: roundMoney(
+        rows.reduce((sum, row) => sum + Math.max(0, row.creditDueCreated), 0),
+      ),
+
+      dueMovement: roundMoney(
+        rows.reduce((sum, row) => sum + row.currentDueEffect, 0),
+      ),
+
+      storeCreditMovement: roundMoney(
+        rows.reduce((sum, row) => sum + row.currentStoreCreditEffect, 0),
+      ),
+
+      netCashEffect: roundMoney(
+        rows.reduce((sum, row) => sum + row.netCashEffect, 0),
+      ),
+
+      grossSales: roundMoney(
+        rows.reduce((sum, row) => sum + row.grossSales, 0),
+      ),
+
+      returns: roundMoney(rows.reduce((sum, row) => sum + row.salesReturn, 0)),
+
+      expenses: roundMoney(rows.reduce((sum, row) => sum + row.expense, 0)),
+    };
+  }, [currentClosingBreakdownRows]);
+
+  const currentClosingShiftMovement = useMemo(() => {
+    if (!openSession) {
+      return null;
+    }
+
+    try {
+      return buildShiftCashMovementBreakdown(
+        data as AppState,
+        openSession,
+        dailyCashTotals,
       );
-    }, [
-      currentClosingBreakdownRows,
-      data,
-    ]);
+    } catch {
+      return null;
+    }
+  }, [openSession, data, dailyCashTotals]);
 
-  const baseFilteredCashbookRows =
-    useMemo(() => {
-      const fromTime =
-        cashbookFromDate
-          ? new Date(
-              `${cashbookFromDate}T00:00:00`
-            ).getTime()
-          : Number.NEGATIVE_INFINITY;
+  const currentClosingShiftMovementDisplay = useMemo(() => {
+    if (!currentClosingShiftMovement) {
+      return null;
+    }
 
-      const toTime =
-        cashbookToDate
-          ? new Date(
-              `${cashbookToDate}T23:59:59.999`
-            ).getTime()
-          : Number.POSITIVE_INFINITY;
-
-      const query =
-        cashbookCustomerQuery
-          .trim()
-          .toLowerCase();
-
-      return cashbookRowsWithSignals.filter(
-        row => {
-          const time =
-            new Date(
-              row.date
-            ).getTime();
-
-          if (
-            !Number.isFinite(time)
-            || time < fromTime
-            || time > toTime
-          ) {
-            return false;
-          }
-
-          if (
-            cashbookTypeFilter
-              !== 'all'
-            && row.type
-              !== cashbookTypeFilter
-          ) {
-            return false;
-          }
-
-          if (
-            query
-            && !row.customer
-              .toLowerCase()
-              .includes(query)
-            && !row.billNo
-              .toLowerCase()
-              .includes(query)
-            && !row.notes
-              .toLowerCase()
-              .includes(query)
-          ) {
-            return false;
-          }
-
-          return true;
-        }
-      );
-    }, [
-      cashbookRowsWithSignals,
-      cashbookFromDate,
-      cashbookToDate,
-      cashbookTypeFilter,
-      cashbookCustomerQuery,
-    ]);
-
-  const cashbookIntelligenceSummary =
-    useMemo(() => ({
-      corrections:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.layerType
-              === 'adjustment'
-          )
-          .length,
-
-      financialCorrections:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.correctionImpactClass
-              === 'financial'
-          )
-          .length,
-
-      metadataOnlyCorrections:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.correctionImpactClass
-              === 'metadata_only'
-          )
-          .length,
-
-      returnsWithStoreCredit:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.type === 'return'
-              && row.auditFlags
-                ?.includes(
-                  'Store credit created'
-                )
-          )
-          .length,
-
-      needsReview:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.riskLevel
-              === 'medium'
-              || row.riskLevel
-              === 'high'
-          )
-          .length,
-
-      largeBalanceMovements:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.auditFlags
-                ?.includes(
-                  'Large balance movement'
-                )
-          )
-          .length,
-
-      mixedRefundEvents:
-        baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.auditFlags
-                ?.includes(
-                  'Mixed refund and due adjustment'
-                )
-          )
-          .length,
-    }), [
-      baseFilteredCashbookRows,
-    ]);
-
-  const layerScopedCashbookRows =
-    useMemo(() => {
-      if (
-        reportingLayerMode
-        === 'operational'
-      ) {
-        return baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.layerType
-              === 'operational'
-          );
-      }
-
-      if (
-        reportingLayerMode
-        === 'adjustment'
-      ) {
-        return baseFilteredCashbookRows
-          .filter(
-            row =>
-              row.layerType
-              === 'adjustment'
-          );
-      }
-
-      return baseFilteredCashbookRows;
-    }, [
-      baseFilteredCashbookRows,
-      reportingLayerMode,
-    ]);
-
-  const filteredCashbookRows =
-    useMemo(() => {
-      if (
-        cashbookAuditFilter
-        === 'needs_review'
-      ) {
-        return layerScopedCashbookRows
-          .filter(
-            row =>
-              row.riskLevel
-              === 'medium'
-              || row.riskLevel
-              === 'high'
-          );
-      }
-
-      if (
-        cashbookAuditFilter
-        === 'corrections_only'
-      ) {
-        return layerScopedCashbookRows
-          .filter(
-            row =>
-              row.layerType
-              === 'adjustment'
-          );
-      }
-
-      return layerScopedCashbookRows;
-    }, [
-      layerScopedCashbookRows,
-      cashbookAuditFilter,
-    ]);
-
-  const cashbookTotalPages =
-    useMemo(
-      () =>
-        Math.max(
-          1,
-          Math.ceil(
-            filteredCashbookRows.length
-            / CASHBOOK_ROWS_PER_PAGE
-          )
-        ),
-      [
-        filteredCashbookRows.length,
-      ]
+    const transactionMap = new Map(
+      (data.transactions || []).map((tx) => [tx.id, tx]),
     );
 
-  const paginatedCashbookRows =
-    useMemo(() => {
-      const start =
-        (
-          cashbookPage - 1
-        )
-        * CASHBOOK_ROWS_PER_PAGE;
+    const productMap = new Map(
+      ((data as AppState).products || []).map((product) => [
+        product.id,
+        product,
+      ]),
+    );
 
-      return filteredCashbookRows.slice(
-        start,
-        start
-        + CASHBOOK_ROWS_PER_PAGE
+    const reserveCashLabel = formatCashSourceLabel("reserve");
+
+    const enrichRow = (row: ShiftMovementRow) => {
+      const tx = row.sourceTxId
+        ? transactionMap.get(row.sourceTxId)
+        : undefined;
+
+      const items = tx
+        ? normalizeTransactionItems(tx.items)
+            .map((item) => {
+              const product = productMap.get(item.id);
+
+              return {
+                id: item.id,
+
+                name: item.name || product?.name || "Item",
+
+                quantity: item.quantity || 0,
+
+                image:
+                  item.thumbnailImage ||
+                  item.image ||
+                  product?.thumbnailImage ||
+                  product?.image ||
+                  "",
+              };
+            })
+            .slice(0, 2)
+        : [];
+
+      return {
+        ...row,
+        items,
+        usesReserveCash: row.description.includes(reserveCashLabel),
+      };
+    };
+
+    return {
+      cashInRows: currentClosingShiftMovement.cashInRows.map(enrichRow),
+
+      cashOutRows: currentClosingShiftMovement.cashOutRows.map(enrichRow),
+    };
+  }, [currentClosingShiftMovement, data]);
+
+  const currentClosingBreakdownDisplayRows = useMemo(() => {
+    const transactionMap = new Map(
+      (data.transactions || []).map((tx) => [tx.id, tx]),
+    );
+
+    const productMap = new Map(
+      ((data as AppState).products || []).map((product) => [
+        product.id,
+        product,
+      ]),
+    );
+
+    return currentClosingBreakdownRows.map((row) => {
+      const paymentModes: string[] = [];
+
+      if (row.cashIn > 0 || row.cashOut > 0) {
+        paymentModes.push("cash");
+      }
+
+      if (row.onlineIn > 0 || row.onlineOut > 0) {
+        paymentModes.push("online");
+      }
+
+      if (row.creditDueCreated > 0) {
+        paymentModes.push("credit");
+      }
+
+      const baseTypeLabel = row.type.replace(/_/g, " ");
+
+      const typeLabel = paymentModes.length
+        ? `${baseTypeLabel} - ${paymentModes.join(" - ")}`
+        : baseTypeLabel;
+
+      const tx = row.sourceTxId
+        ? transactionMap.get(row.sourceTxId)
+        : undefined;
+
+      const itemRows = tx
+        ? normalizeTransactionItems(tx.items).map((item) => {
+            const product = productMap.get(item.id);
+
+            return {
+              id: item.id,
+
+              name: item.name || product?.name || "Item",
+
+              quantity: item.quantity || 0,
+
+              image:
+                item.thumbnailImage ||
+                item.image ||
+                product?.thumbnailImage ||
+                product?.image ||
+                "",
+
+              description: item.description || product?.description || "",
+            };
+          })
+        : [];
+
+      const rawDescription =
+        itemRows.map((item) => item.description.trim()).find(Boolean) ||
+        row.effectSummary ||
+        row.type;
+
+      const helpfulDescription = rawDescription
+        .replace(/\bcash sale\b/gi, "Sale")
+        .replace(/\bcash out\b/gi, "")
+        .replace(/\bcash in\b/gi, "")
+        .replace(/\bonline out\b/gi, "")
+        .replace(/\bonline in\b/gi, "")
+        .replace(/\bcredit\b/gi, "")
+        .replace(/\s{2,}/g, " ")
+        .replace(/\s+([,.-])/g, "$1")
+        .trim()
+        .replace(/[-,]\s*$/, "");
+
+      return {
+        row,
+        typeLabel,
+        description: helpfulDescription,
+
+        items: itemRows.slice(0, 3),
+
+        extraItemCount: Math.max(0, itemRows.length - 3),
+      };
+    });
+  }, [currentClosingBreakdownRows, data]);
+
+  const baseFilteredCashbookRows = useMemo(() => {
+    const fromTime = cashbookFromDate
+      ? new Date(`${cashbookFromDate}T00:00:00`).getTime()
+      : Number.NEGATIVE_INFINITY;
+
+    const toTime = cashbookToDate
+      ? new Date(`${cashbookToDate}T23:59:59.999`).getTime()
+      : Number.POSITIVE_INFINITY;
+
+    const query = cashbookCustomerQuery.trim().toLowerCase();
+
+    return cashbookRowsWithSignals.filter((row) => {
+      const time = new Date(row.date).getTime();
+
+      if (!Number.isFinite(time) || time < fromTime || time > toTime) {
+        return false;
+      }
+
+      if (cashbookTypeFilter !== "all" && row.type !== cashbookTypeFilter) {
+        return false;
+      }
+
+      if (
+        query &&
+        !row.customer.toLowerCase().includes(query) &&
+        !row.billNo.toLowerCase().includes(query) &&
+        !row.notes.toLowerCase().includes(query)
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [
+    cashbookRowsWithSignals,
+    cashbookFromDate,
+    cashbookToDate,
+    cashbookTypeFilter,
+    cashbookCustomerQuery,
+  ]);
+
+  const cashbookIntelligenceSummary = useMemo(
+    () => ({
+      corrections: baseFilteredCashbookRows.filter(
+        (row) => row.layerType === "adjustment",
+      ).length,
+
+      financialCorrections: baseFilteredCashbookRows.filter(
+        (row) => row.correctionImpactClass === "financial",
+      ).length,
+
+      metadataOnlyCorrections: baseFilteredCashbookRows.filter(
+        (row) => row.correctionImpactClass === "metadata_only",
+      ).length,
+
+      returnsWithStoreCredit: baseFilteredCashbookRows.filter(
+        (row) =>
+          row.type === "return" &&
+          row.auditFlags?.includes("Store credit created"),
+      ).length,
+
+      needsReview: baseFilteredCashbookRows.filter(
+        (row) => row.riskLevel === "medium" || row.riskLevel === "high",
+      ).length,
+
+      largeBalanceMovements: baseFilteredCashbookRows.filter((row) =>
+        row.auditFlags?.includes("Large balance movement"),
+      ).length,
+
+      mixedRefundEvents: baseFilteredCashbookRows.filter((row) =>
+        row.auditFlags?.includes("Mixed refund and due adjustment"),
+      ).length,
+    }),
+    [baseFilteredCashbookRows],
+  );
+
+  const layerScopedCashbookRows = useMemo(() => {
+    if (reportingLayerMode === "operational") {
+      return baseFilteredCashbookRows.filter(
+        (row) => row.layerType === "operational",
       );
-    }, [
-      filteredCashbookRows,
-      cashbookPage,
-    ]);
+    }
+
+    if (reportingLayerMode === "adjustment") {
+      return baseFilteredCashbookRows.filter(
+        (row) => row.layerType === "adjustment",
+      );
+    }
+
+    return baseFilteredCashbookRows;
+  }, [baseFilteredCashbookRows, reportingLayerMode]);
+
+  const filteredCashbookRows = useMemo(() => {
+    if (cashbookAuditFilter === "needs_review") {
+      return layerScopedCashbookRows.filter(
+        (row) => row.riskLevel === "medium" || row.riskLevel === "high",
+      );
+    }
+
+    if (cashbookAuditFilter === "corrections_only") {
+      return layerScopedCashbookRows.filter(
+        (row) => row.layerType === "adjustment",
+      );
+    }
+
+    return layerScopedCashbookRows;
+  }, [layerScopedCashbookRows, cashbookAuditFilter]);
+
+  const cashbookTotalPages = useMemo(
+    () =>
+      Math.max(
+        1,
+        Math.ceil(filteredCashbookRows.length / CASHBOOK_ROWS_PER_PAGE),
+      ),
+    [filteredCashbookRows.length],
+  );
+
+  const paginatedCashbookRows = useMemo(() => {
+    const start = (cashbookPage - 1) * CASHBOOK_ROWS_PER_PAGE;
+
+    return filteredCashbookRows.slice(start, start + CASHBOOK_ROWS_PER_PAGE);
+  }, [filteredCashbookRows, cashbookPage]);
 
   useEffect(() => {
     setCashbookPage(1);
@@ -9535,302 +6278,154 @@ export default function Finance({
   ]);
 
   useEffect(() => {
-    setCashbookPage(
-      prev =>
-        Math.min(
-          prev,
-          cashbookTotalPages
-        )
+    setCashbookPage((prev) => Math.min(prev, cashbookTotalPages));
+  }, [cashbookTotalPages]);
+
+  const cashbookRollups = useMemo(() => {
+    return filteredCashbookRows.reduce(
+      (acc, row) => {
+        acc.cashIn = roundMoney(acc.cashIn + row.cashIn);
+
+        acc.cashOut = roundMoney(acc.cashOut + row.cashOut);
+
+        acc.onlineIn = roundMoney(acc.onlineIn + row.onlineIn);
+
+        acc.onlineOut = roundMoney(acc.onlineOut + row.onlineOut);
+
+        acc.grossSales = roundMoney(acc.grossSales + row.grossSales);
+
+        acc.salesReturns = roundMoney(acc.salesReturns + row.salesReturn);
+
+        acc.creditDueCreated = roundMoney(
+          acc.creditDueCreated + row.creditDueCreated,
+        );
+
+        acc.grossProfit = roundMoney(acc.grossProfit + row.grossProfitEffect);
+
+        acc.netProfit = roundMoney(acc.netProfit + row.netProfitEffect);
+
+        return acc;
+      },
+      {
+        cashIn: 0,
+        cashOut: 0,
+        onlineIn: 0,
+        onlineOut: 0,
+        grossSales: 0,
+        salesReturns: 0,
+        creditDueCreated: 0,
+        grossProfit: 0,
+        netProfit: 0,
+      },
     );
-  }, [
-    cashbookTotalPages,
-  ]);
+  }, [filteredCashbookRows]);
 
-  const cashbookRollups =
-    useMemo(() => {
-      return filteredCashbookRows.reduce(
-        (acc, row) => {
-          acc.cashIn =
-            roundMoney(
-              acc.cashIn
-              + row.cashIn
-            );
+  const realActivityRollups = useMemo(() => {
+    const realRows = filteredCashbookRows.filter((row) => row.isRealActivity);
 
-          acc.cashOut =
-            roundMoney(
-              acc.cashOut
-              + row.cashOut
-            );
+    const correctionRows = filteredCashbookRows.filter(
+      (row) => row.isCorrectionImpact,
+    );
 
-          acc.onlineIn =
-            roundMoney(
-              acc.onlineIn
-              + row.onlineIn
-            );
+    const financialCorrectionRows = correctionRows.filter(
+      (row) => row.correctionImpactClass === "financial",
+    );
 
-          acc.onlineOut =
-            roundMoney(
-              acc.onlineOut
-              + row.onlineOut
-            );
+    const metadataOnlyCorrectionRows = correctionRows.filter(
+      (row) => row.correctionImpactClass === "metadata_only",
+    );
 
-          acc.grossSales =
-            roundMoney(
-              acc.grossSales
-              + row.grossSales
-            );
+    return {
+      realSales: roundMoney(
+        realRows.reduce((sum, row) => sum + row.grossSales, 0),
+      ),
 
-          acc.salesReturns =
-            roundMoney(
-              acc.salesReturns
-              + row.salesReturn
-            );
+      realReturns: roundMoney(
+        realRows.reduce((sum, row) => sum + row.salesReturn, 0),
+      ),
 
-          acc.creditDueCreated =
-            roundMoney(
-              acc.creditDueCreated
-              + row.creditDueCreated
-            );
+      correctionAdjustments: correctionRows.length,
 
-          acc.grossProfit =
-            roundMoney(
-              acc.grossProfit
-              + row.grossProfitEffect
-            );
+      financialCorrectionAdjustments: financialCorrectionRows.length,
 
-          acc.netProfit =
-            roundMoney(
-              acc.netProfit
-              + row.netProfitEffect
-            );
+      metadataOnlyCorrectionAdjustments: metadataOnlyCorrectionRows.length,
 
-          return acc;
-        },
-        {
-          cashIn: 0,
-          cashOut: 0,
-          onlineIn: 0,
-          onlineOut: 0,
-          grossSales: 0,
-          salesReturns: 0,
-          creditDueCreated: 0,
-          grossProfit: 0,
-          netProfit: 0,
-        }
-      );
-    }, [
-      filteredCashbookRows,
-    ]);
+      netAdjustmentImpact: roundMoney(
+        correctionRows.reduce((sum, row) => sum + row.netSales, 0),
+      ),
 
-  const realActivityRollups =
-    useMemo(() => {
-      const realRows =
-        filteredCashbookRows
-          .filter(
-            row =>
-              row.isRealActivity
-          );
-
-      const correctionRows =
-        filteredCashbookRows
-          .filter(
-            row =>
-              row.isCorrectionImpact
-          );
-
-      const financialCorrectionRows =
-        correctionRows.filter(
-          row =>
-            row.correctionImpactClass
-            === 'financial'
-        );
-
-      const metadataOnlyCorrectionRows =
-        correctionRows.filter(
-          row =>
-            row.correctionImpactClass
-            === 'metadata_only'
-        );
-
-      return {
-        realSales:
-          roundMoney(
-            realRows.reduce(
-              (sum, row) =>
-                sum + row.grossSales,
-              0
-            )
-          ),
-
-        realReturns:
-          roundMoney(
-            realRows.reduce(
-              (sum, row) =>
-                sum + row.salesReturn,
-              0
-            )
-          ),
-
-        correctionAdjustments:
-          correctionRows.length,
-
-        financialCorrectionAdjustments:
-          financialCorrectionRows.length,
-
-        metadataOnlyCorrectionAdjustments:
-          metadataOnlyCorrectionRows.length,
-
-        netAdjustmentImpact:
-          roundMoney(
-            correctionRows.reduce(
-              (sum, row) =>
-                sum + row.netSales,
-              0
-            )
-          ),
-
-        netFinancialAdjustmentImpact:
-          roundMoney(
-            financialCorrectionRows.reduce(
-              (sum, row) =>
-                sum + row.netSales,
-              0
-            )
-          ),
-      };
-    }, [
-      filteredCashbookRows,
-    ]);
+      netFinancialAdjustmentImpact: roundMoney(
+        financialCorrectionRows.reduce((sum, row) => sum + row.netSales, 0),
+      ),
+    };
+  }, [filteredCashbookRows]);
 
   const getRowsByLayer = (
     rows: CashbookRow[],
-    layer:
-      | 'operational'
-      | 'adjustment'
-      | 'final'
+    layer: "operational" | "adjustment" | "final",
   ) => {
-    if (
-      layer === 'operational'
-    ) {
-      return rows.filter(
-        row =>
-          row.layerType
-          === 'operational'
-      );
+    if (layer === "operational") {
+      return rows.filter((row) => row.layerType === "operational");
     }
 
-    if (
-      layer === 'adjustment'
-    ) {
-      return rows.filter(
-        row =>
-          row.layerType
-          === 'adjustment'
-      );
+    if (layer === "adjustment") {
+      return rows.filter((row) => row.layerType === "adjustment");
     }
 
     return rows;
   };
 
-  const activeWindowRange =
-    useMemo(() => {
-      const todayStart =
-        new Date(
-          `${todayISO()}T00:00:00`
-        ).getTime();
+  const activeWindowRange = useMemo(() => {
+    const todayStart = new Date(`${todayISO()}T00:00:00`).getTime();
 
-      const todayEnd =
-        new Date(
-          `${todayISO()}T23:59:59.999`
-        ).getTime();
+    const todayEnd = new Date(`${todayISO()}T23:59:59.999`).getTime();
 
-      const hasActiveShiftWindow =
-        Boolean(
-          openSession
-          && Number.isFinite(
-            new Date(
-              openSession.startTime
-            ).getTime()
-          )
-        );
-
-      const windowStart =
-        hasActiveShiftWindow
-          ? new Date(
-              openSession!.startTime
-            ).getTime()
-          : todayStart;
-
-      const windowEnd =
-        hasActiveShiftWindow
-          ? Date.now()
-          : todayEnd;
-
-      return {
-        windowStart,
-        windowEnd,
-      };
-    }, [
-      openSession,
-    ]);
-
-  const currentWindowRows =
-    useMemo(
-      () =>
-        cashbookRowsWithSignals.filter(
-          row => {
-            const rowTime =
-              new Date(
-                row.date
-              ).getTime();
-
-            return (
-              Number.isFinite(
-                rowTime
-              )
-              && rowTime
-                >= activeWindowRange.windowStart
-              && rowTime
-                <= activeWindowRange.windowEnd
-            );
-          }
-        ),
-      [
-        cashbookRowsWithSignals,
-        activeWindowRange,
-      ]
+    const hasActiveShiftWindow = Boolean(
+      openSession && Number.isFinite(new Date(openSession.startTime).getTime()),
     );
 
-  const todayLayerBreakdowns =
-    useMemo(() => ({
-      operational:
-        buildLayerFinanceBreakdown(
-          getRowsByLayer(
-            currentWindowRows,
-            'operational'
-          )
-        ),
+    const windowStart = hasActiveShiftWindow
+      ? new Date(openSession!.startTime).getTime()
+      : todayStart;
 
-      adjustment:
-        buildLayerFinanceBreakdown(
-          getRowsByLayer(
-            currentWindowRows,
-            'adjustment'
-          )
-        ),
+    const windowEnd = hasActiveShiftWindow ? Date.now() : todayEnd;
 
-      final:
-        buildLayerFinanceBreakdown(
-          currentWindowRows
-        ),
-    }), [
-      currentWindowRows,
-    ]);
+    return {
+      windowStart,
+      windowEnd,
+    };
+  }, [openSession]);
 
-  const todayFinanceBreakdown =
-    todayLayerBreakdowns[
-      reportingLayerMode
-    ];
+  const currentWindowRows = useMemo(
+    () =>
+      cashbookRowsWithSignals.filter((row) => {
+        const rowTime = new Date(row.date).getTime();
+
+        return (
+          Number.isFinite(rowTime) &&
+          rowTime >= activeWindowRange.windowStart &&
+          rowTime <= activeWindowRange.windowEnd
+        );
+      }),
+    [cashbookRowsWithSignals, activeWindowRange],
+  );
+
+  const todayLayerBreakdowns = useMemo(
+    () => ({
+      operational: buildLayerFinanceBreakdown(
+        getRowsByLayer(currentWindowRows, "operational"),
+      ),
+
+      adjustment: buildLayerFinanceBreakdown(
+        getRowsByLayer(currentWindowRows, "adjustment"),
+      ),
+
+      final: buildLayerFinanceBreakdown(currentWindowRows),
+    }),
+    [currentWindowRows],
+  );
+
+  const todayFinanceBreakdown = todayLayerBreakdowns[reportingLayerMode];
 
   // Closing Balance / Current Shift Cash must represent
   // ACTIVE DRAWER CASH ONLY.
@@ -9839,113 +6434,57 @@ export default function Finance({
   // withdrawals and customer cash-out remain visible in
   // the cash/reserve histories, but they must not reduce
   // the active shift bucket.
-  const financeMovementSummary =
-    useMemo(() => {
-      const shiftStartingBalance =
-        openSession
-          ? openSession.openingBalance
-          : Number(
-              openingBalance || 0
-            ) || 0;
+  const financeMovementSummary = useMemo(() => {
+    const shiftStartingBalance = openSession
+      ? openSession.openingBalance
+      : Number(openingBalance || 0) || 0;
 
-      const cashInMovement =
-        roundMoney(
-          (
-            cashManagementKpis
-              .cashAtSale
-            || 0
-          )
-          + (
-            cashManagementKpis
-              .cashCollections
-            || 0
-          )
-          + (
-            dailyCashTotals
-              .cashAdditions
-            || 0
-          )
-        );
+    const cashInMovement = roundMoney(
+      (cashManagementKpis.cashAtSale || 0) +
+        (cashManagementKpis.cashCollections || 0) +
+        (dailyCashTotals.cashAdditions || 0),
+    );
 
-      // IMPORTANT:
-      // Do not use:
-      // currentClosingShiftMovement?.cashOutTotal
-      //
-      // That total includes both Active Cash and Reserve Cash.
-      //
-      // cashManagementKpis already resolves the active-only
-      // refund / supplier / expense / withdrawal totals.
-      const cashOutMovement =
-        roundMoney(
-          (
-            cashManagementKpis
-              .cashRefunds
-            || 0
-          )
-          + (
-            cashManagementKpis
-              .deleteCompensationRefunds
-            || 0
-          )
-          + (
-            cashManagementKpis
-              .supplierCashPayments
-            || 0
-          )
-          + (
-            cashManagementKpis
-              .expenseCashOutflow
-            || 0
-          )
-          + (
-            cashManagementKpis
-              .cashWithdrawals
-            || 0
-          )
-        );
+    // IMPORTANT:
+    // Do not use:
+    // currentClosingShiftMovement?.cashOutTotal
+    //
+    // That total includes both Active Cash and Reserve Cash.
+    //
+    // cashManagementKpis already resolves the active-only
+    // refund / supplier / expense / withdrawal totals.
+    const cashOutMovement = roundMoney(
+      (cashManagementKpis.cashRefunds || 0) +
+        (cashManagementKpis.deleteCompensationRefunds || 0) +
+        (cashManagementKpis.supplierCashPayments || 0) +
+        (cashManagementKpis.expenseCashOutflow || 0) +
+        (cashManagementKpis.cashWithdrawals || 0),
+    );
 
-      const bankInMovement =
-        roundMoney(
-          (
-            todayFinanceBreakdown
-              .onlineSalesAtSale
-            || 0
-          )
-          + (
-            todayFinanceBreakdown
-              .onlineCollections
-            || 0
-          )
-        );
+    const bankInMovement = roundMoney(
+      (todayFinanceBreakdown.onlineSalesAtSale || 0) +
+        (todayFinanceBreakdown.onlineCollections || 0),
+    );
 
-      const bankOutMovement =
-        roundMoney(
-          (
-            todayFinanceBreakdown
-              .onlineRefunds
-            || 0
-          )
-          + (
-            dailyCashTotals
-              .customerOnlineOutflow
-            || 0
-          )
-        );
+    const bankOutMovement = roundMoney(
+      (todayFinanceBreakdown.onlineRefunds || 0) +
+        (dailyCashTotals.customerOnlineOutflow || 0),
+    );
 
-      return {
-        shiftStartingBalance,
-        cashInMovement,
-        cashOutMovement,
-        bankInMovement,
-        bankOutMovement,
-      };
-    }, [
-      openSession,
-      openingBalance,
-      cashManagementKpis,
-      dailyCashTotals,
-      todayFinanceBreakdown,
-    ]);
+    return {
+      shiftStartingBalance,
+      cashInMovement,
+      cashOutMovement,
+      bankInMovement,
+      bankOutMovement,
+    };
+  }, [
+    openSession,
+    openingBalance,
+    cashManagementKpis,
+    dailyCashTotals,
+    todayFinanceBreakdown,
+  ]);
 
   // ACTIVE DRAWER closing balance only:
   //
@@ -9954,67 +6493,39 @@ export default function Finance({
   // - active cash outflow
   //
   // Reserve Cash is intentionally not part of this KPI.
-  const closingBalanceKpiValue =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            financeMovementSummary
-              .shiftStartingBalance
-            + financeMovementSummary
-              .cashInMovement
-            - financeMovementSummary
-              .cashOutMovement
-          )
+  const closingBalanceKpiValue = useMemo(
+    () =>
+      roundMoney(
+        Math.max(
+          0,
+          financeMovementSummary.shiftStartingBalance +
+            financeMovementSummary.cashInMovement -
+            financeMovementSummary.cashOutMovement,
         ),
-      [
-        financeMovementSummary,
-      ]
-    );
+      ),
+    [financeMovementSummary],
+  );
 
   // closingBalanceKpiValue is already the active bucket.
   //
   // Do NOT subtract closingReserveValue again here.
   // Doing that would remove Reserved Cash twice.
-  const autoCarryForwardValue =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            closingBalanceKpiValue
-          )
-        ),
-      [
-        closingBalanceKpiValue,
-      ]
-    );
+  const autoCarryForwardValue = useMemo(
+    () => roundMoney(Math.max(0, closingBalanceKpiValue)),
+    [closingBalanceKpiValue],
+  );
 
-  const submittedClosingValue =
-    useMemo(() => {
-      if (!openSession) {
-        return 0;
-      }
+  const submittedClosingValue = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
 
-      const raw =
-        closingBalance.trim()
-          ? Number(
-              closingBalance
-            )
-          : autoCarryForwardValue;
+    const raw = closingBalance.trim()
+      ? Number(closingBalance)
+      : autoCarryForwardValue;
 
-      return (
-        Number.isFinite(raw)
-        && raw >= 0
-      )
-        ? raw
-        : 0;
-    }, [
-      openSession,
-      closingBalance,
-      autoCarryForwardValue,
-    ]);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 0;
+  }, [openSession, closingBalance, autoCarryForwardValue]);
 
   // Physical counted cash still includes both buckets:
   //
@@ -10022,61 +6533,32 @@ export default function Finance({
   //
   // This preserves:
   // Total Physical Cash = Current Shift Cash + Reserved Cash
-  const countedClosingValue =
-    useMemo(
-      () =>
-        roundMoney(
-          submittedClosingValue
-          + closingReserveValue
-        ),
-      [
-        submittedClosingValue,
-        closingReserveValue,
-      ]
-    );
+  const countedClosingValue = useMemo(
+    () => roundMoney(submittedClosingValue + closingReserveValue),
+    [submittedClosingValue, closingReserveValue],
+  );
 
-  const carryForwardPreview =
-    useMemo(
-      () =>
-        roundMoney(
-          Math.max(
-            0,
-            submittedClosingValue
-          )
-        ),
-      [
-        submittedClosingValue,
-      ]
-    );
+  const carryForwardPreview = useMemo(
+    () => roundMoney(Math.max(0, submittedClosingValue)),
+    [submittedClosingValue],
+  );
 
-  const closingVariance =
-    openSession
-      ? (
-        countedClosingValue
-        - totalAccessibleCash
-      )
-      : 0;
+  const closingVariance = openSession
+    ? countedClosingValue - totalAccessibleCash
+    : 0;
 
   useEffect(() => {
     if (!openSession) {
-      setClosingBalanceManuallySet(
-        false
-      );
+      setClosingBalanceManuallySet(false);
 
       return;
     }
 
-    if (
-      closingBalanceManuallySet
-      && closingBalance.trim()
-    ) {
+    if (closingBalanceManuallySet && closingBalance.trim()) {
       return;
     }
 
-    setClosingBalance(
-      autoCarryForwardValue
-        .toFixed(2)
-    );
+    setClosingBalance(autoCarryForwardValue.toFixed(2));
   }, [
     openSession?.id,
     autoCarryForwardValue,
@@ -10086,119 +6568,71 @@ export default function Finance({
   ]);
 
   useEffect(() => {
-    if (
-      !FINANCE_DIAGNOSTIC_DEBUG_ENABLED
-    ) {
+    if (!FINANCE_DIAGNOSTIC_DEBUG_ENABLED) {
       return;
     }
 
-    perfLog(
-      'page.Finance.kpi_debug',
-      {
-        runId:
-          perfRunIdRef.current,
+    perfLog("page.Finance.kpi_debug", {
+      runId: perfRunIdRef.current,
 
-        openSession:
-          openSession
-            ? {
-                id:
-                  openSession.id,
+      openSession: openSession
+        ? {
+            id: openSession.id,
 
-                status:
-                  openSession.status,
+            status: openSession.status,
 
-                startTime:
-                  openSession.startTime,
+            startTime: openSession.startTime,
 
-                endTime:
-                  openSession.endTime
-                  || null,
+            endTime: openSession.endTime || null,
 
-                openingBalance:
-                  openSession
-                    .openingBalance,
+            openingBalance: openSession.openingBalance,
 
-                reservedCashOnHand: (openSession as any).reservedCashOnHand ?? null,
-              }
-            : null,
+            reservedCashOnHand: (openSession as any).reservedCashOnHand ?? null,
+          }
+        : null,
 
-        shownKpis: {
-          shiftStartingBalance:
-            financeMovementSummary
-              .shiftStartingBalance,
+      shownKpis: {
+        shiftStartingBalance: financeMovementSummary.shiftStartingBalance,
 
-          cashInMovement:
-            financeMovementSummary
-              .cashInMovement,
+        cashInMovement: financeMovementSummary.cashInMovement,
 
-          cashOutMovement:
-            financeMovementSummary
-              .cashOutMovement,
+        cashOutMovement: financeMovementSummary.cashOutMovement,
 
-          bankInMovement:
-            financeMovementSummary
-              .bankInMovement,
+        bankInMovement: financeMovementSummary.bankInMovement,
 
-          bankOutMovement:
-            financeMovementSummary
-              .bankOutMovement,
+        bankOutMovement: financeMovementSummary.bankOutMovement,
 
-          closingBalance:
-            openSession
-              ? submittedClosingValue
-              : 0,
+        closingBalance: openSession ? submittedClosingValue : 0,
 
-          currentShiftCash:
-            currentShiftTotalCash,
+        currentShiftCash: currentShiftTotalCash,
 
-          reservedCash:
-            displayedReservedCash,
+        reservedCash: displayedReservedCash,
 
-          usableCash:
-            displayedUsableCash,
+        usableCash: displayedUsableCash,
 
-          countedCashTotal:
-            countedClosingValue,
+        countedCashTotal: countedClosingValue,
 
-          nextShiftOpeningCash:
-            carryForwardPreview,
+        nextShiftOpeningCash: carryForwardPreview,
 
-          reserveCashKeptOutsideNextShift:
-            closingReserveValue,
+        reserveCashKeptOutsideNextShift: closingReserveValue,
 
-          totalAccessibleCash,
-        },
+        totalAccessibleCash,
+      },
 
-        sourceCounts: {
-          transactions:
-            data.transactions.length,
+      sourceCounts: {
+        transactions: data.transactions.length,
 
-          expenses:
-            expenses.length,
+        expenses: expenses.length,
 
-          cashAdjustments:
-            cashAdjustments.length,
+        cashAdjustments: cashAdjustments.length,
 
-          manualCashbookEntries:
-            (
-              data.manualCashbookEntries
-              || []
-            ).length,
+        manualCashbookEntries: (data.manualCashbookEntries || []).length,
 
-          purchaseOrders:
-            (
-              data.purchaseOrders
-              || []
-            ).length,
+        purchaseOrders: (data.purchaseOrders || []).length,
 
-          supplierPayments:
-            (
-              data.supplierPayments
-              || []
-            ).length,
-        },
-      }
-    );
+        supplierPayments: (data.supplierPayments || []).length,
+      },
+    });
   }, [
     openSession,
     financeMovementSummary,
@@ -10233,233 +6667,281 @@ export default function Finance({
   ]);
 
   const dailySummary = useMemo(() => {
-    const dayStart =
-      new Date(
-        `${profitDate}T00:00:00`
-      ).getTime();
+    const dayStart = new Date(`${profitDate}T00:00:00`).getTime();
 
-    const dayEnd =
-      new Date(
-        `${profitDate}T23:59:59.999`
-      ).getTime();
+    const dayEnd = new Date(`${profitDate}T23:59:59.999`).getTime();
 
-    const rows =
-      cashbookRowsWithSignals.filter(
-        row => {
-          const rowTime =
-            new Date(
-              row.date
-            ).getTime();
+    const rows = cashbookRowsWithSignals.filter((row) => {
+      const rowTime = new Date(row.date).getTime();
 
-          return (
-            Number.isFinite(
-              rowTime
-            )
-            && rowTime
-              >= dayStart
-            && rowTime
-              <= dayEnd
-          );
-        }
+      return (
+        Number.isFinite(rowTime) && rowTime >= dayStart && rowTime <= dayEnd
       );
+    });
 
-    return buildLayerFinanceBreakdown(
-      getRowsByLayer(
-        rows,
-        reportingLayerMode
-      )
-    );
-  }, [
-    cashbookRowsWithSignals,
-    profitDate,
-    reportingLayerMode,
-  ]);
+    return buildLayerFinanceBreakdown(getRowsByLayer(rows, reportingLayerMode));
+  }, [cashbookRowsWithSignals, profitDate, reportingLayerMode]);
 
   const monthlySummary = useMemo(() => {
-    const monthStart =
-      new Date(
-        `${profitMonth}-01T00:00:00`
-      ).getTime();
+    const monthStart = new Date(`${profitMonth}-01T00:00:00`).getTime();
 
-    const monthEnd =
-      new Date(
-        new Date(
-          monthStart
-        ).getFullYear(),
-        new Date(
-          monthStart
-        ).getMonth() + 1,
-        0,
-        23,
-        59,
-        59,
-        999
-      ).getTime();
+    const monthEnd = new Date(
+      new Date(monthStart).getFullYear(),
+      new Date(monthStart).getMonth() + 1,
+      0,
+      23,
+      59,
+      59,
+      999,
+    ).getTime();
 
-    const rows =
-      cashbookRowsWithSignals.filter(
-        row => {
-          const rowTime =
-            new Date(
-              row.date
-            ).getTime();
+    const rows = cashbookRowsWithSignals.filter((row) => {
+      const rowTime = new Date(row.date).getTime();
 
-          return (
-            Number.isFinite(
-              rowTime
-            )
-            && rowTime
-              >= monthStart
-            && rowTime
-              <= monthEnd
-          );
-        }
+      return (
+        Number.isFinite(rowTime) && rowTime >= monthStart && rowTime <= monthEnd
       );
+    });
 
-    return buildLayerFinanceBreakdown(
-      getRowsByLayer(
-        rows,
-        reportingLayerMode
-      )
-    );
-  }, [
-    cashbookRowsWithSignals,
-    profitMonth,
-    reportingLayerMode,
-  ]);
+    return buildLayerFinanceBreakdown(getRowsByLayer(rows, reportingLayerMode));
+  }, [cashbookRowsWithSignals, profitMonth, reportingLayerMode]);
 
-    const buildCashbookExportRows = () => filteredCashbookRows.map((row) => {
-    const touchesCurrentBalance = Math.abs(row.currentDueEffect) > 0.0001 || Math.abs(row.currentStoreCreditEffect) > 0.0001;
-    const touchesCash = Math.abs(row.cashIn) > 0.0001 || Math.abs(row.cashOut) > 0.0001 || Math.abs(row.onlineIn) > 0.0001 || Math.abs(row.onlineOut) > 0.0001;
-    const touchesProfit = Math.abs(row.grossProfitEffect) > 0.0001 || Math.abs(row.netProfitEffect) > 0.0001 || Math.abs(row.cogsEffect) > 0.0001 || Math.abs(row.expense) > 0.0001;
-    const isHistoricalMetric = row.grossSales > 0 || row.salesReturn > 0 || row.creditDueCreated > 0 || row.onlineSale > 0;
-    const potentialReviewFlag = row.type === 'return' && row.cashOut > 0 && row.currentDueEffect === 0 && row.currentStoreCreditEffect === 0
-      ? 'Check settlement'
-      : row.type === 'sale' && row.netSales > 0 && Math.abs(row.grossProfitEffect) < 0.0001
-        ? 'Check zero-profit row'
-        : '';
-    return {
-      'Date': new Date(row.date).toLocaleString(),
-      'Transaction / Bill No': row.billNo,
-      'Type': row.type.toUpperCase(),
-      'Activity Layer': row.layerType === 'adjustment' ? 'Adjustment' : 'Operational',
-      'Correction Impact Class': row.correctionImpactClass || 'n/a',
-      'Customer': row.customer,
-      'Effect Summary': row.effectSummary,
-      'Risk Level': row.riskLevel || 'low',
-      'Audit Flags': (row.auditFlags || []).join(' | '),
-      'Notes / Settlement Summary': row.notes,
-      'Gross Sales': row.grossSales,
-      'Sales Return': row.salesReturn,
-      'Net Sales': row.netSales,
-      'Credit Due Created': row.creditDueCreated,
-      'Online Sale': row.onlineSale,
-      'Current Due Effect': row.currentDueEffect,
-      'Current Store Credit Effect': row.currentStoreCreditEffect,
-      'Cash In': row.cashIn,
-      'Cash Out': row.cashOut,
-      'Online In': row.onlineIn,
-      'Online Out': row.onlineOut,
-      'Net Cash Effect': row.netCashEffect,
-      'COGS Effect': row.cogsEffect,
-      'Gross Profit Effect': row.grossProfitEffect,
-      'Expense': row.expense,
-      'Net Profit Effect': row.netProfitEffect,
-      'Source Category': row.type,
-      'Is Historical Metric': isHistoricalMetric ? 'Yes' : 'No',
-      'Touches Current Balance': touchesCurrentBalance ? 'Yes' : 'No',
-      'Touches Cash': touchesCash ? 'Yes' : 'No',
-      'Touches Profit': touchesProfit ? 'Yes' : 'No',
-      'Potential Review Flag': potentialReviewFlag,
-    };
-  });
+  const buildCashbookExportRows = () =>
+    filteredCashbookRows.map((row) => {
+      const touchesCurrentBalance =
+        Math.abs(row.currentDueEffect) > 0.0001 ||
+        Math.abs(row.currentStoreCreditEffect) > 0.0001;
+      const touchesCash =
+        Math.abs(row.cashIn) > 0.0001 ||
+        Math.abs(row.cashOut) > 0.0001 ||
+        Math.abs(row.onlineIn) > 0.0001 ||
+        Math.abs(row.onlineOut) > 0.0001;
+      const touchesProfit =
+        Math.abs(row.grossProfitEffect) > 0.0001 ||
+        Math.abs(row.netProfitEffect) > 0.0001 ||
+        Math.abs(row.cogsEffect) > 0.0001 ||
+        Math.abs(row.expense) > 0.0001;
+      const isHistoricalMetric =
+        row.grossSales > 0 ||
+        row.salesReturn > 0 ||
+        row.creditDueCreated > 0 ||
+        row.onlineSale > 0;
+      const potentialReviewFlag =
+        row.type === "return" &&
+        row.cashOut > 0 &&
+        row.currentDueEffect === 0 &&
+        row.currentStoreCreditEffect === 0
+          ? "Check settlement"
+          : row.type === "sale" &&
+              row.netSales > 0 &&
+              Math.abs(row.grossProfitEffect) < 0.0001
+            ? "Check zero-profit row"
+            : "";
+      return {
+        Date: new Date(row.date).toLocaleString(),
+        "Transaction / Bill No": row.billNo,
+        Type: row.type.toUpperCase(),
+        "Activity Layer":
+          row.layerType === "adjustment" ? "Adjustment" : "Operational",
+        "Correction Impact Class": row.correctionImpactClass || "n/a",
+        Customer: row.customer,
+        "Effect Summary": row.effectSummary,
+        "Risk Level": row.riskLevel || "low",
+        "Audit Flags": (row.auditFlags || []).join(" | "),
+        "Notes / Settlement Summary": row.notes,
+        "Gross Sales": row.grossSales,
+        "Sales Return": row.salesReturn,
+        "Net Sales": row.netSales,
+        "Credit Due Created": row.creditDueCreated,
+        "Online Sale": row.onlineSale,
+        "Current Due Effect": row.currentDueEffect,
+        "Current Store Credit Effect": row.currentStoreCreditEffect,
+        "Cash In": row.cashIn,
+        "Cash Out": row.cashOut,
+        "Online In": row.onlineIn,
+        "Online Out": row.onlineOut,
+        "Net Cash Effect": row.netCashEffect,
+        "COGS Effect": row.cogsEffect,
+        "Gross Profit Effect": row.grossProfitEffect,
+        Expense: row.expense,
+        "Net Profit Effect": row.netProfitEffect,
+        "Source Category": row.type,
+        "Is Historical Metric": isHistoricalMetric ? "Yes" : "No",
+        "Touches Current Balance": touchesCurrentBalance ? "Yes" : "No",
+        "Touches Cash": touchesCash ? "Yes" : "No",
+        "Touches Profit": touchesProfit ? "Yes" : "No",
+        "Potential Review Flag": potentialReviewFlag,
+      };
+    });
 
-  const cashbookExportSummaryRows = useMemo(() => ([
-    { Metric: 'Export generated at', Value: new Date().toISOString() },
-    { Metric: 'Cashbook scope', Value: cashbookScope === 'all' ? 'Full history' : 'Recent 90 days' },
-    { Metric: 'From date filter', Value: cashbookFromDate || 'All' },
-    { Metric: 'To date filter', Value: cashbookToDate || 'All' },
-    { Metric: 'Type filter', Value: cashbookTypeFilter },
-    { Metric: 'Audit filter', Value: cashbookAuditFilter },
-    { Metric: 'Search filter', Value: cashbookCustomerQuery || 'None' },
-    { Metric: 'Rows exported', Value: String(filteredCashbookRows.length) },
-    { Metric: 'Rows needing review', Value: String(cashbookIntelligenceSummary.needsReview) },
-    { Metric: 'Adjustment rows', Value: String(cashbookIntelligenceSummary.corrections) },
-    { Metric: 'Financial adjustment rows', Value: String(cashbookIntelligenceSummary.financialCorrections) },
-    { Metric: 'Metadata-only adjustment rows', Value: String(cashbookIntelligenceSummary.metadataOnlyCorrections) },
-    { Metric: 'Store-credit return rows', Value: String(cashbookIntelligenceSummary.returnsWithStoreCredit) },
-    { Metric: 'Large balance movement rows', Value: String(cashbookIntelligenceSummary.largeBalanceMovements) },
-    { Metric: 'Mixed refund events', Value: String(cashbookIntelligenceSummary.mixedRefundEvents) },
-    { Metric: 'Gross Sales', Value: cashbookRollups.grossSales.toFixed(2) },
-    { Metric: 'Returns', Value: cashbookRollups.salesReturns.toFixed(2) },
-    { Metric: 'Credit Due Created', Value: cashbookRollups.creditDueCreated.toFixed(2) },
-    { Metric: 'Current Due', Value: dueStoreCreditSummary.status === 'ok' ? dueStoreCreditSummary.totalDue.toFixed(2) : 'Ledger calculation unavailable' },
-    { Metric: 'Current Store Credit', Value: dueStoreCreditSummary.status === 'ok' ? dueStoreCreditSummary.totalStoreCredit.toFixed(2) : 'Ledger calculation unavailable' },
-    { Metric: 'Cash In', Value: cashbookRollups.cashIn.toFixed(2) },
-    { Metric: 'Cash Out', Value: cashbookRollups.cashOut.toFixed(2) },
-    { Metric: 'Net Cash Movement', Value: (cashbookRollups.cashIn - cashbookRollups.cashOut).toFixed(2) },
-    { Metric: 'Gross Profit', Value: cashbookRollups.grossProfit.toFixed(2) },
-    { Metric: 'Net Profit', Value: cashbookRollups.netProfit.toFixed(2) },
-    { Metric: 'Reporting layer', Value: reportingLayerMode },
-    { Metric: 'Operational Sales', Value: realActivityRollups.realSales.toFixed(2) },
-    { Metric: 'Operational Returns', Value: realActivityRollups.realReturns.toFixed(2) },
-    { Metric: 'Adjustment Rows', Value: String(realActivityRollups.correctionAdjustments) },
-    { Metric: 'Financial Adjustment Rows', Value: String(realActivityRollups.financialCorrectionAdjustments) },
-    { Metric: 'Metadata-only Adjustment Rows', Value: String(realActivityRollups.metadataOnlyCorrectionAdjustments) },
-    { Metric: 'Net Adjustment Impact', Value: realActivityRollups.netAdjustmentImpact.toFixed(2) },
-    { Metric: 'Net Financial Adjustment Impact', Value: realActivityRollups.netFinancialAdjustmentImpact.toFixed(2) },
-  ]), [cashbookScope, cashbookFromDate, cashbookToDate, cashbookTypeFilter, cashbookAuditFilter, reportingLayerMode, cashbookCustomerQuery, filteredCashbookRows.length, cashbookRollups, dueStoreCreditSummary.totalDue, dueStoreCreditSummary.totalStoreCredit, cashbookIntelligenceSummary, realActivityRollups]);
+  const cashbookExportSummaryRows = useMemo(
+    () => [
+      { Metric: "Export generated at", Value: new Date().toISOString() },
+      {
+        Metric: "Cashbook scope",
+        Value: cashbookScope === "all" ? "Full history" : "Recent 90 days",
+      },
+      { Metric: "From date filter", Value: cashbookFromDate || "All" },
+      { Metric: "To date filter", Value: cashbookToDate || "All" },
+      { Metric: "Type filter", Value: cashbookTypeFilter },
+      { Metric: "Audit filter", Value: cashbookAuditFilter },
+      { Metric: "Search filter", Value: cashbookCustomerQuery || "None" },
+      { Metric: "Rows exported", Value: String(filteredCashbookRows.length) },
+      {
+        Metric: "Rows needing review",
+        Value: String(cashbookIntelligenceSummary.needsReview),
+      },
+      {
+        Metric: "Adjustment rows",
+        Value: String(cashbookIntelligenceSummary.corrections),
+      },
+      {
+        Metric: "Financial adjustment rows",
+        Value: String(cashbookIntelligenceSummary.financialCorrections),
+      },
+      {
+        Metric: "Metadata-only adjustment rows",
+        Value: String(cashbookIntelligenceSummary.metadataOnlyCorrections),
+      },
+      {
+        Metric: "Store-credit return rows",
+        Value: String(cashbookIntelligenceSummary.returnsWithStoreCredit),
+      },
+      {
+        Metric: "Large balance movement rows",
+        Value: String(cashbookIntelligenceSummary.largeBalanceMovements),
+      },
+      {
+        Metric: "Mixed refund events",
+        Value: String(cashbookIntelligenceSummary.mixedRefundEvents),
+      },
+      { Metric: "Gross Sales", Value: cashbookRollups.grossSales.toFixed(2) },
+      { Metric: "Returns", Value: cashbookRollups.salesReturns.toFixed(2) },
+      {
+        Metric: "Credit Due Created",
+        Value: cashbookRollups.creditDueCreated.toFixed(2),
+      },
+      {
+        Metric: "Current Due",
+        Value:
+          dueStoreCreditSummary.status === "ok"
+            ? dueStoreCreditSummary.totalDue.toFixed(2)
+            : "Ledger calculation unavailable",
+      },
+      {
+        Metric: "Current Store Credit",
+        Value:
+          dueStoreCreditSummary.status === "ok"
+            ? dueStoreCreditSummary.totalStoreCredit.toFixed(2)
+            : "Ledger calculation unavailable",
+      },
+      { Metric: "Cash In", Value: cashbookRollups.cashIn.toFixed(2) },
+      { Metric: "Cash Out", Value: cashbookRollups.cashOut.toFixed(2) },
+      {
+        Metric: "Net Cash Movement",
+        Value: (cashbookRollups.cashIn - cashbookRollups.cashOut).toFixed(2),
+      },
+      { Metric: "Gross Profit", Value: cashbookRollups.grossProfit.toFixed(2) },
+      { Metric: "Net Profit", Value: cashbookRollups.netProfit.toFixed(2) },
+      { Metric: "Reporting layer", Value: reportingLayerMode },
+      {
+        Metric: "Operational Sales",
+        Value: realActivityRollups.realSales.toFixed(2),
+      },
+      {
+        Metric: "Operational Returns",
+        Value: realActivityRollups.realReturns.toFixed(2),
+      },
+      {
+        Metric: "Adjustment Rows",
+        Value: String(realActivityRollups.correctionAdjustments),
+      },
+      {
+        Metric: "Financial Adjustment Rows",
+        Value: String(realActivityRollups.financialCorrectionAdjustments),
+      },
+      {
+        Metric: "Metadata-only Adjustment Rows",
+        Value: String(realActivityRollups.metadataOnlyCorrectionAdjustments),
+      },
+      {
+        Metric: "Net Adjustment Impact",
+        Value: realActivityRollups.netAdjustmentImpact.toFixed(2),
+      },
+      {
+        Metric: "Net Financial Adjustment Impact",
+        Value: realActivityRollups.netFinancialAdjustmentImpact.toFixed(2),
+      },
+    ],
+    [
+      cashbookScope,
+      cashbookFromDate,
+      cashbookToDate,
+      cashbookTypeFilter,
+      cashbookAuditFilter,
+      reportingLayerMode,
+      cashbookCustomerQuery,
+      filteredCashbookRows.length,
+      cashbookRollups,
+      dueStoreCreditSummary.totalDue,
+      dueStoreCreditSummary.totalStoreCredit,
+      cashbookIntelligenceSummary,
+      realActivityRollups,
+    ],
+  );
 
   const downloadTextFile = (content: string, fileName: string) => {
-    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    const link = document.createElement("a");
     link.href = url;
     link.download = fileName;
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  const escapeCsvValue = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const escapeCsvValue = (value: unknown) =>
+    `"${String(value ?? "").replace(/"/g, '""')}"`;
 
   const exportCashbookCsv = (textFriendly = false) => {
     const cashbookExportRows = buildCashbookExportRows();
-    const headers = Object.keys(cashbookExportRows[0] || { 'Date': '', 'Transaction / Bill No': '' });
+    const headers = Object.keys(
+      cashbookExportRows[0] || { Date: "", "Transaction / Bill No": "" },
+    );
 
     const summaryBlock = [
-      ['Metric', 'Value'],
-      ...cashbookExportSummaryRows.map(row => [row.Metric, row.Value]),
+      ["Metric", "Value"],
+      ...cashbookExportSummaryRows.map((row) => [row.Metric, row.Value]),
       [],
     ];
 
     const detailHeader = [headers];
-    const detailRows = cashbookExportRows.map(row => headers.map(header => row[header as keyof typeof row]));
+    const detailRows = cashbookExportRows.map((row) =>
+      headers.map((header) => row[header as keyof typeof row]),
+    );
 
     const lines = [...summaryBlock, ...detailHeader, ...detailRows]
-      .map(cols => cols.map(col => escapeCsvValue(col)).join(','))
-      .join('\n');
+      .map((cols) => cols.map((col) => escapeCsvValue(col)).join(","))
+      .join("\n");
 
-    const fileSuffix = textFriendly ? 'text-friendly.csv' : 'csv';
+    const fileSuffix = textFriendly ? "text-friendly.csv" : "csv";
 
     downloadTextFile(
       lines,
-      `Cashbook_Export_${new Date().toISOString().split('T')[0]}.${fileSuffix}`
+      `Cashbook_Export_${new Date().toISOString().split("T")[0]}.${fileSuffix}`,
     );
   };
 
-  const exportCashbookWorkbook = (ext: 'xlsx' | 'xls') => {
+  const exportCashbookWorkbook = (ext: "xlsx" | "xls") => {
     // XLS and XLSX use the same workbook payload; extension controls target compatibility.
     const cashbookExportRows = buildCashbookExportRows();
     const workbook = XLSX.utils.book_new();
     const summarySheet = XLSX.utils.json_to_sheet(cashbookExportSummaryRows);
     const detailSheet = XLSX.utils.json_to_sheet(cashbookExportRows);
 
-    summarySheet['!cols'] = [
-      { wch: 30 },
-      { wch: 30 },
-    ];
+    summarySheet["!cols"] = [{ wch: 30 }, { wch: 30 }];
 
-    detailSheet['!cols'] = [
+    detailSheet["!cols"] = [
       { wch: 19 },
       { wch: 16 },
       { wch: 10 },
@@ -10469,408 +6951,235 @@ export default function Finance({
       ...Array.from({ length: 21 }).map(() => ({ wch: 14 })),
     ];
 
-    detailSheet['!freeze'] = {
+    detailSheet["!freeze"] = {
       xSplit: 0,
       ySplit: 1,
     };
 
-    XLSX.utils.book_append_sheet(
-      workbook,
-      summarySheet,
-      'Summary'
-    );
+    XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
 
-    XLSX.utils.book_append_sheet(
-      workbook,
-      detailSheet,
-      'Cashbook_Detail'
-    );
+    XLSX.utils.book_append_sheet(workbook, detailSheet, "Cashbook_Detail");
 
     XLSX.writeFile(
       workbook,
-      `Cashbook_Export_${new Date().toISOString().split('T')[0]}.${ext}`
+      `Cashbook_Export_${new Date().toISOString().split("T")[0]}.${ext}`,
     );
   };
 
   const persistState = async (newState: Partial<AppState>) => {
     try {
-      await safeFinancePersistState(
-        newState,
-        {
-          reason: 'finance.persistState',
-        }
-      );
+      await safeFinancePersistState(newState, {
+        reason: "finance.persistState",
+      });
 
       refreshData();
       setErrors(null);
     } catch (error) {
       console.error(
-        '[finance.persistState] Unable to save finance data',
-        error
+        "[finance.persistState] Unable to save finance data",
+        error,
       );
 
-      setErrors(
-        getFriendlyErrorMessage(
-          error,
-          'finance.persistState'
-        )
-      );
+      setErrors(getFriendlyErrorMessage(error, "finance.persistState"));
     }
   };
 
   const startShift = async () => {
     if (openSession) {
-      return setErrors(
-        'An open cash session already exists.'
-      );
+      return setErrors("An open cash session already exists.");
     }
 
     const fresh = loadData();
 
-    const freshCashSessions =
-      Array.isArray(fresh.cashSessions)
-        ? fresh.cashSessions
-        : [];
+    const freshCashSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
 
-    const freshOpenSession =
-      freshCashSessions.find(
-        session =>
-          session.status === 'open'
-      );
+    const freshOpenSession = freshCashSessions.find(
+      (session) => session.status === "open",
+    );
 
     if (freshOpenSession) {
-      return setErrors(
-        'An open cash session already exists.'
-      );
+      return setErrors("An open cash session already exists.");
     }
 
-    const freshLatestClosedSession =
-      getLastValidClosingSession(
-        freshCashSessions.filter(
-          session =>
-            !session.deletedAt
-        )
-      );
+    const freshLatestClosedSession = getLastValidClosingSession(
+      freshCashSessions.filter((session) => !session.deletedAt),
+    );
 
-    const parsedOpeningBalance =
-      openingBalance.trim()
-        ? Number(openingBalance)
+    const parsedOpeningBalance = openingBalance.trim()
+      ? Number(openingBalance)
+      : Number.NaN;
+
+    const autoCarryBalance = latestCarryForwardSession
+      ? getSessionCarryForwardBalance(latestCarryForwardSession)
+      : undefined;
+
+    const freshAutoCarryBalance = freshLatestClosedSession
+      ? getSessionCarryForwardBalance(freshLatestClosedSession)
+      : undefined;
+
+    const value = Number.isFinite(parsedOpeningBalance)
+      ? parsedOpeningBalance
+      : freshAutoCarryBalance !== undefined
+        ? freshAutoCarryBalance
         : Number.NaN;
 
-    const autoCarryBalance =
-      latestCarryForwardSession
-        ? getSessionCarryForwardBalance(
-            latestCarryForwardSession
-          )
-        : undefined;
+    const freshDerivedValue = value;
 
-    const freshAutoCarryBalance =
-      freshLatestClosedSession
-        ? getSessionCarryForwardBalance(
-            freshLatestClosedSession
-          )
-        : undefined;
+    financeShiftDiag("[FIN][SHIFT][START_CLICK]", {
+      clickedAt: new Date().toISOString(),
 
-    const value =
-      Number.isFinite(
-        parsedOpeningBalance
-      )
-        ? parsedOpeningBalance
-        : (
-          freshAutoCarryBalance !== undefined
-            ? freshAutoCarryBalance
-            : Number.NaN
-        );
+      uiOpeningFieldRaw: openingBalance,
 
-    const freshDerivedValue =
-      value;
+      uiOpeningFieldTrimmed: openingBalance.trim(),
 
-    financeShiftDiag(
-      '[FIN][SHIFT][START_CLICK]',
-      {
-        clickedAt:
-          new Date().toISOString(),
+      localLatestClosedSessionId: latestCarryForwardSession?.id ?? null,
 
-        uiOpeningFieldRaw:
-          openingBalance,
+      localLatestCarryForwardBalance: autoCarryBalance ?? null,
 
-        uiOpeningFieldTrimmed:
-          openingBalance.trim(),
+      freshLatestClosedSessionId: freshLatestClosedSession?.id ?? null,
 
-        localLatestClosedSessionId:
-          latestCarryForwardSession?.id
-          ?? null,
+      freshLatestCarryForwardBalance: freshAutoCarryBalance ?? null,
 
-        localLatestCarryForwardBalance:
-          autoCarryBalance
-          ?? null,
+      submitValueFromLocalSnapshot: Number.isFinite(value) ? value : null,
 
-        freshLatestClosedSessionId:
-          freshLatestClosedSession?.id
-          ?? null,
+      submitValueFromFreshRead: Number.isFinite(freshDerivedValue)
+        ? freshDerivedValue
+        : null,
 
-        freshLatestCarryForwardBalance:
-          freshAutoCarryBalance
-          ?? null,
+      localCounts: getStateEntityCounts(data),
 
-        submitValueFromLocalSnapshot:
-          Number.isFinite(value)
-            ? value
-            : null,
+      freshCounts: getStateEntityCounts(fresh),
 
-        submitValueFromFreshRead:
-          Number.isFinite(
-            freshDerivedValue
-          )
-            ? freshDerivedValue
-            : null,
+      freshnessMismatch: {
+        products: data.products.length !== fresh.products.length,
 
-        localCounts:
-          getStateEntityCounts(data),
+        customers: data.customers.length !== fresh.customers.length,
 
-        freshCounts:
-          getStateEntityCounts(fresh),
+        transactions: data.transactions.length !== fresh.transactions.length,
 
-        freshnessMismatch: {
-          products:
-            data.products.length
-            !== fresh.products.length,
+        cashSessions:
+          (data.cashSessions || []).length !== freshCashSessions.length,
+      },
 
-          customers:
-            data.customers.length
-            !== fresh.customers.length,
+      route:
+        typeof window !== "undefined"
+          ? window.location.hash || window.location.pathname
+          : "unknown",
 
-          transactions:
-            data.transactions.length
-            !== fresh.transactions.length,
+      online: typeof navigator !== "undefined" ? navigator.onLine : null,
 
-          cashSessions:
-            (
-              data.cashSessions
-              || []
-            ).length
-            !== freshCashSessions.length,
-        },
+      storageHints: {
+        localStorageKeys: getStorageKeysSafely("local"),
 
-        route:
-          typeof window
-          !== 'undefined'
-            ? window.location.hash
-              || window.location.pathname
-            : 'unknown',
-
-        online:
-          typeof navigator
-          !== 'undefined'
-            ? navigator.onLine
-            : null,
-
-        storageHints: {
-          localStorageKeys:
-            getStorageKeysSafely(
-              'local'
-            ),
-
-          sessionStorageKeys:
-            getStorageKeysSafely(
-              'session'
-            ),
-        },
-      }
-    );
-
-    financeShiftDiag(
-      '[FIN][SHIFT][FRESHNESS_CHECK]',
-      {
-        source:
-          'start_shift_click',
-
-        localCounts:
-          getStateEntityCounts(
-            data
-          ),
-
-        freshCounts:
-          getStateEntityCounts(
-            fresh
-          ),
-
-        sessionScanLocal:
-          scanSessionHistory(
-            cashSessions
-          ),
-
-        sessionScanFresh:
-          scanSessionHistory(
-            freshCashSessions
-          ),
-      }
-    );
-
-    if (
-      !Number.isFinite(value)
-      || value < 0
-    ) {
-      return setErrors(
-        'Please enter a valid opening balance.'
-      );
-    }
-
-    financeShiftDiag(
-      '[FIN][SHIFT][FIX_APPLIED]',
-      {
-        usedFreshData:
-          true,
-
-        openingBalanceInput:
-          openingBalance,
-
-        finalOpeningBalance:
-          value,
-
-        freshSessionCount:
-          freshCashSessions.length,
-
-        localSessionCount:
-          cashSessions.length,
-      }
-    );
-
-    const session: CashSession = {
-      id:
-        buildCashSessionId(
-          freshCashSessions
-        ),
-
-      startTime:
-        new Date().toISOString(),
-
-      openingBalance:
-        value,
-
-      status:
-        'open',
-    };
-
-    financeLog.shift(
-      'START',
-      {
-        openingCash:
-          value,
-
-        startMode:
-          Number.isFinite(
-            parsedOpeningBalance
-          )
-            ? 'manual'
-            : 'carry_forward',
-      }
-    );
-
-    await persistState({
-      cashSessions: [
-        session,
-        ...freshCashSessions,
-      ],
+        sessionStorageKeys: getStorageKeysSafely("session"),
+      },
     });
 
-    setOpeningBalance('');
+    financeShiftDiag("[FIN][SHIFT][FRESHNESS_CHECK]", {
+      source: "start_shift_click",
+
+      localCounts: getStateEntityCounts(data),
+
+      freshCounts: getStateEntityCounts(fresh),
+
+      sessionScanLocal: scanSessionHistory(cashSessions),
+
+      sessionScanFresh: scanSessionHistory(freshCashSessions),
+    });
+
+    if (!Number.isFinite(value) || value < 0) {
+      return setErrors("Please enter a valid opening balance.");
+    }
+
+    financeShiftDiag("[FIN][SHIFT][FIX_APPLIED]", {
+      usedFreshData: true,
+
+      openingBalanceInput: openingBalance,
+
+      finalOpeningBalance: value,
+
+      freshSessionCount: freshCashSessions.length,
+
+      localSessionCount: cashSessions.length,
+    });
+
+    const session: CashSession = {
+      id: buildCashSessionId(freshCashSessions),
+
+      startTime: new Date().toISOString(),
+
+      openingBalance: value,
+
+      status: "open",
+    };
+
+    financeLog.shift("START", {
+      openingCash: value,
+
+      startMode: Number.isFinite(parsedOpeningBalance)
+        ? "manual"
+        : "carry_forward",
+    });
+
+    await persistState({
+      cashSessions: [session, ...freshCashSessions],
+    });
+
+    setOpeningBalance("");
     setOpeningBalanceAutoFilled(false);
   };
 
   const closeShift = async () => {
     if (!openSession) {
-      return setErrors(
-        'No open cash session found.'
-      );
+      return setErrors("No open cash session found.");
     }
 
     const fresh = loadData();
 
-    const freshCashSessions =
-      Array.isArray(
-        fresh.cashSessions
-      )
-        ? fresh.cashSessions
-        : [];
+    const freshCashSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
 
-    const freshOpenSession =
-      freshCashSessions.find(
-        session =>
-          session.status
-          === 'open'
-      );
+    const freshOpenSession = freshCashSessions.find(
+      (session) => session.status === "open",
+    );
 
     if (!freshOpenSession) {
+      return setErrors("No open cash session found.");
+    }
+
+    const freshExpenses = Array.isArray(fresh.expenses) ? fresh.expenses : [];
+
+    const freshCashAdjustments = Array.isArray(fresh.cashAdjustments)
+      ? fresh.cashAdjustments
+      : [];
+
+    const counted = roundMoney(
+      (closingBalance.trim() ? Number(closingBalance) : closingCountTotal) +
+        closingReserveValue,
+    );
+
+    if (!Number.isFinite(counted) || counted < 0) {
+      return setErrors("Please enter a valid closing cash value.");
+    }
+
+    const reservedCash = closingReserveValue;
+
+    if (!Number.isFinite(reservedCash) || reservedCash < 0) {
+      return setErrors("Please enter a valid reserved cash amount.");
+    }
+
+    if (reservedCash > counted) {
       return setErrors(
-        'No open cash session found.'
+        "Reserved cash cannot be more than counted closing cash.",
       );
     }
 
-    const freshExpenses =
-      Array.isArray(
-        fresh.expenses
-      )
-        ? fresh.expenses
-        : [];
+    const closedAt = new Date().toISOString();
 
-    const freshCashAdjustments =
-      Array.isArray(
-        fresh.cashAdjustments
-      )
-        ? fresh.cashAdjustments
-        : [];
-
-    const counted =
-      roundMoney(
-        (
-          closingBalance.trim()
-            ? Number(
-                closingBalance
-              )
-            : closingCountTotal
-        )
-        + closingReserveValue
-      );
-
-    if (
-      !Number.isFinite(counted)
-      || counted < 0
-    ) {
-      return setErrors(
-        'Please enter a valid closing cash value.'
-      );
-    }
-
-    const reservedCash =
-      closingReserveValue;
-
-    if (
-      !Number.isFinite(
-        reservedCash
-      )
-      || reservedCash < 0
-    ) {
-      return setErrors(
-        'Please enter a valid reserved cash amount.'
-      );
-    }
-
-    if (
-      reservedCash > counted
-    ) {
-      return setErrors(
-        'Reserved cash cannot be more than counted closing cash.'
-      );
-    }
-
-    const closedAt =
-      new Date().toISOString();
-
-    const {
-      systemCashTotal,
-      expenseTotal,
-    } = getSessionCashTotals(
+    const { systemCashTotal, expenseTotal } = getSessionCashTotals(
       fresh.transactions,
       freshExpenses,
       freshCashAdjustments,
@@ -10881,1814 +7190,1027 @@ export default function Finance({
       freshOpenSession.startTime,
       closedAt,
       freshOpenSession.id,
-      Array.isArray(
-        fresh.upfrontOrders
-      )
-        ? fresh.upfrontOrders
-        : [],
-      fresh.supplierPayments || []
+      Array.isArray(fresh.upfrontOrders) ? fresh.upfrontOrders : [],
+      fresh.supplierPayments || [],
     );
 
-    const expectedClosing =
-      freshOpenSession.openingBalance
-      + systemCashTotal;
+    const expectedClosing = freshOpenSession.openingBalance + systemCashTotal;
 
-    const difference =
-      counted - expectedClosing;
+    const difference = counted - expectedClosing;
 
-    const carryForwardBalance =
-      roundMoney(
-        Math.max(
-          0,
-          counted
-          - reservedCash
-        )
+    const carryForwardBalance = roundMoney(Math.max(0, counted - reservedCash));
+
+    const currentRole = getCurrentRole();
+
+    let shiftApprovedBy: "operator" | "admin" =
+      currentRole === "operator" ? "operator" : "admin";
+
+    let adminOverrideAt: string | undefined;
+
+    if (currentRole === "operator" && Math.abs(difference) > 100) {
+      const approved = await requestAdminOverride(
+        "Difference exceeds allowed limit. Admin approval required to close this shift.",
       );
 
-    const currentRole =
-      getCurrentRole();
-
-    let shiftApprovedBy:
-      | 'operator'
-      | 'admin' =
-        currentRole === 'operator'
-          ? 'operator'
-          : 'admin';
-
-    let adminOverrideAt:
-      string | undefined;
-
-    if (
-      currentRole === 'operator'
-      && Math.abs(
-        difference
-      ) > 100
-    ) {
-      const approved =
-        await requestAdminOverride(
-          'Difference exceeds allowed limit. Admin approval required to close this shift.'
-        );
-
       if (!approved) {
-        setErrors(
-          'Difference exceeds allowed limit. Admin approval required.'
-        );
+        setErrors("Difference exceeds allowed limit. Admin approval required.");
 
         return;
       }
 
-      shiftApprovedBy =
-        'admin';
+      shiftApprovedBy = "admin";
 
-      adminOverrideAt =
-        new Date().toISOString();
+      adminOverrideAt = new Date().toISOString();
     }
 
-    financeLog.shift(
-      'CLOSE',
-      {
-        opening:
-          freshOpenSession
-            .openingBalance,
+    financeLog.shift("CLOSE", {
+      opening: freshOpenSession.openingBalance,
 
-        inflow:
-          systemCashTotal
-          + expenseTotal,
+      inflow: systemCashTotal + expenseTotal,
 
-        outflow:
-          expenseTotal,
+      outflow: expenseTotal,
 
-        expected:
-          expectedClosing,
+      expected: expectedClosing,
 
-        actual:
-          counted,
+      actual: counted,
 
-        reservedCash,
+      reservedCash,
 
-        carryForwardBalance,
+      carryForwardBalance,
 
-        variance:
-          difference,
-      }
-    );
-
-    financeShiftDiag(
-      '[FIN][SHIFT][CLOSE_FIX_APPLIED]',
-      {
-        usedFreshData:
-          true,
-
-        freshSessionCount:
-          freshCashSessions.length,
-
-        closingSessionId:
-          freshOpenSession.id,
-
-        countedCash:
-          counted,
-
-        reservedCash,
-
-        carryForwardBalance,
-
-        expectedClosing,
-      }
-    );
-
-    const updated =
-      freshCashSessions.map(
-        session =>
-          session.id
-          === freshOpenSession.id
-            ? {
-                ...session,
-
-                endTime:
-                  closedAt,
-
-                closingBalance:
-                  counted,
-
-                reservedCashOnHand:
-                  reservedCash,
-
-                carryForwardBalance,
-
-                systemCashTotal,
-
-                sessionExpenseTotal:
-                  expenseTotal,
-
-                difference,
-
-                closedWithDifference:
-                  Math.abs(
-                    difference
-                  ) > 0.01,
-
-                differenceAmount:
-                  difference,
-
-                approvedBy:
-                  shiftApprovedBy,
-
-                approvedByOperatorId:
-                  roleSession
-                    ?.operatorId,
-
-                approvedByOperatorName:
-                  roleSession
-                    ?.operatorName,
-
-                adminOverrideAt,
-
-                closingDenominationCounts:
-                  Object.fromEntries(
-                    CLOSING_DENOMS.map(
-                      denom => [
-                        String(
-                          denom
-                        ),
-                        closingCounts[
-                          denom
-                        ] || 0,
-                      ]
-                    )
-                  ),
-
-                status:
-                  'closed' as const,
-              }
-            : session
-      );
-
-    await persistState({
-      cashSessions:
-        updated,
+      variance: difference,
     });
 
-    setClosingBalance('');
+    financeShiftDiag("[FIN][SHIFT][CLOSE_FIX_APPLIED]", {
+      usedFreshData: true,
+
+      freshSessionCount: freshCashSessions.length,
+
+      closingSessionId: freshOpenSession.id,
+
+      countedCash: counted,
+
+      reservedCash,
+
+      carryForwardBalance,
+
+      expectedClosing,
+    });
+
+    const updated = freshCashSessions.map((session) =>
+      session.id === freshOpenSession.id
+        ? {
+            ...session,
+
+            endTime: closedAt,
+
+            closingBalance: counted,
+
+            reservedCashOnHand: reservedCash,
+
+            carryForwardBalance,
+
+            systemCashTotal,
+
+            sessionExpenseTotal: expenseTotal,
+
+            difference,
+
+            closedWithDifference: Math.abs(difference) > 0.01,
+
+            differenceAmount: difference,
+
+            approvedBy: shiftApprovedBy,
+
+            approvedByOperatorId: roleSession?.operatorId,
+
+            approvedByOperatorName: roleSession?.operatorName,
+
+            adminOverrideAt,
+
+            closingDenominationCounts: Object.fromEntries(
+              CLOSING_DENOMS.map((denom) => [
+                String(denom),
+                closingCounts[denom] || 0,
+              ]),
+            ),
+
+            status: "closed" as const,
+          }
+        : session,
+    );
+
+    await persistState({
+      cashSessions: updated,
+    });
+
+    setClosingBalance("");
     setClosingBalanceManuallySet(false);
     resetClosingCounts();
     setOpeningUnlocked(false);
-    setUnlockPinInput('');
+    setUnlockPinInput("");
     setIsOpeningUnlockModalOpen(false);
   };
 
-  const openEditClosingModal = (
-    session: CashSession
-  ) => {
-    if (
-      session.status
-      !== 'closed'
-    ) {
+  const openEditClosingModal = (session: CashSession) => {
+    if (session.status !== "closed") {
       return;
     }
 
-    setEditingClosingSessionId(
-      session.id
-    );
+    setEditingClosingSessionId(session.id);
 
-    setEditingClosingAmount(
-      (
-        session.closingBalance
-        ?? 0
-      ).toFixed(2)
-    );
+    setEditingClosingAmount((session.closingBalance ?? 0).toFixed(2));
 
-    setEditingClosingReserveAmount(
-      getSessionReservedCash(
-        session
-      ).toFixed(2)
-    );
+    setEditingClosingReserveAmount(getSessionReservedCash(session).toFixed(2));
 
-    setEditingClosingNote(
-      session.closingEditNote
-      || ''
-    );
+    setEditingClosingNote(session.closingEditNote || "");
   };
 
-  const saveEditedClosingAmount =
-    async (
-      expectedClosing: number
-    ) => {
-      if (
-        !editingClosingSession
-        || editingClosingSession.status
-        !== 'closed'
-      ) {
-        return;
-      }
-
-      const nextClosing =
-        Number(
-          editingClosingAmount
-        );
-
-      if (
-        !Number.isFinite(
-          nextClosing
-        )
-        || nextClosing < 0
-      ) {
-        return setErrors(
-          'Please enter a valid closing cash value.'
-        );
-      }
-
-      const nextReservedCash =
-        Number(
-          editingClosingReserveAmount
-          || '0'
-        );
-
-      if (
-        !Number.isFinite(
-          nextReservedCash
-        )
-        || nextReservedCash < 0
-      ) {
-        return setErrors(
-          'Please enter a valid reserved cash amount.'
-        );
-      }
-
-      if (
-        nextReservedCash
-        > nextClosing
-      ) {
-        return setErrors(
-          'Reserved cash cannot be more than counted closing cash.'
-        );
-      }
-
-      const fresh =
-        loadData();
-
-      const freshSessions =
-        Array.isArray(
-          fresh.cashSessions
-        )
-          ? fresh.cashSessions
-          : [];
-
-      const updatedSessions =
-        freshSessions.map(
-          session => {
-            if (
-              session.id
-              !== editingClosingSession.id
-              || session.status
-              !== 'closed'
-            ) {
-              return session;
-            }
-
-            return {
-              ...session,
-
-              closingBalance:
-                nextClosing,
-
-              reservedCashOnHand:
-                nextReservedCash,
-
-              carryForwardBalance:
-                roundMoney(
-                  Math.max(
-                    0,
-                    nextClosing
-                    - nextReservedCash
-                  )
-                ),
-
-              difference:
-                nextClosing
-                - expectedClosing,
-
-              closingEditedAt:
-                new Date()
-                  .toISOString(),
-
-              closingEditNote:
-                editingClosingNote
-                  .trim()
-                || undefined,
-            };
-          }
-        );
-
-      await persistState({
-        cashSessions:
-          updatedSessions,
-      });
-
-      setEditingClosingSessionId(
-        null
-      );
-
-      setEditingClosingAmount(
-        ''
-      );
-
-      setEditingClosingReserveAmount(
-        ''
-      );
-
-      setEditingClosingNote(
-        ''
-      );
-    };
-
-  const openDeleteShiftModal = (
-    session: CashSession
-  ) => {
-    if (
-      session.status
-      !== 'closed'
-      || session.deletedAt
-    ) {
+  const saveEditedClosingAmount = async (expectedClosing: number) => {
+    if (!editingClosingSession || editingClosingSession.status !== "closed") {
       return;
     }
 
-    setDeletingSessionId(
-      session.id
-    );
+    const nextClosing = Number(editingClosingAmount);
 
-    setDeleteSessionReason(
-      ''
-    );
+    if (!Number.isFinite(nextClosing) || nextClosing < 0) {
+      return setErrors("Please enter a valid closing cash value.");
+    }
+
+    const nextReservedCash = Number(editingClosingReserveAmount || "0");
+
+    if (!Number.isFinite(nextReservedCash) || nextReservedCash < 0) {
+      return setErrors("Please enter a valid reserved cash amount.");
+    }
+
+    if (nextReservedCash > nextClosing) {
+      return setErrors(
+        "Reserved cash cannot be more than counted closing cash.",
+      );
+    }
+
+    const fresh = loadData();
+
+    const freshSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
+
+    const updatedSessions = freshSessions.map((session) => {
+      if (
+        session.id !== editingClosingSession.id ||
+        session.status !== "closed"
+      ) {
+        return session;
+      }
+
+      return {
+        ...session,
+
+        closingBalance: nextClosing,
+
+        reservedCashOnHand: nextReservedCash,
+
+        carryForwardBalance: roundMoney(
+          Math.max(0, nextClosing - nextReservedCash),
+        ),
+
+        difference: nextClosing - expectedClosing,
+
+        closingEditedAt: new Date().toISOString(),
+
+        closingEditNote: editingClosingNote.trim() || undefined,
+      };
+    });
+
+    await persistState({
+      cashSessions: updatedSessions,
+    });
+
+    setEditingClosingSessionId(null);
+
+    setEditingClosingAmount("");
+
+    setEditingClosingReserveAmount("");
+
+    setEditingClosingNote("");
   };
 
-  const confirmDeleteShift =
-    async () => {
-      if (
-        !deletingSessionId
-      ) {
-        return;
-      }
+  const openDeleteShiftModal = (session: CashSession) => {
+    if (session.status !== "closed" || session.deletedAt) {
+      return;
+    }
 
-      const fresh =
-        loadData();
+    setDeletingSessionId(session.id);
 
-      const freshSessions =
-        Array.isArray(
-          fresh.cashSessions
-        )
-          ? fresh.cashSessions
-          : [];
-
-      const target =
-        freshSessions.find(
-          session =>
-            session.id
-            === deletingSessionId
-        );
-
-      if (
-        !target
-        || target.status
-        !== 'closed'
-        || target.deletedAt
-      ) {
-        setErrors(
-          'Only closed shifts can be deleted.'
-        );
-
-        setDeletingSessionId(
-          null
-        );
-
-        setDeleteSessionReason(
-          ''
-        );
-
-        return;
-      }
-
-      const nowIso =
-        new Date()
-          .toISOString();
-
-      const updatedSessions =
-        freshSessions.map(
-          session =>
-            session.id
-            === target.id
-              ? {
-                  ...session,
-
-                  deletedAt:
-                    nowIso,
-
-                  deletedReason:
-                    deleteSessionReason
-                      .trim()
-                    || undefined,
-
-                  deletedBy:
-                    currentUserEmail
-                    || undefined,
-                }
-              : session
-        );
-
-      financeLog.shift(
-        'DELETE',
-        {
-          type:
-            'shift_delete',
-
-          source:
-            'finance',
-
-          sessionId:
-            target.id,
-
-          sessionStartTime:
-            target.startTime,
-
-          sessionEndTime:
-            target.endTime
-            ?? null,
-
-          reason:
-            deleteSessionReason
-              .trim()
-            || null,
-        }
-      );
-
-      await persistState({
-        cashSessions:
-          updatedSessions,
-      });
-
-      if (
-        activeHistoryDetailSessionId
-        === target.id
-      ) {
-        setActiveHistoryDetailSessionId(
-          null
-        );
-      }
-
-      if (
-        editingClosingSessionId
-        === target.id
-      ) {
-        setEditingClosingSessionId(
-          null
-        );
-
-        setEditingClosingAmount(
-          ''
-        );
-
-        setEditingClosingReserveAmount(
-          ''
-        );
-
-        setEditingClosingNote(
-          ''
-        );
-      }
-
-      setDeletingSessionId(
-        null
-      );
-
-      setDeleteSessionReason(
-        ''
-      );
-    };
-
-  const updateClosingCount = (
-    denom: number,
-    next: number
-  ) => {
-    const safe =
-      Math.max(
-        0,
-        Math.min(
-          999999,
-          Number.isFinite(next)
-            ? Math.floor(next)
-            : 0
-        )
-      );
-
-    setClosingCounts(
-      prev => ({
-        ...prev,
-        [denom]: safe,
-      })
-    );
+    setDeleteSessionReason("");
   };
 
-  const applyCountedTotalToClosing =
-    () => {
-      setClosingBalanceManuallySet(
-        true
-      );
+  const confirmDeleteShift = async () => {
+    if (!deletingSessionId) {
+      return;
+    }
 
-      setClosingBalance(
-        Math.max(
-          0,
-          closingCountTotal
-          - closingReserveValue
-        ).toFixed(2)
-      );
-    };
+    const fresh = loadData();
 
-  const resetClosingCounts =
-    () => {
-      setClosingCounts(
-        buildEmptyCounts()
-      );
-    };
+    const freshSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
 
-  const saveActiveReserveAmount =
-    async (
-      overrideReserve?: number
-    ) => {
-      if (!openSession) {
-        return setErrors(
-          'No open cash session found.'
-        );
-      }
+    const target = freshSessions.find(
+      (session) => session.id === deletingSessionId,
+    );
 
-      const nextReserveRaw =
-        typeof overrideReserve
-        === 'number'
-          ? overrideReserve
-          : roundMoney(
-              liveRemainingReserveCash
-              + (
-                activeReserveAmount
-                  .trim()
-                  ? Number(
-                      activeReserveAmount
-                    )
-                  : 0
-              )
-            );
+    if (!target || target.status !== "closed" || target.deletedAt) {
+      setErrors("Only closed shifts can be deleted.");
 
-      const nextReserve =
-        Number.isFinite(
-          nextReserveRaw
-        )
-        && nextReserveRaw >= 0
-          ? roundMoney(
-              nextReserveRaw
-            )
-          : Number.NaN;
+      setDeletingSessionId(null);
 
-      if (
-        !Number.isFinite(
-          nextReserve
-        )
-        || nextReserve < 0
-      ) {
-        return setErrors(
-          'Please enter a valid cash in hand amount.'
-        );
-      }
+      setDeleteSessionReason("");
 
-      if (
-        nextReserve
-        > totalAccessibleCash
-      ) {
-        return setErrors(
-          'Reserved cash cannot be more than total accessible cash.'
-        );
-      }
+      return;
+    }
 
-      const fresh =
-        loadData();
+    const nowIso = new Date().toISOString();
 
-      const freshSessions =
-        Array.isArray(
-          fresh.cashSessions
-        )
-          ? fresh.cashSessions
-          : [];
+    const updatedSessions = freshSessions.map((session) =>
+      session.id === target.id
+        ? {
+            ...session,
 
-      const changeRecordedAt =
-        new Date()
-          .toISOString();
+            deletedAt: nowIso,
 
-      const updatedSessions =
-        freshSessions.map(
-          (session) => {
-            if (
-              session.id
-              !== openSession.id
-              || session.status
-              !== 'open'
-            ) {
-              return session;
-            }
+            deletedReason: deleteSessionReason.trim() || undefined,
 
-            const previousReserve =
-              roundMoney(
-                Math.max(
-                  0,
-                  liveRemainingReserveCash
-                )
-              );
-
-            const reserveChange =
-              roundMoney(
-                nextReserve
-                - previousReserve
-              );
-
-            const preservedReserveSavedAt =
-              nextReserve > 0
-                ? changeRecordedAt
-                : undefined;
-
-            const nextReserveLedger =
-              Array.isArray(
-                session.reserveCashLedger
-              )
-                ? [
-                    ...session.reserveCashLedger,
-                  ]
-                : [];
-
-            if (
-              Math.abs(
-                reserveChange
-              ) > 0
-            ) {
-              nextReserveLedger.push({
-                id:
-                  `reserve-ledger-${Date.now()}-${Math.abs(reserveChange).toFixed(2)}`,
-
-                date:
-                  changeRecordedAt,
-
-                type:
-                  reserveChange > 0
-                    ? 'in'
-                    : 'out',
-
-                amount:
-                  Math.abs(
-                    reserveChange
-                  ),
-
-                note:
-                  reserveChange > 0
-                    ? (
-                      previousReserve > 0
-                        ? 'Reserve top-up'
-                        : 'Reserve created'
-                    )
-                    : (
-                      nextReserve === 0
-                        ? 'Added back to shift'
-                        : 'Reserve reduced'
-                    ),
-              });
-            }
-
-            return {
-              ...session,
-
-              reservedCashOnHand:
-                nextReserve,
-
-              reservedCashSavedAt:
-                preservedReserveSavedAt,
-
-              reserveCashLedger:
-                nextReserveLedger,
-            };
+            deletedBy: currentUserEmail || undefined,
           }
-        );
+        : session,
+    );
 
-      await persistState({
-        cashSessions:
-          updatedSessions,
-      });
+    financeLog.shift("DELETE", {
+      type: "shift_delete",
 
-      setClosingBalanceManuallySet(
-        false
+      source: "finance",
+
+      sessionId: target.id,
+
+      sessionStartTime: target.startTime,
+
+      sessionEndTime: target.endTime ?? null,
+
+      reason: deleteSessionReason.trim() || null,
+    });
+
+    await persistState({
+      cashSessions: updatedSessions,
+    });
+
+    if (activeHistoryDetailSessionId === target.id) {
+      setActiveHistoryDetailSessionId(null);
+    }
+
+    if (editingClosingSessionId === target.id) {
+      setEditingClosingSessionId(null);
+
+      setEditingClosingAmount("");
+
+      setEditingClosingReserveAmount("");
+
+      setEditingClosingNote("");
+    }
+
+    setDeletingSessionId(null);
+
+    setDeleteSessionReason("");
+  };
+
+  const updateClosingCount = (denom: number, next: number) => {
+    const safe = Math.max(
+      0,
+      Math.min(999999, Number.isFinite(next) ? Math.floor(next) : 0),
+    );
+
+    setClosingCounts((prev) => ({
+      ...prev,
+      [denom]: safe,
+    }));
+  };
+
+  const applyCountedTotalToClosing = () => {
+    setClosingBalanceManuallySet(true);
+
+    setClosingBalance(
+      Math.max(0, closingCountTotal - closingReserveValue).toFixed(2),
+    );
+  };
+
+  const resetClosingCounts = () => {
+    setClosingCounts(buildEmptyCounts());
+  };
+
+  const saveActiveReserveAmount = async (overrideReserve?: number) => {
+    if (!openSession) {
+      return setErrors("No open cash session found.");
+    }
+
+    const nextReserveRaw =
+      typeof overrideReserve === "number"
+        ? overrideReserve
+        : roundMoney(
+            liveRemainingReserveCash +
+              (activeReserveAmount.trim() ? Number(activeReserveAmount) : 0),
+          );
+
+    const nextReserve =
+      Number.isFinite(nextReserveRaw) && nextReserveRaw >= 0
+        ? roundMoney(nextReserveRaw)
+        : Number.NaN;
+
+    if (!Number.isFinite(nextReserve) || nextReserve < 0) {
+      return setErrors("Please enter a valid cash in hand amount.");
+    }
+
+    if (nextReserve > totalAccessibleCash) {
+      return setErrors(
+        "Reserved cash cannot be more than total accessible cash.",
       );
+    }
 
-      setClosingBalance(
-        Math.max(
-          0,
-          roundMoney(
-            totalAccessibleCash
-            - nextReserve
-          )
-        ).toFixed(2)
-      );
+    const fresh = loadData();
 
-      setActiveReserveAmount(
-        ''
-      );
+    const freshSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
 
-      setIsReserveAmountEditorOpen(
-        false
-      );
-    };
+    const changeRecordedAt = new Date().toISOString();
 
-  const handleManagerUnlock =
-    () => {
-      const requiredPin =
-        (
-          data.profile.adminPin
-          || ''
-        ).trim()
-        || '1234';
-
-      if (
-        !unlockPinInput.trim()
-      ) {
-        setErrors(
-          'Please enter manager PIN.'
-        );
-
-        return;
+    const updatedSessions = freshSessions.map((session) => {
+      if (session.id !== openSession.id || session.status !== "open") {
+        return session;
       }
 
-      if (
-        unlockPinInput
-        !== requiredPin
-      ) {
-        setErrors(
-          'Invalid manager PIN.'
-        );
+      const previousReserve = roundMoney(Math.max(0, liveRemainingReserveCash));
 
-        return;
+      const reserveChange = roundMoney(nextReserve - previousReserve);
+
+      const preservedReserveSavedAt =
+        nextReserve > 0 ? changeRecordedAt : undefined;
+
+      const nextReserveLedger = Array.isArray(session.reserveCashLedger)
+        ? [...session.reserveCashLedger]
+        : [];
+
+      if (Math.abs(reserveChange) > 0) {
+        nextReserveLedger.push({
+          id: `reserve-ledger-${Date.now()}-${Math.abs(reserveChange).toFixed(2)}`,
+
+          date: changeRecordedAt,
+
+          type: reserveChange > 0 ? "in" : "out",
+
+          amount: Math.abs(reserveChange),
+
+          note:
+            reserveChange > 0
+              ? previousReserve > 0
+                ? "Reserve top-up"
+                : "Reserve created"
+              : nextReserve === 0
+                ? "Added back to shift"
+                : "Reserve reduced",
+        });
       }
 
-      setOpeningUnlocked(
-        true
-      );
+      return {
+        ...session,
 
-      setEditingOpeningBalance(
-        true
-      );
+        reservedCashOnHand: nextReserve,
 
-      if (openSession) {
-        setOpeningBalanceEditValue(
-          openSession
-            .openingBalance
-            .toFixed(2)
-        );
-      }
+        reservedCashSavedAt: preservedReserveSavedAt,
 
-      setIsOpeningUnlockModalOpen(
-        false
-      );
+        reserveCashLedger: nextReserveLedger,
+      };
+    });
 
-      setUnlockPinInput(
-        ''
-      );
+    await persistState({
+      cashSessions: updatedSessions,
+    });
 
-      setErrors(
-        null
-      );
-    };
+    setClosingBalanceManuallySet(false);
 
-  const cancelOpeningBalanceEdit =
-    () => {
-      setEditingOpeningBalance(
-        false
-      );
+    setClosingBalance(
+      Math.max(0, roundMoney(totalAccessibleCash - nextReserve)).toFixed(2),
+    );
 
-      setOpeningBalanceEditValue(
-        ''
-      );
+    setActiveReserveAmount("");
 
-      setOpeningUnlocked(
-        false
-      );
-    };
+    setIsReserveAmountEditorOpen(false);
+  };
 
-  const saveOpeningBalanceEdit =
-    async () => {
-      if (
-        !openSession
-        || !isOpenSessionToday
-      ) {
-        return setErrors(
-          'Open session is required for opening balance edit.'
-        );
-      }
+  const handleManagerUnlock = () => {
+    const requiredPin = (data.profile.adminPin || "").trim() || "1234";
 
-      const fresh =
-        loadData();
+    if (!unlockPinInput.trim()) {
+      setErrors("Please enter manager PIN.");
 
-      const freshCashSessions =
-        Array.isArray(
-          fresh.cashSessions
-        )
-          ? fresh.cashSessions
-          : [];
+      return;
+    }
 
-      const freshOpenSession =
-        freshCashSessions.find(
-          session =>
-            session.status
-            === 'open'
-        );
+    if (unlockPinInput !== requiredPin) {
+      setErrors("Invalid manager PIN.");
 
-      if (!freshOpenSession) {
-        return setErrors(
-          'No open cash session found.'
-        );
-      }
+      return;
+    }
 
-      const value =
-        Number(
-          openingBalanceEditValue
-        );
+    setOpeningUnlocked(true);
 
-      if (
-        !Number.isFinite(value)
-        || value < 0
-      ) {
-        return setErrors(
-          'Please enter a valid opening balance.'
-        );
-      }
+    setEditingOpeningBalance(true);
 
-      financeShiftDiag(
-        '[FIN][SHIFT][OPENING_EDIT_FIX_APPLIED]',
-        {
-          usedFreshData:
-            true,
+    if (openSession) {
+      setOpeningBalanceEditValue(openSession.openingBalance.toFixed(2));
+    }
 
-          freshSessionCount:
-            freshCashSessions.length,
+    setIsOpeningUnlockModalOpen(false);
 
-          sessionId:
-            freshOpenSession.id,
+    setUnlockPinInput("");
 
-          previousOpening:
-            freshOpenSession
-              .openingBalance,
+    setErrors(null);
+  };
 
-          newOpening:
-            value,
-        }
-      );
+  const cancelOpeningBalanceEdit = () => {
+    setEditingOpeningBalance(false);
 
-      const updated =
-        freshCashSessions.map(
-          session =>
-            session.id
-            === freshOpenSession.id
-              ? {
-                  ...session,
-                  openingBalance:
-                    value,
-                }
-              : session
-        );
+    setOpeningBalanceEditValue("");
 
-      await persistState({
-        cashSessions:
-          updated,
-      });
+    setOpeningUnlocked(false);
+  };
 
-      setEditingOpeningBalance(
-        false
-      );
+  const saveOpeningBalanceEdit = async () => {
+    if (!openSession || !isOpenSessionToday) {
+      return setErrors("Open session is required for opening balance edit.");
+    }
 
-      setOpeningBalanceEditValue(
-        ''
-      );
+    const fresh = loadData();
 
-      setOpeningUnlocked(
-        false
-      );
-    };
+    const freshCashSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
+
+    const freshOpenSession = freshCashSessions.find(
+      (session) => session.status === "open",
+    );
+
+    if (!freshOpenSession) {
+      return setErrors("No open cash session found.");
+    }
+
+    const value = Number(openingBalanceEditValue);
+
+    if (!Number.isFinite(value) || value < 0) {
+      return setErrors("Please enter a valid opening balance.");
+    }
+
+    financeShiftDiag("[FIN][SHIFT][OPENING_EDIT_FIX_APPLIED]", {
+      usedFreshData: true,
+
+      freshSessionCount: freshCashSessions.length,
+
+      sessionId: freshOpenSession.id,
+
+      previousOpening: freshOpenSession.openingBalance,
+
+      newOpening: value,
+    });
+
+    const updated = freshCashSessions.map((session) =>
+      session.id === freshOpenSession.id
+        ? {
+            ...session,
+            openingBalance: value,
+          }
+        : session,
+    );
+
+    await persistState({
+      cashSessions: updated,
+    });
+
+    setEditingOpeningBalance(false);
+
+    setOpeningBalanceEditValue("");
+
+    setOpeningUnlocked(false);
+  };
 
   const createExpenseActivity = (
-    action: ExpenseActivity['action'],
-    message: string
+    action: ExpenseActivity["action"],
+    message: string,
   ): ExpenseActivity => ({
-    id:
-      `${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+    id: `${Date.now()}-${Math.floor(Math.random() * 100000)}`,
 
     action,
 
     message,
 
-    createdAt:
-      new Date().toISOString(),
+    createdAt: new Date().toISOString(),
   });
 
-  const formatDateTimeCell = (
-    value?: string
-  ) => {
+  const formatDateTimeCell = (value?: string) => {
     if (!value) {
-      return '—';
+      return "—";
     }
 
-    const parsed =
-      new Date(value);
+    const parsed = new Date(value);
 
-    return Number.isNaN(
-      parsed.getTime()
-    )
-      ? '—'
-      : formatDateTimeDisplay(
-          parsed
-        );
+    return Number.isNaN(parsed.getTime()) ? "—" : formatDateTimeDisplay(parsed);
   };
 
-  const resetWithdrawalRepairForm =
-    () => {
-      setEditingWithdrawalId(
-        null
-      );
+  const resetWithdrawalRepairForm = () => {
+    setEditingWithdrawalId(null);
 
-      setCashWithdrawAmount(
-        ''
-      );
+    setCashWithdrawAmount("");
 
-      setCashWithdrawNote(
-        ''
-      );
+    setCashWithdrawNote("");
 
-      setWithdrawalCashSource(
-        'drawer'
-      );
+    setWithdrawalCashSource("drawer");
 
-      setWithdrawalFinancialDate(
-        toDateTimeLocalNow()
-      );
+    setWithdrawalFinancialDate(toDateTimeLocalNow());
 
-      setWithdrawalRepairReason(
-        ''
-      );
+    setWithdrawalRepairReason("");
 
-      setWithdrawalMethod(
-        'Cash'
-      );
+    setWithdrawalMethod("Cash");
 
-      setWithdrawalTitle(
-        ''
-      );
+    setWithdrawalTitle("");
 
-      setWithdrawalPaidTo(
-        ''
-      );
+    setWithdrawalPaidTo("");
 
-      setWithdrawalReference(
-        ''
-      );
-    };
+    setWithdrawalReference("");
+  };
 
-  const withdrawalRows =
-    useMemo(
-      () =>
-        cashAdjustments
-          .filter(
-            (entry) =>
-              entry.type
-              === 'cash_withdrawal'
-          )
-          .slice()
-          .sort(
-            (a, b) =>
-              new Date(
-                b.createdAt || 0
-              ).getTime()
-              - new Date(
-                a.createdAt || 0
-              ).getTime()
-          ),
-      [
-        cashAdjustments,
-      ]
-    );
+  const withdrawalRows = useMemo(
+    () =>
+      cashAdjustments
+        .filter((entry) => entry.type === "cash_withdrawal")
+        .slice()
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt || 0).getTime() -
+            new Date(a.createdAt || 0).getTime(),
+        ),
+    [cashAdjustments],
+  );
 
   const buildWithdrawalRepairPreview = (
-    draft: WithdrawalRepairDraft
+    draft: WithdrawalRepairDraft,
   ): WithdrawalRepairPreview => {
-    const currentTotal =
-      withdrawalRows.reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-              || 0
-            )
-          ),
-        0
-      );
+    const currentTotal = withdrawalRows.reduce(
+      (sum, entry) => sum + Math.max(0, Number(entry.amount || 0)),
+      0,
+    );
 
     const nextRows =
-      draft.kind
-        === 'add_cash_withdrawal'
-      && draft.nextCashAdjustment
-        ? [
-            draft.nextCashAdjustment,
-            ...withdrawalRows,
-          ]
-        : draft.kind
-            === 'delete_cash_withdrawal'
-          && draft.oldCashAdjustment
+      draft.kind === "add_cash_withdrawal" && draft.nextCashAdjustment
+        ? [draft.nextCashAdjustment, ...withdrawalRows]
+        : draft.kind === "delete_cash_withdrawal" && draft.oldCashAdjustment
           ? withdrawalRows.filter(
-              (entry) =>
-                entry.id
-                !== draft
-                  .oldCashAdjustment!
-                  .id
+              (entry) => entry.id !== draft.oldCashAdjustment!.id,
             )
-          : withdrawalRows.map(
-              (entry) =>
-                entry.id
-                === draft
-                  .oldCashAdjustment
-                  ?.id
-                  ? (
-                    draft.nextCashAdjustment
-                    || draft.oldCashAdjustment
-                    || entry
-                  )
-                  : entry
+          : withdrawalRows.map((entry) =>
+              entry.id === draft.oldCashAdjustment?.id
+                ? draft.nextCashAdjustment || draft.oldCashAdjustment || entry
+                : entry,
             );
 
-    const nextTotal =
-      nextRows.reduce(
-        (sum, entry) =>
-          sum
-          + Math.max(
-            0,
-            Number(
-              entry.amount
-              || 0
-            )
-          ),
-        0
-      );
+    const nextTotal = nextRows.reduce(
+      (sum, entry) => sum + Math.max(0, Number(entry.amount || 0)),
+      0,
+    );
 
     return {
-      beforeWithdrawalTotal:
-        currentTotal,
+      beforeWithdrawalTotal: currentTotal,
 
-      afterWithdrawalTotal:
-        nextTotal,
+      afterWithdrawalTotal: nextTotal,
 
-      changeWithdrawalTotal:
-        roundMoney(
-          nextTotal
-          - currentTotal
-        ),
+      changeWithdrawalTotal: roundMoney(nextTotal - currentTotal),
 
-      historicalShiftRepair:
-        Boolean(
-          openSession?.startTime
-          && draft.financialDate
-          && new Date(
-            draft.financialDate
-          ).getTime()
-          < new Date(
-            openSession.startTime
-          ).getTime()
-        ),
+      historicalShiftRepair: Boolean(
+        openSession?.startTime &&
+        draft.financialDate &&
+        new Date(draft.financialDate).getTime() <
+          new Date(openSession.startTime).getTime(),
+      ),
     };
   };
 
   const buildWithdrawalRepairHistoryEntry = (
     draft: WithdrawalRepairDraft,
-    preview: WithdrawalRepairPreview
+    preview: WithdrawalRepairPreview,
   ): RepairHistoryEntry => ({
-    id:
-      `repair-${Date.now()}`,
+    id: `repair-${Date.now()}`,
 
-    entityType:
-      'cash_adjustment',
+    entityType: "cash_adjustment",
 
     entityId:
-      draft.oldCashAdjustment?.id
-      || draft.nextCashAdjustment?.id
-      || 'cash-withdrawal',
+      draft.oldCashAdjustment?.id ||
+      draft.nextCashAdjustment?.id ||
+      "cash-withdrawal",
 
-    entityName:
-      'Cash Withdrawal',
+    entityName: "Cash Withdrawal",
 
-    repairKind:
-      draft.kind,
+    repairKind: draft.kind,
 
     targetTransactionId:
-      draft.oldCashAdjustment?.id
-      || draft.nextCashAdjustment?.id,
+      draft.oldCashAdjustment?.id || draft.nextCashAdjustment?.id,
 
-    reason:
-      draft.reason.trim(),
+    reason: draft.reason.trim(),
 
-    notes:
-      'cash_withdrawal',
+    notes: "cash_withdrawal",
 
-    financialDate:
-      draft.financialDate,
+    financialDate: draft.financialDate,
 
-    adminUid:
-      auth.currentUser?.uid
-      || null,
+    adminUid: auth.currentUser?.uid || null,
 
-    adminEmail:
-      auth.currentUser?.email
-      || null,
+    adminEmail: auth.currentUser?.email || null,
 
-    createdAt:
-      new Date()
-        .toISOString(),
+    createdAt: new Date().toISOString(),
 
     before: {
-      totalDue:
-        preview
-          .beforeWithdrawalTotal,
+      totalDue: preview.beforeWithdrawalTotal,
 
-      storeCredit:
-        0,
+      storeCredit: 0,
 
-      netReceivable:
-        preview
-          .beforeWithdrawalTotal,
+      netReceivable: preview.beforeWithdrawalTotal,
     },
 
     after: {
-      totalDue:
-        preview
-          .afterWithdrawalTotal,
+      totalDue: preview.afterWithdrawalTotal,
 
-      storeCredit:
-        0,
+      storeCredit: 0,
 
-      netReceivable:
-        preview
-          .afterWithdrawalTotal,
+      netReceivable: preview.afterWithdrawalTotal,
     },
 
     delta: {
-      totalDue:
-        preview
-          .changeWithdrawalTotal,
+      totalDue: preview.changeWithdrawalTotal,
 
-      storeCredit:
-        0,
+      storeCredit: 0,
 
-      netReceivable:
-        preview
-          .changeWithdrawalTotal,
+      netReceivable: preview.changeWithdrawalTotal,
     },
 
-    oldCashAdjustment:
-      draft.oldCashAdjustment
-      || null,
+    oldCashAdjustment: draft.oldCashAdjustment || null,
 
-    newCashAdjustment:
-      draft.nextCashAdjustment
-      || null,
+    newCashAdjustment: draft.nextCashAdjustment || null,
   });
 
   const buildExpenseRepairPreview = (
-    draft: ExpenseRepairDraft
+    draft: ExpenseRepairDraft,
   ): ExpenseRepairPreview => {
-    const currentTotal =
-      filteredExpenses.reduce(
-        (sum, e) =>
-          sum + e.amount,
-        0
-      );
+    const currentTotal = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
 
     const nextExpenses =
-      draft.kind === 'add_expense'
-      && draft.nextExpense
-        ? [
-            draft.nextExpense,
-            ...expenses,
-          ]
-        : draft.kind === 'edit_expense'
-          && draft.nextExpense
-          ? expenses.map(
-              (expense) =>
-                expense.id
-                === draft
-                  .nextExpense!
-                  .id
-                  ? draft
-                    .nextExpense!
-                  : expense
+      draft.kind === "add_expense" && draft.nextExpense
+        ? [draft.nextExpense, ...expenses]
+        : draft.kind === "edit_expense" && draft.nextExpense
+          ? expenses.map((expense) =>
+              expense.id === draft.nextExpense!.id
+                ? draft.nextExpense!
+                : expense,
             )
-          : draft.kind === 'delete_expense'
-            && draft.oldExpense
-            ? expenses.filter(
-                (expense) =>
-                  expense.id
-                  !== draft
-                    .oldExpense!
-                    .id
-              )
+          : draft.kind === "delete_expense" && draft.oldExpense
+            ? expenses.filter((expense) => expense.id !== draft.oldExpense!.id)
             : expenses;
 
-    const nextFiltered =
-      filterExpensesCollection(
-        nextExpenses
-      );
+    const nextFiltered = filterExpensesCollection(nextExpenses);
 
-    const nextTotal =
-      nextFiltered.reduce(
-        (sum, e) =>
-          sum + e.amount,
-        0
-      );
+    const nextTotal = nextFiltered.reduce((sum, e) => sum + e.amount, 0);
 
     return {
-      beforeExpenseTotal:
-        roundMoney(
-          currentTotal
-        ),
+      beforeExpenseTotal: roundMoney(currentTotal),
 
-      afterExpenseTotal:
-        roundMoney(
-          nextTotal
-        ),
+      afterExpenseTotal: roundMoney(nextTotal),
 
-      changeExpenseTotal:
-        roundMoney(
-          nextTotal
-          - currentTotal
-        ),
+      changeExpenseTotal: roundMoney(nextTotal - currentTotal),
     };
   };
 
   const buildExpenseRepairHistoryEntry = (
     draft: ExpenseRepairDraft,
-    preview: ExpenseRepairPreview
+    preview: ExpenseRepairPreview,
   ): RepairHistoryEntry => ({
-    id:
-      `repair-${Date.now()}`,
+    id: `repair-${Date.now()}`,
 
-    entityType:
-      'expense',
+    entityType: "expense",
 
-    entityId:
-      draft.oldExpense?.id
-      || draft.nextExpense?.id
-      || 'expense',
+    entityId: draft.oldExpense?.id || draft.nextExpense?.id || "expense",
 
     entityName:
-      draft.nextExpense?.title
-      || draft.oldExpense?.title
-      || 'Expense',
+      draft.nextExpense?.title || draft.oldExpense?.title || "Expense",
 
-    repairKind:
-      draft.kind,
+    repairKind: draft.kind,
 
-    targetTransactionId:
-      draft.oldExpense?.id
-      || draft.nextExpense?.id,
+    targetTransactionId: draft.oldExpense?.id || draft.nextExpense?.id,
 
-    reason:
-      draft.reason.trim(),
+    reason: draft.reason.trim(),
 
-    financialDate:
-      draft.financialDate,
+    financialDate: draft.financialDate,
 
-    adminUid:
-      auth.currentUser?.uid
-      || null,
+    adminUid: auth.currentUser?.uid || null,
 
-    adminEmail:
-      auth.currentUser?.email
-      || null,
+    adminEmail: auth.currentUser?.email || null,
 
-    createdAt:
-      new Date()
-        .toISOString(),
+    createdAt: new Date().toISOString(),
 
     before: {
-      totalDue:
-        preview
-          .beforeExpenseTotal,
+      totalDue: preview.beforeExpenseTotal,
 
-      storeCredit:
-        0,
+      storeCredit: 0,
 
-      netReceivable:
-        preview
-          .beforeExpenseTotal,
+      netReceivable: preview.beforeExpenseTotal,
     },
 
     after: {
-      totalDue:
-        preview
-          .afterExpenseTotal,
+      totalDue: preview.afterExpenseTotal,
 
-      storeCredit:
-        0,
+      storeCredit: 0,
 
-      netReceivable:
-        preview
-          .afterExpenseTotal,
+      netReceivable: preview.afterExpenseTotal,
     },
 
     delta: {
-      totalDue:
-        preview
-          .changeExpenseTotal,
+      totalDue: preview.changeExpenseTotal,
 
-      storeCredit:
-        0,
+      storeCredit: 0,
 
-      netReceivable:
-        preview
-          .changeExpenseTotal,
+      netReceivable: preview.changeExpenseTotal,
     },
 
-    oldTransaction:
-      null,
+    oldTransaction: null,
 
-    newTransaction:
-      null,
+    newTransaction: null,
 
-    oldExpense:
-      draft.oldExpense
-      || null,
+    oldExpense: draft.oldExpense || null,
 
-    newExpense:
-      draft.nextExpense
-      || null,
+    newExpense: draft.nextExpense || null,
   });
 
-  const resetExpenseForm =
-    () => {
-      setExpenseTitle('');
-      setExpenseAmount('');
-      setExpenseCategory('General');
-      setExpenseNote('');
-      setExpenseCashSource('drawer');
-      setEditingExpenseId(null);
-      setExpenseFinancialDate(toDateTimeLocalNow());
-      setExpenseRepairReason('');
-    };
+  const resetExpenseForm = () => {
+    setExpenseTitle("");
+    setExpenseAmount("");
+    setExpenseCategory("General");
+    setExpenseNote("");
+    setExpenseCashSource("drawer");
+    setEditingExpenseId(null);
+    setExpenseFinancialDate(toDateTimeLocalNow());
+    setExpenseRepairReason("");
+  };
 
   const addExpense = async () => {
-    const amount =
-      Number(
-        expenseAmount
-      );
+    const amount = Number(expenseAmount);
 
     if (
-      !expenseTitle.trim()
-      || !expenseCategory.trim()
-      || !Number.isFinite(
-        amount
-      )
-      || amount <= 0
+      !expenseTitle.trim() ||
+      !expenseCategory.trim() ||
+      !Number.isFinite(amount) ||
+      amount <= 0
     ) {
-      return setErrors(
-        'Please enter valid expense details.'
-      );
+      return setErrors("Please enter valid expense details.");
     }
 
     const availableFromSelectedSource =
-      getAvailableCashBySource(
-        expenseCashSource
-      );
+      getAvailableCashBySource(expenseCashSource);
 
-    if (
-      amount
-      > availableFromSelectedSource
-    ) {
+    if (amount > availableFromSelectedSource) {
       return setErrors(
-        `${formatCashSourceLabel(expenseCashSource)} cannot cover this expense.`
+        `${formatCashSourceLabel(expenseCashSource)} cannot cover this expense.`,
       );
     }
 
-    const financialDate =
-      repairMode
-        ? parseDateTimeInput(
-            expenseFinancialDate
-          )
-        : new Date()
-          .toISOString();
+    const financialDate = repairMode
+      ? parseDateTimeInput(expenseFinancialDate)
+      : new Date().toISOString();
 
-    if (
-      repairMode
-      && !financialDate
-    ) {
-      return setErrors(
-        'Please enter a valid financial date and time.'
-      );
+    if (repairMode && !financialDate) {
+      return setErrors("Please enter a valid financial date and time.");
     }
 
     const expense: Expense = {
-      id:
-        editingExpenseId
-        || Date.now()
-          .toString(),
+      id: editingExpenseId || Date.now().toString(),
 
-      title:
-        expenseTitle.trim(),
+      title: expenseTitle.trim(),
 
       amount,
 
-      category:
-        expenseCategory.trim(),
+      category: expenseCategory.trim(),
 
-      note:
-        expenseNote.trim()
-        || undefined,
+      note: expenseNote.trim() || undefined,
 
-      paymentMethod:
-        'Cash',
+      paymentMethod: "Cash",
 
-      cashSource:
-        expenseCashSource,
+      cashSource: expenseCashSource,
 
-      effectiveAt:
-        financialDate
-        || new Date()
-          .toISOString(),
+      effectiveAt: financialDate || new Date().toISOString(),
 
-      createdAt:
-        financialDate
-        || new Date()
-          .toISOString(),
+      createdAt: financialDate || new Date().toISOString(),
 
-      updatedAt:
-        new Date()
-          .toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
     if (repairMode) {
-      if (
-        !expenseRepairReason
-          .trim()
-      ) {
-        return setErrors(
-          'Repair reason is required.'
-        );
+      if (!expenseRepairReason.trim()) {
+        return setErrors("Repair reason is required.");
       }
 
-      const oldExpense =
-        editingExpenseId
-          ? expenses.find(
-              (item) =>
-                item.id
-                === editingExpenseId
-            )
-            || null
-          : null;
+      const oldExpense = editingExpenseId
+        ? expenses.find((item) => item.id === editingExpenseId) || null
+        : null;
 
-      const draft:
-        ExpenseRepairDraft = {
-          kind:
-            editingExpenseId
-              ? 'edit_expense'
-              : 'add_expense',
+      const draft: ExpenseRepairDraft = {
+        kind: editingExpenseId ? "edit_expense" : "add_expense",
 
-          reason:
-            expenseRepairReason,
+        reason: expenseRepairReason,
 
-          financialDate:
-            expense.effectiveAt
-            || expense.createdAt,
+        financialDate: expense.effectiveAt || expense.createdAt,
 
-          oldExpense,
+        oldExpense,
 
-          nextExpense:
-            expense,
-        };
+        nextExpense: expense,
+      };
 
-      setExpenseRepairDraft(
-        draft
-      );
+      setExpenseRepairDraft(draft);
 
-      setExpenseRepairPreview(
-        buildExpenseRepairPreview(
-          draft
-        )
-      );
+      setExpenseRepairPreview(buildExpenseRepairPreview(draft));
 
-      setExpenseRepairConfirmOpen(
-        true
-      );
+      setExpenseRepairConfirmOpen(true);
 
-      setEmbeddedExpenseEditorOpen(
-        false
-      );
+      setEmbeddedExpenseEditorOpen(false);
 
-      setErrors(
-        null
-      );
+      setErrors(null);
 
       return;
     }
 
-    financeLog.expense(
-      'CREATE',
-      {
-        amount,
+    financeLog.expense("CREATE", {
+      amount,
 
-        category:
-          expense.category,
+      category: expense.category,
 
-        affectsCash:
-          true,
-      }
+      affectsCash: true,
+    });
+
+    financeLog.cash("OUTFLOW", {
+      txId: expense.id,
+
+      amount,
+
+      reason: `${expense.title} (${formatCashSourceLabel(expense.cashSource)})`,
+
+      paymentMode: "Cash",
+
+      source: "expense",
+    });
+
+    const activity = createExpenseActivity(
+      "add_expense",
+      `Added ${expense.title} (${formatINR(expense.amount)}) in ${expense.category} - ${formatCashSourceLabel(expense.cashSource)}`,
     );
-
-    financeLog.cash(
-      'OUTFLOW',
-      {
-        txId:
-          expense.id,
-
-        amount,
-
-        reason:
-          `${expense.title} (${formatCashSourceLabel(expense.cashSource)})`,
-
-        paymentMode:
-          'Cash',
-
-        source:
-          'expense',
-      }
-    );
-
-    const activity =
-      createExpenseActivity(
-        'add_expense',
-        `Added ${expense.title} (${formatINR(expense.amount)}) in ${expense.category} - ${formatCashSourceLabel(expense.cashSource)}`
-      );
 
     const optimisticState = {
       ...data,
 
-      expenses: [
-        expense,
-        ...expenses,
-      ],
+      expenses: [expense, ...expenses],
 
-      expenseActivities: [
-        activity,
-        ...expenseActivities,
-      ].slice(
-        0,
-        500
-      ),
+      expenseActivities: [activity, ...expenseActivities].slice(0, 500),
     };
 
-    setData(
-      optimisticState
-    );
+    setData(optimisticState);
 
     try {
-      await saveExpenseToSubcollection(
-        expense
-      );
+      await saveExpenseToSubcollection(expense);
 
-      await saveExpenseActivityToSubcollection(
-        activity
-      );
+      await saveExpenseActivityToSubcollection(activity);
 
       resetExpenseForm();
 
-      setErrors(
-        null
-      );
+      setErrors(null);
     } catch (error) {
       setData(data);
 
       console.error(
-        '[finance.addExpense] Failed to save expense subcollection docs',
-        error
+        "[finance.addExpense] Failed to save expense subcollection docs",
+        error,
       );
 
-      setErrors(
-        getFriendlyErrorMessage(
-          error,
-          'finance.add_expense'
-        )
-      );
+      setErrors(getFriendlyErrorMessage(error, "finance.add_expense"));
     }
   };
 
-  const addCashAdjustment =
-    async (
-      type:
-        | 'cash_addition'
-        | 'cash_withdrawal'
-    ) => {
-      const rawAmount =
-        type === 'cash_addition'
-          ? cashAddAmount
-          : cashWithdrawAmount;
+  const addCashAdjustment = async (
+    type: "cash_addition" | "cash_withdrawal",
+  ) => {
+    const rawAmount =
+      type === "cash_addition" ? cashAddAmount : cashWithdrawAmount;
 
-      const rawNote =
-        type === 'cash_addition'
-          ? cashAddNote
-          : cashWithdrawNote;
+    const rawNote = type === "cash_addition" ? cashAddNote : cashWithdrawNote;
 
-      const amount =
-        Number(
-          rawAmount
-        );
+    const amount = Number(rawAmount);
 
-      if (
-        !Number.isFinite(
-          amount
-        )
-        || amount <= 0
-      ) {
-        return setErrors(
-          'Please enter a valid adjustment amount.'
-        );
-      }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return setErrors("Please enter a valid adjustment amount.");
+    }
 
-      if (
-        type === 'cash_withdrawal'
-        && !can(
-          'cashWithdrawal'
-        )
-      ) {
-        const approved =
-          await requestAdminOverride(
-            'Admin password required to withdraw cash.'
-          );
-
-        if (!approved) {
-          return;
-        }
-      }
-
-      const availableFromSelectedSource =
-        getAvailableCashBySource(
-          withdrawalCashSource
-        );
-
-      if (
-        type === 'cash_withdrawal'
-        && amount
-          > availableFromSelectedSource
-      ) {
-        return setErrors(
-          `${formatCashSourceLabel(withdrawalCashSource)} cannot cover this withdrawal.`
-        );
-      }
-
-      const entry:
-        CashAdjustment = {
-          id:
-            `cash-adj-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-
-          type,
-
-          amount,
-
-          cashSource:
-            type
-            === 'cash_withdrawal'
-              ? withdrawalCashSource
-              : undefined,
-
-          note:
-            rawNote.trim()
-            || undefined,
-
-          createdAt:
-            new Date()
-              .toISOString(),
-
-          sessionId:
-            openSession?.id,
-        };
-
-      financeLog.cash(
-        type === 'cash_addition'
-          ? 'INFLOW'
-          : 'OUTFLOW',
-        {
-          txId:
-            entry.id,
-
-          amount:
-            entry.amount,
-
-          reason:
-            entry.note
-            || (
-              type === 'cash_addition'
-                ? 'Manual cash addition'
-                : `Manual cash withdrawal (${formatCashSourceLabel(entry.cashSource)})`
-            ),
-
-          paymentMode:
-            'Cash',
-
-          source:
-            'manual_cash_adjustment',
-        }
+    if (type === "cash_withdrawal" && !can("cashWithdrawal")) {
+      const approved = await requestAdminOverride(
+        "Admin password required to withdraw cash.",
       );
 
-      const activity =
-        createExpenseActivity(
-          type,
-
-          `${type === 'cash_addition' ? 'Cash Added' : 'Cash Withdrawn'} (${formatINR(entry.amount)})${type === 'cash_withdrawal' ? ` - ${formatCashSourceLabel(entry.cashSource)}` : ''}${entry.note ? ` • ${entry.note}` : ''}`
-        );
-
-      await persistState({
-        cashAdjustments: [
-          entry,
-          ...(data.cashAdjustments || []),
-        ],
-      });
-
-      try {
-        await saveExpenseActivityToSubcollection(
-          activity
-        );
-      } catch (error) {
-        console.error(
-          '[finance.cashAdjustment] Failed to save activity subcollection doc',
-          error
-        );
+      if (!approved) {
+        return;
       }
+    }
 
-      if (
-        type === 'cash_addition'
-      ) {
-        setCashAddAmount('');
-        setCashAddNote('');
-      } else {
-        setCashWithdrawAmount('');
-        setCashWithdrawNote('');
-        setWithdrawalCashSource('drawer');
-      }
+    const availableFromSelectedSource =
+      getAvailableCashBySource(withdrawalCashSource);
+
+    if (type === "cash_withdrawal" && amount > availableFromSelectedSource) {
+      return setErrors(
+        `${formatCashSourceLabel(withdrawalCashSource)} cannot cover this withdrawal.`,
+      );
+    }
+
+    const entry: CashAdjustment = {
+      id: `cash-adj-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+
+      type,
+
+      amount,
+
+      cashSource: type === "cash_withdrawal" ? withdrawalCashSource : undefined,
+
+      note: rawNote.trim() || undefined,
+
+      createdAt: new Date().toISOString(),
+
+      sessionId: openSession?.id,
     };
 
-      const startEditWithdrawalRepair = (entry: CashAdjustment) => {
+    financeLog.cash(type === "cash_addition" ? "INFLOW" : "OUTFLOW", {
+      txId: entry.id,
+
+      amount: entry.amount,
+
+      reason:
+        entry.note ||
+        (type === "cash_addition"
+          ? "Manual cash addition"
+          : `Manual cash withdrawal (${formatCashSourceLabel(entry.cashSource)})`),
+
+      paymentMode: "Cash",
+
+      source: "manual_cash_adjustment",
+    });
+
+    const activity = createExpenseActivity(
+      type,
+
+      `${type === "cash_addition" ? "Cash Added" : "Cash Withdrawn"} (${formatINR(entry.amount)})${type === "cash_withdrawal" ? ` - ${formatCashSourceLabel(entry.cashSource)}` : ""}${entry.note ? ` • ${entry.note}` : ""}`,
+    );
+
+    await persistState({
+      cashAdjustments: [entry, ...(data.cashAdjustments || [])],
+    });
+
+    try {
+      await saveExpenseActivityToSubcollection(activity);
+    } catch (error) {
+      console.error(
+        "[finance.cashAdjustment] Failed to save activity subcollection doc",
+        error,
+      );
+    }
+
+    if (type === "cash_addition") {
+      setCashAddAmount("");
+      setCashAddNote("");
+    } else {
+      setCashWithdrawAmount("");
+      setCashWithdrawNote("");
+      setWithdrawalCashSource("drawer");
+    }
+  };
+
+  const startEditWithdrawalRepair = (entry: CashAdjustment) => {
     setEditingWithdrawalId(entry.id);
-    setCashWithdrawAmount(String(entry.amount || ''));
-    setCashWithdrawNote(entry.note || '');
+    setCashWithdrawAmount(String(entry.amount || ""));
+    setCashWithdrawNote(entry.note || "");
     setWithdrawalCashSource(normalizeCashSource(entry.cashSource));
-    setWithdrawalFinancialDate(toDateTimeLocalValue(entry.effectiveAt || entry.createdAt));
-    setWithdrawalRepairReason('');
-    setWithdrawalMethod(String(entry.method || 'Cash'));
-    setWithdrawalTitle(String(entry.title || ''));
-    setWithdrawalPaidTo(String(entry.paidTo || ''));
-    setWithdrawalReference(String(entry.reference || ''));
+    setWithdrawalFinancialDate(
+      toDateTimeLocalValue(entry.effectiveAt || entry.createdAt),
+    );
+    setWithdrawalRepairReason("");
+    setWithdrawalMethod(String(entry.method || "Cash"));
+    setWithdrawalTitle(String(entry.title || ""));
+    setWithdrawalPaidTo(String(entry.paidTo || ""));
+    setWithdrawalReference(String(entry.reference || ""));
     setEmbeddedWithdrawalEditorOpen(true);
     setErrors(null);
   };
@@ -12701,15 +8223,17 @@ export default function Finance({
 
   const startDeleteWithdrawalRepair = (entry: CashAdjustment) => {
     setEditingWithdrawalId(entry.id);
-    setCashWithdrawAmount(String(entry.amount || ''));
-    setCashWithdrawNote(entry.note || '');
+    setCashWithdrawAmount(String(entry.amount || ""));
+    setCashWithdrawNote(entry.note || "");
     setWithdrawalCashSource(normalizeCashSource(entry.cashSource));
-    setWithdrawalFinancialDate(toDateTimeLocalValue(entry.effectiveAt || entry.createdAt));
-    setWithdrawalRepairReason('');
-    setWithdrawalMethod(String(entry.method || 'Cash'));
-    setWithdrawalTitle(String(entry.title || ''));
-    setWithdrawalPaidTo(String(entry.paidTo || ''));
-    setWithdrawalReference(String(entry.reference || ''));
+    setWithdrawalFinancialDate(
+      toDateTimeLocalValue(entry.effectiveAt || entry.createdAt),
+    );
+    setWithdrawalRepairReason("");
+    setWithdrawalMethod(String(entry.method || "Cash"));
+    setWithdrawalTitle(String(entry.title || ""));
+    setWithdrawalPaidTo(String(entry.paidTo || ""));
+    setWithdrawalReference(String(entry.reference || ""));
     setEmbeddedWithdrawalEditorOpen(true);
     setErrors(null);
   };
@@ -12721,48 +8245,50 @@ export default function Finance({
       ? withdrawalRows.find((entry) => entry.id === editingWithdrawalId)
       : null;
 
-    if (kind !== 'add_cash_withdrawal' && !target) {
-      setErrors('Withdrawal not found.');
+    if (kind !== "add_cash_withdrawal" && !target) {
+      setErrors("Withdrawal not found.");
       return;
     }
 
     if (!withdrawalRepairReason.trim()) {
-      setErrors('Repair reason is required.');
+      setErrors("Repair reason is required.");
       return;
     }
 
     const financialDate = parseDateTimeInput(withdrawalFinancialDate);
 
     if (!financialDate) {
-      setErrors('Please enter a valid financial date and time.');
+      setErrors("Please enter a valid financial date and time.");
       return;
     }
 
     const nextAmount = Number(cashWithdrawAmount);
 
     if (
-      kind === 'edit_cash_withdrawal'
-      && (!Number.isFinite(nextAmount) || nextAmount <= 0)
+      kind === "edit_cash_withdrawal" &&
+      (!Number.isFinite(nextAmount) || nextAmount <= 0)
     ) {
-      setErrors('Please enter a valid withdrawal amount.');
+      setErrors("Please enter a valid withdrawal amount.");
       return;
     }
 
     if (
-      kind === 'add_cash_withdrawal'
-      && (!Number.isFinite(nextAmount) || nextAmount <= 0)
+      kind === "add_cash_withdrawal" &&
+      (!Number.isFinite(nextAmount) || nextAmount <= 0)
     ) {
-      setErrors('Please enter a valid withdrawal amount.');
+      setErrors("Please enter a valid withdrawal amount.");
       return;
     }
 
     const nextCashAdjustmentBase: CashAdjustment = {
-      id: target?.id || `cash-adj-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
-      type: 'cash_withdrawal',
+      id:
+        target?.id ||
+        `cash-adj-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+      type: "cash_withdrawal",
       amount: nextAmount,
-      method: withdrawalMethod.trim() || 'Cash',
+      method: withdrawalMethod.trim() || "Cash",
       cashSource: withdrawalCashSource,
-      title: withdrawalTitle.trim() || 'Manual Cash Withdrawal',
+      title: withdrawalTitle.trim() || "Manual Cash Withdrawal",
       note: cashWithdrawNote.trim() || undefined,
       paidTo: withdrawalPaidTo.trim() || undefined,
       reference: withdrawalReference.trim() || undefined,
@@ -12773,12 +8299,12 @@ export default function Finance({
     };
 
     const nextCashAdjustment =
-      kind === 'edit_cash_withdrawal'
+      kind === "edit_cash_withdrawal"
         ? {
             ...(target as CashAdjustment),
             ...nextCashAdjustmentBase,
           }
-        : kind === 'add_cash_withdrawal'
+        : kind === "add_cash_withdrawal"
           ? nextCashAdjustmentBase
           : null;
 
@@ -12806,26 +8332,19 @@ export default function Finance({
 
     try {
       const nextCashAdjustments =
-        withdrawalRepairDraft.kind === 'add_cash_withdrawal'
-        && withdrawalRepairDraft.nextCashAdjustment
-          ? [
-              withdrawalRepairDraft.nextCashAdjustment,
-              ...cashAdjustments,
-            ]
-          : withdrawalRepairDraft.kind === 'delete_cash_withdrawal'
-            && withdrawalRepairDraft.oldCashAdjustment
+        withdrawalRepairDraft.kind === "add_cash_withdrawal" &&
+        withdrawalRepairDraft.nextCashAdjustment
+          ? [withdrawalRepairDraft.nextCashAdjustment, ...cashAdjustments]
+          : withdrawalRepairDraft.kind === "delete_cash_withdrawal" &&
+              withdrawalRepairDraft.oldCashAdjustment
             ? cashAdjustments.filter(
                 (entry) =>
-                  entry.id !== withdrawalRepairDraft.oldCashAdjustment!.id
+                  entry.id !== withdrawalRepairDraft.oldCashAdjustment!.id,
               )
-            : cashAdjustments.map(
-                (entry) =>
-                  entry.id === withdrawalRepairDraft.oldCashAdjustment?.id
-                    ? (
-                        withdrawalRepairDraft.nextCashAdjustment
-                        || entry
-                      )
-                    : entry
+            : cashAdjustments.map((entry) =>
+                entry.id === withdrawalRepairDraft.oldCashAdjustment?.id
+                  ? withdrawalRepairDraft.nextCashAdjustment || entry
+                  : entry,
               );
 
       await persistState({
@@ -12835,8 +8354,8 @@ export default function Finance({
       await appendRepairHistoryEntry(
         buildWithdrawalRepairHistoryEntry(
           withdrawalRepairDraft,
-          withdrawalRepairPreview
-        )
+          withdrawalRepairPreview,
+        ),
       );
 
       setData(loadData());
@@ -12847,34 +8366,29 @@ export default function Finance({
       resetWithdrawalRepairForm();
       setErrors(null);
     } catch (error) {
-      setErrors(
-        getFriendlyErrorMessage(
-          error,
-          'finance.withdrawal_repair'
-        )
-      );
+      setErrors(getFriendlyErrorMessage(error, "finance.withdrawal_repair"));
     } finally {
       setWithdrawalRepairSubmitting(false);
     }
   };
 
   const removeExpense = async (id: string) => {
-    const item = expenses.find(e => e.id === id);
+    const item = expenses.find((e) => e.id === id);
 
     if (!item) return;
 
     if (repairMode) {
       if (!expenseRepairReason.trim()) {
-        return setErrors('Repair reason is required.');
+        return setErrors("Repair reason is required.");
       }
 
       const draft: ExpenseRepairDraft = {
-        kind: 'delete_expense',
+        kind: "delete_expense",
         reason: expenseRepairReason,
         financialDate:
-          parseDateTimeInput(expenseFinancialDate)
-          || item.effectiveAt
-          || item.createdAt,
+          parseDateTimeInput(expenseFinancialDate) ||
+          item.effectiveAt ||
+          item.createdAt,
         oldExpense: item,
       };
 
@@ -12888,22 +8402,19 @@ export default function Finance({
     }
 
     if (!isExpenseStoredInSubcollection(id)) {
-      setErrors('Old expense needs migration before it can be deleted.');
+      setErrors("Old expense needs migration before it can be deleted.");
       return;
     }
 
     const activity = createExpenseActivity(
-      'delete_expense',
-      `Deleted ${item.title} (${formatINR(item.amount)})`
+      "delete_expense",
+      `Deleted ${item.title} (${formatINR(item.amount)})`,
     );
 
     const optimisticState = {
       ...data,
-      expenses: expenses.filter(e => e.id !== id),
-      expenseActivities: [
-        activity,
-        ...expenseActivities,
-      ].slice(0, 500),
+      expenses: expenses.filter((e) => e.id !== id),
+      expenseActivities: [activity, ...expenseActivities].slice(0, 500),
     };
 
     setData(optimisticState);
@@ -12916,16 +8427,11 @@ export default function Finance({
       setData(data);
 
       console.error(
-        '[finance.removeExpense] Failed to delete expense subcollection doc',
-        error
+        "[finance.removeExpense] Failed to delete expense subcollection doc",
+        error,
       );
 
-      setErrors(
-        getFriendlyErrorMessage(
-          error,
-          'finance.delete_expense'
-        )
-      );
+      setErrors(getFriendlyErrorMessage(error, "finance.delete_expense"));
     }
   };
 
@@ -12934,15 +8440,12 @@ export default function Finance({
     setExpenseTitle(expense.title);
     setExpenseAmount(String(expense.amount));
     setExpenseCategory(expense.category);
-    setExpenseNote(expense.note || '');
+    setExpenseNote(expense.note || "");
     setExpenseCashSource(normalizeCashSource(expense.cashSource));
     setExpenseFinancialDate(
-      toDateTimeLocalValue(
-        expense.effectiveAt
-        || expense.createdAt
-      )
+      toDateTimeLocalValue(expense.effectiveAt || expense.createdAt),
     );
-    setExpenseRepairReason('');
+    setExpenseRepairReason("");
     setErrors(null);
   };
 
@@ -12951,22 +8454,19 @@ export default function Finance({
     setExpenseTitle(expense.title);
     setExpenseAmount(String(expense.amount));
     setExpenseCategory(expense.category);
-    setExpenseNote(expense.note || '');
+    setExpenseNote(expense.note || "");
     setExpenseCashSource(normalizeCashSource(expense.cashSource));
     setExpenseFinancialDate(
-      toDateTimeLocalValue(
-        expense.effectiveAt
-        || expense.createdAt
-      )
+      toDateTimeLocalValue(expense.effectiveAt || expense.createdAt),
     );
-    setErrors('Enter repair reason, then confirm delete preview.');
+    setErrors("Enter repair reason, then confirm delete preview.");
   };
 
   const applyExpenseRepairDraft = async () => {
     if (!expenseRepairDraft || !expenseRepairPreview) return;
 
     if (!expenseRepairDraft.reason.trim()) {
-      setErrors('Repair reason is required.');
+      setErrors("Repair reason is required.");
       return;
     }
 
@@ -12974,43 +8474,35 @@ export default function Finance({
 
     try {
       if (
-        expenseRepairDraft.kind === 'delete_expense'
-        && expenseRepairDraft.oldExpense
+        expenseRepairDraft.kind === "delete_expense" &&
+        expenseRepairDraft.oldExpense
       ) {
-        if (
-          !isExpenseStoredInSubcollection(
-            expenseRepairDraft.oldExpense.id
-          )
-        ) {
+        if (!isExpenseStoredInSubcollection(expenseRepairDraft.oldExpense.id)) {
           throw new Error(
-            'Old expense needs migration before it can be deleted.'
+            "Old expense needs migration before it can be deleted.",
           );
         }
 
         const activity = createExpenseActivity(
-          'delete_expense',
-          `Deleted ${expenseRepairDraft.oldExpense.title} (${formatINR(expenseRepairDraft.oldExpense.amount)})`
+          "delete_expense",
+          `Deleted ${expenseRepairDraft.oldExpense.title} (${formatINR(expenseRepairDraft.oldExpense.amount)})`,
         );
 
-        await deleteExpenseFromSubcollection(
-          expenseRepairDraft.oldExpense
-        );
+        await deleteExpenseFromSubcollection(expenseRepairDraft.oldExpense);
 
         await saveExpenseActivityToSubcollection(activity);
       } else if (expenseRepairDraft.nextExpense) {
-        const action: ExpenseActivity['action'] =
-          expenseRepairDraft.kind === 'edit_expense'
-            ? 'add_expense'
-            : 'add_expense';
+        const action: ExpenseActivity["action"] =
+          expenseRepairDraft.kind === "edit_expense"
+            ? "add_expense"
+            : "add_expense";
 
         const activity = createExpenseActivity(
           action,
-          `${expenseRepairDraft.kind === 'edit_expense' ? 'Edited' : 'Added'} ${expenseRepairDraft.nextExpense.title} (${formatINR(expenseRepairDraft.nextExpense.amount)}) in ${expenseRepairDraft.nextExpense.category} - ${formatCashSourceLabel(expenseRepairDraft.nextExpense.cashSource)}`
+          `${expenseRepairDraft.kind === "edit_expense" ? "Edited" : "Added"} ${expenseRepairDraft.nextExpense.title} (${formatINR(expenseRepairDraft.nextExpense.amount)}) in ${expenseRepairDraft.nextExpense.category} - ${formatCashSourceLabel(expenseRepairDraft.nextExpense.cashSource)}`,
         );
 
-        await saveExpenseToSubcollection(
-          expenseRepairDraft.nextExpense
-        );
+        await saveExpenseToSubcollection(expenseRepairDraft.nextExpense);
 
         await saveExpenseActivityToSubcollection(activity);
       }
@@ -13018,8 +8510,8 @@ export default function Finance({
       await appendRepairHistoryEntry(
         buildExpenseRepairHistoryEntry(
           expenseRepairDraft,
-          expenseRepairPreview
-        )
+          expenseRepairPreview,
+        ),
       );
 
       setData(loadData());
@@ -13029,32 +8521,25 @@ export default function Finance({
       resetExpenseForm();
       setErrors(null);
     } catch (error) {
-      setErrors(
-        getFriendlyErrorMessage(
-          error,
-          'finance.expense_repair'
-        )
-      );
+      setErrors(getFriendlyErrorMessage(error, "finance.expense_repair"));
     } finally {
       setExpenseRepairSubmitting(false);
     }
   };
 
-  const expenseRepairOperationLabel = (
-    kind?: ExpenseRepairDraftKind
-  ) => {
+  const expenseRepairOperationLabel = (kind?: ExpenseRepairDraftKind) => {
     switch (kind) {
-      case 'add_expense':
-        return 'Add Expense';
+      case "add_expense":
+        return "Add Expense";
 
-      case 'edit_expense':
-        return 'Edit Expense';
+      case "edit_expense":
+        return "Edit Expense";
 
-      case 'delete_expense':
-        return 'Delete Expense';
+      case "delete_expense":
+        return "Delete Expense";
 
       default:
-        return 'Expense Repair';
+        return "Expense Repair";
     }
   };
 
@@ -13064,15 +8549,12 @@ export default function Finance({
     if (!name) return;
 
     const categories = Array.from(
-      new Set([
-        ...(data.expenseCategories || []),
-        name,
-      ])
+      new Set([...(data.expenseCategories || []), name]),
     );
 
     const activity = createExpenseActivity(
-      'add_category',
-      `Added category ${name}`
+      "add_category",
+      `Added category ${name}`,
     );
 
     await persistState({
@@ -13083,95 +8565,72 @@ export default function Finance({
       await saveExpenseActivityToSubcollection(activity);
     } catch (error) {
       console.error(
-        '[finance.addExpenseCategory] Failed to save activity subcollection doc',
-        error
+        "[finance.addExpenseCategory] Failed to save activity subcollection doc",
+        error,
       );
     }
 
-    setNewCategory('');
+    setNewCategory("");
   };
 
   const deleteExpenseCategory = async (name: string) => {
-    const isUsed = expenses.some(
-      e => e.category === name
-    );
+    const isUsed = expenses.some((e) => e.category === name);
 
     if (isUsed) {
-      return setErrors(
-        'Cannot delete category that is used by expenses.'
-      );
+      return setErrors("Cannot delete category that is used by expenses.");
     }
 
     const activity = createExpenseActivity(
-      'delete_category',
-      `Removed category ${name}`
+      "delete_category",
+      `Removed category ${name}`,
     );
 
     await persistState({
-      expenseCategories:
-        expenseCategories.filter(
-          c => c !== name
-        ),
+      expenseCategories: expenseCategories.filter((c) => c !== name),
     });
 
     try {
       await saveExpenseActivityToSubcollection(activity);
     } catch (error) {
       console.error(
-        '[finance.deleteExpenseCategory] Failed to save activity subcollection doc',
-        error
+        "[finance.deleteExpenseCategory] Failed to save activity subcollection doc",
+        error,
       );
     }
   };
 
   if (embeddedExpenseRepair) {
-    const expenseRepairHistory =
-      (loadData().repairHistoryEntries || [])
-        .filter(
-          (entry) =>
-            entry.entityType === 'expense'
-        )
-        .slice(0, 12);
+    const expenseRepairHistory = (loadData().repairHistoryEntries || [])
+      .filter((entry) => entry.entityType === "expense")
+      .slice(0, 12);
 
-    const allTimeExpenses =
-      [...expenses].sort((a, b) => {
-        const left =
-          a as Expense & {
-            date?: string;
-          };
+    const allTimeExpenses = [...expenses].sort((a, b) => {
+      const left = a as Expense & {
+        date?: string;
+      };
 
-        const right =
-          b as Expense & {
-            date?: string;
-          };
+      const right = b as Expense & {
+        date?: string;
+      };
 
-        return (
-          new Date(
-            right.effectiveAt
-            || right.createdAt
-            || right.date
-            || 0
-          ).getTime()
-          - new Date(
-            left.effectiveAt
-            || left.createdAt
-            || left.date
-            || 0
-          ).getTime()
-        );
-      });
+      return (
+        new Date(
+          right.effectiveAt || right.createdAt || right.date || 0,
+        ).getTime() -
+        new Date(left.effectiveAt || left.createdAt || left.date || 0).getTime()
+      );
+    });
 
     return (
       <div className="space-y-4">
         <Card>
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <CardTitle>
-                Expense Repair
-              </CardTitle>
+              <CardTitle>Expense Repair</CardTitle>
 
               <p className="text-sm text-muted-foreground">
-                All-time expense repair table with full details, edit, delete, and backdated preview flow.
+                All-time expense repair table with full details, edit, delete,
+                and backdated preview flow.
               </p>
             </div>
 
@@ -13195,14 +8654,9 @@ export default function Finance({
                 <div className="text-lg font-semibold text-slate-900">
                   {formatINR(
                     allTimeExpenses.reduce(
-                      (sum, expense) =>
-                        sum
-                        + Number(
-                          expense.amount
-                          || 0
-                        ),
-                      0
-                    )
+                      (sum, expense) => sum + Number(expense.amount || 0),
+                      0,
+                    ),
                   )}
                 </div>
               </div>
@@ -13214,61 +8668,37 @@ export default function Finance({
               <table className="w-full min-w-[1080px] text-sm">
                 <thead className="bg-slate-50">
                   <tr>
-                    <th className="p-3 text-left">
-                      Date
-                    </th>
+                    <th className="p-3 text-left">Date</th>
 
-                    <th className="p-3 text-left">
-                      Category
-                    </th>
+                    <th className="p-3 text-left">Category</th>
 
-                    <th className="p-3 text-left">
-                      Title/Description
-                    </th>
+                    <th className="p-3 text-left">Title/Description</th>
 
-                    <th className="p-3 text-right">
-                      Amount
-                    </th>
+                    <th className="p-3 text-right">Amount</th>
 
-                    <th className="p-3 text-left">
-                      Payment Method
-                    </th>
+                    <th className="p-3 text-left">Payment Method</th>
 
-                    <th className="p-3 text-left">
-                      Financial Date
-                    </th>
+                    <th className="p-3 text-left">Financial Date</th>
 
-                    <th className="p-3 text-left">
-                      Repair Trail
-                    </th>
+                    <th className="p-3 text-left">Repair Trail</th>
 
-                    <th className="p-3 text-right">
-                      Actions
-                    </th>
+                    <th className="p-3 text-right">Actions</th>
                   </tr>
                 </thead>
 
                 <tbody>
                   {allTimeExpenses.map((expense) => {
-                    const expenseHistory =
-                      expenseRepairHistory.filter(
-                        (entry) =>
-                          entry.entityId
-                          === expense.id
-                      );
+                    const expenseHistory = expenseRepairHistory.filter(
+                      (entry) => entry.entityId === expense.id,
+                    );
 
                     return (
-                      <tr
-                        key={expense.id}
-                        className="border-t align-top"
-                      >
+                      <tr key={expense.id} className="border-t align-top">
                         <td className="p-3 text-slate-600">
                           {formatExpenseLoggedDate(expense)}
                         </td>
 
-                        <td className="p-3">
-                          {expense.category}
-                        </td>
+                        <td className="p-3">{expense.category}</td>
 
                         <td className="p-3">
                           <div className="font-medium text-slate-900">
@@ -13276,7 +8706,7 @@ export default function Finance({
                           </div>
 
                           <div className="text-xs text-slate-500">
-                            {expense.note || '—'}
+                            {expense.note || "—"}
                           </div>
 
                           <div className="text-[11px] text-slate-400">
@@ -13289,23 +8719,25 @@ export default function Finance({
                         </td>
 
                         <td className="p-3 text-slate-500">
-                          {`${(
-                            expense as Expense & {
-                              paymentMethod?: string;
-                            }
-                          ).paymentMethod || 'Cash'} • ${formatCashSourceLabel(expense.cashSource)}`}
+                          {`${
+                            (
+                              expense as Expense & {
+                                paymentMethod?: string;
+                              }
+                            ).paymentMethod || "Cash"
+                          } • ${formatCashSourceLabel(expense.cashSource)}`}
                         </td>
 
                         <td className="p-3 text-slate-600">
                           {expense.effectiveAt
                             ? formatDateTimeDisplay(expense.effectiveAt)
-                            : '—'}
+                            : "—"}
                         </td>
 
                         <td className="p-3 text-xs text-slate-500">
                           {expenseHistory[0]
-                            ? `${expenseHistory[0].repairKind.replace(/_/g, ' ')} · ${expenseHistory[0].reason}`
-                            : '—'}
+                            ? `${expenseHistory[0].repairKind.replace(/_/g, " ")} · ${expenseHistory[0].reason}`
+                            : "—"}
                         </td>
 
                         <td className="p-3">
@@ -13367,37 +8799,29 @@ export default function Finance({
             >
               <CardHeader>
                 <CardTitle>
-                  {editingExpenseId
-                    ? 'Edit Expense'
-                    : 'Add Expense'}
+                  {editingExpenseId ? "Edit Expense" : "Add Expense"}
                 </CardTitle>
               </CardHeader>
 
               <CardContent className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="md:col-span-2">
-                    <Label>
-                      Title
-                    </Label>
+                    <Label>Title</Label>
 
                     <Input
                       value={expenseTitle}
-                      onChange={e => setExpenseTitle(e.target.value)}
+                      onChange={(e) => setExpenseTitle(e.target.value)}
                       placeholder="Expense title"
                     />
                   </div>
 
                   <div>
-                    <Label>
-                      Amount
-                    </Label>
+                    <Label>Amount</Label>
 
                     <Input
                       value={expenseAmount}
-                      onChange={e =>
-                        setExpenseAmount(
-                          e.target.value.replace(/[^\d.]/g, '')
-                        )
+                      onChange={(e) =>
+                        setExpenseAmount(e.target.value.replace(/[^\d.]/g, ""))
                       }
                       placeholder="0.00"
                       inputMode="decimal"
@@ -13405,20 +8829,15 @@ export default function Finance({
                   </div>
 
                   <div>
-                    <Label>
-                      Category
-                    </Label>
+                    <Label>Category</Label>
 
                     <select
                       className="h-10 w-full rounded-md border px-3 text-sm"
                       value={expenseCategory}
-                      onChange={e => setExpenseCategory(e.target.value)}
+                      onChange={(e) => setExpenseCategory(e.target.value)}
                     >
-                      {expenseCategories.map(category => (
-                        <option
-                          key={category}
-                          value={category}
-                        >
+                      {expenseCategories.map((category) => (
+                        <option key={category} value={category}>
                           {category}
                         </option>
                       ))}
@@ -13426,65 +8845,47 @@ export default function Finance({
                   </div>
 
                   <div className="md:col-span-2">
-                    <Label>
-                      Title/Description
-                    </Label>
+                    <Label>Title/Description</Label>
 
                     <Input
                       value={expenseNote}
-                      onChange={e => setExpenseNote(e.target.value)}
+                      onChange={(e) => setExpenseNote(e.target.value)}
                       placeholder="Optional note"
                     />
                   </div>
 
                   <div>
-                    <Label>
-                      Financial Date
-                    </Label>
+                    <Label>Financial Date</Label>
 
                     <Input
                       type="datetime-local"
                       value={expenseFinancialDate}
-                      onChange={e =>
-                        setExpenseFinancialDate(e.target.value)
-                      }
+                      onChange={(e) => setExpenseFinancialDate(e.target.value)}
                     />
                   </div>
 
                   <div>
-                    <Label>
-                      Utilize From
-                    </Label>
+                    <Label>Utilize From</Label>
 
                     <select
                       className="h-10 w-full rounded-md border px-3 text-sm"
                       value={expenseCashSource}
-                      onChange={e =>
-                        setExpenseCashSource(
-                          e.target.value as CashSource
-                        )
+                      onChange={(e) =>
+                        setExpenseCashSource(e.target.value as CashSource)
                       }
                     >
-                      <option value="drawer">
-                        Active Cash
-                      </option>
+                      <option value="drawer">Active Cash</option>
 
-                      <option value="reserve">
-                        Reserve Cash
-                      </option>
+                      <option value="reserve">Reserve Cash</option>
                     </select>
                   </div>
 
                   <div>
-                    <Label>
-                      Repair Reason
-                    </Label>
+                    <Label>Repair Reason</Label>
 
                     <Input
                       value={expenseRepairReason}
-                      onChange={e =>
-                        setExpenseRepairReason(e.target.value)
-                      }
+                      onChange={(e) => setExpenseRepairReason(e.target.value)}
                       placeholder="Required reason for this repair"
                     />
                   </div>
@@ -13499,9 +8900,7 @@ export default function Finance({
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     variant="outline"
-                    onClick={() =>
-                      setEmbeddedExpenseEditorOpen(false)
-                    }
+                    onClick={() => setEmbeddedExpenseEditorOpen(false)}
                   >
                     Cancel
                   </Button>
@@ -13510,22 +8909,14 @@ export default function Finance({
                     <Button
                       variant="outline"
                       className="text-rose-600"
-                      onClick={() =>
-                        void removeExpense(editingExpenseId)
-                      }
+                      onClick={() => void removeExpense(editingExpenseId)}
                     >
                       Preview Delete
                     </Button>
                   )}
 
-                  <Button
-                    onClick={() =>
-                      void addExpense()
-                    }
-                  >
-                    {editingExpenseId
-                      ? 'Preview Edit'
-                      : 'Preview Add'}
+                  <Button onClick={() => void addExpense()}>
+                    {editingExpenseId ? "Preview Edit" : "Preview Add"}
                   </Button>
                 </div>
               </CardContent>
@@ -13533,15 +8924,13 @@ export default function Finance({
           </div>
         )}
 
-        {expenseRepairConfirmOpen
-          && expenseRepairDraft
-          && expenseRepairPreview
-          && (
+        {expenseRepairConfirmOpen &&
+          expenseRepairDraft &&
+          expenseRepairPreview && (
             <div
               className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
               onClick={() =>
-                !expenseRepairSubmitting
-                && setExpenseRepairConfirmOpen(false)
+                !expenseRepairSubmitting && setExpenseRepairConfirmOpen(false)
               }
             >
               <Card
@@ -13549,9 +8938,7 @@ export default function Finance({
                 onClick={(e) => e.stopPropagation()}
               >
                 <CardHeader>
-                  <CardTitle>
-                    Confirm Repair
-                  </CardTitle>
+                  <CardTitle>Confirm Repair</CardTitle>
                 </CardHeader>
 
                 <CardContent className="space-y-4 text-sm">
@@ -13561,9 +8948,7 @@ export default function Finance({
                     </div>
 
                     <div className="mt-1 font-semibold text-slate-900">
-                      {expenseRepairOperationLabel(
-                        expenseRepairDraft.kind
-                      )}
+                      {expenseRepairOperationLabel(expenseRepairDraft.kind)}
                     </div>
 
                     <div className="mt-1 text-xs text-slate-600">
@@ -13571,9 +8956,7 @@ export default function Finance({
                     </div>
 
                     <div className="mt-1 text-xs text-slate-600">
-                      {formatDateTimeDisplay(
-                        expenseRepairDraft.financialDate
-                      )}
+                      {formatDateTimeDisplay(expenseRepairDraft.financialDate)}
                     </div>
                   </div>
 
@@ -13584,9 +8967,7 @@ export default function Finance({
                       </div>
 
                       <div className="mt-1 font-semibold text-slate-900">
-                        {formatINR(
-                          expenseRepairPreview.beforeExpenseTotal
-                        )}
+                        {formatINR(expenseRepairPreview.beforeExpenseTotal)}
                       </div>
                     </div>
 
@@ -13596,9 +8977,7 @@ export default function Finance({
                       </div>
 
                       <div className="mt-1 font-semibold text-slate-900">
-                        {formatINR(
-                          expenseRepairPreview.afterExpenseTotal
-                        )}
+                        {formatINR(expenseRepairPreview.afterExpenseTotal)}
                       </div>
                     </div>
 
@@ -13608,9 +8987,7 @@ export default function Finance({
                       </div>
 
                       <div className="mt-1 font-semibold text-slate-900">
-                        {formatINR(
-                          expenseRepairPreview.changeExpenseTotal
-                        )}
+                        {formatINR(expenseRepairPreview.changeExpenseTotal)}
                       </div>
                     </div>
                   </div>
@@ -13618,23 +8995,19 @@ export default function Finance({
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"
-                      onClick={() =>
-                        setExpenseRepairConfirmOpen(false)
-                      }
+                      onClick={() => setExpenseRepairConfirmOpen(false)}
                       disabled={expenseRepairSubmitting}
                     >
                       Cancel
                     </Button>
 
                     <Button
-                      onClick={() =>
-                        void applyExpenseRepairDraft()
-                      }
+                      onClick={() => void applyExpenseRepairDraft()}
                       disabled={expenseRepairSubmitting}
                     >
                       {expenseRepairSubmitting
-                        ? 'Applying...'
-                        : 'Confirm Repair'}
+                        ? "Applying..."
+                        : "Confirm Repair"}
                     </Button>
                   </div>
                 </CardContent>
@@ -13646,33 +9019,25 @@ export default function Finance({
   }
 
   if (embeddedWithdrawalRepair) {
-    const withdrawalRepairHistory =
-      (loadData().repairHistoryEntries || [])
-        .filter(
-          (entry) =>
-            entry.entityType === 'cash_adjustment'
-        )
-        .slice(0, 12);
+    const withdrawalRepairHistory = (loadData().repairHistoryEntries || [])
+      .filter((entry) => entry.entityType === "cash_adjustment")
+      .slice(0, 12);
 
     return (
       <div className="space-y-4">
         <Card>
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <CardTitle>
-                Withdrawal Repair
-              </CardTitle>
+              <CardTitle>Withdrawal Repair</CardTitle>
 
               <p className="text-sm text-muted-foreground">
-                All-time cash withdrawal repair table with edit/delete preview flow and repair history.
+                All-time cash withdrawal repair table with edit/delete preview
+                flow and repair history.
               </p>
             </div>
 
             <div className="flex flex-col items-stretch gap-3 md:items-end">
-              <Button
-                type="button"
-                onClick={startAddWithdrawalRepair}
-              >
+              <Button type="button" onClick={startAddWithdrawalRepair}>
                 Add Withdrawal
               </Button>
 
@@ -13684,14 +9049,9 @@ export default function Finance({
                 <div className="text-lg font-semibold text-slate-900">
                   {formatINR(
                     withdrawalRows.reduce(
-                      (sum, entry) =>
-                        sum
-                        + Number(
-                          entry.amount
-                          || 0
-                        ),
-                      0
-                    )
+                      (sum, entry) => sum + Number(entry.amount || 0),
+                      0,
+                    ),
                   )}
                 </div>
               </div>
@@ -13719,37 +9079,29 @@ export default function Finance({
 
                 <tbody>
                   {withdrawalRows.map((entry) => {
-                    const created =
-                      entry.createdAt
-                        ? new Date(entry.createdAt)
-                        : null;
+                    const created = entry.createdAt
+                      ? new Date(entry.createdAt)
+                      : null;
 
                     return (
-                      <tr
-                        key={entry.id}
-                        className="border-t align-top"
-                      >
+                      <tr key={entry.id} className="border-t align-top">
                         <td className="p-3 text-slate-600">
-                          {created
-                            && !Number.isNaN(created.getTime())
+                          {created && !Number.isNaN(created.getTime())
                             ? formatDateDisplay(created)
-                            : '—'}
+                            : "—"}
                         </td>
 
                         <td className="p-3 text-slate-600">
-                          {created
-                            && !Number.isNaN(created.getTime())
+                          {created && !Number.isNaN(created.getTime())
                             ? created.toLocaleTimeString()
-                            : '—'}
+                            : "—"}
                         </td>
 
-                        <td className="p-3">
-                          Cash Withdrawal
-                        </td>
+                        <td className="p-3">Cash Withdrawal</td>
 
                         <td className="p-3">
                           <div className="font-medium text-slate-900">
-                            {entry.title || 'Manual Cash Withdrawal'}
+                            {entry.title || "Manual Cash Withdrawal"}
                           </div>
 
                           <div className="text-[11px] text-slate-400">
@@ -13759,20 +9111,20 @@ export default function Finance({
 
                         <td className="p-3 text-slate-600">
                           <div className="max-w-[240px] whitespace-normal break-words">
-                            {entry.note || '—'}
+                            {entry.note || "—"}
                           </div>
                         </td>
 
                         <td className="p-3 text-slate-600">
-                          {`${entry.method || 'Cash'} • ${formatCashSourceLabel(entry.cashSource)}`}
+                          {`${entry.method || "Cash"} • ${formatCashSourceLabel(entry.cashSource)}`}
                         </td>
 
                         <td className="p-3 text-slate-600">
-                          {entry.paidTo || '—'}
+                          {entry.paidTo || "—"}
                         </td>
 
                         <td className="p-3 text-slate-600">
-                          {entry.reference || '—'}
+                          {entry.reference || "—"}
                         </td>
 
                         <td className="p-3 text-right font-semibold">
@@ -13795,9 +9147,7 @@ export default function Finance({
                               type="button"
                               variant="outline"
                               size="sm"
-                              onClick={() =>
-                                startEditWithdrawalRepair(entry)
-                              }
+                              onClick={() => startEditWithdrawalRepair(entry)}
                             >
                               Edit Withdrawal
                             </Button>
@@ -13807,9 +9157,7 @@ export default function Finance({
                               variant="outline"
                               size="sm"
                               className="text-rose-600"
-                              onClick={() =>
-                                startDeleteWithdrawalRepair(entry)
-                              }
+                              onClick={() => startDeleteWithdrawalRepair(entry)}
                             >
                               Delete Withdrawal
                             </Button>
@@ -13845,7 +9193,7 @@ export default function Finance({
                     className="rounded-xl border border-slate-200 px-3 py-2"
                   >
                     <div className="font-medium text-slate-900">
-                      {entry.repairKind.replace(/_/g, ' ')}
+                      {entry.repairKind.replace(/_/g, " ")}
                     </div>
 
                     <div>
@@ -13855,9 +9203,7 @@ export default function Finance({
                 ))}
 
                 {withdrawalRepairHistory.length === 0 && (
-                  <div>
-                    No repair history yet.
-                  </div>
+                  <div>No repair history yet.</div>
                 )}
               </div>
             </div>
@@ -13876,8 +9222,8 @@ export default function Finance({
               <CardHeader>
                 <CardTitle>
                   {editingWithdrawalId
-                    ? 'Withdrawal Repair'
-                    : 'Add Withdrawal Repair'}
+                    ? "Withdrawal Repair"
+                    : "Add Withdrawal Repair"}
                 </CardTitle>
               </CardHeader>
 
@@ -13889,29 +9235,23 @@ export default function Finance({
                 )}
 
                 <div className="space-y-1">
-                  <Label>
-                    Financial Date
-                  </Label>
+                  <Label>Financial Date</Label>
 
                   <Input
                     type="datetime-local"
                     value={withdrawalFinancialDate}
-                    onChange={(e) =>
-                      setWithdrawalFinancialDate(e.target.value)
-                    }
+                    onChange={(e) => setWithdrawalFinancialDate(e.target.value)}
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Amount
-                  </Label>
+                  <Label>Amount</Label>
 
                   <Input
                     value={cashWithdrawAmount}
                     onChange={(e) =>
                       setCashWithdrawAmount(
-                        e.target.value.replace(/[^\d.]/g, '')
+                        e.target.value.replace(/[^\d.]/g, ""),
                       )
                     }
                     placeholder="0.00"
@@ -13920,109 +9260,77 @@ export default function Finance({
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Method
-                  </Label>
+                  <Label>Method</Label>
 
                   <Input
                     value={withdrawalMethod}
-                    onChange={(e) =>
-                      setWithdrawalMethod(e.target.value)
-                    }
+                    onChange={(e) => setWithdrawalMethod(e.target.value)}
                     placeholder="Cash"
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Utilize From
-                  </Label>
+                  <Label>Utilize From</Label>
 
                   <select
                     className="h-10 w-full rounded-md border px-3 text-sm"
                     value={withdrawalCashSource}
                     onChange={(e) =>
-                      setWithdrawalCashSource(
-                        e.target.value as CashSource
-                      )
+                      setWithdrawalCashSource(e.target.value as CashSource)
                     }
                   >
-                    <option value="drawer">
-                      Active Cash
-                    </option>
+                    <option value="drawer">Active Cash</option>
 
-                    <option value="reserve">
-                      Reserve Cash
-                    </option>
+                    <option value="reserve">Reserve Cash</option>
                   </select>
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Details / Title
-                  </Label>
+                  <Label>Details / Title</Label>
 
                   <Input
                     value={withdrawalTitle}
-                    onChange={(e) =>
-                      setWithdrawalTitle(e.target.value)
-                    }
+                    onChange={(e) => setWithdrawalTitle(e.target.value)}
                     placeholder="Manual Cash Withdrawal"
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Notes
-                  </Label>
+                  <Label>Notes</Label>
 
                   <Input
                     value={cashWithdrawNote}
-                    onChange={(e) =>
-                      setCashWithdrawNote(e.target.value)
-                    }
+                    onChange={(e) => setCashWithdrawNote(e.target.value)}
                     placeholder="Reason / note"
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Paid To / Person
-                  </Label>
+                  <Label>Paid To / Person</Label>
 
                   <Input
                     value={withdrawalPaidTo}
-                    onChange={(e) =>
-                      setWithdrawalPaidTo(e.target.value)
-                    }
+                    onChange={(e) => setWithdrawalPaidTo(e.target.value)}
                     placeholder="Optional"
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Reference
-                  </Label>
+                  <Label>Reference</Label>
 
                   <Input
                     value={withdrawalReference}
-                    onChange={(e) =>
-                      setWithdrawalReference(e.target.value)
-                    }
+                    onChange={(e) => setWithdrawalReference(e.target.value)}
                     placeholder="Optional"
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <Label>
-                    Repair Reason
-                  </Label>
+                  <Label>Repair Reason</Label>
 
                   <Input
                     value={withdrawalRepairReason}
-                    onChange={(e) =>
-                      setWithdrawalRepairReason(e.target.value)
-                    }
+                    onChange={(e) => setWithdrawalRepairReason(e.target.value)}
                     placeholder="Required reason for this repair"
                   />
                 </div>
@@ -14030,9 +9338,7 @@ export default function Finance({
                 <div className="flex justify-end gap-2">
                   <Button
                     variant="outline"
-                    onClick={() =>
-                      setEmbeddedWithdrawalEditorOpen(false)
-                    }
+                    onClick={() => setEmbeddedWithdrawalEditorOpen(false)}
                   >
                     Cancel
                   </Button>
@@ -14042,9 +9348,7 @@ export default function Finance({
                       variant="outline"
                       className="text-rose-600"
                       onClick={() =>
-                        previewWithdrawalRepair(
-                          'delete_cash_withdrawal'
-                        )
+                        previewWithdrawalRepair("delete_cash_withdrawal")
                       }
                     >
                       Preview Delete Withdrawal
@@ -14055,14 +9359,14 @@ export default function Finance({
                     onClick={() =>
                       previewWithdrawalRepair(
                         editingWithdrawalId
-                          ? 'edit_cash_withdrawal'
-                          : 'add_cash_withdrawal'
+                          ? "edit_cash_withdrawal"
+                          : "add_cash_withdrawal",
                       )
                     }
                   >
                     {editingWithdrawalId
-                      ? 'Preview Edit Withdrawal'
-                      : 'Preview Add Withdrawal'}
+                      ? "Preview Edit Withdrawal"
+                      : "Preview Add Withdrawal"}
                   </Button>
                 </div>
               </CardContent>
@@ -14070,15 +9374,14 @@ export default function Finance({
           </div>
         )}
 
-        {withdrawalRepairConfirmOpen
-          && withdrawalRepairDraft
-          && withdrawalRepairPreview
-          && (
+        {withdrawalRepairConfirmOpen &&
+          withdrawalRepairDraft &&
+          withdrawalRepairPreview && (
             <div
               className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
               onClick={() =>
-                !withdrawalRepairSubmitting
-                && setWithdrawalRepairConfirmOpen(false)
+                !withdrawalRepairSubmitting &&
+                setWithdrawalRepairConfirmOpen(false)
               }
             >
               <Card
@@ -14086,15 +9389,16 @@ export default function Finance({
                 onClick={(e) => e.stopPropagation()}
               >
                 <CardHeader>
-                  <CardTitle>
-                    Confirm Repair
-                  </CardTitle>
+                  <CardTitle>Confirm Repair</CardTitle>
                 </CardHeader>
 
                 <CardContent className="space-y-4 text-sm">
                   {withdrawalRepairPreview.historicalShiftRepair && (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                      This repair is historical. Reports will update for the selected financial date, but the current open shift will not be changed unless the withdrawal falls inside that shift window.
+                      This repair is historical. Reports will update for the
+                      selected financial date, but the current open shift will
+                      not be changed unless the withdrawal falls inside that
+                      shift window.
                     </div>
                   )}
 
@@ -14104,11 +9408,11 @@ export default function Finance({
                     </div>
 
                     <div className="mt-1 font-semibold text-slate-900">
-                      {withdrawalRepairDraft.kind === 'delete_cash_withdrawal'
-                        ? 'Delete Withdrawal'
-                        : withdrawalRepairDraft.kind === 'add_cash_withdrawal'
-                          ? 'Add Withdrawal'
-                          : 'Edit Withdrawal'}
+                      {withdrawalRepairDraft.kind === "delete_cash_withdrawal"
+                        ? "Delete Withdrawal"
+                        : withdrawalRepairDraft.kind === "add_cash_withdrawal"
+                          ? "Add Withdrawal"
+                          : "Edit Withdrawal"}
                     </div>
 
                     <div className="mt-1 text-xs text-slate-600">
@@ -14117,7 +9421,7 @@ export default function Finance({
 
                     <div className="mt-1 text-xs text-slate-600">
                       {formatDateTimeDisplay(
-                        withdrawalRepairDraft.financialDate
+                        withdrawalRepairDraft.financialDate,
                       )}
                     </div>
                   </div>
@@ -14132,10 +9436,12 @@ export default function Finance({
                         <div className="mt-1 font-semibold text-slate-900">
                           {formatINR(
                             Number(
-                              withdrawalRepairDraft.nextCashAdjustment?.amount
-                              || withdrawalRepairDraft.oldCashAdjustment?.amount
-                              || 0
-                            )
+                              withdrawalRepairDraft.nextCashAdjustment
+                                ?.amount ||
+                                withdrawalRepairDraft.oldCashAdjustment
+                                  ?.amount ||
+                                0,
+                            ),
                           )}
                         </div>
                       </div>
@@ -14146,9 +9452,9 @@ export default function Finance({
                         </div>
 
                         <div className="mt-1 font-medium text-slate-900">
-                          {withdrawalRepairDraft.nextCashAdjustment?.method
-                            || withdrawalRepairDraft.oldCashAdjustment?.method
-                            || 'Cash'}
+                          {withdrawalRepairDraft.nextCashAdjustment?.method ||
+                            withdrawalRepairDraft.oldCashAdjustment?.method ||
+                            "Cash"}
                         </div>
                       </div>
 
@@ -14158,9 +9464,9 @@ export default function Finance({
                         </div>
 
                         <div className="mt-1 font-medium text-slate-900">
-                          {withdrawalRepairDraft.nextCashAdjustment?.title
-                            || withdrawalRepairDraft.oldCashAdjustment?.title
-                            || 'Manual Cash Withdrawal'}
+                          {withdrawalRepairDraft.nextCashAdjustment?.title ||
+                            withdrawalRepairDraft.oldCashAdjustment?.title ||
+                            "Manual Cash Withdrawal"}
                         </div>
                       </div>
 
@@ -14170,9 +9476,9 @@ export default function Finance({
                         </div>
 
                         <div className="mt-1 text-slate-700">
-                          {withdrawalRepairDraft.nextCashAdjustment?.note
-                            || withdrawalRepairDraft.oldCashAdjustment?.note
-                            || '—'}
+                          {withdrawalRepairDraft.nextCashAdjustment?.note ||
+                            withdrawalRepairDraft.oldCashAdjustment?.note ||
+                            "—"}
                         </div>
                       </div>
                     </div>
@@ -14186,7 +9492,7 @@ export default function Finance({
 
                       <div className="mt-1 font-semibold text-slate-900">
                         {formatINR(
-                          withdrawalRepairPreview.beforeWithdrawalTotal
+                          withdrawalRepairPreview.beforeWithdrawalTotal,
                         )}
                       </div>
                     </div>
@@ -14198,7 +9504,7 @@ export default function Finance({
 
                       <div className="mt-1 font-semibold text-slate-900">
                         {formatINR(
-                          withdrawalRepairPreview.afterWithdrawalTotal
+                          withdrawalRepairPreview.afterWithdrawalTotal,
                         )}
                       </div>
                     </div>
@@ -14210,7 +9516,7 @@ export default function Finance({
 
                       <div className="mt-1 font-semibold text-slate-900">
                         {formatINR(
-                          withdrawalRepairPreview.changeWithdrawalTotal
+                          withdrawalRepairPreview.changeWithdrawalTotal,
                         )}
                       </div>
                     </div>
@@ -14219,23 +9525,19 @@ export default function Finance({
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"
-                      onClick={() =>
-                        setWithdrawalRepairConfirmOpen(false)
-                      }
+                      onClick={() => setWithdrawalRepairConfirmOpen(false)}
                       disabled={withdrawalRepairSubmitting}
                     >
                       Cancel
                     </Button>
 
                     <Button
-                      onClick={() =>
-                        void applyWithdrawalRepairDraft()
-                      }
+                      onClick={() => void applyWithdrawalRepairDraft()}
                       disabled={withdrawalRepairSubmitting}
                     >
                       {withdrawalRepairSubmitting
-                        ? 'Applying...'
-                        : 'Confirm Repair'}
+                        ? "Applying..."
+                        : "Confirm Repair"}
                     </Button>
                   </div>
                 </CardContent>
@@ -14245,101 +9547,64 @@ export default function Finance({
       </div>
     );
   }
-    const exportExpensePDF = () => {
-    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const exportExpensePDF = () => {
+    const doc = new jsPDF({
+      orientation: "landscape",
+      unit: "mm",
+      format: "a4",
+    });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
     (doc as any).setCharSpace?.(0);
 
-    const reportRows = [...filteredExpenses].sort((a, b) => (
-      new Date(getExpenseEffectiveDate(a)).getTime()
-      - new Date(getExpenseEffectiveDate(b)).getTime()
-    ));
+    const reportRows = [...filteredExpenses].sort(
+      (a, b) =>
+        new Date(getExpenseEffectiveDate(a)).getTime() -
+        new Date(getExpenseEffectiveDate(b)).getTime(),
+    );
 
     const groupedRows = reportRows.reduce((map, expense) => {
-      const dateKey = new Date(
-        getExpenseEffectiveDate(expense)
-      ).toISOString().slice(0, 10);
+      const dateKey = new Date(getExpenseEffectiveDate(expense))
+        .toISOString()
+        .slice(0, 10);
 
-      map.set(
-        dateKey,
-        [
-          ...(map.get(dateKey) || []),
-          expense,
-        ]
-      );
+      map.set(dateKey, [...(map.get(dateKey) || []), expense]);
 
       return map;
     }, new Map<string, Expense[]>());
 
-    const dateKeys =
-      Array.from(
-        groupedRows.keys()
-      ).sort();
+    const dateKeys = Array.from(groupedRows.keys()).sort();
 
-    const dateRangeLabel =
-      dateKeys.length
-        ? `${formatExpenseDateCell(`${dateKeys[0]}T00:00:00`)} to ${formatExpenseDateCell(`${dateKeys[dateKeys.length - 1]}T00:00:00`)}`
-        : 'No entries';
+    const dateRangeLabel = dateKeys.length
+      ? `${formatExpenseDateCell(`${dateKeys[0]}T00:00:00`)} to ${formatExpenseDateCell(`${dateKeys[dateKeys.length - 1]}T00:00:00`)}`
+      : "No entries";
 
-    doc.setFillColor(
-      15,
-      23,
-      42
-    );
+    doc.setFillColor(15, 23, 42);
 
-    doc.rect(
-      0,
-      0,
-      pageWidth,
-      26,
-      'F'
-    );
+    doc.rect(0, 0, pageWidth, 26, "F");
 
-    doc.setFont(
-      'helvetica',
-      'bold'
-    );
+    doc.setFont("helvetica", "bold");
 
-    doc.setTextColor(
-      255,
-      255,
-      255
-    );
+    doc.setTextColor(255, 255, 255);
 
     doc.setFontSize(20);
 
-    doc.text(
-      'Expense Report',
-      14,
-      16
-    );
+    doc.text("Expense Report", 14, 16);
 
-    doc.setFont(
-      'helvetica',
-      'normal'
-    );
+    doc.setFont("helvetica", "normal");
 
     doc.setFontSize(10);
 
-    doc.text(
-      `Filter: ${expenseReportFilterLabel}`,
-      14,
-      22
-    );
+    doc.text(`Filter: ${expenseReportFilterLabel}`, 14, 22);
 
-    doc.setTextColor(
-      15,
-      23,
-      42
-    );
+    doc.setTextColor(15, 23, 42);
 
     forcePdfStandardText(doc);
 
     autoTable(doc, {
       startY: 32,
 
-      theme: 'grid',
+      theme: "grid",
 
       margin: {
         left: 14,
@@ -14347,114 +9612,78 @@ export default function Finance({
       },
 
       styles: {
-        font: 'helvetica',
-        fontStyle: 'normal',
+        font: "helvetica",
+        fontStyle: "normal",
         fontSize: 10,
         cellPadding: 3,
-        lineColor: [
-          226,
-          232,
-          240,
-        ],
+        lineColor: [226, 232, 240],
         lineWidth: 0.2,
-        textColor: [
-          15,
-          23,
-          42,
-        ],
-        overflow: 'linebreak',
-        valign: 'middle',
+        textColor: [15, 23, 42],
+        overflow: "linebreak",
+        valign: "middle",
       },
 
-      body: [[
-        {
-          content:
-            'Total Expenses',
+      body: [
+        [
+          {
+            content: "Total Expenses",
 
-          styles: {
-            fontStyle:
-              'normal',
+            styles: {
+              fontStyle: "normal",
 
-            fillColor: [
-              248,
-              250,
-              252,
-            ],
+              fillColor: [248, 250, 252],
+            },
           },
-        },
 
-        {
-          content:
-            formatPdfAmount(
-              expensesTotalForDate
-            ),
+          {
+            content: formatPdfAmount(expensesTotalForDate),
 
-          styles: {
-            halign:
-              'right',
+            styles: {
+              halign: "right",
 
-            fontStyle:
-              'normal',
+              fontStyle: "normal",
 
-            overflow:
-              'visible',
+              overflow: "visible",
+            },
           },
-        },
 
-        {
-          content:
-            'Number of Entries',
+          {
+            content: "Number of Entries",
 
-          styles: {
-            fontStyle:
-              'normal',
+            styles: {
+              fontStyle: "normal",
 
-            fillColor: [
-              248,
-              250,
-              252,
-            ],
+              fillColor: [248, 250, 252],
+            },
           },
-        },
 
-        {
-          content:
-            String(
-              filteredExpenses.length
-            ),
+          {
+            content: String(filteredExpenses.length),
 
-          styles: {
-            halign:
-              'center',
+            styles: {
+              halign: "center",
+            },
           },
-        },
 
-        {
-          content:
-            'Date Range',
+          {
+            content: "Date Range",
 
-          styles: {
-            fontStyle:
-              'normal',
+            styles: {
+              fontStyle: "normal",
 
-            fillColor: [
-              248,
-              250,
-              252,
-            ],
+              fillColor: [248, 250, 252],
+            },
           },
-        },
 
-        {
-          content:
-            dateRangeLabel,
+          {
+            content: dateRangeLabel,
 
-          styles: {
-            halign:
-              'center',
+            styles: {
+              halign: "center",
+            },
           },
-        },
-      ]],
+        ],
+      ],
 
       columnStyles: {
         0: {
@@ -14463,7 +9692,7 @@ export default function Finance({
 
         1: {
           cellWidth: 38,
-          halign: 'right',
+          halign: "right",
         },
 
         2: {
@@ -14484,484 +9713,287 @@ export default function Finance({
       },
     });
 
-    const bodyRows:
-      any[] = [];
+    const bodyRows: any[] = [];
 
-    groupedRows.forEach(
-      (
-        entries,
-        dateKey
-      ) => {
-        const subtotal =
-          entries.reduce(
-            (
-              sum,
-              entry
-            ) =>
-              sum
-              + Number(
-                entry.amount
-                || 0
-              ),
-            0
-          );
+    groupedRows.forEach((entries, dateKey) => {
+      const subtotal = entries.reduce(
+        (sum, entry) => sum + Number(entry.amount || 0),
+        0,
+      );
 
-        bodyRows.push([
-          {
-            content:
-              `${formatExpenseDateHeading(`${dateKey}T00:00:00`)} | Subtotal ${formatPdfAmount(subtotal)}`,
+      bodyRows.push([
+        {
+          content: `${formatExpenseDateHeading(`${dateKey}T00:00:00`)} | Subtotal ${formatPdfAmount(subtotal)}`,
 
-            colSpan:
-              6,
+          colSpan: 6,
 
-            styles: {
-              fillColor: [
-                226,
-                232,
-                240,
-              ],
+          styles: {
+            fillColor: [226, 232, 240],
 
-              textColor: [
-                15,
-                23,
-                42,
-              ],
+            textColor: [15, 23, 42],
 
-              fontStyle:
-                'normal',
+            fontStyle: "normal",
 
-              halign:
-                'left',
+            halign: "left",
 
-              overflow:
-                'visible',
-            },
+            overflow: "visible",
           },
+        },
+      ]);
+
+      entries.forEach((expense) => {
+        bodyRows.push([
+          formatExpenseDateCell(getExpenseEffectiveDate(expense)),
+
+          expense.category || "—",
+
+          expense.title || "—",
+
+          expense.note || "—",
+
+          "Cash",
+
+          formatPdfAmount(expense.amount),
         ]);
-
-        entries.forEach(
-          (expense) => {
-            bodyRows.push([
-              formatExpenseDateCell(
-                getExpenseEffectiveDate(
-                  expense
-                )
-              ),
-
-              expense.category
-              || '—',
-
-              expense.title
-              || '—',
-
-              expense.note
-              || '—',
-
-              'Cash',
-
-              formatPdfAmount(
-                expense.amount
-              ),
-            ]);
-          }
-        );
-      }
-    );
+      });
+    });
 
     bodyRows.push([
       {
-        content:
-          `Grand Total ${formatPdfAmount(expensesTotalForDate)}`,
+        content: `Grand Total ${formatPdfAmount(expensesTotalForDate)}`,
 
-        colSpan:
-          6,
+        colSpan: 6,
 
         styles: {
-          fillColor: [
-            15,
-            23,
-            42,
-          ],
+          fillColor: [15, 23, 42],
 
-          textColor: [
-            255,
-            255,
-            255,
-          ],
+          textColor: [255, 255, 255],
 
-          fontStyle:
-            'normal',
+          fontStyle: "normal",
 
-          halign:
-            'right',
+          halign: "right",
 
-          overflow:
-            'visible',
+          overflow: "visible",
         },
       },
     ]);
 
-    const normalizedBodyRows =
-      bodyRows.map(
-        (row) => {
-          if (
-            !Array.isArray(
-              row
-            )
-          ) {
-            return row;
-          }
+    const normalizedBodyRows = bodyRows.map((row) => {
+      if (!Array.isArray(row)) {
+        return row;
+      }
 
-          return row.map(
-            (cell) => {
-              if (
-                typeof cell
-                === 'string'
-              ) {
-                return cell.replaceAll(
-                  '?',
-                  '--'
-                );
-              }
-
-              if (
-                cell
-                && typeof cell
-                === 'object'
-                && 'content'
-                  in cell
-                && typeof (
-                  cell as {
-                    content?: unknown;
-                  }
-                ).content
-                === 'string'
-              ) {
-                return {
-                  ...cell,
-
-                  content:
-                    String(
-                      (
-                        cell as {
-                          content: string;
-                        }
-                      ).content
-                    ).replaceAll(
-                      '?',
-                      '--'
-                    ),
-                };
-              }
-
-              return cell;
-            }
-          );
+      return row.map((cell) => {
+        if (typeof cell === "string") {
+          return cell.replaceAll("?", "--");
         }
-      );
+
+        if (
+          cell &&
+          typeof cell === "object" &&
+          "content" in cell &&
+          typeof (
+            cell as {
+              content?: unknown;
+            }
+          ).content === "string"
+        ) {
+          return {
+            ...cell,
+
+            content: String(
+              (
+                cell as {
+                  content: string;
+                }
+              ).content,
+            ).replaceAll("?", "--"),
+          };
+        }
+
+        return cell;
+      });
+    });
 
     forcePdfStandardText(doc);
 
     autoTable(doc, {
-      startY:
-        (
-          doc as any
-        ).lastAutoTable
-          .finalY
-        + 8,
+      startY: (doc as any).lastAutoTable.finalY + 8,
 
-      theme:
-        'grid',
+      theme: "grid",
 
       margin: {
-        left:
-          14,
+        left: 14,
 
-        right:
-          14,
+        right: 14,
 
-        bottom:
-          14,
+        bottom: 14,
       },
 
-      head: [[
-        'Date',
-        'Category',
-        'Title / Description',
-        'Note',
-        'Payment Method / Party',
-        'Amount',
-      ]],
+      head: [
+        [
+          "Date",
+          "Category",
+          "Title / Description",
+          "Note",
+          "Payment Method / Party",
+          "Amount",
+        ],
+      ],
 
-      body:
-        normalizedBodyRows,
+      body: normalizedBodyRows,
 
       styles: {
-        font:
-          'helvetica',
+        font: "helvetica",
 
-        fontStyle:
-          'normal',
+        fontStyle: "normal",
 
-        fontSize:
-          9,
+        fontSize: 9,
 
-        cellPadding:
-          3,
+        cellPadding: 3,
 
-        lineColor: [
-          226,
-          232,
-          240,
-        ],
+        lineColor: [226, 232, 240],
 
-        lineWidth:
-          0.2,
+        lineWidth: 0.2,
 
-        textColor: [
-          15,
-          23,
-          42,
-        ],
+        textColor: [15, 23, 42],
 
-        overflow:
-          'linebreak',
+        overflow: "linebreak",
 
-        valign:
-          'top',
+        valign: "top",
       },
 
       headStyles: {
-        font:
-          'helvetica',
+        font: "helvetica",
 
-        fillColor: [
-          30,
-          41,
-          59,
-        ],
+        fillColor: [30, 41, 59],
 
-        textColor: [
-          255,
-          255,
-          255,
-        ],
+        textColor: [255, 255, 255],
 
-        fontStyle:
-          'normal',
+        fontStyle: "normal",
 
-        halign:
-          'center',
+        halign: "center",
       },
 
       columnStyles: {
         0: {
-          cellWidth:
-            26,
+          cellWidth: 26,
         },
 
         1: {
-          cellWidth:
-            34,
+          cellWidth: 34,
         },
 
         2: {
-          cellWidth:
-            64,
+          cellWidth: 64,
         },
 
         3: {
-          cellWidth:
-            74,
+          cellWidth: 74,
         },
 
         4: {
-          cellWidth:
-            38,
+          cellWidth: 38,
         },
 
         5: {
-          cellWidth:
-            38,
+          cellWidth: 38,
 
-          halign:
-            'right',
+          halign: "right",
 
-          overflow:
-            'visible',
+          overflow: "visible",
         },
       },
 
-      didParseCell:
-        (
-          hookData
-        ) => {
-          if (
-            hookData.section
-            === 'body'
-            && hookData
-              .column
-              .index
-            === 5
-          ) {
-            hookData
-              .cell
-              .styles
-              .halign =
-                'right';
+      didParseCell: (hookData) => {
+        if (hookData.section === "body" && hookData.column.index === 5) {
+          hookData.cell.styles.halign = "right";
 
-            hookData
-              .cell
-              .styles
-              .overflow =
-                'visible';
+          hookData.cell.styles.overflow = "visible";
 
-            hookData
-              .cell
-              .styles
-              .fontStyle =
-                'normal';
-          }
-
-          if (
-            hookData.section
-            === 'body'
-            && hookData
-              .row
-              .raw?.[0]
-              ?.colSpan
-            === 6
-          ) {
-            hookData
-              .cell
-              .styles
-              .fontSize =
-                10;
-
-            hookData
-              .cell
-              .styles
-              .fontStyle =
-                'normal';
-          }
-        },
-
-      didDrawPage:
-        () => {
-          forcePdfStandardText(
-            doc
-          );
-
-          const pageNumber =
-            (
-              doc as any
-            ).internal
-              .getCurrentPageInfo()
-              .pageNumber;
-
-          const pageCount =
-            doc.getNumberOfPages();
-
-          doc.setFontSize(
-            9
-          );
-
-          doc.setTextColor(
-            100
-          );
-
-          doc.text(
-            `Generated: ${new Date().toLocaleString('en-IN')}`,
-            14,
-            pageHeight - 6
-          );
-
-          doc.text(
-            `Page ${pageNumber} of ${pageCount}`,
-            pageWidth - 32,
-            pageHeight - 6
-          );
-        },
-    });
-
-    const exportSuffix =
-      expenseCategoryFilter
-      === 'all'
-        ? 'all'
-        : expenseCategoryFilter
-          .toLowerCase()
-          .replace(
-            /[^a-z0-9]+/g,
-            '-'
-          )
-          .replace(
-            /^-+|-+$/g,
-            ''
-          )
-          || 'filtered';
-
-    doc.save(
-      `expenses-${exportSuffix}.pdf`
-    );
-
-    return;
-
-    let y =
-      36;
-
-    filteredExpenses.forEach(
-      (
-        e,
-        idx
-      ) => {
-        doc.text(
-          `${idx + 1}. ${e.title} (${e.category}) - ${e.amount.toFixed(2)}`,
-          14,
-          y
-        );
-
-        y += 7;
-
-        if (e.note) {
-          doc.setTextColor(
-            110
-          );
-
-          doc.text(
-            `Note: ${e.note}`,
-            18,
-            y
-          );
-
-          doc.setTextColor(
-            0
-          );
-
-          y += 6;
+          hookData.cell.styles.fontStyle = "normal";
         }
 
         if (
-          y > 270
+          hookData.section === "body" &&
+          hookData.row.raw?.[0]?.colSpan === 6
         ) {
-          doc.addPage();
-          y = 20;
+          hookData.cell.styles.fontSize = 10;
+
+          hookData.cell.styles.fontStyle = "normal";
         }
+      },
+
+      didDrawPage: () => {
+        forcePdfStandardText(doc);
+
+        const pageNumber = (doc as any).internal.getCurrentPageInfo()
+          .pageNumber;
+
+        const pageCount = doc.getNumberOfPages();
+
+        doc.setFontSize(9);
+
+        doc.setTextColor(100);
+
+        doc.text(
+          `Generated: ${new Date().toLocaleString("en-IN")}`,
+          14,
+          pageHeight - 6,
+        );
+
+        doc.text(
+          `Page ${pageNumber} of ${pageCount}`,
+          pageWidth - 32,
+          pageHeight - 6,
+        );
+      },
+    });
+
+    const exportSuffix =
+      expenseCategoryFilter === "all"
+        ? "all"
+        : expenseCategoryFilter
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "") || "filtered";
+
+    doc.save(`expenses-${exportSuffix}.pdf`);
+
+    return;
+
+    let y = 36;
+
+    filteredExpenses.forEach((e, idx) => {
+      doc.text(
+        `${idx + 1}. ${e.title} (${e.category}) - ${e.amount.toFixed(2)}`,
+        14,
+        y,
+      );
+
+      y += 7;
+
+      if (e.note) {
+        doc.setTextColor(110);
+
+        doc.text(`Note: ${e.note}`, 18, y);
+
+        doc.setTextColor(0);
+
+        y += 6;
       }
-    );
 
-    doc.setFontSize(
-      12
-    );
+      if (y > 270) {
+        doc.addPage();
+        y = 20;
+      }
+    });
 
-    doc.text(
-      `Total Expenses: ${expensesTotalForDate.toFixed(2)}`,
-      14,
-      y + 8
-    );
+    doc.setFontSize(12);
 
-    doc.save(
-      'expenses-all.pdf'
-    );
+    doc.text(`Total Expenses: ${expensesTotalForDate.toFixed(2)}`, 14, y + 8);
+
+    doc.save("expenses-all.pdf");
   };
 
   const collectPayment = async () => {
@@ -14969,278 +10001,150 @@ export default function Finance({
       return;
     }
 
-    const amount =
-      Number(
-        paymentAmount
-      );
+    const amount = Number(paymentAmount);
 
-    if (
-      !Number.isFinite(
-        amount
-      )
-      || amount <= 0
-    ) {
-      return setErrors(
-        'Please enter a valid payment amount.'
-      );
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return setErrors("Please enter a valid payment amount.");
     }
 
-    const tx:
-      Transaction = {
-        id:
-          Date.now()
-            .toString(),
+    const tx: Transaction = {
+      id: Date.now().toString(),
 
-        items:
-          [],
+      items: [],
 
-        total:
-          amount,
+      total: amount,
 
-        date:
-          new Date()
-            .toISOString(),
+      date: new Date().toISOString(),
 
-        type:
-          'payment',
+      type: "payment",
 
-        customerId:
-          collectingCustomer.id,
+      customerId: collectingCustomer.id,
 
-        customerName:
-          collectingCustomer.name,
+      customerName: collectingCustomer.name,
 
-        paymentMethod:
-          paymentMethod
-          === 'Online'
-            ? 'Online'
-            : 'Cash',
-      };
+      paymentMethod: paymentMethod === "Online" ? "Online" : "Cash",
+    };
 
     try {
-      const nextState =
-        processTransaction(
-          tx
-        );
+      const nextState = processTransaction(tx);
 
-      setData(
-        nextState
-      );
+      setData(nextState);
 
-      setCollectingCustomer(
-        null
-      );
+      setCollectingCustomer(null);
 
-      setPaymentAmount(
-        ''
-      );
+      setPaymentAmount("");
 
-      setPaymentMethod(
-        'Cash'
-      );
+      setPaymentMethod("Cash");
 
-      setErrors(
-        null
-      );
+      setErrors(null);
     } catch (error) {
-      setErrors(
-        'Unable to collect payment. Please try again.'
-      );
+      setErrors("Unable to collect payment. Please try again.");
     }
   };
 
   useEffect(() => {
-    const closedSessions =
-      (
-        data.cashSessions
-        || []
-      ).filter(
-        session =>
-          session.status
-          === 'closed'
-          && session.endTime
-      );
+    const closedSessions = (data.cashSessions || []).filter(
+      (session) => session.status === "closed" && session.endTime,
+    );
 
-    if (
-      !closedSessions.length
-    ) {
+    if (!closedSessions.length) {
       return;
     }
 
-    const corrected =
-      (
-        data.cashSessions
-        || []
-      ).map(
-        session => {
-          if (
-            session.status
-            !== 'closed'
-            || !session.endTime
-          ) {
-            return session;
-          }
+    const corrected = (data.cashSessions || []).map((session) => {
+      if (session.status !== "closed" || !session.endTime) {
+        return session;
+      }
 
-          const {
-            systemCashTotal,
-            expenseTotal,
-          } =
-            getSessionCashTotals(
-              data.transactions,
-              expenses,
-              cashAdjustments,
-              data.deleteCompensations
-              || [],
-              data.deletedTransactions
-              || [],
-              data.purchaseOrders
-              || [],
-              data.manualCashbookEntries
-              || [],
-              session.startTime,
-              session.endTime,
-              session.id,
-              upfrontOrders,
-              data.supplierPayments
-              || []
-            );
-
-          const expectedClosing =
-            session.openingBalance
-            + systemCashTotal;
-
-          const difference =
-            (
-              session.closingBalance
-              ?? 0
-            )
-            - expectedClosing;
-
-          const systemChanged =
-            !Number.isFinite(
-              session.systemCashTotal
-            )
-            || Math.abs(
-              (
-                session.systemCashTotal
-                ?? 0
-              )
-              - systemCashTotal
-            ) > 0.0001;
-
-          const differenceChanged =
-            !Number.isFinite(
-              session.difference
-            )
-            || Math.abs(
-              (
-                session.difference
-                ?? 0
-              )
-              - difference
-            ) > 0.0001;
-
-          const expenseChanged =
-            !Number.isFinite(
-              session.sessionExpenseTotal
-            )
-            || Math.abs(
-              (
-                session.sessionExpenseTotal
-                ?? 0
-              )
-              - expenseTotal
-            ) > 0.0001;
-
-          if (
-            !systemChanged
-            && !differenceChanged
-            && !expenseChanged
-          ) {
-            return session;
-          }
-
-          return {
-            ...session,
-            systemCashTotal,
-            sessionExpenseTotal:
-              expenseTotal,
-            difference,
-          };
-        }
+      const { systemCashTotal, expenseTotal } = getSessionCashTotals(
+        data.transactions,
+        expenses,
+        cashAdjustments,
+        data.deleteCompensations || [],
+        data.deletedTransactions || [],
+        data.purchaseOrders || [],
+        data.manualCashbookEntries || [],
+        session.startTime,
+        session.endTime,
+        session.id,
+        upfrontOrders,
+        data.supplierPayments || [],
       );
 
-    const changed =
-      corrected.some(
-        (
-          session,
-          idx
-        ) =>
-          session
-          !== (
-            data.cashSessions
-            || []
-          )[idx]
-      );
+      const expectedClosing = session.openingBalance + systemCashTotal;
+
+      const difference = (session.closingBalance ?? 0) - expectedClosing;
+
+      const systemChanged =
+        !Number.isFinite(session.systemCashTotal) ||
+        Math.abs((session.systemCashTotal ?? 0) - systemCashTotal) > 0.0001;
+
+      const differenceChanged =
+        !Number.isFinite(session.difference) ||
+        Math.abs((session.difference ?? 0) - difference) > 0.0001;
+
+      const expenseChanged =
+        !Number.isFinite(session.sessionExpenseTotal) ||
+        Math.abs((session.sessionExpenseTotal ?? 0) - expenseTotal) > 0.0001;
+
+      if (!systemChanged && !differenceChanged && !expenseChanged) {
+        return session;
+      }
+
+      return {
+        ...session,
+        systemCashTotal,
+        sessionExpenseTotal: expenseTotal,
+        difference,
+      };
+    });
+
+    const changed = corrected.some(
+      (session, idx) => session !== (data.cashSessions || [])[idx],
+    );
 
     if (!changed) {
       return;
     }
 
     persistState({
-      cashSessions:
-        corrected,
+      cashSessions: corrected,
     });
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    data.transactions,
-    data.expenses,
-    data.cashSessions,
-  ]);
+  }, [data.transactions, data.expenses, data.cashSessions]);
 
-  const chartMax =
-    Math.max(
-      monthlySummary.netSales,
-      monthlySummary.todayExpenses,
-      Math.abs(
-        monthlySummary.grossProfit
-      ),
-      1
-    );
+  const chartMax = Math.max(
+    monthlySummary.netSales,
+    monthlySummary.todayExpenses,
+    Math.abs(monthlySummary.grossProfit),
+    1,
+  );
 
-  const tabs:
-    Array<{
-      key: FinanceTabKey;
-      label: string;
-      icon: React.ReactNode;
-    }> = [
-      {
-        key:
-          'cash',
+  const tabs: Array<{
+    key: FinanceTabKey;
+    label: string;
+    icon: React.ReactNode;
+  }> = [
+    {
+      key: "cash",
 
-        label:
-          'Cash Management',
+      label: "Cash Management",
 
-        icon:
-          <Wallet className="w-4 h-4" />,
-      },
+      icon: <Wallet className="w-4 h-4" />,
+    },
 
-      {
-        key:
-          'expense',
+    {
+      key: "expense",
 
-        label:
-          'Expense Management',
+      label: "Expense Management",
 
-        icon:
-          <ReceiptIndianRupee className="w-4 h-4" />,
-      },
-    ];
-      return (
+      icon: <ReceiptIndianRupee className="w-4 h-4" />,
+    },
+  ];
+  return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="w-full px-3 py-4 sm:px-4 lg:px-6 space-y-4">
-
         {errors && (
           <div className="text-destructive text-sm bg-destructive/10 border border-destructive/20 p-3 rounded-lg flex items-center gap-2">
             <AlertCircle className="w-4 h-4" />
@@ -15248,85 +10152,174 @@ export default function Finance({
           </div>
         )}
 
-        {dueStoreCreditSummary.status === 'error' && (
+        {dueStoreCreditSummary.status === "error" && (
           <div className="text-amber-800 text-sm bg-amber-50 border border-amber-200 p-3 rounded-lg flex items-center gap-2">
             <AlertCircle className="w-4 h-4" />
-            Ledger calculation unavailable. Current due and store credit totals are hidden until canonical replay succeeds.
+            Ledger calculation unavailable. Current due and store credit totals
+            are hidden until canonical replay succeeds.
           </div>
         )}
 
-        {!lockedTab && <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
-          {tabs.map(tab => {
-            const isActive = activeTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`inline-flex items-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${isActive ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
-              >
-                {tab.icon}
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>}
+        {!lockedTab && (
+          <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setActiveTab(tab.key)}
+                  className={`inline-flex items-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition ${isActive ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-100"}`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
-
-
-        {activeTab === '__removed_cashbook__' && (
+        {activeTab === "__removed_cashbook__" && (
           <div className="space-y-4">
             <Card className="border-slate-200 shadow-sm">
               <CardContent className="space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-8 gap-2">
-                  <Input type="date" value={cashbookFromDate} onChange={e => setCashbookFromDate(e.target.value)} />
-                  <Input type="date" value={cashbookToDate} onChange={e => setCashbookToDate(e.target.value)} />
-                  <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={cashbookTypeFilter} onChange={e => setCashbookTypeFilter(e.target.value as 'all' | 'sale' | 'payment' | 'return' | 'expense' | 'delete_reversal' | 'delete_compensation' | 'update_correction')}>
+                  <Input
+                    type="date"
+                    value={cashbookFromDate}
+                    onChange={(e) => setCashbookFromDate(e.target.value)}
+                  />
+                  <Input
+                    type="date"
+                    value={cashbookToDate}
+                    onChange={(e) => setCashbookToDate(e.target.value)}
+                  />
+                  <select
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    value={cashbookTypeFilter}
+                    onChange={(e) =>
+                      setCashbookTypeFilter(
+                        e.target.value as
+                          | "all"
+                          | "sale"
+                          | "payment"
+                          | "return"
+                          | "expense"
+                          | "delete_reversal"
+                          | "delete_compensation"
+                          | "update_correction",
+                      )
+                    }
+                  >
                     <option value="all">All Types</option>
                     <option value="sale">Sale</option>
                     <option value="payment">Payment</option>
                     <option value="return">Return</option>
                     <option value="expense">Expense</option>
                     <option value="delete_reversal">Delete Reversal</option>
-                    <option value="delete_compensation">Delete Compensation</option>
+                    <option value="delete_compensation">
+                      Delete Compensation
+                    </option>
                     <option value="update_correction">Update Correction</option>
                   </select>
-                  <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={cashbookAuditFilter} onChange={e => setCashbookAuditFilter(e.target.value as 'all' | 'needs_review' | 'corrections_only')}>
+                  <select
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    value={cashbookAuditFilter}
+                    onChange={(e) =>
+                      setCashbookAuditFilter(
+                        e.target.value as
+                          | "all"
+                          | "needs_review"
+                          | "corrections_only",
+                      )
+                    }
+                  >
                     <option value="all">All Rows</option>
                     <option value="needs_review">Needs Review</option>
                     <option value="corrections_only">Corrections Only</option>
                   </select>
-                  <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={reportingLayerMode} onChange={e => setReportingLayerMode(e.target.value as 'operational' | 'adjustment' | 'final')}>
+                  <select
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    value={reportingLayerMode}
+                    onChange={(e) =>
+                      setReportingLayerMode(
+                        e.target.value as
+                          | "operational"
+                          | "adjustment"
+                          | "final",
+                      )
+                    }
+                  >
                     <option value="operational">Operational Activity</option>
                     <option value="adjustment">Adjustment Activity</option>
                     <option value="final">Final Accounting</option>
                   </select>
-                  <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={cashbookScope} onChange={e => setCashbookScope(e.target.value as 'recent_90d' | 'all')}>
+                  <select
+                    className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    value={cashbookScope}
+                    onChange={(e) =>
+                      setCashbookScope(e.target.value as "recent_90d" | "all")
+                    }
+                  >
                     <option value="recent_90d">Recent 90 Days Scope</option>
                     <option value="all">Full History Scope</option>
                   </select>
-                  <Input placeholder="Search customer, bill, or notes" value={cashbookCustomerQuery} onChange={e => setCashbookCustomerQuery(e.target.value)} className="md:col-span-2" />
+                  <Input
+                    placeholder="Search customer, bill, or notes"
+                    value={cashbookCustomerQuery}
+                    onChange={(e) => setCashbookCustomerQuery(e.target.value)}
+                    className="md:col-span-2"
+                  />
                 </div>
 
-                <div className={`rounded-md border px-3 py-2 text-xs ${cashbookScope === 'all' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-                  {cashbookScope === 'all'
-                    ? 'Cashbook scope: Full history (complete accounting view).'
-                    : 'Cashbook scope: Recent 90 days (performance mode). Switch to Full History Scope for complete accounting view/export.'}
+                <div
+                  className={`rounded-md border px-3 py-2 text-xs ${cashbookScope === "all" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}
+                >
+                  {cashbookScope === "all"
+                    ? "Cashbook scope: Full history (complete accounting view)."
+                    : "Cashbook scope: Recent 90 days (performance mode). Switch to Full History Scope for complete accounting view/export."}
                 </div>
 
-                {can('analytics') && (
-                <div className="rounded-md border p-2.5 bg-muted/20">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Removed Download Center</div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => exportCashbookCsv(false)}>Download CSV</Button>
-                    <Button size="sm" variant="outline" onClick={() => exportCashbookWorkbook('xls')}>Download Excel</Button>
-                    <Button size="sm" variant="outline" onClick={() => exportCashbookWorkbook('xlsx')}>Download XLSX</Button>
-                    <Button size="sm" variant="outline" onClick={() => exportCashbookCsv(true)}>Download CSV (Text-Friendly)</Button>
+                {can("analytics") && (
+                  <div className="rounded-md border p-2.5 bg-muted/20">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                      Removed Download Center
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => exportCashbookCsv(false)}
+                      >
+                        Download CSV
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => exportCashbookWorkbook("xls")}
+                      >
+                        Download Excel
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => exportCashbookWorkbook("xlsx")}
+                      >
+                        Download XLSX
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => exportCashbookCsv(true)}
+                      >
+                        Download CSV (Text-Friendly)
+                      </Button>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground mt-2">
+                      Exports use current Cashbook filters and include metadata
+                      summary + detailed audit columns for accountant review.
+                    </p>
                   </div>
-                  <p className="text-[11px] text-muted-foreground mt-2">
-                    Exports use current Cashbook filters and include metadata summary + detailed audit columns for accountant review.
-                  </p>
-                </div>
                 )}
               </CardContent>
             </Card>
@@ -15335,15 +10328,24 @@ export default function Finance({
               <CardHeader>
                 <CardTitle className="flex items-center justify-between gap-2">
                   <span>Removed KPI Table</span>
-                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => setShowFullCashbookColumns(prev => !prev)}>
-                    {showFullCashbookColumns ? 'Show compact columns' : 'Show full accountant columns'}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() => setShowFullCashbookColumns((prev) => !prev)}
+                  >
+                    {showFullCashbookColumns
+                      ? "Show compact columns"
+                      : "Show full accountant columns"}
                   </Button>
                 </CardTitle>
               </CardHeader>
 
               <CardContent>
                 <div className="overflow-auto border rounded-lg">
-                  <table className={`${showFullCashbookColumns ? 'min-w-[1900px]' : 'min-w-[1400px]'} w-full text-xs`}>
+                  <table
+                    className={`${showFullCashbookColumns ? "min-w-[1900px]" : "min-w-[1400px]"} w-full text-xs`}
+                  >
                     <thead className="bg-muted/40">
                       <tr>
                         <th className="p-2 text-left">Date</th>
@@ -15353,17 +10355,23 @@ export default function Finance({
                         <th className="p-2 text-left">Customer</th>
                         <th className="p-2 text-left">Notes / Settlement</th>
                         <th className="p-2 text-right">Net Sales</th>
-                        <th className="p-2 text-right">Due Created (Period Flow)</th>
-                        <th className="p-2 text-right">Due Outstanding Effect</th>
+                        <th className="p-2 text-right">
+                          Due Created (Period Flow)
+                        </th>
+                        <th className="p-2 text-right">
+                          Due Outstanding Effect
+                        </th>
                         <th className="p-2 text-right">Store Credit Effect</th>
                         <th className="p-2 text-right">Cash In</th>
                         <th className="p-2 text-right">Cash Out</th>
                         <th className="p-2 text-right">Net Cash Effect</th>
-                        {can('analytics') && <th className="p-2 text-right">Net Profit Effect</th>}
+                        {can("analytics") && (
+                          <th className="p-2 text-right">Net Profit Effect</th>
+                        )}
                         <th className="p-2 text-left">Effect Summary</th>
                         <th className="p-2 text-left">Flags / Risk</th>
 
-                        {showFullCashbookColumns && can('analytics') && (
+                        {showFullCashbookColumns && can("analytics") && (
                           <>
                             <th className="p-2 text-right">Gross Sales</th>
                             <th className="p-2 text-right">Sales Return</th>
@@ -15371,7 +10379,9 @@ export default function Finance({
                             <th className="p-2 text-right">Online In</th>
                             <th className="p-2 text-right">Online Out</th>
                             <th className="p-2 text-right">COGS Effect</th>
-                            <th className="p-2 text-right">Gross Profit Effect</th>
+                            <th className="p-2 text-right">
+                              Gross Profit Effect
+                            </th>
                             <th className="p-2 text-right">Expense</th>
                           </>
                         )}
@@ -15379,29 +10389,51 @@ export default function Finance({
                     </thead>
 
                     <tbody>
-                      {paginatedCashbookRows.map(row => (
+                      {paginatedCashbookRows.map((row) => (
                         <tr key={row.id} className="border-t">
-                          <td className="p-2 whitespace-nowrap">{formatDateTimeDisplay(row.date)}</td>
-                          <td className="p-2 font-medium whitespace-nowrap">#{row.billNo}</td>
+                          <td className="p-2 whitespace-nowrap">
+                            {formatDateTimeDisplay(row.date)}
+                          </td>
+                          <td className="p-2 font-medium whitespace-nowrap">
+                            #{row.billNo}
+                          </td>
                           <td className="p-2 uppercase">{row.type}</td>
 
                           <td className="p-2">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${row.layerType === 'adjustment' ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>
-                              {row.layerType === 'adjustment' ? 'Adjustment' : 'Operational'}
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded border ${row.layerType === "adjustment" ? "bg-amber-100 text-amber-700 border-amber-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"}`}
+                            >
+                              {row.layerType === "adjustment"
+                                ? "Adjustment"
+                                : "Operational"}
                             </span>
                           </td>
 
                           <td className="p-2">{row.customer}</td>
                           <td className="p-2">{row.notes}</td>
-                          <td className="p-2 text-right">{formatINR(row.netSales)}</td>
-                          <td className="p-2 text-right">{formatINR(row.creditDueCreated)}</td>
-                          <td className="p-2 text-right">{formatINR(row.currentDueEffect)}</td>
-                          <td className="p-2 text-right">{formatINR(row.currentStoreCreditEffect)}</td>
-                          <td className="p-2 text-right">{formatINR(row.cashIn)}</td>
-                          <td className="p-2 text-right">{formatINR(row.cashOut)}</td>
-                          <td className="p-2 text-right">{formatINR(row.netCashEffect)}</td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.netSales)}
+                          </td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.creditDueCreated)}
+                          </td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.currentDueEffect)}
+                          </td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.currentStoreCreditEffect)}
+                          </td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.cashIn)}
+                          </td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.cashOut)}
+                          </td>
+                          <td className="p-2 text-right">
+                            {formatINR(row.netCashEffect)}
+                          </td>
 
-                          {can('analytics') && (
+                          {can("analytics") && (
                             <td className="p-2 text-right">
                               {formatINR(row.netProfitEffect)}
                             </td>
@@ -15411,15 +10443,22 @@ export default function Finance({
 
                           <td className="p-2">
                             <div className="flex flex-wrap gap-1 items-center">
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${row.riskLevel === 'high' ? 'bg-red-100 text-red-700 border-red-200' : row.riskLevel === 'medium' ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-700 border-slate-200'}`}>
-                                {(row.riskLevel || 'low').toUpperCase()}
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded border ${row.riskLevel === "high" ? "bg-red-100 text-red-700 border-red-200" : row.riskLevel === "medium" ? "bg-amber-100 text-amber-700 border-amber-200" : "bg-slate-100 text-slate-700 border-slate-200"}`}
+                              >
+                                {(row.riskLevel || "low").toUpperCase()}
                               </span>
 
-                              {(row.auditFlags || []).slice(0, 2).map(flag => (
-                                <span key={`${row.id}-${flag}`} className="text-[10px] px-1.5 py-0.5 rounded border bg-muted/60">
-                                  {flag}
-                                </span>
-                              ))}
+                              {(row.auditFlags || [])
+                                .slice(0, 2)
+                                .map((flag) => (
+                                  <span
+                                    key={`${row.id}-${flag}`}
+                                    className="text-[10px] px-1.5 py-0.5 rounded border bg-muted/60"
+                                  >
+                                    {flag}
+                                  </span>
+                                ))}
 
                               {(row.auditFlags || []).length > 2 && (
                                 <span className="text-[10px] text-muted-foreground">
@@ -15429,16 +10468,32 @@ export default function Finance({
                             </div>
                           </td>
 
-                          {showFullCashbookColumns && can('analytics') && (
+                          {showFullCashbookColumns && can("analytics") && (
                             <>
-                              <td className="p-2 text-right">{formatINR(row.grossSales)}</td>
-                              <td className="p-2 text-right">{formatINR(row.salesReturn)}</td>
-                              <td className="p-2 text-right">{formatINR(row.onlineSale)}</td>
-                              <td className="p-2 text-right">{formatINR(row.onlineIn)}</td>
-                              <td className="p-2 text-right">{formatINR(row.onlineOut)}</td>
-                              <td className="p-2 text-right">{formatINR(row.cogsEffect)}</td>
-                              <td className="p-2 text-right">{formatINR(row.grossProfitEffect)}</td>
-                              <td className="p-2 text-right">{formatINR(row.expense)}</td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.grossSales)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.salesReturn)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.onlineSale)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.onlineIn)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.onlineOut)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.cogsEffect)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.grossProfitEffect)}
+                              </td>
+                              <td className="p-2 text-right">
+                                {formatINR(row.expense)}
+                              </td>
                             </>
                           )}
                         </tr>
@@ -15448,7 +10503,13 @@ export default function Finance({
                         <tr>
                           <td
                             className="p-4 text-center text-muted-foreground"
-                            colSpan={can('analytics') ? (showFullCashbookColumns ? 24 : 16) : 15}
+                            colSpan={
+                              can("analytics")
+                                ? showFullCashbookColumns
+                                  ? 24
+                                  : 16
+                                : 15
+                            }
                           >
                             No cashbook rows for selected filters.
                           </td>
@@ -15463,7 +10524,7 @@ export default function Finance({
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => setCashbookPage(p => Math.max(1, p - 1))}
+                      onClick={() => setCashbookPage((p) => Math.max(1, p - 1))}
                       disabled={cashbookPage <= 1}
                     >
                       Previous
@@ -15476,7 +10537,11 @@ export default function Finance({
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => setCashbookPage(p => Math.min(cashbookTotalPages, p + 1))}
+                      onClick={() =>
+                        setCashbookPage((p) =>
+                          Math.min(cashbookTotalPages, p + 1),
+                        )
+                      }
                       disabled={cashbookPage >= cashbookTotalPages}
                     >
                       Next
@@ -15488,16 +10553,24 @@ export default function Finance({
           </div>
         )}
 
-        {activeTab === 'cash' && (
+        {activeTab === "cash" && (
           <div className="space-y-4">
-            {isDetailedCashbookPending && (
+            {(isFinanceHydrating || isDetailedCashbookPending) && (
               <Card className="border-slate-200 shadow-sm">
                 <CardContent className="py-4">
-                  <LightweightLoader label="Preparing detailed cashbook analytics..." />
+                  <LightweightLoader
+                    label={
+                      isFinanceHydrating
+                        ? "Loading finance data..."
+                        : "Preparing detailed cashbook analytics..."
+                    }
+                  />
                 </CardContent>
               </Card>
             )}
 
+            {!isFinanceHydrating && (
+              <>
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <Card className="border-slate-200 shadow-sm">
                 <CardHeader>
@@ -15508,8 +10581,20 @@ export default function Finance({
                       </CardTitle>
                     </div>
 
-                    <Pill tone={!openSession ? 'neutral' : (openingUnlocked ? 'amber' : 'emerald')}>
-                      {!openSession ? 'Not started' : (openingUnlocked ? 'Open' : 'Open')}
+                    <Pill
+                      tone={
+                        !openSession
+                          ? "neutral"
+                          : openingUnlocked
+                            ? "amber"
+                            : "emerald"
+                      }
+                    >
+                      {!openSession
+                        ? "Not started"
+                        : openingUnlocked
+                          ? "Open"
+                          : "Open"}
                     </Pill>
                   </div>
                 </CardHeader>
@@ -15517,20 +10602,34 @@ export default function Finance({
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <StatCard
-                      label={`Opening Balance${openSession?.startTime ? ` • ${formatMonthDayTimeNoYear(openSession.startTime)}` : ''}`}
-                      value={formatINRSummary(financeMovementSummary.shiftStartingBalance)}
+                      label={`Opening Balance${openSession?.startTime ? ` • ${formatMonthDayTimeNoYear(openSession.startTime)}` : ""}`}
+                      value={formatINRSummary(
+                        financeMovementSummary.shiftStartingBalance,
+                      )}
                     />
 
                     <StatCard
                       label="Cash In Movement"
-                      value={formatINRSummary(financeMovementSummary.cashInMovement)}
-                      tone={financeMovementSummary.cashInMovement >= 0 ? 'good' : 'neutral'}
+                      value={formatINRSummary(
+                        financeMovementSummary.cashInMovement,
+                      )}
+                      tone={
+                        financeMovementSummary.cashInMovement >= 0
+                          ? "good"
+                          : "neutral"
+                      }
                     />
 
                     <StatCard
                       label="Cash Out Movement"
-                      value={formatINRSummary(financeMovementSummary.cashOutMovement)}
-                      tone={financeMovementSummary.cashOutMovement > 0 ? 'bad' : 'neutral'}
+                      value={formatINRSummary(
+                        financeMovementSummary.cashOutMovement,
+                      )}
+                      tone={
+                        financeMovementSummary.cashOutMovement > 0
+                          ? "bad"
+                          : "neutral"
+                      }
                     />
 
                     <button
@@ -15545,9 +10644,23 @@ export default function Finance({
                       <StatCard
                         label="Closing Balance"
                         value={formatINRSummary(closingBalanceKpiValue)}
-                        tone={!openSession ? 'neutral' : closingBalanceKpiValue < 0 ? 'bad' : 'good'}
-                        interactive={!!openSession && !isDetailedCashbookPending}
-                        hint={openSession ? (isDetailedCashbookPending ? 'Preparing breakdown...' : 'Click to view breakdown') : undefined}
+                        tone={
+                          !openSession
+                            ? "neutral"
+                            : closingBalanceKpiValue < 0
+                              ? "bad"
+                              : "good"
+                        }
+                        interactive={
+                          !!openSession && !isDetailedCashbookPending
+                        }
+                        hint={
+                          openSession
+                            ? isDetailedCashbookPending
+                              ? "Preparing breakdown..."
+                              : "Click to view breakdown"
+                            : undefined
+                        }
                       />
                     </button>
                   </div>
@@ -15567,9 +10680,15 @@ export default function Finance({
                           <StatCard
                             label="Reserved Cash"
                             value={formatINRSummary(liveRemainingReserveCash)}
-                            tone={liveRemainingReserveCash > 0 ? 'good' : 'neutral'}
+                            tone={
+                              liveRemainingReserveCash > 0 ? "good" : "neutral"
+                            }
                             interactive={!!openSession}
-                            hint={openSession ? 'Click to view reserve ledger' : undefined}
+                            hint={
+                              openSession
+                                ? "Click to view reserve ledger"
+                                : undefined
+                            }
                           />
                         </button>
                       </div>
@@ -15583,7 +10702,9 @@ export default function Finance({
                               setIsReserveAmountEditorOpen(true);
                               setErrors(null);
                             }}
-                            disabled={!openSession || currentOperationalCash <= 0}
+                            disabled={
+                              !openSession || currentOperationalCash <= 0
+                            }
                           >
                             Add More Reserve Cash
                           </Button>
@@ -15608,8 +10729,12 @@ export default function Finance({
                                 </Label>
 
                                 <div className="whitespace-nowrap text-[15px] font-semibold text-sky-700">
-                                  Reserve {formatINRSummary(liveRemainingReserveCash)} → {formatINRSummary(reserveAfterSavePreview)}
-                                  {' '}| Shift {formatINRSummary(currentOperationalCash)} → {formatINRSummary(usableAfterSavePreview)}
+                                  Reserve{" "}
+                                  {formatINRSummary(liveRemainingReserveCash)} →{" "}
+                                  {formatINRSummary(reserveAfterSavePreview)} |
+                                  Shift{" "}
+                                  {formatINRSummary(currentOperationalCash)} →{" "}
+                                  {formatINRSummary(usableAfterSavePreview)}
                                 </div>
                               </div>
 
@@ -15619,10 +10744,13 @@ export default function Finance({
                                 max={activeReserveInputMax}
                                 value={activeReserveAmount}
                                 onChange={(e) => {
-                                  const sanitized = e.target.value.replace(/[^\d.]/g, '');
+                                  const sanitized = e.target.value.replace(
+                                    /[^\d.]/g,
+                                    "",
+                                  );
 
                                   if (!sanitized.trim()) {
-                                    setActiveReserveAmount('');
+                                    setActiveReserveAmount("");
                                     return;
                                   }
 
@@ -15635,7 +10763,9 @@ export default function Finance({
 
                                   if (parsed > activeReserveInputMax) {
                                     setActiveReserveAmount(
-                                      formatEditableAmount(activeReserveInputMax)
+                                      formatEditableAmount(
+                                        activeReserveInputMax,
+                                      ),
                                     );
                                     return;
                                   }
@@ -15650,7 +10780,7 @@ export default function Finance({
                               <Button
                                 type="button"
                                 variant="outline"
-                                onClick={() => setActiveReserveAmount('')}
+                                onClick={() => setActiveReserveAmount("")}
                               >
                                 Reset
                               </Button>
@@ -15660,7 +10790,7 @@ export default function Finance({
                                 variant="outline"
                                 onClick={() => {
                                   setIsReserveAmountEditorOpen(false);
-                                  setActiveReserveAmount('');
+                                  setActiveReserveAmount("");
                                 }}
                               >
                                 Cancel
@@ -15684,7 +10814,9 @@ export default function Finance({
                             Reserve utilized
                           </div>
 
-                          <div className={`mt-1 text-sm font-semibold ${activeReserveOutflowSinceSave > 0 ? 'text-rose-700' : 'text-slate-700'}`}>
+                          <div
+                            className={`mt-1 text-sm font-semibold ${activeReserveOutflowSinceSave > 0 ? "text-rose-700" : "text-slate-700"}`}
+                          >
                             {formatINRSummary(activeReserveOutflowSinceSave)}
                           </div>
                         </div>
@@ -15725,9 +10857,9 @@ export default function Finance({
                             inputMode="numeric"
                             className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 outline-none"
                             value={openingBalance}
-                            onChange={e => {
+                            onChange={(e) => {
                               setOpeningBalance(
-                                e.target.value.replace(/[^\d]/g, '')
+                                e.target.value.replace(/[^\d]/g, ""),
                               );
 
                               if (openingBalanceAutoFilled) {
@@ -15738,9 +10870,7 @@ export default function Finance({
                           />
                         </div>
 
-                        <Button onClick={startShift}>
-                          Start Shift
-                        </Button>
+                        <Button onClick={startShift}>Start Shift</Button>
                       </div>
 
                       <div className="flex flex-wrap gap-2">
@@ -15750,18 +10880,22 @@ export default function Finance({
                           size="sm"
                           onClick={() =>
                             setOpeningBalance(
-                              (
-                                latestCarryForwardSession
-                                  ? getSessionCarryForwardBalance(latestCarryForwardSession)
-                                  : 0
-                              ).toFixed(0)
+                              (latestCarryForwardSession
+                                ? getSessionCarryForwardBalance(
+                                    latestCarryForwardSession,
+                                  )
+                                : 0
+                              ).toFixed(0),
                             )
                           }
                         >
-                          Use last carry-forward: {formatINR(
+                          Use last carry-forward:{" "}
+                          {formatINR(
                             latestCarryForwardSession
-                              ? getSessionCarryForwardBalance(latestCarryForwardSession)
-                              : 0
+                              ? getSessionCarryForwardBalance(
+                                  latestCarryForwardSession,
+                                )
+                              : 0,
                           )}
                         </Button>
 
@@ -15769,7 +10903,7 @@ export default function Finance({
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={() => setOpeningBalance('0')}
+                          onClick={() => setOpeningBalance("0")}
                         >
                           Set to 0
                         </Button>
@@ -15777,7 +10911,8 @@ export default function Finance({
 
                       {openingBalanceAutoFilled && (
                         <p className="text-xs text-muted-foreground">
-                          Auto-filled from last shift carry-forward after reserve.
+                          Auto-filled from last shift carry-forward after
+                          reserve.
                         </p>
                       )}
                     </div>
@@ -15785,8 +10920,8 @@ export default function Finance({
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-muted-foreground">
                         {openingUnlocked
-                          ? 'Unlocked — edits allowed.'
-                          : 'Unlock to edit opening balance.'}
+                          ? "Unlocked — edits allowed."
+                          : "Unlock to edit opening balance."}
                       </p>
 
                       {!openingUnlocked ? (
@@ -15815,9 +10950,9 @@ export default function Finance({
                             inputMode="numeric"
                             className="border-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 outline-none"
                             value={openingBalanceEditValue}
-                            onChange={e =>
+                            onChange={(e) =>
                               setOpeningBalanceEditValue(
-                                e.target.value.replace(/[^\d]/g, '')
+                                e.target.value.replace(/[^\d]/g, ""),
                               )
                             }
                             placeholder="0"
@@ -15859,7 +10994,7 @@ export default function Finance({
                             key={idx}
                             className="rounded-xl border bg-background p-2 space-y-1.5"
                           >
-                            {bucket.map(denom => {
+                            {bucket.map((denom) => {
                               const qty = closingCounts[denom] || 0;
 
                               return (
@@ -15890,14 +11025,14 @@ export default function Finance({
                                       className="w-12 h-7 text-center px-1"
                                       inputMode="numeric"
                                       value={qty}
-                                      onChange={e => {
+                                      onChange={(e) => {
                                         const next = Number(
-                                          e.target.value.replace(/[^\d]/g, '')
+                                          e.target.value.replace(/[^\d]/g, ""),
                                         );
 
                                         updateClosingCount(
                                           denom,
-                                          Number.isFinite(next) ? next : 0
+                                          Number.isFinite(next) ? next : 0,
                                         );
                                       }}
                                     />
@@ -15970,7 +11105,7 @@ export default function Finance({
                               type="number"
                               min="0"
                               value={closingBalance}
-                              onChange={e => {
+                              onChange={(e) => {
                                 setClosingBalanceManuallySet(true);
                                 setClosingBalance(e.target.value);
                               }}
@@ -15989,14 +11124,16 @@ export default function Finance({
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-1">
                           <div className="rounded-lg border border-slate-200 bg-white p-3 text-s text-slate-600">
                             Reserved cash
-
                             <div className="mt-1 text-s font-semibold text-slate-900">
                               {formatINR(liveRemainingReserveCash)}
                             </div>
-
                             {activeReserveOutflowSinceSave > 0 ? (
                               <div className="mt-1 text-xs text-slate-500">
-                                Saved {formatINRSummary(activeReserveBase)} • Utilized {formatINRSummary(activeReserveOutflowSinceSave)}
+                                Saved {formatINRSummary(activeReserveBase)} •
+                                Utilized{" "}
+                                {formatINRSummary(
+                                  activeReserveOutflowSinceSave,
+                                )}
                               </div>
                             ) : null}
                           </div>
@@ -16019,9 +11156,7 @@ export default function Finance({
                             Reset Counts
                           </Button>
 
-                          <Button onClick={closeShift}>
-                            Close Shift
-                          </Button>
+                          <Button onClick={closeShift}>Close Shift</Button>
                         </div>
                       </div>
                     </>
@@ -16040,10 +11175,8 @@ export default function Finance({
                   <Label>Add Amount</Label>
                   <Input
                     value={cashAddAmount}
-                    onChange={e =>
-                      setCashAddAmount(
-                        e.target.value.replace(/[^\d.]/g, '')
-                      )
+                    onChange={(e) =>
+                      setCashAddAmount(e.target.value.replace(/[^\d.]/g, ""))
                     }
                     placeholder="0.00"
                     inputMode="decimal"
@@ -16054,20 +11187,20 @@ export default function Finance({
                   <Label>Reason / Note</Label>
                   <Input
                     value={cashAddNote}
-                    onChange={e => setCashAddNote(e.target.value)}
+                    onChange={(e) => setCashAddNote(e.target.value)}
                     placeholder="Optional note"
                   />
                 </div>
 
                 <Button
-                  onClick={() => addCashAdjustment('cash_addition')}
+                  onClick={() => addCashAdjustment("cash_addition")}
                   disabled={!(Number(cashAddAmount) > 0)}
                 >
                   Add Cash to Drawer
                 </Button>
               </CardContent>
             </Card>
-                        {isCurrentClosingBreakdownOpen && openSession && (
+            {isCurrentClosingBreakdownOpen && openSession && (
               <div
                 className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
                 role="dialog"
@@ -16086,12 +11219,12 @@ export default function Finance({
                         </div>
 
                         <div className="mt-1 text-sm text-slate-600">
-                          Shift window:{' '}
+                          Shift window:{" "}
                           <span className="font-medium text-slate-700">
-                            {formatDateTimeDisplay(openSession.startTime)} to{' '}
+                            {formatDateTimeDisplay(openSession.startTime)} to{" "}
                             {openSession.endTime
                               ? formatDateTimeDisplay(openSession.endTime)
-                              : 'In progress'}
+                              : "In progress"}
                           </span>
                         </div>
                       </div>
@@ -16121,7 +11254,9 @@ export default function Finance({
                           Cash In
                         </div>
                         <div className="mt-1 text-sm font-semibold text-emerald-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.cashIn)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.cashIn,
+                          )}
                         </div>
                       </div>
 
@@ -16130,7 +11265,9 @@ export default function Finance({
                           Cash Out
                         </div>
                         <div className="mt-1 text-sm font-semibold text-rose-900">
-                          {formatPlainAmount(financeMovementSummary.cashOutMovement)}
+                          {formatPlainAmount(
+                            financeMovementSummary.cashOutMovement,
+                          )}
                         </div>
                       </div>
 
@@ -16139,7 +11276,9 @@ export default function Finance({
                           Online In
                         </div>
                         <div className="mt-1 text-sm font-semibold text-blue-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.onlineIn)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.onlineIn,
+                          )}
                         </div>
                       </div>
 
@@ -16148,7 +11287,9 @@ export default function Finance({
                           Online Out
                         </div>
                         <div className="mt-1 text-sm font-semibold text-orange-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.onlineOut)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.onlineOut,
+                          )}
                         </div>
                       </div>
                     </div>
@@ -16159,7 +11300,9 @@ export default function Finance({
                           Credit Due Created
                         </div>
                         <div className="mt-1 text-sm font-semibold text-violet-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.creditCreated)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.creditCreated,
+                          )}
                         </div>
                       </div>
 
@@ -16168,7 +11311,9 @@ export default function Finance({
                           Due Movement
                         </div>
                         <div className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.dueMovement)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.dueMovement,
+                          )}
                         </div>
                       </div>
 
@@ -16177,7 +11322,9 @@ export default function Finance({
                           Store Credit Movement
                         </div>
                         <div className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.storeCreditMovement)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.storeCreditMovement,
+                          )}
                         </div>
                       </div>
 
@@ -16186,7 +11333,9 @@ export default function Finance({
                           Returns
                         </div>
                         <div className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.returns)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.returns,
+                          )}
                         </div>
                       </div>
 
@@ -16195,7 +11344,9 @@ export default function Finance({
                           Expenses
                         </div>
                         <div className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatPlainAmount(currentClosingBreakdownRollup.expenses)}
+                          {formatPlainAmount(
+                            currentClosingBreakdownRollup.expenses,
+                          )}
                         </div>
                       </div>
                     </div>
@@ -16215,66 +11366,72 @@ export default function Finance({
                           </div>
 
                           <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
-                            {!currentClosingShiftMovementDisplay?.cashInRows.length ? (
+                            {!currentClosingShiftMovementDisplay?.cashInRows
+                              .length ? (
                               <div className="p-4 text-sm text-slate-500">
                                 No cash-in movements for this shift.
                               </div>
-                            ) : currentClosingShiftMovementDisplay.cashInRows.map((row) => (
-                              <div
-                                key={row.id}
-                                className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
-                              >
-                                <div className="col-span-3">
-                                  {new Date(row.date).toLocaleTimeString([], {
-                                    hour: 'numeric',
-                                    minute: '2-digit',
-                                  })}
-                                </div>
-
-                                <div className="col-span-3">
-                                  {row.type}
-                                </div>
-
-                                <div className="col-span-4 min-w-0">
-                                  <div className="font-medium text-slate-900">
-                                    {row.name}
-                                  </div>
-
-                                  {row.items.length ? (
-                                    <div className="mt-1 space-y-1">
-                                      {row.items.map((item) => (
-                                        <div
-                                          key={`${row.id}-${item.id}-${item.name}`}
-                                          className="flex items-center gap-2"
-                                        >
-                                          <div className="h-8 w-8 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">
-                                            {item.image ? (
-                                              <img
-                                                src={item.image}
-                                                alt={item.name}
-                                                className="h-full w-full object-cover"
-                                              />
-                                            ) : (
-                                              <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">
-                                                No img
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          <div className="min-w-0 truncate text-[11px] text-slate-600">
-                                            {item.name} x {item.quantity}
-                                          </div>
-                                        </div>
-                                      ))}
+                            ) : (
+                              currentClosingShiftMovementDisplay.cashInRows.map(
+                                (row) => (
+                                  <div
+                                    key={row.id}
+                                    className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
+                                  >
+                                    <div className="col-span-3">
+                                      {new Date(row.date).toLocaleTimeString(
+                                        [],
+                                        {
+                                          hour: "numeric",
+                                          minute: "2-digit",
+                                        },
+                                      )}
                                     </div>
-                                  ) : null}
-                                </div>
 
-                                <div className="col-span-2 text-right font-semibold">
-                                  {formatPlainAmount(row.amount)}
-                                </div>
-                              </div>
-                            ))}
+                                    <div className="col-span-3">{row.type}</div>
+
+                                    <div className="col-span-4 min-w-0">
+                                      <div className="font-medium text-slate-900">
+                                        {row.name}
+                                      </div>
+
+                                      {row.items.length ? (
+                                        <div className="mt-1 space-y-1">
+                                          {row.items.map((item) => (
+                                            <div
+                                              key={`${row.id}-${item.id}-${item.name}`}
+                                              className="flex items-center gap-2"
+                                            >
+                                              <div className="h-8 w-8 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">
+                                                {item.image ? (
+                                                  <img
+                                                    src={item.image}
+                                                    alt={item.name}
+                                                    className="h-full w-full object-cover"
+                                                  />
+                                                ) : (
+                                                  <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">
+                                                    No img
+                                                  </div>
+                                                )}
+                                              </div>
+
+                                              <div className="min-w-0 truncate text-[11px] text-slate-600">
+                                                {item.name} x {item.quantity}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
+
+                                    <div className="col-span-2 text-right font-semibold">
+                                      {formatPlainAmount(row.amount)}
+                                    </div>
+                                  </div>
+                                ),
+                              )
+                            )}
                           </div>
                         </div>
 
@@ -16291,76 +11448,84 @@ export default function Finance({
                           </div>
 
                           <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
-                            {!currentClosingShiftMovementDisplay?.cashOutRows.length ? (
+                            {!currentClosingShiftMovementDisplay?.cashOutRows
+                              .length ? (
                               <div className="p-4 text-sm text-slate-500">
                                 No cash-out movements for this shift.
                               </div>
-                            ) : currentClosingShiftMovementDisplay.cashOutRows.map((row) => (
-                              <div
-                                key={row.id}
-                                className={`grid grid-cols-12 gap-2 px-3 py-2 text-xs ${
-                                  row.usesReserveCash ? 'bg-amber-50/80' : ''
-                                }`}
-                              >
-                                <div className="col-span-3">
-                                  {new Date(row.date).toLocaleTimeString([], {
-                                    hour: 'numeric',
-                                    minute: '2-digit',
-                                  })}
-                                </div>
-
-                                <div className="col-span-3">
-                                  {row.type}
-                                </div>
-
-                                <div className="col-span-4 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <div className="font-medium text-slate-900">
-                                      {row.name}
+                            ) : (
+                              currentClosingShiftMovementDisplay.cashOutRows.map(
+                                (row) => (
+                                  <div
+                                    key={row.id}
+                                    className={`grid grid-cols-12 gap-2 px-3 py-2 text-xs ${
+                                      row.usesReserveCash
+                                        ? "bg-amber-50/80"
+                                        : ""
+                                    }`}
+                                  >
+                                    <div className="col-span-3">
+                                      {new Date(row.date).toLocaleTimeString(
+                                        [],
+                                        {
+                                          hour: "numeric",
+                                          minute: "2-digit",
+                                        },
+                                      )}
                                     </div>
 
-                                    {row.usesReserveCash ? (
-                                      <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-                                        Reserved Cash
-                                      </span>
-                                    ) : null}
-                                  </div>
+                                    <div className="col-span-3">{row.type}</div>
 
-                                  {row.items.length ? (
-                                    <div className="mt-1 space-y-1">
-                                      {row.items.map((item) => (
-                                        <div
-                                          key={`${row.id}-${item.id}-${item.name}`}
-                                          className="flex items-center gap-2"
-                                        >
-                                          <div className="h-8 w-8 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">
-                                            {item.image ? (
-                                              <img
-                                                src={item.image}
-                                                alt={item.name}
-                                                className="h-full w-full object-cover"
-                                              />
-                                            ) : (
-                                              <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">
-                                                No img
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          <div className="min-w-0 truncate text-[11px] text-slate-600">
-                                            {item.name} x {item.quantity}
-                                          </div>
+                                    <div className="col-span-4 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <div className="font-medium text-slate-900">
+                                          {row.name}
                                         </div>
-                                      ))}
-                                    </div>
-                                  ) : null}
-                                </div>
 
-                                <div className="col-span-2 text-right font-semibold">
-                                  {formatPlainAmount(row.amount)}
-                                </div>
-                              </div>
-                            ))}
+                                        {row.usesReserveCash ? (
+                                          <span className="rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                            Reserved Cash
+                                          </span>
+                                        ) : null}
+                                      </div>
+
+                                      {row.items.length ? (
+                                        <div className="mt-1 space-y-1">
+                                          {row.items.map((item) => (
+                                            <div
+                                              key={`${row.id}-${item.id}-${item.name}`}
+                                              className="flex items-center gap-2"
+                                            >
+                                              <div className="h-8 w-8 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white">
+                                                {item.image ? (
+                                                  <img
+                                                    src={item.image}
+                                                    alt={item.name}
+                                                    className="h-full w-full object-cover"
+                                                  />
+                                                ) : (
+                                                  <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-400">
+                                                    No img
+                                                  </div>
+                                                )}
+                                              </div>
+
+                                              <div className="min-w-0 truncate text-[11px] text-slate-600">
+                                                {item.name} x {item.quantity}
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
+
+                                    <div className="col-span-2 text-right font-semibold">
+                                      {formatPlainAmount(row.amount)}
+                                    </div>
+                                  </div>
+                                ),
+                              )
+                            )}
                           </div>
                         </div>
                       </div>
@@ -16374,7 +11539,8 @@ export default function Finance({
                           </div>
 
                           <div className="mt-0.5 text-xs text-slate-500">
-                            {currentClosingBreakdownRows.length} rows included in this shift breakdown
+                            {currentClosingBreakdownRows.length} rows included
+                            in this shift breakdown
                           </div>
                         </div>
                       </div>
@@ -16404,110 +11570,113 @@ export default function Finance({
                                   className="p-4 text-center text-muted-foreground"
                                   colSpan={11}
                                 >
-                                  No supporting transactions found for this shift.
+                                  No supporting transactions found for this
+                                  shift.
                                 </td>
                               </tr>
-                            ) : currentClosingBreakdownDisplayRows.map(
-                              ({
-                                row,
-                                typeLabel,
-                                description,
-                                items,
-                                extraItemCount,
-                              }) => (
-                                <tr
-                                  key={row.id}
-                                  className="border-t align-top"
-                                >
-                                  <td className="p-2 whitespace-nowrap">
-                                    {formatDateTimeDisplay(row.date)}
-                                  </td>
+                            ) : (
+                              currentClosingBreakdownDisplayRows.map(
+                                ({
+                                  row,
+                                  typeLabel,
+                                  description,
+                                  items,
+                                  extraItemCount,
+                                }) => (
+                                  <tr
+                                    key={row.id}
+                                    className="border-t align-top"
+                                  >
+                                    <td className="p-2 whitespace-nowrap">
+                                      {formatDateTimeDisplay(row.date)}
+                                    </td>
 
-                                  <td className="p-2 font-medium text-slate-900">
-                                    {typeLabel}
-                                  </td>
+                                    <td className="p-2 font-medium text-slate-900">
+                                      {typeLabel}
+                                    </td>
 
-                                  <td className="p-2">
-                                    {row.customer}
-                                  </td>
+                                    <td className="p-2">{row.customer}</td>
 
-                                  <td className="p-2 min-w-[280px]">
-                                    {!items.length && description ? (
-                                      <div className="font-medium text-slate-900">
-                                        {description}
-                                      </div>
-                                    ) : null}
+                                    <td className="p-2 min-w-[280px]">
+                                      {!items.length && description ? (
+                                        <div className="font-medium text-slate-900">
+                                          {description}
+                                        </div>
+                                      ) : null}
 
-                                    {items.length ? (
-                                      <div className="mt-2 space-y-2">
-                                        {items.map((item) => (
-                                          <div
-                                            key={`${row.id}-${item.id}-${item.name}`}
-                                            className="flex items-center gap-2 px-0 py-0.5"
-                                          >
-                                            {item.image ? (
-                                              <img
-                                                src={item.image}
-                                                alt={item.name}
-                                                className="h-9 w-9 rounded-md border border-slate-200 object-cover"
-                                              />
-                                            ) : (
-                                              <div className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] text-slate-400">
-                                                No img
-                                              </div>
-                                            )}
-
-                                            <div className="min-w-0 flex-1">
-                                              <div className="truncate text-xs font-medium text-slate-900">
-                                                {item.name} x {item.quantity}
-                                              </div>
-
-                                              {item.description ? (
-                                                <div className="truncate text-[10px] text-slate-400">
-                                                  {item.description}
+                                      {items.length ? (
+                                        <div className="mt-2 space-y-2">
+                                          {items.map((item) => (
+                                            <div
+                                              key={`${row.id}-${item.id}-${item.name}`}
+                                              className="flex items-center gap-2 px-0 py-0.5"
+                                            >
+                                              {item.image ? (
+                                                <img
+                                                  src={item.image}
+                                                  alt={item.name}
+                                                  className="h-9 w-9 rounded-md border border-slate-200 object-cover"
+                                                />
+                                              ) : (
+                                                <div className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] text-slate-400">
+                                                  No img
                                                 </div>
-                                              ) : null}
+                                              )}
+
+                                              <div className="min-w-0 flex-1">
+                                                <div className="truncate text-xs font-medium text-slate-900">
+                                                  {item.name} x {item.quantity}
+                                                </div>
+
+                                                {item.description ? (
+                                                  <div className="truncate text-[10px] text-slate-400">
+                                                    {item.description}
+                                                  </div>
+                                                ) : null}
+                                              </div>
                                             </div>
-                                          </div>
-                                        ))}
+                                          ))}
 
-                                        {extraItemCount > 0 ? (
-                                          <div className="text-[10px] text-slate-400">
-                                            +{extraItemCount} more item(s)
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    ) : null}
-                                  </td>
+                                          {extraItemCount > 0 ? (
+                                            <div className="text-[10px] text-slate-400">
+                                              +{extraItemCount} more item(s)
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </td>
 
-                                  <td className="p-2 text-right">
-                                    {formatPlainAmount(row.cashIn)}
-                                  </td>
+                                    <td className="p-2 text-right">
+                                      {formatPlainAmount(row.cashIn)}
+                                    </td>
 
-                                  <td className="p-2 text-right">
-                                    {formatPlainAmount(row.cashOut)}
-                                  </td>
+                                    <td className="p-2 text-right">
+                                      {formatPlainAmount(row.cashOut)}
+                                    </td>
 
-                                  <td className="p-2 text-right">
-                                    {formatPlainAmount(row.onlineIn)}
-                                  </td>
+                                    <td className="p-2 text-right">
+                                      {formatPlainAmount(row.onlineIn)}
+                                    </td>
 
-                                  <td className="p-2 text-right">
-                                    {formatPlainAmount(row.onlineOut)}
-                                  </td>
+                                    <td className="p-2 text-right">
+                                      {formatPlainAmount(row.onlineOut)}
+                                    </td>
 
-                                  <td className="p-2 text-right">
-                                    {formatPlainAmount(row.currentDueEffect)}
-                                  </td>
+                                    <td className="p-2 text-right">
+                                      {formatPlainAmount(row.currentDueEffect)}
+                                    </td>
 
-                                  <td className="p-2 text-right">
-                                    {formatPlainAmount(row.currentStoreCreditEffect)}
-                                  </td>
+                                    <td className="p-2 text-right">
+                                      {formatPlainAmount(
+                                        row.currentStoreCreditEffect,
+                                      )}
+                                    </td>
 
-                                  <td className="p-2 text-right font-semibold">
-                                    {formatPlainAmount(row.netCashEffect)}
-                                  </td>
-                                </tr>
+                                    <td className="p-2 text-right font-semibold">
+                                      {formatPlainAmount(row.netCashEffect)}
+                                    </td>
+                                  </tr>
+                                ),
                               )
                             )}
                           </tbody>
@@ -16528,21 +11697,19 @@ export default function Finance({
               >
                 <Card
                   className="w-full max-w-5xl max-h-[90vh] overflow-auto"
-                  onClick={event => event.stopPropagation()}
+                  onClick={(event) => event.stopPropagation()}
                 >
                   <CardHeader className="flex flex-row items-start justify-between gap-3">
                     <div>
-                      <CardTitle>
-                        Reserve Cash Ledger
-                      </CardTitle>
+                      <CardTitle>Reserve Cash Ledger</CardTitle>
 
                       <p className="mt-1 text-sm text-slate-600">
-                        Saved{' '}
+                        Saved{" "}
                         {activeReserveSavedAt
                           ? formatDateTimeDisplay(activeReserveSavedAt)
-                          : 'during this shift'}{' '}
+                          : "during this shift"}{" "}
                         • {reserveLedgerRows.length} ledger entr
-                        {reserveLedgerRows.length === 1 ? 'y' : 'ies'}
+                        {reserveLedgerRows.length === 1 ? "y" : "ies"}
                       </p>
                     </div>
 
@@ -16560,8 +11727,8 @@ export default function Finance({
                     {(() => {
                       const chronologicalRows = [...reserveLedgerRows].sort(
                         (a, b) =>
-                          new Date(a.date).getTime()
-                          - new Date(b.date).getTime()
+                          new Date(a.date).getTime() -
+                          new Date(b.date).getTime(),
                       );
 
                       let reserveCashIn = 0;
@@ -16570,24 +11737,22 @@ export default function Finance({
 
                       const ledgerRows = chronologicalRows
                         .map((row) => {
-                          if (row.direction === 'in') {
+                          if (row.direction === "in") {
                             reserveCashIn = roundMoney(
-                              reserveCashIn + row.amount
+                              reserveCashIn + row.amount,
                             );
 
                             runningReserve = roundMoney(
-                              runningReserve + row.amount
+                              runningReserve + row.amount,
                             );
                           } else {
                             reserveCashOut = roundMoney(
-                              reserveCashOut + row.amount
+                              reserveCashOut + row.amount,
                             );
 
                             runningReserve = Math.max(
                               0,
-                              roundMoney(
-                                runningReserve - row.amount
-                              )
+                              roundMoney(runningReserve - row.amount),
                             );
                           }
 
@@ -16614,46 +11779,38 @@ export default function Finance({
                           .toISOString()
                           .slice(0, 10);
 
-                        const existing =
-                          dailyTimelineMap.get(dayKey)
-                          || {
-                            key: dayKey,
-                            date: row.date,
-                            reserveIn: 0,
-                            reserveOut: 0,
-                            balanceAfter: 0,
-                          };
+                        const existing = dailyTimelineMap.get(dayKey) || {
+                          key: dayKey,
+                          date: row.date,
+                          reserveIn: 0,
+                          reserveOut: 0,
+                          balanceAfter: 0,
+                        };
 
-                        if (row.direction === 'in') {
+                        if (row.direction === "in") {
                           existing.reserveIn = roundMoney(
-                            existing.reserveIn + row.amount
+                            existing.reserveIn + row.amount,
                           );
                         } else {
                           existing.reserveOut = roundMoney(
-                            existing.reserveOut + row.amount
+                            existing.reserveOut + row.amount,
                           );
                         }
 
-                        const matchingLedgerRow =
-                          ledgerRows.find(
-                            (ledgerRow) =>
-                              ledgerRow.id === row.id
-                          );
+                        const matchingLedgerRow = ledgerRows.find(
+                          (ledgerRow) => ledgerRow.id === row.id,
+                        );
 
                         existing.balanceAfter =
-                          matchingLedgerRow?.balanceAfter
-                          ?? existing.balanceAfter;
+                          matchingLedgerRow?.balanceAfter ??
+                          existing.balanceAfter;
 
-                        dailyTimelineMap.set(
-                          dayKey,
-                          existing
-                        );
+                        dailyTimelineMap.set(dayKey, existing);
                       });
 
-                      const dailyTimeline =
-                        Array.from(
-                          dailyTimelineMap.values()
-                        ).reverse();
+                      const dailyTimeline = Array.from(
+                        dailyTimelineMap.values(),
+                      ).reverse();
 
                       return (
                         <>
@@ -16713,27 +11870,27 @@ export default function Finance({
                                   >
                                     <span className="font-semibold text-slate-900">
                                       {new Date(day.date).toLocaleDateString(
-                                        'en-US',
+                                        "en-US",
                                         {
-                                          day: 'numeric',
-                                          month: 'short',
-                                        }
+                                          day: "numeric",
+                                          month: "short",
+                                        },
                                       )}
                                     </span>
 
-                                    {' • '}
+                                    {" • "}
 
                                     {day.reserveIn > 0
                                       ? `Reserved ${formatINRSummary(day.reserveIn)}`
-                                      : 'No reserve added'}
+                                      : "No reserve added"}
 
-                                    {' • '}
+                                    {" • "}
 
                                     {day.reserveOut > 0
                                       ? `Utilized ${formatINRSummary(day.reserveOut)}`
-                                      : 'No utilization'}
+                                      : "No utilization"}
 
-                                    {' • '}
+                                    {" • "}
 
                                     <span className="font-semibold text-slate-900">
                                       {formatINRSummary(day.balanceAfter)} left
@@ -16751,7 +11908,9 @@ export default function Finance({
                               <div className="col-span-3">Details</div>
                               <div className="col-span-1 text-right">In</div>
                               <div className="col-span-1 text-right">Out</div>
-                              <div className="col-span-2 text-right">Reserve Left</div>
+                              <div className="col-span-2 text-right">
+                                Reserve Left
+                              </div>
                             </div>
 
                             <div className="max-h-[420px] overflow-auto divide-y divide-slate-200">
@@ -16759,107 +11918,113 @@ export default function Finance({
                                 <div className="p-6 text-sm text-slate-500">
                                   No reserve cash activity yet.
                                 </div>
-                              ) : ledgerRows.map((row) => (
-                                <div
-                                  key={row.id}
-                                  className="grid grid-cols-12 gap-2 px-4 py-3 text-sm"
-                                >
-                                  <div className="col-span-3 text-slate-600">
-                                    {formatDateTimeDisplay(row.date)}
-                                  </div>
-
-                                  <div className="col-span-2">
-                                    <div className="font-medium text-slate-900">
-                                      {row.type}
+                              ) : (
+                                ledgerRows.map((row) => (
+                                  <div
+                                    key={row.id}
+                                    className="grid grid-cols-12 gap-2 px-4 py-3 text-sm"
+                                  >
+                                    <div className="col-span-3 text-slate-600">
+                                      {formatDateTimeDisplay(row.date)}
                                     </div>
 
-                                    {row.partyName && (
-                                      <div className="mt-1 text-xs font-medium text-slate-600">
-                                        {row.partyName}
+                                    <div className="col-span-2">
+                                      <div className="font-medium text-slate-900">
+                                        {row.type}
                                       </div>
-                                    )}
 
-                                    {row.reference && (
-                                      <div className="mt-0.5 break-all text-[11px] text-slate-500">
-                                        {row.reference}
-                                      </div>
-                                    )}
-                                  </div>
+                                      {row.partyName && (
+                                        <div className="mt-1 text-xs font-medium text-slate-600">
+                                          {row.partyName}
+                                        </div>
+                                      )}
 
-                                  <div className="col-span-3 min-w-0 text-slate-600">
-                                    <div className="text-xs">
-                                      {row.details}
+                                      {row.reference && (
+                                        <div className="mt-0.5 break-all text-[11px] text-slate-500">
+                                          {row.reference}
+                                        </div>
+                                      )}
                                     </div>
 
-                                    {!!row.detailItems?.length && (
-                                      <div className="mt-2 space-y-2">
-                                        {row.detailItems.map((item) => (
-                                          <div
-                                            key={item.id}
-                                            className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2"
-                                          >
-                                            {item.image ? (
-                                              <img
-                                                src={item.image}
-                                                alt={item.name}
-                                                loading="lazy"
-                                                className="h-10 w-10 shrink-0 rounded-md border border-slate-200 bg-white object-cover"
-                                                onError={(event) => {
-                                                  event.currentTarget.style.display = 'none';
-                                                }}
-                                              />
-                                            ) : (
-                                              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] font-semibold text-slate-500">
-                                                PO
-                                              </div>
-                                            )}
+                                    <div className="col-span-3 min-w-0 text-slate-600">
+                                      <div className="text-xs">
+                                        {row.details}
+                                      </div>
 
-                                            <div className="min-w-0 flex-1">
-                                              <div className="truncate text-xs font-semibold text-slate-900">
-                                                {item.name}
-                                              </div>
-
-                                              {item.reference && (
-                                                <div className="truncate text-[11px] text-slate-500">
-                                                  {item.reference}
+                                      {!!row.detailItems?.length && (
+                                        <div className="mt-2 space-y-2">
+                                          {row.detailItems.map((item) => (
+                                            <div
+                                              key={item.id}
+                                              className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2"
+                                            >
+                                              {item.image ? (
+                                                <img
+                                                  src={item.image}
+                                                  alt={item.name}
+                                                  loading="lazy"
+                                                  className="h-10 w-10 shrink-0 rounded-md border border-slate-200 bg-white object-cover"
+                                                  onError={(event) => {
+                                                    event.currentTarget.style.display =
+                                                      "none";
+                                                  }}
+                                                />
+                                              ) : (
+                                                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] font-semibold text-slate-500">
+                                                  PO
                                                 </div>
                                               )}
 
-                                              <div className="mt-0.5 text-[11px] font-medium text-rose-700">
-                                                Reserve used {formatINRSummary(item.amount)}
+                                              <div className="min-w-0 flex-1">
+                                                <div className="truncate text-xs font-semibold text-slate-900">
+                                                  {item.name}
+                                                </div>
+
+                                                {item.reference && (
+                                                  <div className="truncate text-[11px] text-slate-500">
+                                                    {item.reference}
+                                                  </div>
+                                                )}
+
+                                                <div className="mt-0.5 text-[11px] font-medium text-rose-700">
+                                                  Reserve used{" "}
+                                                  {formatINRSummary(
+                                                    item.amount,
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  <div className="col-span-1 text-right font-semibold text-emerald-700">
-                                    {row.direction === 'in'
-                                      ? formatINRSummary(row.amount)
-                                      : '—'}
-                                  </div>
-
-                                  <div className="col-span-1 text-right font-semibold text-rose-700">
-                                    {row.direction === 'out'
-                                      ? formatINRSummary(row.amount)
-                                      : '—'}
-                                  </div>
-
-                                  <div className="col-span-2 text-right">
-                                    <div className="font-semibold text-slate-900">
-                                      {formatINRSummary(row.balanceAfter)}
+                                          ))}
+                                        </div>
+                                      )}
                                     </div>
 
-                                    {row.direction === 'out' && (
-                                      <div className="mt-0.5 text-[11px] text-slate-500">
-                                        after payment
+                                    <div className="col-span-1 text-right font-semibold text-emerald-700">
+                                      {row.direction === "in"
+                                        ? formatINRSummary(row.amount)
+                                        : "—"}
+                                    </div>
+
+                                    <div className="col-span-1 text-right font-semibold text-rose-700">
+                                      {row.direction === "out"
+                                        ? formatINRSummary(row.amount)
+                                        : "—"}
+                                    </div>
+
+                                    <div className="col-span-2 text-right">
+                                      <div className="font-semibold text-slate-900">
+                                        {formatINRSummary(row.balanceAfter)}
                                       </div>
-                                    )}
+
+                                      {row.direction === "out" && (
+                                        <div className="mt-0.5 text-[11px] text-slate-500">
+                                          after payment
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              ))}
+                                ))
+                              )}
                             </div>
                           </div>
                         </>
@@ -16874,9 +12039,7 @@ export default function Finance({
               <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
                 <Card className="w-full max-w-sm">
                   <CardHeader>
-                    <CardTitle>
-                      Manager Unlock
-                    </CardTitle>
+                    <CardTitle>Manager Unlock</CardTitle>
                   </CardHeader>
 
                   <CardContent className="space-y-3">
@@ -16890,11 +12053,9 @@ export default function Finance({
                       type="password"
                       inputMode="numeric"
                       value={unlockPinInput}
-                      onChange={e =>
+                      onChange={(e) =>
                         setUnlockPinInput(
-                          e.target.value
-                            .replace(/[^\d]/g, '')
-                            .slice(0, 6)
+                          e.target.value.replace(/[^\d]/g, "").slice(0, 6),
                         )
                       }
                       placeholder="Enter manager PIN"
@@ -16905,79 +12066,68 @@ export default function Finance({
                         variant="outline"
                         onClick={() => {
                           setIsOpeningUnlockModalOpen(false);
-                          setUnlockPinInput('');
+                          setUnlockPinInput("");
                         }}
                       >
                         Close
                       </Button>
 
-                      <Button onClick={handleManagerUnlock}>
-                        Unlock
-                      </Button>
+                      <Button onClick={handleManagerUnlock}>Unlock</Button>
                     </div>
                   </CardContent>
                 </Card>
               </div>
             )}
 
-            {editingClosingSession
-              && editingClosingSession.status === 'closed'
-              && (() => {
-                const computedTotals =
-                  getSessionCashTotals(
-                    data.transactions,
-                    expenses,
-                    cashAdjustments,
-                    data.deleteCompensations || [],
-                    data.deletedTransactions || [],
-                    data.purchaseOrders || [],
-                    data.manualCashbookEntries || [],
-                    editingClosingSession.startTime,
-                    editingClosingSession.endTime,
-                    undefined,
-                    upfrontOrders,
-                    data.supplierPayments || []
-                  );
+            {editingClosingSession &&
+              editingClosingSession.status === "closed" &&
+              (() => {
+                const computedTotals = getSessionCashTotals(
+                  data.transactions,
+                  expenses,
+                  cashAdjustments,
+                  data.deleteCompensations || [],
+                  data.deletedTransactions || [],
+                  data.purchaseOrders || [],
+                  data.manualCashbookEntries || [],
+                  editingClosingSession.startTime,
+                  editingClosingSession.endTime,
+                  undefined,
+                  upfrontOrders,
+                  data.supplierPayments || [],
+                );
 
                 const expectedClosing =
-                  editingClosingSession.openingBalance
-                  + (
-                    editingClosingSession.systemCashTotal
-                    ?? computedTotals.systemCashTotal
-                  );
+                  editingClosingSession.openingBalance +
+                  (editingClosingSession.systemCashTotal ??
+                    computedTotals.systemCashTotal);
 
-                const previewClosing =
-                  Number(editingClosingAmount);
+                const previewClosing = Number(editingClosingAmount);
 
-                const previewVariance =
-                  Number.isFinite(previewClosing)
-                    ? previewClosing - expectedClosing
-                    : (
-                      editingClosingSession.difference
-                      ?? 0
-                    );
+                const previewVariance = Number.isFinite(previewClosing)
+                  ? previewClosing - expectedClosing
+                  : (editingClosingSession.difference ?? 0);
 
                 return (
                   <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
                     <Card className="w-full max-w-lg">
                       <CardHeader>
-                        <CardTitle>
-                          Edit Closing Amount
-                        </CardTitle>
+                        <CardTitle>Edit Closing Amount</CardTitle>
                       </CardHeader>
 
                       <CardContent className="space-y-3">
                         <p className="text-xs text-muted-foreground">
-                          This only corrects the counted closing amount. It does not change transactions or cash movements.
+                          This only corrects the counted closing amount. It does
+                          not change transactions or cash movements.
                         </p>
 
                         <div className="grid grid-cols-2 gap-2 text-sm">
                           <div>
-                            <span className="text-muted-foreground">
-                              Shift
-                            </span>
+                            <span className="text-muted-foreground">Shift</span>
                             <div>
-                              {formatDateTimeDisplay(editingClosingSession.startTime)}
+                              {formatDateTimeDisplay(
+                                editingClosingSession.startTime,
+                              )}
                             </div>
                           </div>
 
@@ -16994,9 +12144,7 @@ export default function Finance({
                             <span className="text-muted-foreground">
                               Expected
                             </span>
-                            <div>
-                              {formatINR(expectedClosing)}
-                            </div>
+                            <div>{formatINR(expectedClosing)}</div>
                           </div>
 
                           <div>
@@ -17004,7 +12152,9 @@ export default function Finance({
                               Current closing
                             </span>
                             <div>
-                              {formatINR(editingClosingSession.closingBalance ?? 0)}
+                              {formatINR(
+                                editingClosingSession.closingBalance ?? 0,
+                              )}
                             </div>
                           </div>
 
@@ -17013,7 +12163,9 @@ export default function Finance({
                               Reserved cash
                             </span>
                             <div>
-                              {formatINR(getSessionReservedCash(editingClosingSession))}
+                              {formatINR(
+                                getSessionReservedCash(editingClosingSession),
+                              )}
                             </div>
                           </div>
 
@@ -17022,49 +12174,47 @@ export default function Finance({
                               Carry-forward
                             </span>
                             <div>
-                              {formatINR(getSessionCarryForwardBalance(editingClosingSession))}
+                              {formatINR(
+                                getSessionCarryForwardBalance(
+                                  editingClosingSession,
+                                ),
+                              )}
                             </div>
                           </div>
                         </div>
 
                         <div>
-                          <Label>
-                            New Closing Amount
-                          </Label>
+                          <Label>New Closing Amount</Label>
 
                           <Input
                             type="number"
                             min="0"
                             value={editingClosingAmount}
-                            onChange={e =>
+                            onChange={(e) =>
                               setEditingClosingAmount(e.target.value)
                             }
                           />
                         </div>
 
                         <div>
-                          <Label>
-                            Reserve Cash on Hand
-                          </Label>
+                          <Label>Reserve Cash on Hand</Label>
 
                           <Input
                             type="number"
                             min="0"
                             value={editingClosingReserveAmount}
-                            onChange={e =>
+                            onChange={(e) =>
                               setEditingClosingReserveAmount(e.target.value)
                             }
                           />
                         </div>
 
                         <div>
-                          <Label>
-                            Note (optional)
-                          </Label>
+                          <Label>Note (optional)</Label>
 
                           <Input
                             value={editingClosingNote}
-                            onChange={e =>
+                            onChange={(e) =>
                               setEditingClosingNote(e.target.value)
                             }
                             placeholder="Reason for correction"
@@ -17073,21 +12223,21 @@ export default function Finance({
 
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-sm">
                           <div>
-                            Variance Preview:{' '}
+                            Variance Preview:{" "}
                             <span className="font-semibold">
                               {formatINR(previewVariance)}
                             </span>
                           </div>
 
                           <div>
-                            Carry-forward Preview:{' '}
+                            Carry-forward Preview:{" "}
                             <span className="font-semibold">
                               {formatINR(
                                 Math.max(
                                   0,
-                                  (Number(editingClosingAmount) || 0)
-                                  - (Number(editingClosingReserveAmount) || 0)
-                                )
+                                  (Number(editingClosingAmount) || 0) -
+                                    (Number(editingClosingReserveAmount) || 0),
+                                ),
                               )}
                             </span>
                           </div>
@@ -17098,9 +12248,9 @@ export default function Finance({
                             variant="outline"
                             onClick={() => {
                               setEditingClosingSessionId(null);
-                              setEditingClosingAmount('');
-                              setEditingClosingReserveAmount('');
-                              setEditingClosingNote('');
+                              setEditingClosingAmount("");
+                              setEditingClosingReserveAmount("");
+                              setEditingClosingNote("");
                             }}
                           >
                             Cancel
@@ -17149,99 +12299,75 @@ export default function Finance({
                     <select
                       className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
                       value={cashHistoryRange}
-                      onChange={e =>
+                      onChange={(e) =>
                         setCashHistoryRange(
-                          e.target.value as
-                            | 'today'
-                            | '7d'
-                            | '30d'
-                            | 'all'
+                          e.target.value as "today" | "7d" | "30d" | "all",
                         )
                       }
                     >
-                      <option value="today">
-                        Today
-                      </option>
+                      <option value="today">Today</option>
 
-                      <option value="7d">
-                        Last 7 days
-                      </option>
+                      <option value="7d">Last 7 days</option>
 
-                      <option value="30d">
-                        Last 30 days
-                      </option>
+                      <option value="30d">Last 30 days</option>
 
-                      <option value="all">
-                        All
-                      </option>
+                      <option value="all">All</option>
                     </select>
                   </div>
                 </CardTitle>
               </CardHeader>
 
               <CardContent className="space-y-3 pt-5">
-                {filteredCashHistory.map(session => {
-                  const computedTotals =
-                    getSessionCashTotals(
-                      data.transactions,
-                      expenses,
-                      cashAdjustments,
-                      data.deleteCompensations || [],
-                      data.deletedTransactions || [],
-                      data.purchaseOrders || [],
-                      data.manualCashbookEntries || [],
-                      session.startTime,
-                      session.endTime,
-                      undefined,
-                      upfrontOrders,
-                      data.supplierPayments || []
-                    );
+                {filteredCashHistory.map((session) => {
+                  const computedTotals = getSessionCashTotals(
+                    data.transactions,
+                    expenses,
+                    cashAdjustments,
+                    data.deleteCompensations || [],
+                    data.deletedTransactions || [],
+                    data.purchaseOrders || [],
+                    data.manualCashbookEntries || [],
+                    session.startTime,
+                    session.endTime,
+                    undefined,
+                    upfrontOrders,
+                    data.supplierPayments || [],
+                  );
 
                   const systemCashTotal =
-                    session.systemCashTotal
-                    ?? computedTotals.systemCashTotal;
+                    session.systemCashTotal ?? computedTotals.systemCashTotal;
 
                   const sessionExpenseTotal =
-                    session.sessionExpenseTotal
-                    ?? computedTotals.expenseTotal;
+                    session.sessionExpenseTotal ?? computedTotals.expenseTotal;
 
                   const difference =
-                    session.difference
-                    ?? (
-                      (session.closingBalance ?? 0)
-                      - (
-                        session.openingBalance
-                        + systemCashTotal
-                      )
-                    );
+                    session.difference ??
+                    (session.closingBalance ?? 0) -
+                      (session.openingBalance + systemCashTotal);
 
-                  const isOpen =
-                    activeHistoryDetailSessionId
-                    === session.id;
+                  const isOpen = activeHistoryDetailSessionId === session.id;
 
-                  const isMatch =
-                    difference === 0;
+                  const isMatch = difference === 0;
 
-                  const isShort =
-                    difference < 0;
+                  const isShort = difference < 0;
 
                   const statusLabel =
-                    session.status === 'open'
-                      ? 'Ongoing'
+                    session.status === "open"
+                      ? "Ongoing"
                       : isMatch
-                        ? 'Matched'
+                        ? "Matched"
                         : isShort
-                          ? 'Short'
-                          : 'Over';
+                          ? "Short"
+                          : "Over";
 
                   const statusClass =
-                    session.status === 'open'
-                      ? 'bg-amber-50 text-amber-700 ring-amber-200'
+                    session.status === "open"
+                      ? "bg-amber-50 text-amber-700 ring-amber-200"
                       : isMatch
-                        ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                        ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
                         : isShort
-                          ? 'bg-rose-50 text-rose-700 ring-rose-200'
-                          : 'bg-slate-100 text-slate-700 ring-slate-200';
+                          ? "bg-rose-50 text-rose-700 ring-rose-200"
+                          : "bg-slate-100 text-slate-700 ring-slate-200";
 
                   return (
                     <div
@@ -17251,22 +12377,16 @@ export default function Finance({
                       <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                            <span>
-                              Starting date{' '}
-                            </span>
+                            <span>Starting date </span>
 
                             <span className="font-medium text-slate-700">
                               {formatDateTimeDisplay(session.startTime)}
                             </span>
 
-                            <span>
-                              {' • '}
-                            </span>
+                            <span>{" • "}</span>
 
                             <span>
-                              {session.endTime
-                                ? 'Closing date '
-                                : 'Not closed'}
+                              {session.endTime ? "Closing date " : "Not closed"}
                             </span>
 
                             {session.endTime ? (
@@ -17289,28 +12409,21 @@ export default function Finance({
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              setActiveHistoryDetailSessionId(
-                                prev =>
-                                  prev === session.id
-                                    ? null
-                                    : session.id
+                              setActiveHistoryDetailSessionId((prev) =>
+                                prev === session.id ? null : session.id,
                               )
                             }
                           >
-                            {isOpen
-                              ? 'Hide details'
-                              : 'View details'}
+                            {isOpen ? "Hide details" : "View details"}
                           </Button>
 
-                          {session.status === 'closed' ? (
+                          {session.status === "closed" ? (
                             <>
                               <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() =>
-                                  openEditClosingModal(session)
-                                }
+                                onClick={() => openEditClosingModal(session)}
                               >
                                 Edit Closing Amount
                               </Button>
@@ -17320,9 +12433,7 @@ export default function Finance({
                                 variant="outline"
                                 size="sm"
                                 className="border-rose-300 text-rose-700 hover:bg-rose-50"
-                                onClick={() =>
-                                  openDeleteShiftModal(session)
-                                }
+                                onClick={() => openDeleteShiftModal(session)}
                               >
                                 Delete
                               </Button>
@@ -17341,7 +12452,7 @@ export default function Finance({
                         </div>
                       </div>
 
-                      {session.status === 'open' && (
+                      {session.status === "open" && (
                         <div className="px-4 pb-2 text-[11px] text-muted-foreground">
                           Close this shift before editing closing amount.
                         </div>
@@ -17385,26 +12496,28 @@ export default function Finance({
                             </div>
 
                             <div className="mt-1 text-sm font-semibold text-emerald-900">
-                              {formatINR(getSessionCarryForwardBalance(session))}
+                              {formatINR(
+                                getSessionCarryForwardBalance(session),
+                              )}
                             </div>
                           </div>
 
                           <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
                             <div className="text-[11px] text-slate-500">
                               {isMatch
-                                ? 'Difference'
+                                ? "Difference"
                                 : isShort
-                                  ? 'Short'
-                                  : 'Over'}
+                                  ? "Short"
+                                  : "Over"}
                             </div>
 
                             <div
                               className={`mt-1 text-sm font-semibold ${
                                 isMatch
-                                  ? 'text-slate-900'
+                                  ? "text-slate-900"
                                   : isShort
-                                    ? 'text-rose-700'
-                                    : 'text-slate-900'
+                                    ? "text-rose-700"
+                                    : "text-slate-900"
                               }`}
                             >
                               {formatINR(Math.abs(difference))}
@@ -17414,11 +12527,11 @@ export default function Finance({
 
                         {session.closingEditedAt && (
                           <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
-                            Closing edited{' '}
+                            Closing edited{" "}
                             {formatDateTimeDisplay(session.closingEditedAt)}
                             {session.closingEditNote
                               ? ` • ${session.closingEditNote}`
-                              : ''}
+                              : ""}
                           </div>
                         )}
                       </div>
@@ -17433,586 +12546,626 @@ export default function Finance({
                 )}
               </CardContent>
             </Card>
-                        {activeHistorySession && (() => {
-              const computedTotals = getSessionCashTotals(data.transactions, expenses, cashAdjustments, data.deleteCompensations || [], data.deletedTransactions || [], data.purchaseOrders || [], data.manualCashbookEntries || [], activeHistorySession.startTime, activeHistorySession.endTime, undefined, upfrontOrders, data.supplierPayments || []);
-              const systemCashTotal = activeHistorySession.systemCashTotal ?? computedTotals.systemCashTotal;
-              const sessionExpenseTotal = activeHistorySession.sessionExpenseTotal ?? computedTotals.expenseTotal;
-              const difference = activeHistorySession.difference ?? ((activeHistorySession.closingBalance ?? 0) - (activeHistorySession.openingBalance + systemCashTotal));
-              const isMatch = difference === 0;
-              const isShort = difference < 0;
-              const statusLabel = activeHistorySession.status === 'open' ? 'Ongoing' : isMatch ? 'Matched' : isShort ? 'Short' : 'Over';
-              const statusClass = activeHistorySession.status === 'open'
-                ? 'bg-amber-50 text-amber-700 ring-amber-200'
-                : isMatch
-                  ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                  : isShort
-                    ? 'bg-rose-50 text-rose-700 ring-rose-200'
-                    : 'bg-slate-100 text-slate-700 ring-slate-200';
+            {activeHistorySession &&
+              (() => {
+                const computedTotals = getSessionCashTotals(
+                  data.transactions,
+                  expenses,
+                  cashAdjustments,
+                  data.deleteCompensations || [],
+                  data.deletedTransactions || [],
+                  data.purchaseOrders || [],
+                  data.manualCashbookEntries || [],
+                  activeHistorySession.startTime,
+                  activeHistorySession.endTime,
+                  undefined,
+                  upfrontOrders,
+                  data.supplierPayments || [],
+                );
+                const systemCashTotal =
+                  activeHistorySession.systemCashTotal ??
+                  computedTotals.systemCashTotal;
+                const sessionExpenseTotal =
+                  activeHistorySession.sessionExpenseTotal ??
+                  computedTotals.expenseTotal;
+                const difference =
+                  activeHistorySession.difference ??
+                  (activeHistorySession.closingBalance ?? 0) -
+                    (activeHistorySession.openingBalance + systemCashTotal);
+                const isMatch = difference === 0;
+                const isShort = difference < 0;
+                const statusLabel =
+                  activeHistorySession.status === "open"
+                    ? "Ongoing"
+                    : isMatch
+                      ? "Matched"
+                      : isShort
+                        ? "Short"
+                        : "Over";
+                const statusClass =
+                  activeHistorySession.status === "open"
+                    ? "bg-amber-50 text-amber-700 ring-amber-200"
+                    : isMatch
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                      : isShort
+                        ? "bg-rose-50 text-rose-700 ring-rose-200"
+                        : "bg-slate-100 text-slate-700 ring-slate-200";
 
-              const sessionStartTs = new Date(activeHistorySession.startTime).getTime();
-              const sessionEndTs = activeHistorySession.endTime ? new Date(activeHistorySession.endTime).getTime() : Number.POSITIVE_INFINITY;
-
-              const sessionSalesTx = data.transactions.filter(t => {
-                if (t.type !== 'sale') return false;
-
-                const txTime = new Date(t.date).getTime();
-
-                if (!(txTime >= sessionStartTs && txTime <= sessionEndTs)) {
-                  return false;
-                }
-
-                return getSaleSettlementBreakdown(t).cashPaid > 0;
-              });
-
-              const salesTotal = sessionSalesTx.reduce(
-                (sum, t) => sum + getSaleSettlementBreakdown(t).cashPaid,
-                0
-              );
-
-              const soldItemMap = new Map<
-                string,
-                {
-                  id: string;
-                  name: string;
-                  qty: number;
-                  amount: number;
-                }
-              >();
-
-              sessionSalesTx.forEach(tx => {
-                const settlement = getSaleSettlementBreakdown(tx);
-                const totalAbs = Math.max(0, Math.abs(tx.total));
-                const cashAllocationRatio = totalAbs > 0
-                  ? Math.min(1, settlement.cashPaid / totalAbs)
-                  : 0;
-
-                normalizeTransactionItems(tx.items).forEach(item => {
-                  const key = item.id || item.name;
-
-                  const lineAmount = (
-                    (item.sellPrice || 0) * item.quantity
-                    - (item.discountAmount || 0)
-                  ) * cashAllocationRatio;
-
-                  const existing = soldItemMap.get(key);
-
-                  if (existing) {
-                    existing.qty += item.quantity;
-                    existing.amount += lineAmount;
-                  } else {
-                    soldItemMap.set(key, {
-                      id: key,
-                      name: item.name,
-                      qty: item.quantity,
-                      amount: lineAmount,
-                    });
-                  }
-                });
-              });
-
-              const soldItems = Array.from(soldItemMap.values());
-
-              const soldQtyTotal = soldItems.reduce(
-                (sum, i) => sum + i.qty,
-                0
-              );
-
-              const sessionExpenses = expenses.filter(e => {
-                const expTime = new Date(
-                  getExpenseEffectiveDate(e)
+                const sessionStartTs = new Date(
+                  activeHistorySession.startTime,
                 ).getTime();
+                const sessionEndTs = activeHistorySession.endTime
+                  ? new Date(activeHistorySession.endTime).getTime()
+                  : Number.POSITIVE_INFINITY;
+
+                const sessionSalesTx = data.transactions.filter((t) => {
+                  if (t.type !== "sale") return false;
+
+                  const txTime = new Date(t.date).getTime();
+
+                  if (!(txTime >= sessionStartTs && txTime <= sessionEndTs)) {
+                    return false;
+                  }
+
+                  return getSaleSettlementBreakdown(t).cashPaid > 0;
+                });
+
+                const salesTotal = sessionSalesTx.reduce(
+                  (sum, t) => sum + getSaleSettlementBreakdown(t).cashPaid,
+                  0,
+                );
+
+                const soldItemMap = new Map<
+                  string,
+                  {
+                    id: string;
+                    name: string;
+                    qty: number;
+                    amount: number;
+                  }
+                >();
+
+                sessionSalesTx.forEach((tx) => {
+                  const settlement = getSaleSettlementBreakdown(tx);
+                  const totalAbs = Math.max(0, Math.abs(tx.total));
+                  const cashAllocationRatio =
+                    totalAbs > 0
+                      ? Math.min(1, settlement.cashPaid / totalAbs)
+                      : 0;
+
+                  normalizeTransactionItems(tx.items).forEach((item) => {
+                    const key = item.id || item.name;
+
+                    const lineAmount =
+                      ((item.sellPrice || 0) * item.quantity -
+                        (item.discountAmount || 0)) *
+                      cashAllocationRatio;
+
+                    const existing = soldItemMap.get(key);
+
+                    if (existing) {
+                      existing.qty += item.quantity;
+                      existing.amount += lineAmount;
+                    } else {
+                      soldItemMap.set(key, {
+                        id: key,
+                        name: item.name,
+                        qty: item.quantity,
+                        amount: lineAmount,
+                      });
+                    }
+                  });
+                });
+
+                const soldItems = Array.from(soldItemMap.values());
+
+                const soldQtyTotal = soldItems.reduce(
+                  (sum, i) => sum + i.qty,
+                  0,
+                );
+
+                const sessionExpenses = expenses.filter((e) => {
+                  const expTime = new Date(
+                    getExpenseEffectiveDate(e),
+                  ).getTime();
+
+                  return expTime >= sessionStartTs && expTime <= sessionEndTs;
+                });
+
+                const expenseTotal = sessionExpenses.reduce(
+                  (sum, e) => sum + e.amount,
+                  0,
+                );
+
+                let movement: ReturnType<
+                  typeof buildShiftCashMovementBreakdown
+                > = {
+                  cashInRows: [],
+                  cashOutRows: [],
+                  cashInTotal: 0,
+                  cashOutTotal: 0,
+                  expectedCash: roundMoney(
+                    activeHistorySession.openingBalance + systemCashTotal,
+                  ),
+                };
+
+                try {
+                  movement = buildShiftCashMovementBreakdown(
+                    data as AppState,
+                    activeHistorySession,
+                    computedTotals,
+                  );
+                } catch (error) {
+                  if ((import.meta as any).env?.DEV) {
+                  }
+                }
 
                 return (
-                  expTime >= sessionStartTs
-                  && expTime <= sessionEndTs
-                );
-              });
-
-              const expenseTotal = sessionExpenses.reduce(
-                (sum, e) => sum + e.amount,
-                0
-              );
-
-              let movement: ReturnType<typeof buildShiftCashMovementBreakdown> = {
-                cashInRows: [],
-                cashOutRows: [],
-                cashInTotal: 0,
-                cashOutTotal: 0,
-                expectedCash: roundMoney(
-                  activeHistorySession.openingBalance + systemCashTotal
-                ),
-              };
-
-              try {
-                movement = buildShiftCashMovementBreakdown(
-                  data as AppState,
-                  activeHistorySession,
-                  computedTotals
-                );
-              } catch (error) {
-                if ((import.meta as any).env?.DEV) {
-                }
-              }
-
-              return (
-                <div
-                  className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
-                  role="dialog"
-                  aria-modal="true"
-                  onClick={() => setActiveHistoryDetailSessionId(null)}
-                >
                   <div
-                    className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white shadow-2xl"
-                    onClick={event => event.stopPropagation()}
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={() => setActiveHistoryDetailSessionId(null)}
                   >
-                    <div className="space-y-4 p-4 sm:p-6">
-                      {activeHistorySession.status === 'closed' && (
-                        <div className="flex justify-end">
+                    <div
+                      className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white shadow-2xl"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="space-y-4 p-4 sm:p-6">
+                        {activeHistorySession.status === "closed" && (
+                          <div className="flex justify-end">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                openEditClosingModal(activeHistorySession)
+                              }
+                            >
+                              Edit Closing Amount
+                            </Button>
+                          </div>
+                        )}
+
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <div className="text-base font-semibold text-slate-900">
+                                {isSameDay(
+                                  activeHistorySession.startTime,
+                                  todayKey,
+                                )
+                                  ? "Today"
+                                  : formatDateDisplay(
+                                      activeHistorySession.startTime,
+                                    )}
+                              </div>
+
+                              <span
+                                className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${statusClass}`}
+                              >
+                                {statusLabel}
+                              </span>
+                            </div>
+
+                            <div className="mt-1 text-sm text-slate-600">
+                              {activeHistorySession.status === "open"
+                                ? "Started: "
+                                : "Shift: "}
+
+                              <span className="font-medium text-slate-700">
+                                {formatDateTimeDisplay(
+                                  activeHistorySession.startTime,
+                                )}{" "}
+                                →{" "}
+                                {activeHistorySession.endTime
+                                  ? formatDateTimeDisplay(
+                                      activeHistorySession.endTime,
+                                    )
+                                  : "In progress"}
+                              </span>
+                            </div>
+
+                            <div className="mt-2">
+                              <div
+                                className={`text-sm font-semibold ${
+                                  activeHistorySession.status === "open"
+                                    ? "text-slate-900"
+                                    : isMatch
+                                      ? "text-emerald-700"
+                                      : isShort
+                                        ? "text-rose-700"
+                                        : "text-slate-900"
+                                }`}
+                              >
+                                {activeHistorySession.status === "open"
+                                  ? "Session is ongoing"
+                                  : isMatch
+                                    ? "Cash matched"
+                                    : isShort
+                                      ? `Short by ${formatINR(Math.abs(difference))}`
+                                      : `Over by ${formatINR(difference)}`}
+                              </div>
+
+                              <div className="mt-0.5 text-xs text-slate-600">
+                                Difference = Counted cash − (Sales + Collections
+                                − Refunds − Expenses)
+                              </div>
+                            </div>
+                          </div>
+
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              openEditClosingModal(activeHistorySession)
+                              setActiveHistoryDetailSessionId(null)
                             }
                           >
-                            Edit Closing Amount
+                            Hide details
                           </Button>
                         </div>
-                      )}
 
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <div className="text-base font-semibold text-slate-900">
-                              {isSameDay(activeHistorySession.startTime, todayKey)
-                                ? 'Today'
-                                : formatDateDisplay(activeHistorySession.startTime)}
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-[11px] font-medium text-slate-500">
+                              Opening cash
                             </div>
 
-                            <span
-                              className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${statusClass}`}
-                            >
-                              {statusLabel}
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {formatINR(activeHistorySession.openingBalance)}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-[11px] font-medium text-slate-500">
+                              Counted cash
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {formatINR(
+                                activeHistorySession.closingBalance ?? 0,
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                            <div className="text-[11px] font-medium text-amber-700">
+                              Reserved cash
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-amber-900">
+                              {formatINR(
+                                getSessionReservedCash(activeHistorySession),
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                            <div className="text-[11px] font-medium text-emerald-700">
+                              Carry-forward
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-emerald-900">
+                              {formatINR(
+                                getSessionCarryForwardBalance(
+                                  activeHistorySession,
+                                ),
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs text-slate-600">
+                          <div>
+                            System cash movement in this shift:{" "}
+                            <span className="font-semibold text-slate-800">
+                              {formatINR(systemCashTotal)}
                             </span>
                           </div>
 
-                          <div className="mt-1 text-sm text-slate-600">
-                            {activeHistorySession.status === 'open'
-                              ? 'Started: '
-                              : 'Shift: '}
-
-                            <span className="font-medium text-slate-700">
-                              {formatDateTimeDisplay(activeHistorySession.startTime)} →{' '}
-                              {activeHistorySession.endTime
-                                ? formatDateTimeDisplay(activeHistorySession.endTime)
-                                : 'In progress'}
+                          <div>
+                            Cash out in this shift:{" "}
+                            <span className="font-semibold text-slate-800">
+                              {formatINR(movement.cashOutTotal)}
                             </span>
                           </div>
+                        </div>
 
-                          <div className="mt-2">
-                            <div
-                              className={`text-sm font-semibold ${
-                                activeHistorySession.status === 'open'
-                                  ? 'text-slate-900'
-                                  : isMatch
-                                    ? 'text-emerald-700'
-                                    : isShort
-                                      ? 'text-rose-700'
-                                      : 'text-slate-900'
-                              }`}
-                            >
-                              {activeHistorySession.status === 'open'
-                                ? 'Session is ongoing'
-                                : isMatch
-                                  ? 'Cash matched'
-                                  : isShort
-                                    ? `Short by ${formatINR(Math.abs(difference))}`
-                                    : `Over by ${formatINR(difference)}`}
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                            <div className="text-[11px] text-emerald-700">
+                              Cash In
                             </div>
 
-                            <div className="mt-0.5 text-xs text-slate-600">
-                              Difference = Counted cash − (Sales + Collections − Refunds − Expenses)
-                            </div>
-                          </div>
-                        </div>
-
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setActiveHistoryDetailSessionId(null)}
-                        >
-                          Hide details
-                        </Button>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <div className="text-[11px] font-medium text-slate-500">
-                            Opening cash
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatINR(activeHistorySession.openingBalance)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <div className="text-[11px] font-medium text-slate-500">
-                            Counted cash
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatINR(activeHistorySession.closingBalance ?? 0)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                          <div className="text-[11px] font-medium text-amber-700">
-                            Reserved cash
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-amber-900">
-                            {formatINR(getSessionReservedCash(activeHistorySession))}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                          <div className="text-[11px] font-medium text-emerald-700">
-                            Carry-forward
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-emerald-900">
-                            {formatINR(getSessionCarryForwardBalance(activeHistorySession))}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-xs text-slate-600">
-                        <div>
-                          System cash movement in this shift:{' '}
-                          <span className="font-semibold text-slate-800">
-                            {formatINR(systemCashTotal)}
-                          </span>
-                        </div>
-
-                        <div>
-                          Cash out in this shift:{' '}
-                          <span className="font-semibold text-slate-800">
-                            {formatINR(movement.cashOutTotal)}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
-                          <div className="text-[11px] text-emerald-700">
-                            Cash In
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-emerald-900">
-                            {formatINR(movement.cashInTotal)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
-                          <div className="text-[11px] text-rose-700">
-                            Cash Out
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-rose-900">
-                            {formatINR(movement.cashOutTotal)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                          <div className="text-[11px] text-slate-700">
-                            Expected/System Cash
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatINR(movement.expectedCash)}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 p-3 text-sm font-semibold text-emerald-700">
-                            Cash In Breakdown
-                          </div>
-
-                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
-                            <div className="col-span-3">
-                              Time
-                            </div>
-
-                            <div className="col-span-3">
-                              Type
-                            </div>
-
-                            <div className="col-span-3">
-                              Name
-                            </div>
-
-                            <div className="col-span-3 text-right">
-                              Amount
+                            <div className="mt-1 text-sm font-semibold text-emerald-900">
+                              {formatINR(movement.cashInTotal)}
                             </div>
                           </div>
 
-                          <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
-                            {movement.cashInRows.length === 0 ? (
-                              <div className="p-4 text-sm text-slate-500">
-                                No cash-in movements for this shift.
-                              </div>
-                            ) : movement.cashInRows.map(row => (
-                              <div
-                                key={row.id}
-                                className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
-                              >
-                                <div className="col-span-3">
-                                  {new Date(row.date).toLocaleTimeString()}
-                                </div>
-
-                                <div className="col-span-3">
-                                  {row.type}
-                                </div>
-
-                                <div className="col-span-3 truncate">
-                                  {row.name}
-                                </div>
-
-                                <div className="col-span-3 text-right font-semibold">
-                                  {formatINR(row.amount)}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 p-3 text-sm font-semibold text-rose-700">
-                            Cash Out Breakdown
-                          </div>
-
-                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
-                            <div className="col-span-3">
-                              Time
+                          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                            <div className="text-[11px] text-rose-700">
+                              Cash Out
                             </div>
 
-                            <div className="col-span-3">
-                              Type
-                            </div>
-
-                            <div className="col-span-3">
-                              Name
-                            </div>
-
-                            <div className="col-span-3 text-right">
-                              Amount
+                            <div className="mt-1 text-sm font-semibold text-rose-900">
+                              {formatINR(movement.cashOutTotal)}
                             </div>
                           </div>
 
-                          <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
-                            {movement.cashOutRows.length === 0 ? (
-                              <div className="p-4 text-sm text-slate-500">
-                                No cash-out movements for this shift.
-                              </div>
-                            ) : movement.cashOutRows.map(row => (
-                              <div
-                                key={row.id}
-                                className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
-                              >
-                                <div className="col-span-3">
-                                  {new Date(row.date).toLocaleTimeString()}
-                                </div>
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="text-[11px] text-slate-700">
+                              Expected/System Cash
+                            </div>
 
-                                <div className="col-span-3">
-                                  {row.type}
-                                </div>
-
-                                <div className="col-span-3 truncate">
-                                  {row.name}
-                                </div>
-
-                                <div className="col-span-3 text-right font-semibold">
-                                  {formatINR(row.amount)}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                          <div className="text-[11px] font-semibold text-slate-600">
-                            Total Sales
-                          </div>
-
-                          <div className="mt-1 text-xl font-semibold text-slate-900">
-                            {formatINR(salesTotal)}
-                          </div>
-
-                          <div className="mt-1 text-xs text-slate-500">
-                            {soldQtyTotal} items sold
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {formatINR(movement.expectedCash)}
+                            </div>
                           </div>
                         </div>
 
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                          <div className="text-[11px] font-semibold text-slate-600">
-                            Total Expense
-                          </div>
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="border-b border-slate-200 p-3 text-sm font-semibold text-emerald-700">
+                              Cash In Breakdown
+                            </div>
 
-                          <div className="mt-1 text-xl font-semibold text-slate-900">
-                            {formatINR(expenseTotal)}
-                          </div>
+                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                              <div className="col-span-3">Time</div>
 
-                          <div className="mt-1 text-xs text-slate-500">
-                            {sessionExpenses.length} entries
-                          </div>
-                        </div>
-                      </div>
+                              <div className="col-span-3">Type</div>
 
-                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                          <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
-                            <div>
-                              <div className="text-sm font-semibold text-slate-900">
-                                Sales
-                              </div>
+                              <div className="col-span-3">Name</div>
 
-                              <div className="mt-0.5 text-xs text-slate-500">
-                                ({formatDateDisplay(activeHistorySession.startTime)})
+                              <div className="col-span-3 text-right">
+                                Amount
                               </div>
                             </div>
 
-                            <Pill tone="amber">
+                            <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
+                              {movement.cashInRows.length === 0 ? (
+                                <div className="p-4 text-sm text-slate-500">
+                                  No cash-in movements for this shift.
+                                </div>
+                              ) : (
+                                movement.cashInRows.map((row) => (
+                                  <div
+                                    key={row.id}
+                                    className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
+                                  >
+                                    <div className="col-span-3">
+                                      {new Date(row.date).toLocaleTimeString()}
+                                    </div>
+
+                                    <div className="col-span-3">{row.type}</div>
+
+                                    <div className="col-span-3 truncate">
+                                      {row.name}
+                                    </div>
+
+                                    <div className="col-span-3 text-right font-semibold">
+                                      {formatINR(row.amount)}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="border-b border-slate-200 p-3 text-sm font-semibold text-rose-700">
+                              Cash Out Breakdown
+                            </div>
+
+                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                              <div className="col-span-3">Time</div>
+
+                              <div className="col-span-3">Type</div>
+
+                              <div className="col-span-3">Name</div>
+
+                              <div className="col-span-3 text-right">
+                                Amount
+                              </div>
+                            </div>
+
+                            <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
+                              {movement.cashOutRows.length === 0 ? (
+                                <div className="p-4 text-sm text-slate-500">
+                                  No cash-out movements for this shift.
+                                </div>
+                              ) : (
+                                movement.cashOutRows.map((row) => (
+                                  <div
+                                    key={row.id}
+                                    className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
+                                  >
+                                    <div className="col-span-3">
+                                      {new Date(row.date).toLocaleTimeString()}
+                                    </div>
+
+                                    <div className="col-span-3">{row.type}</div>
+
+                                    <div className="col-span-3 truncate">
+                                      {row.name}
+                                    </div>
+
+                                    <div className="col-span-3 text-right font-semibold">
+                                      {formatINR(row.amount)}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="text-[11px] font-semibold text-slate-600">
+                              Total Sales
+                            </div>
+
+                            <div className="mt-1 text-xl font-semibold text-slate-900">
                               {formatINR(salesTotal)}
-                            </Pill>
-                          </div>
-
-                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-2 text-[11px] font-semibold text-slate-600">
-                            <div className="col-span-7">
-                              Item
                             </div>
 
-                            <div className="col-span-2 text-right">
-                              Qty
-                            </div>
-
-                            <div className="col-span-3 text-right">
-                              Amount
+                            <div className="mt-1 text-xs text-slate-500">
+                              {soldQtyTotal} items sold
                             </div>
                           </div>
 
-                          <div className="max-h-[280px] overflow-auto divide-y divide-slate-200">
-                            {soldItems.length === 0 ? (
-                              <div className="p-6 text-center text-sm text-slate-600">
-                                No cash sales for this shift.
-                              </div>
-                            ) : soldItems.map(i => (
-                              <div
-                                key={i.id}
-                                className="grid grid-cols-12 gap-2 px-4 py-3"
-                              >
-                                <div className="col-span-7 min-w-0">
-                                  <div className="truncate text-sm font-semibold text-slate-900">
-                                    {i.name}
-                                  </div>
-                                </div>
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="text-[11px] font-semibold text-slate-600">
+                              Total Expense
+                            </div>
 
-                                <div className="col-span-2 text-right text-sm font-semibold text-slate-900">
-                                  {i.qty}
-                                </div>
+                            <div className="mt-1 text-xl font-semibold text-slate-900">
+                              {formatINR(expenseTotal)}
+                            </div>
 
-                                <div className="col-span-3 text-right text-sm font-semibold text-slate-900">
-                                  {formatINR(i.amount)}
-                                </div>
-                              </div>
-                            ))}
+                            <div className="mt-1 text-xs text-slate-500">
+                              {sessionExpenses.length} entries
+                            </div>
                           </div>
                         </div>
 
-                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                          <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
-                            <div>
-                              <div className="text-sm font-semibold text-slate-900">
-                                Expense
-                              </div>
-
-                              <div className="mt-0.5 text-xs text-slate-500">
-                                ({formatDateDisplay(activeHistorySession.startTime)})
-                              </div>
-                            </div>
-
-                            <Pill tone="neutral">
-                              {formatINR(expenseTotal)}
-                            </Pill>
-                          </div>
-
-                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-2 text-[11px] font-semibold text-slate-600">
-                            <div className="col-span-8">
-                              Expense
-                            </div>
-
-                            <div className="col-span-4 text-right">
-                              Amount
-                            </div>
-                          </div>
-
-                          <div className="max-h-[280px] overflow-auto divide-y divide-slate-200">
-                            {sessionExpenses.length === 0 ? (
-                              <div className="p-6 text-center text-sm text-slate-600">
-                                No expenses for this shift.
-                              </div>
-                            ) : sessionExpenses.map(e => (
-                              <div
-                                key={e.id}
-                                className="grid grid-cols-12 gap-2 px-4 py-3"
-                              >
-                                <div className="col-span-8 min-w-0">
-                                  <div className="truncate text-sm font-semibold text-slate-900">
-                                    {e.title}
-                                  </div>
-
-                                  <div className="mt-0.5 truncate text-xs text-slate-500">
-                                    {e.note ?? '—'}
-                                  </div>
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
+                              <div>
+                                <div className="text-sm font-semibold text-slate-900">
+                                  Sales
                                 </div>
 
-                                <div className="col-span-4 text-right text-sm font-semibold text-slate-900">
-                                  {formatINR(e.amount)}
+                                <div className="mt-0.5 text-xs text-slate-500">
+                                  (
+                                  {formatDateDisplay(
+                                    activeHistorySession.startTime,
+                                  )}
+                                  )
                                 </div>
                               </div>
-                            ))}
+
+                              <Pill tone="amber">{formatINR(salesTotal)}</Pill>
+                            </div>
+
+                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-2 text-[11px] font-semibold text-slate-600">
+                              <div className="col-span-7">Item</div>
+
+                              <div className="col-span-2 text-right">Qty</div>
+
+                              <div className="col-span-3 text-right">
+                                Amount
+                              </div>
+                            </div>
+
+                            <div className="max-h-[280px] overflow-auto divide-y divide-slate-200">
+                              {soldItems.length === 0 ? (
+                                <div className="p-6 text-center text-sm text-slate-600">
+                                  No cash sales for this shift.
+                                </div>
+                              ) : (
+                                soldItems.map((i) => (
+                                  <div
+                                    key={i.id}
+                                    className="grid grid-cols-12 gap-2 px-4 py-3"
+                                  >
+                                    <div className="col-span-7 min-w-0">
+                                      <div className="truncate text-sm font-semibold text-slate-900">
+                                        {i.name}
+                                      </div>
+                                    </div>
+
+                                    <div className="col-span-2 text-right text-sm font-semibold text-slate-900">
+                                      {i.qty}
+                                    </div>
+
+                                    <div className="col-span-3 text-right text-sm font-semibold text-slate-900">
+                                      {formatINR(i.amount)}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
+                              <div>
+                                <div className="text-sm font-semibold text-slate-900">
+                                  Expense
+                                </div>
+
+                                <div className="mt-0.5 text-xs text-slate-500">
+                                  (
+                                  {formatDateDisplay(
+                                    activeHistorySession.startTime,
+                                  )}
+                                  )
+                                </div>
+                              </div>
+
+                              <Pill tone="neutral">
+                                {formatINR(expenseTotal)}
+                              </Pill>
+                            </div>
+
+                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-2 text-[11px] font-semibold text-slate-600">
+                              <div className="col-span-8">Expense</div>
+
+                              <div className="col-span-4 text-right">
+                                Amount
+                              </div>
+                            </div>
+
+                            <div className="max-h-[280px] overflow-auto divide-y divide-slate-200">
+                              {sessionExpenses.length === 0 ? (
+                                <div className="p-6 text-center text-sm text-slate-600">
+                                  No expenses for this shift.
+                                </div>
+                              ) : (
+                                sessionExpenses.map((e) => (
+                                  <div
+                                    key={e.id}
+                                    className="grid grid-cols-12 gap-2 px-4 py-3"
+                                  >
+                                    <div className="col-span-8 min-w-0">
+                                      <div className="truncate text-sm font-semibold text-slate-900">
+                                        {e.title}
+                                      </div>
+
+                                      <div className="mt-0.5 truncate text-xs text-slate-500">
+                                        {e.note ?? "—"}
+                                      </div>
+                                    </div>
+
+                                    <div className="col-span-4 text-right text-sm font-semibold text-slate-900">
+                                      {formatINR(e.amount)}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              );
+                );
+              })()}
 
-            })()}
-
-            {deletingSessionId && (() => {
-              const deletingSession =
-                cashSessions.find(
-                  session =>
-                    session.id === deletingSessionId
+            {deletingSessionId &&
+              (() => {
+                const deletingSession = cashSessions.find(
+                  (session) => session.id === deletingSessionId,
                 );
 
-              if (
-                !deletingSession
-                || deletingSession.status !== 'closed'
-              ) {
-                return null;
-              }
+                if (!deletingSession || deletingSession.status !== "closed") {
+                  return null;
+                }
 
-              const computedTotals =
-                getSessionCashTotals(
+                const computedTotals = getSessionCashTotals(
                   data.transactions,
                   expenses,
                   cashAdjustments,
@@ -18024,134 +13177,120 @@ export default function Finance({
                   deletingSession.endTime,
                   undefined,
                   upfrontOrders,
-                  data.supplierPayments || []
+                  data.supplierPayments || [],
                 );
 
-              const systemCashTotal =
-                deletingSession.systemCashTotal
-                ?? computedTotals.systemCashTotal;
+                const systemCashTotal =
+                  deletingSession.systemCashTotal ??
+                  computedTotals.systemCashTotal;
 
-              const expectedClosing =
-                deletingSession.openingBalance
-                + systemCashTotal;
+                const expectedClosing =
+                  deletingSession.openingBalance + systemCashTotal;
 
-              const countedClosing =
-                deletingSession.closingBalance
-                ?? 0;
+                const countedClosing = deletingSession.closingBalance ?? 0;
 
-              const difference =
-                deletingSession.difference
-                ?? (
-                  countedClosing
-                  - expectedClosing
+                const difference =
+                  deletingSession.difference ??
+                  countedClosing - expectedClosing;
+
+                return (
+                  <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+                    <Card className="w-full max-w-lg">
+                      <CardHeader>
+                        <CardTitle>Delete Closed Shift</CardTitle>
+                      </CardHeader>
+
+                      <CardContent className="space-y-3">
+                        <p className="text-xs text-rose-700">
+                          This removes the shift record from history. It does
+                          not delete sales, expenses, payments, purchases, or
+                          cash movements.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div>
+                            <span className="text-muted-foreground">Shift</span>
+
+                            <div>
+                              {formatDateTimeDisplay(deletingSession.startTime)}
+                            </div>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground">
+                              Opening
+                            </span>
+
+                            <div>
+                              {formatINR(deletingSession.openingBalance)}
+                            </div>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground">
+                              Expected closing
+                            </span>
+
+                            <div>{formatINR(expectedClosing)}</div>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground">
+                              Counted closing
+                            </span>
+
+                            <div>{formatINR(countedClosing)}</div>
+                          </div>
+
+                          <div>
+                            <span className="text-muted-foreground">
+                              Variance
+                            </span>
+
+                            <div>{formatINR(difference)}</div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label>Reason (optional)</Label>
+
+                          <Input
+                            value={deleteSessionReason}
+                            onChange={(e) =>
+                              setDeleteSessionReason(e.target.value)
+                            }
+                            placeholder="Reason for archiving this closed shift"
+                          />
+                        </div>
+
+                        <div className="flex gap-2 justify-end">
+                          <Button
+                            variant="outline"
+                            onClick={() => {
+                              setDeletingSessionId(null);
+                              setDeleteSessionReason("");
+                            }}
+                          >
+                            Cancel
+                          </Button>
+
+                          <Button
+                            variant="destructive"
+                            onClick={confirmDeleteShift}
+                          >
+                            Delete Shift
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
                 );
-
-              return (
-                <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-                  <Card className="w-full max-w-lg">
-                    <CardHeader>
-                      <CardTitle>
-                        Delete Closed Shift
-                      </CardTitle>
-                    </CardHeader>
-
-                    <CardContent className="space-y-3">
-                      <p className="text-xs text-rose-700">
-                        This removes the shift record from history. It does not delete sales, expenses, payments, purchases, or cash movements.
-                      </p>
-
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div>
-                          <span className="text-muted-foreground">
-                            Shift
-                          </span>
-
-                          <div>
-                            {formatDateTimeDisplay(deletingSession.startTime)}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="text-muted-foreground">
-                            Opening
-                          </span>
-
-                          <div>
-                            {formatINR(deletingSession.openingBalance)}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="text-muted-foreground">
-                            Expected closing
-                          </span>
-
-                          <div>
-                            {formatINR(expectedClosing)}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="text-muted-foreground">
-                            Counted closing
-                          </span>
-
-                          <div>
-                            {formatINR(countedClosing)}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="text-muted-foreground">
-                            Variance
-                          </span>
-
-                          <div>
-                            {formatINR(difference)}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div>
-                        <Label>
-                          Reason (optional)
-                        </Label>
-
-                        <Input
-                          value={deleteSessionReason}
-                          onChange={e =>
-                            setDeleteSessionReason(e.target.value)
-                          }
-                          placeholder="Reason for archiving this closed shift"
-                        />
-                      </div>
-
-                      <div className="flex gap-2 justify-end">
-                        <Button
-                          variant="outline"
-                          onClick={() => {
-                            setDeletingSessionId(null);
-                            setDeleteSessionReason('');
-                          }}
-                        >
-                          Cancel
-                        </Button>
-
-                        <Button
-                          variant="destructive"
-                          onClick={confirmDeleteShift}
-                        >
-                          Delete Shift
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              );
-            })()}
+              })()}
+            </>
+            )}
           </div>
         )}
-                {activeTab === 'expense' && (
+        {activeTab === "expense" && (
           <div className="w-full space-y-4 rounded-2xl bg-slate-50 text-slate-900">
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[360px,minmax(0,1fr)]">
               <div className="space-y-4">
@@ -18159,43 +13298,87 @@ export default function Finance({
                   <CardHeader className="border-b border-slate-200">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <CardTitle>{repairMode && editingExpenseId ? 'Edit Expense' : 'Add Expense'}</CardTitle>
+                        <CardTitle>
+                          {repairMode && editingExpenseId
+                            ? "Edit Expense"
+                            : "Add Expense"}
+                        </CardTitle>
                         {/* <p className="mt-1 text-sm text-slate-600">Log a cash expense and it will appear instantly in the register.</p> */}
                       </div>
-                      <Pill tone="neutral">{repairMode && editingExpenseId ? 'Editing' : 'New entry'}</Pill>
+                      <Pill tone="neutral">
+                        {repairMode && editingExpenseId
+                          ? "Editing"
+                          : "New entry"}
+                      </Pill>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4 pt-5">
                     <div className="space-y-1.5">
                       <Label>Title</Label>
-                      <Input value={expenseTitle} onChange={e => setExpenseTitle(e.target.value)} placeholder="Tea, Diesel, Packaging, Loading..." />
+                      <Input
+                        value={expenseTitle}
+                        onChange={(e) => setExpenseTitle(e.target.value)}
+                        placeholder="Tea, Diesel, Packaging, Loading..."
+                      />
                     </div>
 
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="space-y-1.5">
                         <Label>Amount</Label>
-                        <Input value={expenseAmount} onChange={e => setExpenseAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="0.00" inputMode="decimal" />
+                        <Input
+                          value={expenseAmount}
+                          onChange={(e) =>
+                            setExpenseAmount(
+                              e.target.value.replace(/[^\d.]/g, ""),
+                            )
+                          }
+                          placeholder="0.00"
+                          inputMode="decimal"
+                        />
                       </div>
                       <div className="space-y-1.5">
                         <Label>Category</Label>
-                        <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={expenseCategory} onChange={e => setExpenseCategory(e.target.value)}>
-                          {expenseCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                        <select
+                          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                          value={expenseCategory}
+                          onChange={(e) => setExpenseCategory(e.target.value)}
+                        >
+                          {expenseCategories.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
                         </select>
                       </div>
                     </div>
 
                     <div className="space-y-1.5">
                       <Label>Note</Label>
-                      <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional note or vendor detail" />
+                      <Input
+                        value={expenseNote}
+                        onChange={(e) => setExpenseNote(e.target.value)}
+                        placeholder="Optional note or vendor detail"
+                      />
                     </div>
                     <div className="space-y-1.5">
                       <Label>Utilize From</Label>
-                      <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={expenseCashSource} onChange={e => setExpenseCashSource(e.target.value as CashSource)}>
+                      <select
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        value={expenseCashSource}
+                        onChange={(e) =>
+                          setExpenseCashSource(e.target.value as CashSource)
+                        }
+                      >
                         <option value="drawer">Active Cash</option>
                         <option value="reserve">Reserve Cash</option>
                       </select>
                       <div className="text-xs text-slate-500">
-                        Available in {formatCashSourceLabel(expenseCashSource)}: <span className="font-semibold text-slate-700">{formatINR(getAvailableCashBySource(expenseCashSource))}</span>
+                        Available in {formatCashSourceLabel(expenseCashSource)}:{" "}
+                        <span className="font-semibold text-slate-700">
+                          {formatINR(
+                            getAvailableCashBySource(expenseCashSource),
+                          )}
+                        </span>
                       </div>
                     </div>
 
@@ -18203,36 +13386,64 @@ export default function Finance({
                       <>
                         <div className="space-y-1.5">
                           <Label>Financial Date</Label>
-                          <Input type="datetime-local" value={expenseFinancialDate} onChange={e => setExpenseFinancialDate(e.target.value)} />
+                          <Input
+                            type="datetime-local"
+                            value={expenseFinancialDate}
+                            onChange={(e) =>
+                              setExpenseFinancialDate(e.target.value)
+                            }
+                          />
                         </div>
                         <div className="space-y-1.5">
                           <Label>Repair Reason</Label>
-                          <Input value={expenseRepairReason} onChange={e => setExpenseRepairReason(e.target.value)} placeholder="Required for repair flow" />
+                          <Input
+                            value={expenseRepairReason}
+                            onChange={(e) =>
+                              setExpenseRepairReason(e.target.value)
+                            }
+                            placeholder="Required for repair flow"
+                          />
                         </div>
                       </>
                     )}
 
                     <div className="flex flex-col gap-2">
-                      <Button onClick={addExpense} disabled={!(expenseTitle.trim().length > 0 && Number(expenseAmount) > 0)}>
-                        {repairMode ? (editingExpenseId ? 'Preview Edit Expense' : 'Preview Add Expense') : 'Add Expense'}
+                      <Button
+                        onClick={addExpense}
+                        disabled={
+                          !(
+                            expenseTitle.trim().length > 0 &&
+                            Number(expenseAmount) > 0
+                          )
+                        }
+                      >
+                        {repairMode
+                          ? editingExpenseId
+                            ? "Preview Edit Expense"
+                            : "Preview Add Expense"
+                          : "Add Expense"}
                       </Button>
                       <Button
                         type="button"
                         variant="outline"
                         onClick={() => {
                           setEditingExpenseId(null);
-                          setExpenseTitle('');
-                          setExpenseAmount('');
-                          setExpenseCategory('General');
-                          setExpenseNote('');
+                          setExpenseTitle("");
+                          setExpenseAmount("");
+                          setExpenseCategory("General");
+                          setExpenseNote("");
                           setExpenseFinancialDate(toDateTimeLocalNow());
-                          setExpenseRepairReason('');
+                          setExpenseRepairReason("");
                         }}
                       >
                         Clear Form
                       </Button>
                       {repairMode && editingExpenseId && (
-                        <Button variant="outline" className="text-rose-600" onClick={() => void removeExpense(editingExpenseId)}>
+                        <Button
+                          variant="outline"
+                          className="text-rose-600"
+                          onClick={() => void removeExpense(editingExpenseId)}
+                        >
                           Preview Delete Expense
                         </Button>
                       )}
@@ -18240,23 +13451,57 @@ export default function Finance({
                   </CardContent>
                 </Card>
 
-                {can('cashWithdrawal') && (
+                {can("cashWithdrawal") && (
                   <Card className="border-amber-200 bg-amber-50/70 shadow-sm">
                     <CardHeader className="border-b border-amber-200">
-                      <CardTitle className="text-amber-900">Withdraw Cash</CardTitle>
-                      <p className="text-sm text-amber-800">Move cash out after choosing whether it should come from active cash or reserve cash.</p>
+                      <CardTitle className="text-amber-900">
+                        Withdraw Cash
+                      </CardTitle>
+                      <p className="text-sm text-amber-800">
+                        Move cash out after choosing whether it should come from
+                        active cash or reserve cash.
+                      </p>
                     </CardHeader>
                     <CardContent className="space-y-3 pt-5">
                       <div className="rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-sm text-amber-900">
-                        Available in {formatCashSourceLabel(withdrawalCashSource)}: <span className="font-semibold">{formatINR(getAvailableCashBySource(withdrawalCashSource))}</span>
+                        Available in{" "}
+                        {formatCashSourceLabel(withdrawalCashSource)}:{" "}
+                        <span className="font-semibold">
+                          {formatINR(
+                            getAvailableCashBySource(withdrawalCashSource),
+                          )}
+                        </span>
                       </div>
-                      <select className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm" value={withdrawalCashSource} onChange={e => setWithdrawalCashSource(e.target.value as CashSource)}>
+                      <select
+                        className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm"
+                        value={withdrawalCashSource}
+                        onChange={(e) =>
+                          setWithdrawalCashSource(e.target.value as CashSource)
+                        }
+                      >
                         <option value="drawer">Active Cash</option>
                         <option value="reserve">Reserve Cash</option>
                       </select>
-                      <Input value={cashWithdrawAmount} onChange={e => setCashWithdrawAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="Withdraw amount" inputMode="decimal" />
-                      <Input value={cashWithdrawNote} onChange={e => setCashWithdrawNote(e.target.value)} placeholder="Reason or note" />
-                      <Button variant="outline" onClick={() => addCashAdjustment('cash_withdrawal')} disabled={!(Number(cashWithdrawAmount) > 0)}>
+                      <Input
+                        value={cashWithdrawAmount}
+                        onChange={(e) =>
+                          setCashWithdrawAmount(
+                            e.target.value.replace(/[^\d.]/g, ""),
+                          )
+                        }
+                        placeholder="Withdraw amount"
+                        inputMode="decimal"
+                      />
+                      <Input
+                        value={cashWithdrawNote}
+                        onChange={(e) => setCashWithdrawNote(e.target.value)}
+                        placeholder="Reason or note"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => addCashAdjustment("cash_withdrawal")}
+                        disabled={!(Number(cashWithdrawAmount) > 0)}
+                      >
                         Withdraw Cash
                       </Button>
                     </CardContent>
@@ -18272,21 +13517,40 @@ export default function Finance({
                   </CardHeader>
                   <CardContent className="space-y-3 pt-5">
                     <div className="flex gap-2">
-                      <Input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="Add category" />
-                      <Button variant="outline" onClick={addExpenseCategory} disabled={!newCategory.trim()}>Add</Button>
+                      <Input
+                        value={newCategory}
+                        onChange={(e) => setNewCategory(e.target.value)}
+                        placeholder="Add category"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={addExpenseCategory}
+                        disabled={!newCategory.trim()}
+                      >
+                        Add
+                      </Button>
                     </div>
                     <div className="max-h-52 overflow-auto rounded-xl border border-slate-200">
                       <div className="divide-y divide-slate-200">
-                        {expenseCategories.map(category => (
-                          <div key={category} className="flex items-center justify-between gap-2 px-3 py-2.5">
-                            <div className="truncate text-sm font-medium text-slate-900">{category}</div>
+                        {expenseCategories.map((category) => (
+                          <div
+                            key={category}
+                            className="flex items-center justify-between gap-2 px-3 py-2.5"
+                          >
+                            <div className="truncate text-sm font-medium text-slate-900">
+                              {category}
+                            </div>
                             <Button
                               type="button"
                               variant="ghost"
                               size="sm"
                               onClick={() => deleteExpenseCategory(category)}
-                              disabled={category === 'General'}
-                              className={category === 'General' ? 'text-slate-300' : 'text-rose-600'}
+                              disabled={category === "General"}
+                              className={
+                                category === "General"
+                                  ? "text-slate-300"
+                                  : "text-rose-600"
+                              }
                             >
                               Remove
                             </Button>
@@ -18294,7 +13558,9 @@ export default function Finance({
                         ))}
                       </div>
                     </div>
-                    <p className="text-xs text-slate-500">General stays as the base fallback category.</p>
+                    <p className="text-xs text-slate-500">
+                      General stays as the base fallback category.
+                    </p>
                   </CardContent>
                 </Card>
               </div>
@@ -18302,20 +13568,36 @@ export default function Finance({
               <div className="min-w-0 space-y-4">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">All Expenses</div>
-                    <div className="mt-1 text-2xl font-semibold text-slate-900">{formatINR(allExpensesTotal)}</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      All Expenses
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {formatINR(allExpensesTotal)}
+                    </div>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Visible Total</div>
-                    <div className="mt-1 text-2xl font-semibold text-slate-900">{formatINR(expensesTotalForDate)}</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Visible Total
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {formatINR(expensesTotalForDate)}
+                    </div>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Entries</div>
-                    <div className="mt-1 text-2xl font-semibold text-slate-900">{filteredExpenses.length}</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Entries
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {filteredExpenses.length}
+                    </div>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">This Month</div>
-                    <div className="mt-1 text-2xl font-semibold text-slate-900">{formatINR(thisMonthExpensesTotal)}</div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      This Month
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-slate-900">
+                      {formatINR(thisMonthExpensesTotal)}
+                    </div>
                   </div>
                 </div>
 
@@ -18327,7 +13609,9 @@ export default function Finance({
                         {/* <p className="mt-1 text-sm text-slate-600">All expenses are shown by default. Use search or category to narrow the register.</p> */}
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" onClick={exportExpensePDF}>Download PDF</Button>
+                        <Button variant="outline" onClick={exportExpensePDF}>
+                          Download PDF
+                        </Button>
                       </div>
                     </div>
                   </CardHeader>
@@ -18337,7 +13621,9 @@ export default function Finance({
                         <Label>Search Expenses</Label>
                         <Input
                           value={expenseSearchQuery}
-                          onChange={e => setExpenseSearchQuery(e.target.value)}
+                          onChange={(e) =>
+                            setExpenseSearchQuery(e.target.value)
+                          }
                           placeholder="Search title, note, category, or ID"
                         />
                       </div>
@@ -18346,28 +13632,72 @@ export default function Finance({
                     {filteredExpenses.length === 0 ? (
                       <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
                         <div>
-                          <div className="text-base font-semibold text-slate-900">No matching expenses</div>
-                          <div className="mt-1 text-sm text-slate-600">Try clearing the search or adding a new expense.</div>
+                          <div className="text-base font-semibold text-slate-900">
+                            No matching expenses
+                          </div>
+                          <div className="mt-1 text-sm text-slate-600">
+                            Try clearing the search or adding a new expense.
+                          </div>
                         </div>
                       </div>
                     ) : (
                       <div className="max-h-[72vh] space-y-3 overflow-auto pr-1">
-                        {filteredExpenses.map(expense => (
-                          <div key={expense.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/70">
+                        {filteredExpenses.map((expense) => (
+                          <div
+                            key={expense.id}
+                            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:bg-slate-50/70"
+                          >
                             <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
                               <div className="shrink-0">
-                                <div className="text-base font-semibold text-slate-900">{formatDateDisplay(getExpenseEffectiveDate(expense))}</div>
-                                <div className="text-sm text-slate-600">{new Date(getExpenseEffectiveDate(expense)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
+                                <div className="text-base font-semibold text-slate-900">
+                                  {formatDateDisplay(
+                                    getExpenseEffectiveDate(expense),
+                                  )}
+                                </div>
+                                <div className="text-sm text-slate-600">
+                                  {new Date(
+                                    getExpenseEffectiveDate(expense),
+                                  ).toLocaleTimeString([], {
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  })}
+                                </div>
                               </div>
                               <div className="min-w-0 flex-1">
-                                <div className="text-base font-bold text-slate-950">{expense.title}</div>
-                                {expense.note?.trim() ? <div className="mt-1 text-sm text-slate-600">{expense.note.trim()}</div> : null}
+                                <div className="text-base font-bold text-slate-950">
+                                  {expense.title}
+                                </div>
+                                {expense.note?.trim() ? (
+                                  <div className="mt-1 text-sm text-slate-600">
+                                    {expense.note.trim()}
+                                  </div>
+                                ) : null}
                               </div>
-                              <div className="shrink-0 text-xl font-semibold text-slate-900">{formatINR(expense.amount)}</div>
+                              <div className="shrink-0 text-xl font-semibold text-slate-900">
+                                {formatINR(expense.amount)}
+                              </div>
                               {repairMode ? (
-                                <Button type="button" variant="outline" size="sm" onClick={() => startDeleteExpenseRepair(expense)} className="shrink-0 text-rose-600">Delete</Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() =>
+                                    startDeleteExpenseRepair(expense)
+                                  }
+                                  className="shrink-0 text-rose-600"
+                                >
+                                  Delete
+                                </Button>
                               ) : (
-                                <Button type="button" variant="outline" size="sm" onClick={() => removeExpense(expense.id)} className="shrink-0 text-rose-600">Delete</Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => removeExpense(expense.id)}
+                                  className="shrink-0 text-rose-600"
+                                >
+                                  Delete
+                                </Button>
                               )}
                             </div>
                           </div>
@@ -18377,22 +13707,43 @@ export default function Finance({
                   </CardContent>
 
                   <div className="border-t border-slate-200 px-6 py-4 text-sm text-slate-600">
-                    <span className="font-medium text-slate-900">Latest activity:</span>{' '}
-                    {expenseActivities[0] ? `${expenseActivities[0].message} | ${formatDateTimeDisplay(expenseActivities[0].createdAt)}` : 'No recent activity'}
+                    <span className="font-medium text-slate-900">
+                      Latest activity:
+                    </span>{" "}
+                    {expenseActivities[0]
+                      ? `${expenseActivities[0].message} | ${formatDateTimeDisplay(expenseActivities[0].createdAt)}`
+                      : "No recent activity"}
                   </div>
 
                   {repairMode && (
                     <div className="border-t border-slate-200 px-6 py-4">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Repair History</div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Repair History
+                      </div>
                       <div className="mt-3 space-y-2 text-sm text-slate-600">
-                        {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 8).map((entry) => (
-                          <div key={entry.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-                            <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                            <div className="mt-1 text-xs text-slate-500">{entry.entityName} | {entry.reason} | {formatDateTimeDisplay(entry.createdAt)}</div>
+                        {(loadData().repairHistoryEntries || [])
+                          .filter((entry) => entry.entityType === "expense")
+                          .slice(0, 8)
+                          .map((entry) => (
+                            <div
+                              key={entry.id}
+                              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5"
+                            >
+                              <div className="font-medium text-slate-900">
+                                {entry.repairKind.replace(/_/g, " ")}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {entry.entityName} | {entry.reason} |{" "}
+                                {formatDateTimeDisplay(entry.createdAt)}
+                              </div>
+                            </div>
+                          ))}
+                        {(loadData().repairHistoryEntries || []).filter(
+                          (entry) => entry.entityType === "expense",
+                        ).length === 0 && (
+                          <div className="text-sm text-slate-500">
+                            No repair history yet.
                           </div>
-                        ))}
-                        {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').length === 0 && (
-                          <div className="text-sm text-slate-500">No repair history yet.</div>
                         )}
                       </div>
                     </div>
@@ -18403,48 +13754,68 @@ export default function Finance({
           </div>
         )}
 
-        {activeTab === '__legacy_expense__' && (
+        {activeTab === "__legacy_expense__" && (
           <div className="h-[calc(100vh-220px)] w-full bg-slate-50 text-slate-900 rounded-2xl">
             <div className="mx-auto flex h-full max-w-6xl flex-col px-4 py-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <h2 className="truncate text-base font-semibold">Expenses</h2>
-                      <Pill tone={filteredExpenses.length ? 'amber' : 'neutral'}>
-                        {filteredExpenses.length ? `${filteredExpenses.length} entries` : 'No entries'}
+                      <h2 className="truncate text-base font-semibold">
+                        Expenses
+                      </h2>
+                      <Pill
+                        tone={filteredExpenses.length ? "amber" : "neutral"}
+                      >
+                        {filteredExpenses.length
+                          ? `${filteredExpenses.length} entries`
+                          : "No entries"}
                       </Pill>
                     </div>
 
                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                      {([
-                        ['today', 'Today'],
-                        ['7d', 'Last 7 days'],
-                        ['15d', 'Last 15 days'],
-                        ['month', 'This month'],
-                        ['custom', 'Custom']
-                      ] as Array<[ExpenseDatePreset, string]>).map(([key, label]) => (
+                      {(
+                        [
+                          ["today", "Today"],
+                          ["7d", "Last 7 days"],
+                          ["15d", "Last 15 days"],
+                          ["month", "This month"],
+                          ["custom", "Custom"],
+                        ] as Array<[ExpenseDatePreset, string]>
+                      ).map(([key, label]) => (
                         <button
                           key={key}
                           type="button"
                           onClick={() => setExpensePreset(key)}
-                          className={`rounded-full px-3 py-1.5 text-xs font-semibold ring-1 transition ${expensePreset === key ? 'bg-slate-900 text-white ring-slate-900' : 'bg-white text-slate-700 ring-slate-200 hover:bg-slate-50'}`}
+                          className={`rounded-full px-3 py-1.5 text-xs font-semibold ring-1 transition ${expensePreset === key ? "bg-slate-900 text-white ring-slate-900" : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50"}`}
                         >
                           {label}
                         </button>
                       ))}
-                      <span className="ml-1 text-xs text-slate-500">{expenseFilterLabel}</span>
+                      <span className="ml-1 text-xs text-slate-500">
+                        {expenseFilterLabel}
+                      </span>
                     </div>
 
-                    {expensePreset === 'custom' && (
+                    {expensePreset === "custom" && (
                       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
                         <div className="sm:w-44">
                           <Label>From</Label>
-                          <Input type="date" value={expenseCustomFrom} onChange={e => setExpenseCustomFrom(e.target.value)} />
+                          <Input
+                            type="date"
+                            value={expenseCustomFrom}
+                            onChange={(e) =>
+                              setExpenseCustomFrom(e.target.value)
+                            }
+                          />
                         </div>
                         <div className="sm:w-44">
                           <Label>To</Label>
-                          <Input type="date" value={expenseCustomTo} onChange={e => setExpenseCustomTo(e.target.value)} />
+                          <Input
+                            type="date"
+                            value={expenseCustomTo}
+                            onChange={(e) => setExpenseCustomTo(e.target.value)}
+                          />
                         </div>
                       </div>
                     )}
@@ -18452,12 +13823,22 @@ export default function Finance({
 
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 sm:min-w-[220px]">
-                      <div className="text-[11px] font-semibold text-slate-600">Filtered Total</div>
-                      <div className="mt-0.5 text-xl font-semibold tracking-tight text-slate-900">{formatINR(expensesTotalForDate)}</div>
+                      <div className="text-[11px] font-semibold text-slate-600">
+                        Filtered Total
+                      </div>
+                      <div className="mt-0.5 text-xl font-semibold tracking-tight text-slate-900">
+                        {formatINR(expensesTotalForDate)}
+                      </div>
                     </div>
 
                     <div className="flex gap-2">
-                      <Button variant="outline" onClick={exportExpensePDF} className="whitespace-nowrap">Download PDF</Button>
+                      <Button
+                        variant="outline"
+                        onClick={exportExpensePDF}
+                        className="whitespace-nowrap"
+                      >
+                        Download PDF
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -18474,8 +13855,12 @@ export default function Finance({
                     <div className="border-b border-slate-200 p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
-                          <div className="text-sm font-semibold text-slate-900">Quick Add</div>
-                          <div className="mt-0.5 text-xs text-slate-500">Title • Amount • Category</div>
+                          <div className="text-sm font-semibold text-slate-900">
+                            Quick Add
+                          </div>
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            Title • Amount • Category
+                          </div>
                         </div>
                         <Pill tone="neutral">Add</Pill>
                       </div>
@@ -18485,34 +13870,73 @@ export default function Finance({
                       <div className="space-y-3">
                         <div className="space-y-1">
                           <Label>Title</Label>
-                          <Input value={expenseTitle} onChange={e => setExpenseTitle(e.target.value)} placeholder="e.g., Tea, Diesel, Packaging" />
+                          <Input
+                            value={expenseTitle}
+                            onChange={(e) => setExpenseTitle(e.target.value)}
+                            placeholder="e.g., Tea, Diesel, Packaging"
+                          />
                         </div>
 
                         <div className="grid grid-cols-2 gap-3">
                           <div className="space-y-1">
                             <Label>Amount</Label>
-                            <Input value={expenseAmount} onChange={e => setExpenseAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="0.00" inputMode="decimal" />
+                            <Input
+                              value={expenseAmount}
+                              onChange={(e) =>
+                                setExpenseAmount(
+                                  e.target.value.replace(/[^\d.]/g, ""),
+                                )
+                              }
+                              placeholder="0.00"
+                              inputMode="decimal"
+                            />
                           </div>
                           <div className="space-y-1">
                             <Label>Category</Label>
-                            <select className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300" value={expenseCategory} onChange={e => setExpenseCategory(e.target.value)}>
-                              {expenseCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                            <select
+                              className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
+                              value={expenseCategory}
+                              onChange={(e) =>
+                                setExpenseCategory(e.target.value)
+                              }
+                            >
+                              {expenseCategories.map((c) => (
+                                <option key={c} value={c}>
+                                  {c}
+                                </option>
+                              ))}
                             </select>
                           </div>
                         </div>
 
                         <div className="space-y-1">
                           <Label>Note</Label>
-                          <Input value={expenseNote} onChange={e => setExpenseNote(e.target.value)} placeholder="Optional" />
+                          <Input
+                            value={expenseNote}
+                            onChange={(e) => setExpenseNote(e.target.value)}
+                            placeholder="Optional"
+                          />
                         </div>
                         <div className="space-y-1">
                           <Label>Utilize From</Label>
-                          <select className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300" value={expenseCashSource} onChange={e => setExpenseCashSource(e.target.value as CashSource)}>
+                          <select
+                            className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
+                            value={expenseCashSource}
+                            onChange={(e) =>
+                              setExpenseCashSource(e.target.value as CashSource)
+                            }
+                          >
                             <option value="drawer">Active Cash</option>
                             <option value="reserve">Reserve Cash</option>
                           </select>
                           <div className="text-xs text-slate-500">
-                            Available in {formatCashSourceLabel(expenseCashSource)}: <span className="font-semibold text-slate-700">{formatINR(getAvailableCashBySource(expenseCashSource))}</span>
+                            Available in{" "}
+                            {formatCashSourceLabel(expenseCashSource)}:{" "}
+                            <span className="font-semibold text-slate-700">
+                              {formatINR(
+                                getAvailableCashBySource(expenseCashSource),
+                              )}
+                            </span>
                           </div>
                         </div>
 
@@ -18520,56 +13944,147 @@ export default function Finance({
                           <>
                             <div className="space-y-1">
                               <Label>Financial Date</Label>
-                              <Input type="datetime-local" value={expenseFinancialDate} onChange={e => setExpenseFinancialDate(e.target.value)} />
+                              <Input
+                                type="datetime-local"
+                                value={expenseFinancialDate}
+                                onChange={(e) =>
+                                  setExpenseFinancialDate(e.target.value)
+                                }
+                              />
                             </div>
                             <div className="space-y-1">
                               <Label>Repair Reason</Label>
-                              <Input value={expenseRepairReason} onChange={e => setExpenseRepairReason(e.target.value)} placeholder="Required reason for this repair" />
+                              <Input
+                                value={expenseRepairReason}
+                                onChange={(e) =>
+                                  setExpenseRepairReason(e.target.value)
+                                }
+                                placeholder="Required reason for this repair"
+                              />
                             </div>
                           </>
                         )}
 
-                        <Button className="w-full rounded-2xl py-3 text-base" onClick={addExpense} disabled={!(expenseTitle.trim().length > 0 && Number(expenseAmount) > 0)}>{repairMode ? (editingExpenseId ? 'Preview Edit Expense' : 'Preview Add Expense') : 'Add Expense'}</Button>
+                        <Button
+                          className="w-full rounded-2xl py-3 text-base"
+                          onClick={addExpense}
+                          disabled={
+                            !(
+                              expenseTitle.trim().length > 0 &&
+                              Number(expenseAmount) > 0
+                            )
+                          }
+                        >
+                          {repairMode
+                            ? editingExpenseId
+                              ? "Preview Edit Expense"
+                              : "Preview Add Expense"
+                            : "Add Expense"}
+                        </Button>
                         {repairMode && editingExpenseId && (
-                          <Button variant="outline" className="w-full rounded-2xl py-3 text-base text-rose-600" onClick={() => void removeExpense(editingExpenseId)}>
+                          <Button
+                            variant="outline"
+                            className="w-full rounded-2xl py-3 text-base text-rose-600"
+                            onClick={() => void removeExpense(editingExpenseId)}
+                          >
                             Preview Delete Expense
                           </Button>
                         )}
-                        {can('cashWithdrawal') && (
-                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 space-y-2">
-                          <div className="text-sm font-semibold text-amber-900">Withdraw Cash</div>
-                          <div className="text-xs text-amber-800">Available in {formatCashSourceLabel(withdrawalCashSource)}: {formatINR(getAvailableCashBySource(withdrawalCashSource))}</div>
-                          <Input value={cashWithdrawAmount} onChange={e => setCashWithdrawAmount(e.target.value.replace(/[^\d.]/g, ''))} placeholder="Amount" inputMode="decimal" />
-                          <Input value={cashWithdrawNote} onChange={e => setCashWithdrawNote(e.target.value)} placeholder="Reason / note (optional)" />
-                          <select className="w-full h-10 rounded-xl border border-amber-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-300" value={withdrawalCashSource} onChange={e => setWithdrawalCashSource(e.target.value as CashSource)}>
-                            <option value="drawer">Active Cash</option>
-                            <option value="reserve">Reserve Cash</option>
-                          </select>
-                          <Button variant="outline" className="w-full" onClick={() => addCashAdjustment('cash_withdrawal')} disabled={!(Number(cashWithdrawAmount) > 0)}>Withdraw Cash</Button>
-                        </div>
+                        {can("cashWithdrawal") && (
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 space-y-2">
+                            <div className="text-sm font-semibold text-amber-900">
+                              Withdraw Cash
+                            </div>
+                            <div className="text-xs text-amber-800">
+                              Available in{" "}
+                              {formatCashSourceLabel(withdrawalCashSource)}:{" "}
+                              {formatINR(
+                                getAvailableCashBySource(withdrawalCashSource),
+                              )}
+                            </div>
+                            <Input
+                              value={cashWithdrawAmount}
+                              onChange={(e) =>
+                                setCashWithdrawAmount(
+                                  e.target.value.replace(/[^\d.]/g, ""),
+                                )
+                              }
+                              placeholder="Amount"
+                              inputMode="decimal"
+                            />
+                            <Input
+                              value={cashWithdrawNote}
+                              onChange={(e) =>
+                                setCashWithdrawNote(e.target.value)
+                              }
+                              placeholder="Reason / note (optional)"
+                            />
+                            <select
+                              className="w-full h-10 rounded-xl border border-amber-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-300"
+                              value={withdrawalCashSource}
+                              onChange={(e) =>
+                                setWithdrawalCashSource(
+                                  e.target.value as CashSource,
+                                )
+                              }
+                            >
+                              <option value="drawer">Active Cash</option>
+                              <option value="reserve">Reserve Cash</option>
+                            </select>
+                            <Button
+                              variant="outline"
+                              className="w-full"
+                              onClick={() =>
+                                addCashAdjustment("cash_withdrawal")
+                              }
+                              disabled={!(Number(cashWithdrawAmount) > 0)}
+                            >
+                              Withdraw Cash
+                            </Button>
+                          </div>
                         )}
 
                         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                           <div className="flex items-center justify-between">
-                            <div className="text-xs font-semibold text-slate-700">Categories</div>
-                            <Pill tone="neutral">{expenseCategories.length}</Pill>
+                            <div className="text-xs font-semibold text-slate-700">
+                              Categories
+                            </div>
+                            <Pill tone="neutral">
+                              {expenseCategories.length}
+                            </Pill>
                           </div>
 
                           <div className="mt-2 flex items-stretch gap-2">
-                            <Input value={newCategory} onChange={e => setNewCategory(e.target.value)} placeholder="Add category" />
-                            <Button variant="outline" onClick={addExpenseCategory} disabled={!newCategory.trim()} className="px-3">+</Button>
+                            <Input
+                              value={newCategory}
+                              onChange={(e) => setNewCategory(e.target.value)}
+                              placeholder="Add category"
+                            />
+                            <Button
+                              variant="outline"
+                              onClick={addExpenseCategory}
+                              disabled={!newCategory.trim()}
+                              className="px-3"
+                            >
+                              +
+                            </Button>
                           </div>
 
                           <div className="mt-2 max-h-32 overflow-auto rounded-2xl border border-slate-200 bg-white">
                             <div className="divide-y divide-slate-200">
-                              {expenseCategories.map(c => (
-                                <div key={c} className="flex items-center justify-between gap-2 px-3 py-2">
-                                  <div className="truncate text-sm font-medium text-slate-900">{c}</div>
+                              {expenseCategories.map((c) => (
+                                <div
+                                  key={c}
+                                  className="flex items-center justify-between gap-2 px-3 py-2"
+                                >
+                                  <div className="truncate text-sm font-medium text-slate-900">
+                                    {c}
+                                  </div>
                                   <button
                                     type="button"
                                     onClick={() => deleteExpenseCategory(c)}
-                                    disabled={c === 'General'}
-                                    className={`shrink-0 rounded-lg px-2 py-1 text-xs font-semibold transition ${c === 'General' ? 'cursor-not-allowed text-slate-300' : 'text-rose-600 hover:bg-rose-50'}`}
+                                    disabled={c === "General"}
+                                    className={`shrink-0 rounded-lg px-2 py-1 text-xs font-semibold transition ${c === "General" ? "cursor-not-allowed text-slate-300" : "text-rose-600 hover:bg-rose-50"}`}
                                   >
                                     Remove
                                   </button>
@@ -18578,7 +14093,9 @@ export default function Finance({
                             </div>
                           </div>
 
-                          <div className="mt-2 text-[11px] text-slate-500">General is required.</div>
+                          <div className="mt-2 text-[11px] text-slate-500">
+                            General is required.
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -18589,8 +14106,14 @@ export default function Finance({
                   <div className="flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm min-h-0">
                     <div className="border-b border-slate-200 p-4">
                       <div className="flex items-center justify-between">
-                        <div className="text-sm font-semibold text-slate-900">Expenses List</div>
-                        <Pill tone={expensesTotalForDate > 0 ? 'amber' : 'neutral'}>{formatINR(expensesTotalForDate)}</Pill>
+                        <div className="text-sm font-semibold text-slate-900">
+                          Expenses List
+                        </div>
+                        <Pill
+                          tone={expensesTotalForDate > 0 ? "amber" : "neutral"}
+                        >
+                          {formatINR(expensesTotalForDate)}
+                        </Pill>
                       </div>
                       <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
                         <span>Latest on top</span>
@@ -18602,8 +14125,13 @@ export default function Finance({
                       {filteredExpenses.length === 0 ? (
                         <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
                           <div>
-                            <div className="text-sm font-semibold text-slate-900">No expenses yet</div>
-                            <div className="mt-1 text-sm text-slate-600">Add using <span className="font-semibold">Quick Add</span>.</div>
+                            <div className="text-sm font-semibold text-slate-900">
+                              No expenses yet
+                            </div>
+                            <div className="mt-1 text-sm text-slate-600">
+                              Add using{" "}
+                              <span className="font-semibold">Quick Add</span>.
+                            </div>
                           </div>
                         </div>
                       ) : (
@@ -18617,24 +14145,62 @@ export default function Finance({
                           </div>
 
                           <div className="divide-y divide-slate-200">
-                            {filteredExpenses.map(e => (
-                              <div key={e.id} className="grid grid-cols-12 gap-2 px-3 py-3">
+                            {filteredExpenses.map((e) => (
+                              <div
+                                key={e.id}
+                                className="grid grid-cols-12 gap-2 px-3 py-3"
+                              >
                                 <div className="col-span-5 min-w-0">
-                                  <div className="truncate text-sm font-semibold text-slate-900">{e.title}</div>
-                                  <div className="mt-0.5 truncate text-xs text-slate-500">{e.note ? e.note : '—'}</div>
+                                  <div className="truncate text-sm font-semibold text-slate-900">
+                                    {e.title}
+                                  </div>
+                                  <div className="mt-0.5 truncate text-xs text-slate-500">
+                                    {e.note ? e.note : "—"}
+                                  </div>
                                 </div>
 
-                                <div className="col-span-2 text-xs text-slate-600">{formatExpenseLoggedDate(e)}</div>
-                                <div className="col-span-2"><span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">{e.category}</span></div>
-                                <div className="col-span-2 text-right text-sm font-semibold text-slate-900">{formatINR(e.amount)}</div>
+                                <div className="col-span-2 text-xs text-slate-600">
+                                  {formatExpenseLoggedDate(e)}
+                                </div>
+                                <div className="col-span-2">
+                                  <span className="inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-inset ring-slate-200">
+                                    {e.category}
+                                  </span>
+                                </div>
+                                <div className="col-span-2 text-right text-sm font-semibold text-slate-900">
+                                  {formatINR(e.amount)}
+                                </div>
                                 <div className="col-span-1 flex justify-end">
                                   {repairMode ? (
                                     <div className="flex gap-1">
-                                      <Button type="button" variant="ghost" onClick={() => startEditExpense(e)} className="h-8 px-2 text-slate-700">Edit</Button>
-                                      <Button type="button" variant="ghost" onClick={() => startDeleteExpenseRepair(e)} className="h-8 px-2 text-rose-600">Delete</Button>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        onClick={() => startEditExpense(e)}
+                                        className="h-8 px-2 text-slate-700"
+                                      >
+                                        Edit
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        onClick={() =>
+                                          startDeleteExpenseRepair(e)
+                                        }
+                                        className="h-8 px-2 text-rose-600"
+                                      >
+                                        Delete
+                                      </Button>
                                     </div>
                                   ) : (
-                                    <Button type="button" variant="ghost" onClick={() => removeExpense(e.id)} className="h-8 w-8 p-0 text-rose-600">✕</Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      onClick={() => removeExpense(e.id)}
+                                      className="h-8 w-8 p-0 text-rose-600"
+                                    >
+                                      ✕
+                                    </Button>
                                   )}
                                 </div>
                               </div>
@@ -18646,19 +14212,36 @@ export default function Finance({
 
                     <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500">
                       <span>Activity log: </span>
-                      {expenseActivities[0] ? `${expenseActivities[0].message} • ${formatDateTimeDisplay(expenseActivities[0].createdAt)}` : 'No recent activity'}
+                      {expenseActivities[0]
+                        ? `${expenseActivities[0].message} • ${formatDateTimeDisplay(expenseActivities[0].createdAt)}`
+                        : "No recent activity"}
                     </div>
                     {repairMode && (
                       <div className="border-t border-slate-200 px-4 py-3">
-                        <div className="text-xs font-semibold text-slate-700">Repair History</div>
+                        <div className="text-xs font-semibold text-slate-700">
+                          Repair History
+                        </div>
                         <div className="mt-2 space-y-2 text-xs text-slate-500">
-                          {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').slice(0, 8).map((entry) => (
-                            <div key={entry.id} className="rounded-xl border border-slate-200 px-3 py-2">
-                              <div className="font-medium text-slate-900">{entry.repairKind.replace(/_/g, ' ')}</div>
-                              <div>{entry.entityName} • {entry.reason} • {formatDateTimeDisplay(entry.createdAt)}</div>
-                            </div>
-                          ))}
-                          {(loadData().repairHistoryEntries || []).filter((entry) => entry.entityType === 'expense').length === 0 && <div>No repair history yet.</div>}
+                          {(loadData().repairHistoryEntries || [])
+                            .filter((entry) => entry.entityType === "expense")
+                            .slice(0, 8)
+                            .map((entry) => (
+                              <div
+                                key={entry.id}
+                                className="rounded-xl border border-slate-200 px-3 py-2"
+                              >
+                                <div className="font-medium text-slate-900">
+                                  {entry.repairKind.replace(/_/g, " ")}
+                                </div>
+                                <div>
+                                  {entry.entityName} • {entry.reason} •{" "}
+                                  {formatDateTimeDisplay(entry.createdAt)}
+                                </div>
+                              </div>
+                            ))}
+                          {(loadData().repairHistoryEntries || []).filter(
+                            (entry) => entry.entityType === "expense",
+                          ).length === 0 && <div>No repair history yet.</div>}
                         </div>
                       </div>
                     )}
@@ -18669,38 +14252,94 @@ export default function Finance({
           </div>
         )}
 
-        {activeTab === '__removed_credit__' && (
+        {activeTab === "__removed_credit__" && (
           <Card className="border-slate-200 shadow-sm">
-            <CardHeader><CardTitle>Credit Ops</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle>Credit Ops</CardTitle>
+            </CardHeader>
             <CardContent className="space-y-3">
-              {creditCustomers.map(customer => (
-                <div key={customer.id} className="border rounded-lg p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              {creditCustomers.map((customer) => (
+                <div
+                  key={customer.id}
+                  className="border rounded-lg p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3"
+                >
                   <div>
                     <p className="font-semibold">{customer.name}</p>
-                    <p className="text-sm text-muted-foreground">Last Visit: {formatDateDisplay(customer.lastVisit)}</p>
+                    <p className="text-sm text-muted-foreground">
+                      Last Visit: {formatDateDisplay(customer.lastVisit)}
+                    </p>
                   </div>
                   <div className="text-right">
-                    <p className="font-bold text-red-700">Due: {formatINRSummary(canonicalCustomerBalanceById.get(customer.id)?.currentDue || 0)}</p>
-                    <Button size="sm" onClick={() => { const due = canonicalCustomerBalanceById.get(customer.id)?.currentDue || 0; setCollectingCustomer(customer); setPaymentAmount(due.toFixed(2)); }}>Collect Payment</Button>
+                    <p className="font-bold text-red-700">
+                      Due:{" "}
+                      {formatINRSummary(
+                        canonicalCustomerBalanceById.get(customer.id)
+                          ?.currentDue || 0,
+                      )}
+                    </p>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        const due =
+                          canonicalCustomerBalanceById.get(customer.id)
+                            ?.currentDue || 0;
+                        setCollectingCustomer(customer);
+                        setPaymentAmount(due.toFixed(2));
+                      }}
+                    >
+                      Collect Payment
+                    </Button>
                   </div>
                 </div>
               ))}
-              {!creditCustomers.length && <p className="text-sm text-muted-foreground">No customers with due balance.</p>}
+              {!creditCustomers.length && (
+                <p className="text-sm text-muted-foreground">
+                  No customers with due balance.
+                </p>
+              )}
 
               {collectingCustomer && (
                 <Card className="bg-muted/30">
                   <CardContent className="pt-4 space-y-2">
-                    <p className="font-semibold">Collect from {collectingCustomer.name}</p>
+                    <p className="font-semibold">
+                      Collect from {collectingCustomer.name}
+                    </p>
                     <Label>Amount</Label>
-                    <Input type="number" min="0" value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} />
+                    <Input
+                      type="number"
+                      min="0"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                    />
                     <Label>Method</Label>
                     <div className="flex gap-2">
-                      <Button variant={paymentMethod === 'Cash' ? 'default' : 'outline'} onClick={() => setPaymentMethod('Cash')}>Cash</Button>
-                      <Button variant={paymentMethod === 'Online' ? 'default' : 'outline'} onClick={() => setPaymentMethod('Online')}>UPI</Button>
+                      <Button
+                        variant={
+                          paymentMethod === "Cash" ? "default" : "outline"
+                        }
+                        onClick={() => setPaymentMethod("Cash")}
+                      >
+                        Cash
+                      </Button>
+                      <Button
+                        variant={
+                          paymentMethod === "Online" ? "default" : "outline"
+                        }
+                        onClick={() => setPaymentMethod("Online")}
+                      >
+                        UPI
+                      </Button>
                     </div>
                     <div className="flex gap-2 pt-2">
-                      <Button onClick={collectPayment}>Confirm Collection</Button>
-                      <Button variant="outline" onClick={() => setCollectingCustomer(null)}>Cancel</Button>
+                      <Button onClick={collectPayment}>
+                        Confirm Collection
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => setCollectingCustomer(null)}
+                      >
+                        Cancel
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -18709,24 +14348,54 @@ export default function Finance({
           </Card>
         )}
 
-        {activeTab === '__removed_profit__' && (
+        {activeTab === "__removed_profit__" && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
             <div className="lg:col-span-5 space-y-4">
               <Card className="border-slate-200 shadow-sm">
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between gap-2 flex-wrap">
                     <span>Daily Profit</span>
-                    <Input type="date" className="w-auto" value={profitDate} onChange={e => setProfitDate(e.target.value)} />
+                    <Input
+                      type="date"
+                      className="w-auto"
+                      value={profitDate}
+                      onChange={(e) => setProfitDate(e.target.value)}
+                    />
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-3">
-                  <StatCard label="Gross Sales" value={formatINRSummary(dailySummary.grossSales)} />
-                  <StatCard label="Sales Returns" value={formatINRSummary(dailySummary.salesReturns)} tone={dailySummary.salesReturns > 0 ? 'bad' : 'neutral'} />
-                  <StatCard label="Net Sales" value={formatINRSummary(dailySummary.netSales)} tone={dailySummary.netSales >= 0 ? 'good' : 'bad'} />
-                  <StatCard label="COGS" value={formatINRSummary(dailySummary.cogs)} />
-                  <StatCard label="Gross Profit" value={formatINRSummary(dailySummary.grossProfit)} tone={dailySummary.grossProfit >= 0 ? 'good' : 'bad'} />
-                  <StatCard label="Expenses" value={formatINRSummary(dailySummary.todayExpenses)} />
-                  <StatCard label="Net Profit" value={formatINRSummary(dailySummary.netProfit)} tone={dailySummary.netProfit >= 0 ? 'good' : 'bad'} />
+                  <StatCard
+                    label="Gross Sales"
+                    value={formatINRSummary(dailySummary.grossSales)}
+                  />
+                  <StatCard
+                    label="Sales Returns"
+                    value={formatINRSummary(dailySummary.salesReturns)}
+                    tone={dailySummary.salesReturns > 0 ? "bad" : "neutral"}
+                  />
+                  <StatCard
+                    label="Net Sales"
+                    value={formatINRSummary(dailySummary.netSales)}
+                    tone={dailySummary.netSales >= 0 ? "good" : "bad"}
+                  />
+                  <StatCard
+                    label="COGS"
+                    value={formatINRSummary(dailySummary.cogs)}
+                  />
+                  <StatCard
+                    label="Gross Profit"
+                    value={formatINRSummary(dailySummary.grossProfit)}
+                    tone={dailySummary.grossProfit >= 0 ? "good" : "bad"}
+                  />
+                  <StatCard
+                    label="Expenses"
+                    value={formatINRSummary(dailySummary.todayExpenses)}
+                  />
+                  <StatCard
+                    label="Net Profit"
+                    value={formatINRSummary(dailySummary.netProfit)}
+                    tone={dailySummary.netProfit >= 0 ? "good" : "bad"}
+                  />
                 </CardContent>
               </Card>
 
@@ -18734,112 +14403,319 @@ export default function Finance({
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between gap-2 flex-wrap">
                     <span>Monthly Profit</span>
-                    <Input type="month" className="w-auto" value={profitMonth} onChange={e => setProfitMonth(e.target.value)} />
+                    <Input
+                      type="month"
+                      className="w-auto"
+                      value={profitMonth}
+                      onChange={(e) => setProfitMonth(e.target.value)}
+                    />
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-3">
-                  <StatCard label="Gross Sales" value={formatINRSummary(monthlySummary.grossSales)} />
-                  <StatCard label="Sales Returns" value={formatINRSummary(monthlySummary.salesReturns)} tone={monthlySummary.salesReturns > 0 ? 'bad' : 'neutral'} />
-                  <StatCard label="Net Sales" value={formatINRSummary(monthlySummary.netSales)} tone={monthlySummary.netSales >= 0 ? 'good' : 'bad'} />
-                  <StatCard label="COGS" value={formatINRSummary(monthlySummary.cogs)} />
-                  <StatCard label="Gross Profit" value={formatINRSummary(monthlySummary.grossProfit)} tone={monthlySummary.grossProfit >= 0 ? 'good' : 'bad'} />
-                  <StatCard label="Expenses" value={formatINRSummary(monthlySummary.todayExpenses)} />
-                  <StatCard label="Net Profit" value={formatINRSummary(monthlySummary.netProfit)} tone={monthlySummary.netProfit >= 0 ? 'good' : 'bad'} />
+                  <StatCard
+                    label="Gross Sales"
+                    value={formatINRSummary(monthlySummary.grossSales)}
+                  />
+                  <StatCard
+                    label="Sales Returns"
+                    value={formatINRSummary(monthlySummary.salesReturns)}
+                    tone={monthlySummary.salesReturns > 0 ? "bad" : "neutral"}
+                  />
+                  <StatCard
+                    label="Net Sales"
+                    value={formatINRSummary(monthlySummary.netSales)}
+                    tone={monthlySummary.netSales >= 0 ? "good" : "bad"}
+                  />
+                  <StatCard
+                    label="COGS"
+                    value={formatINRSummary(monthlySummary.cogs)}
+                  />
+                  <StatCard
+                    label="Gross Profit"
+                    value={formatINRSummary(monthlySummary.grossProfit)}
+                    tone={monthlySummary.grossProfit >= 0 ? "good" : "bad"}
+                  />
+                  <StatCard
+                    label="Expenses"
+                    value={formatINRSummary(monthlySummary.todayExpenses)}
+                  />
+                  <StatCard
+                    label="Net Profit"
+                    value={formatINRSummary(monthlySummary.netProfit)}
+                    tone={monthlySummary.netProfit >= 0 ? "good" : "bad"}
+                  />
                 </CardContent>
               </Card>
             </div>
 
             <div className="lg:col-span-7">
               <Card className="border-slate-200 shadow-sm">
-                <CardHeader><CardTitle>Sales vs Expense Chart</CardTitle></CardHeader>
+                <CardHeader>
+                  <CardTitle>Sales vs Expense Chart</CardTitle>
+                </CardHeader>
                 <CardContent className="space-y-3">
                   <div>
-                    <div className="flex justify-between text-sm"><span>Net Sales</span><span>{formatINRSummary(monthlySummary.netSales)}</span></div>
-                    <div className="h-3 bg-muted rounded"><div className="h-3 bg-green-500 rounded" style={{ width: `${(monthlySummary.netSales / chartMax) * 100}%` }} /></div>
+                    <div className="flex justify-between text-sm">
+                      <span>Net Sales</span>
+                      <span>{formatINRSummary(monthlySummary.netSales)}</span>
+                    </div>
+                    <div className="h-3 bg-muted rounded">
+                      <div
+                        className="h-3 bg-green-500 rounded"
+                        style={{
+                          width: `${(monthlySummary.netSales / chartMax) * 100}%`,
+                        }}
+                      />
+                    </div>
                   </div>
                   <div>
-                    <div className="flex justify-between text-sm"><span>Expenses</span><span>{formatINRSummary(monthlySummary.todayExpenses)}</span></div>
-                    <div className="h-3 bg-muted rounded"><div className="h-3 bg-red-500 rounded" style={{ width: `${(monthlySummary.todayExpenses / chartMax) * 100}%` }} /></div>
+                    <div className="flex justify-between text-sm">
+                      <span>Expenses</span>
+                      <span>
+                        {formatINRSummary(monthlySummary.todayExpenses)}
+                      </span>
+                    </div>
+                    <div className="h-3 bg-muted rounded">
+                      <div
+                        className="h-3 bg-red-500 rounded"
+                        style={{
+                          width: `${(monthlySummary.todayExpenses / chartMax) * 100}%`,
+                        }}
+                      />
+                    </div>
                   </div>
                   <div>
-                    <div className="flex justify-between text-sm"><span>Gross Profit</span><span>{formatINRSummary(monthlySummary.grossProfit)}</span></div>
-                    <div className="h-3 bg-muted rounded"><div className="h-3 bg-blue-500 rounded" style={{ width: `${(Math.abs(monthlySummary.grossProfit) / chartMax) * 100}%` }} /></div>
+                    <div className="flex justify-between text-sm">
+                      <span>Gross Profit</span>
+                      <span>
+                        {formatINRSummary(monthlySummary.grossProfit)}
+                      </span>
+                    </div>
+                    <div className="h-3 bg-muted rounded">
+                      <div
+                        className="h-3 bg-blue-500 rounded"
+                        style={{
+                          width: `${(Math.abs(monthlySummary.grossProfit) / chartMax) * 100}%`,
+                        }}
+                      />
+                    </div>
                   </div>
                 </CardContent>
               </Card>
             </div>
           </div>
         )}
-        {isExpectedClosingBreakdownOpen && openSession && expectedClosingBreakdown && (
-          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setIsExpectedClosingBreakdownOpen(false)}>
-            <Card className="w-full max-w-xl" onClick={(e) => e.stopPropagation()}>
-              <CardHeader><CardTitle>Expected Closing Breakdown</CardTitle></CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div>Opening Cash: <b>{formatINR(expectedClosingBreakdown.openingCash)}</b></div>
-
-                <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Active Cash Flow</div>
-                <div>Active Cash Sales: <b>{formatINR(expectedClosingBreakdown.activeCashSales)}</b></div>
-                <div>Customer Cash Collections: <b>{formatINR(expectedClosingBreakdown.customerCashCollections)}</b></div>
-                <div>Custom Order Cash Collections: <b>{formatINR(expectedClosingBreakdown.customOrderCashCollections)}</b></div>
-                <div>Cash Additions: <b>{formatINR(expectedClosingBreakdown.cashAdditions)}</b></div>
-
-                <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Deleted / Refund Flow</div>
-                <div>Deleted Sale Cash Included for Refund Offset: <b>{formatINR(expectedClosingBreakdown.deletedSaleCashIncludedForRefundOffset)}</b></div>
-                <div>Explicit Delete Refunds: <b>{formatINR(expectedClosingBreakdown.deleteCompensationRefunds)}</b></div>
-                <div>Total Cash at Sale: <b>{formatINR(expectedClosingBreakdown.cashAtSale)}</b></div>
-                <div className="text-xs text-muted-foreground">Deleted sale cash is included only when that deleted sale has an explicit cash refund, so sale cash-in and refund cash-out offset correctly.</div>
-
-                <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Outflows</div>
-                <div>Cash Refunds: <b>{formatINR(expectedClosingBreakdown.cashRefunds)}</b></div>
-                <div>Supplier Cash Payments: <b>{formatINR(expectedClosingBreakdown.supplierCashPayments)}</b></div>
-                <div>Expenses: <b>{formatINR(expectedClosingBreakdown.expenses)}</b></div>
-                <div>Cash Withdrawals: <b>{formatINR(expectedClosingBreakdown.cashWithdrawals)}</b></div>
-
-                <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Totals</div>
-                <div>Gross Cash Entered: <b>{formatINR(expectedClosingBreakdown.grossCashEntered)}</b></div>
-                <div>Gross Cash Exited: <b>{formatINR(expectedClosingBreakdown.grossCashExited)}</b></div>
-                <div>Net Cash Movement: <b>{formatINR(expectedClosingBreakdown.netCashMovement)}</b></div>
-                <div className="pt-2 border-t">Expected Closing = Opening + Net Cash Movement = <b>{formatINR(expectedClosingBreakdown.expectedClosing)}</b></div>
-                <div className="pt-2 flex justify-end"><Button variant="outline" onClick={() => setIsExpectedClosingBreakdownOpen(false)}>Close</Button></div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
-        {repairMode && expenseRepairConfirmOpen && expenseRepairDraft && expenseRepairPreview && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !expenseRepairSubmitting && setExpenseRepairConfirmOpen(false)}>
-            <Card className="w-full max-w-lg border-slate-200 shadow-xl" onClick={(e) => e.stopPropagation()}>
-              <CardHeader><CardTitle>Confirm Repair</CardTitle></CardHeader>
-              <CardContent className="space-y-4 text-sm">
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operation</div>
-                  <div className="mt-1 font-semibold text-slate-900">{expenseRepairOperationLabel(expenseRepairDraft.kind)}</div>
-                  <div className="mt-1 text-xs text-slate-600">{expenseRepairDraft.reason}</div>
-                  <div className="mt-1 text-xs text-slate-600">{formatDateTimeDisplay(expenseRepairDraft.financialDate)}</div>
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="rounded-2xl border border-slate-200 p-3">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Before</div>
-                    <div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.beforeExpenseTotal)}</div>
+        {isExpectedClosingBreakdownOpen &&
+          openSession &&
+          expectedClosingBreakdown && (
+            <div
+              className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+              onClick={() => setIsExpectedClosingBreakdownOpen(false)}
+            >
+              <Card
+                className="w-full max-w-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <CardHeader>
+                  <CardTitle>Expected Closing Breakdown</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div>
+                    Opening Cash:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.openingCash)}</b>
                   </div>
-                  <div className="rounded-2xl border border-slate-200 p-3">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">After</div>
-                    <div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.afterExpenseTotal)}</div>
+
+                  <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Active Cash Flow
                   </div>
-                  <div className="rounded-2xl border border-slate-200 p-3">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Change</div>
-                    <div className="mt-1 font-semibold text-slate-900">{formatINR(expenseRepairPreview.changeExpenseTotal)}</div>
+                  <div>
+                    Active Cash Sales:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.activeCashSales)}</b>
                   </div>
-                </div>
-                <div className="flex justify-end gap-2">
-                  <Button variant="outline" onClick={() => setExpenseRepairConfirmOpen(false)} disabled={expenseRepairSubmitting}>Cancel</Button>
-                  <Button onClick={() => void applyExpenseRepairDraft()} disabled={expenseRepairSubmitting}>
-                    {expenseRepairSubmitting ? 'Applying...' : 'Confirm Repair'}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+                  <div>
+                    Customer Cash Collections:{" "}
+                    <b>
+                      {formatINR(
+                        expectedClosingBreakdown.customerCashCollections,
+                      )}
+                    </b>
+                  </div>
+                  <div>
+                    Custom Order Cash Collections:{" "}
+                    <b>
+                      {formatINR(
+                        expectedClosingBreakdown.customOrderCashCollections,
+                      )}
+                    </b>
+                  </div>
+                  <div>
+                    Cash Additions:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.cashAdditions)}</b>
+                  </div>
+
+                  <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Deleted / Refund Flow
+                  </div>
+                  <div>
+                    Deleted Sale Cash Included for Refund Offset:{" "}
+                    <b>
+                      {formatINR(
+                        expectedClosingBreakdown.deletedSaleCashIncludedForRefundOffset,
+                      )}
+                    </b>
+                  </div>
+                  <div>
+                    Explicit Delete Refunds:{" "}
+                    <b>
+                      {formatINR(
+                        expectedClosingBreakdown.deleteCompensationRefunds,
+                      )}
+                    </b>
+                  </div>
+                  <div>
+                    Total Cash at Sale:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.cashAtSale)}</b>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Deleted sale cash is included only when that deleted sale
+                    has an explicit cash refund, so sale cash-in and refund
+                    cash-out offset correctly.
+                  </div>
+
+                  <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Outflows
+                  </div>
+                  <div>
+                    Cash Refunds:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.cashRefunds)}</b>
+                  </div>
+                  <div>
+                    Supplier Cash Payments:{" "}
+                    <b>
+                      {formatINR(expectedClosingBreakdown.supplierCashPayments)}
+                    </b>
+                  </div>
+                  <div>
+                    Expenses:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.expenses)}</b>
+                  </div>
+                  <div>
+                    Cash Withdrawals:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.cashWithdrawals)}</b>
+                  </div>
+
+                  <div className="pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Totals
+                  </div>
+                  <div>
+                    Gross Cash Entered:{" "}
+                    <b>
+                      {formatINR(expectedClosingBreakdown.grossCashEntered)}
+                    </b>
+                  </div>
+                  <div>
+                    Gross Cash Exited:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.grossCashExited)}</b>
+                  </div>
+                  <div>
+                    Net Cash Movement:{" "}
+                    <b>{formatINR(expectedClosingBreakdown.netCashMovement)}</b>
+                  </div>
+                  <div className="pt-2 border-t">
+                    Expected Closing = Opening + Net Cash Movement ={" "}
+                    <b>{formatINR(expectedClosingBreakdown.expectedClosing)}</b>
+                  </div>
+                  <div className="pt-2 flex justify-end">
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsExpectedClosingBreakdownOpen(false)}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        {repairMode &&
+          expenseRepairConfirmOpen &&
+          expenseRepairDraft &&
+          expenseRepairPreview && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+              onClick={() =>
+                !expenseRepairSubmitting && setExpenseRepairConfirmOpen(false)
+              }
+            >
+              <Card
+                className="w-full max-w-lg border-slate-200 shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <CardHeader>
+                  <CardTitle>Confirm Repair</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Operation
+                    </div>
+                    <div className="mt-1 font-semibold text-slate-900">
+                      {expenseRepairOperationLabel(expenseRepairDraft.kind)}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {expenseRepairDraft.reason}
+                    </div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      {formatDateTimeDisplay(expenseRepairDraft.financialDate)}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="rounded-2xl border border-slate-200 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Before
+                      </div>
+                      <div className="mt-1 font-semibold text-slate-900">
+                        {formatINR(expenseRepairPreview.beforeExpenseTotal)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        After
+                      </div>
+                      <div className="mt-1 font-semibold text-slate-900">
+                        {formatINR(expenseRepairPreview.afterExpenseTotal)}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Change
+                      </div>
+                      <div className="mt-1 font-semibold text-slate-900">
+                        {formatINR(expenseRepairPreview.changeExpenseTotal)}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setExpenseRepairConfirmOpen(false)}
+                      disabled={expenseRepairSubmitting}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      onClick={() => void applyExpenseRepairDraft()}
+                      disabled={expenseRepairSubmitting}
+                    >
+                      {expenseRepairSubmitting
+                        ? "Applying..."
+                        : "Confirm Repair"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
       </div>
     </div>
   );
