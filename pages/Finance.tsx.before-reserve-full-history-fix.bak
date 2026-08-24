@@ -5682,26 +5682,14 @@ export default function Finance({
             return [] as ReserveLedgerRow[];
           }
 
-          /*
-           * Ledger/history window is intentionally different
-           * from the live reserve calculation window.
-           *
-           * Live reserve:
-           *   latest reserve snapshot -> now
-           *
-           * Visible ledger:
-           *   shift start -> now
-           *
-           * This lets historical reserve-funded transactions
-           * remain visible without subtracting them again from
-           * the current saved reserve snapshot.
-           */
-          const ledgerStartMs =
+          const savedAtMs =
             new Date(
-              openSession.startTime
+              activeReserveWindowStart
+              || activeReserveSavedAt
+              || openSession.startTime
             ).getTime();
 
-          if (!Number.isFinite(ledgerStartMs)) {
+          if (!Number.isFinite(savedAtMs)) {
             return [] as ReserveLedgerRow[];
           }
 
@@ -5711,7 +5699,7 @@ export default function Finance({
 
             return (
               Number.isFinite(at)
-              && at >= ledgerStartMs
+              && at >= savedAtMs
             );
           };
 
@@ -5894,34 +5882,7 @@ export default function Finance({
               ? openSession.reserveCashLedger
               : [];
 
-          const isReserveReconstructionPlaceholder =
-            (entry: any) => {
-              const note =
-                String(
-                  entry?.note || ''
-                )
-                  .trim()
-                  .toLowerCase();
-
-              return (
-                note.includes(
-                  'testing adjustment: missing reserve movement'
-                )
-                || note.includes(
-                  'missing reserve movement needed to match saved reservedcashonhand'
-                )
-              );
-            };
-
-          const visiblePersistedLedger =
-            persistedLedger.filter(
-              entry =>
-                !isReserveReconstructionPlaceholder(
-                  entry
-                )
-            );
-
-          visiblePersistedLedger.forEach(
+          persistedLedger.forEach(
             (entry, index) => {
               const amount =
                 Math.max(
@@ -5975,7 +5936,7 @@ export default function Finance({
 
           const persistedLedgerNetChange =
             roundMoney(
-              visiblePersistedLedger.reduce(
+              persistedLedger.reduce(
                 (sum, entry) => {
                   const amount =
                     Math.max(
@@ -5997,7 +5958,43 @@ export default function Finance({
                 0
               )
             );
-// --------------------------------------------------
+
+          const openingReserveBeforeManualLedger =
+            roundMoney(
+              Math.max(
+                0,
+                activeReserveBase
+                - persistedLedgerNetChange
+              )
+            );
+
+          if (
+            openingReserveBeforeManualLedger > 0
+          ) {
+            rows.push({
+              id:
+                'reserve-opening-balance',
+
+              date:
+                activeReserveSavedAt
+                || openSession.startTime,
+
+              type:
+                'Opening Reserve',
+
+              details:
+                'Reserve balance before new additions',
+
+              amount:
+                openingReserveBeforeManualLedger,
+
+              direction:
+                'in',
+            });
+          }
+
+
+          // --------------------------------------------------
           // CUSTOMER RESERVE TRANSACTIONS
           // --------------------------------------------------
 
@@ -6156,51 +6153,11 @@ export default function Finance({
                 || payment.createdAt
                 || '';
 
-              const reserveFundingPaymentId =
-                String(
-                  payment.id || ''
-                );
-
-              const reserveFundingHistoryRows =
-                purchaseOrderList.flatMap(
-                  order =>
-                    (
-                      (
-                        order.paymentHistory
-                        || []
-                      ) as any[]
-                    )
-                      .filter(
-                        history =>
-                          reserveFundingPaymentId
-                          && String(
-                            history
-                              ?.supplierPaymentId
-                            || ''
-                          ) === reserveFundingPaymentId
-                      )
-                      .map(
-                        history => ({
-                          order,
-                          history,
-                        })
-                      )
-                );
-
-              const isReserveFundedSupplierPayment =
-                shouldReduceReserveFromSource(
-                  payment.cashSource
-                )
-                || reserveFundingHistoryRows.some(
-                  ({ history }) =>
-                    shouldReduceReserveFromSource(
-                      history?.cashSource
-                    )
-                );
-
               if (
                 !inWindow(paymentDate)
-                || !isReserveFundedSupplierPayment
+                || !shouldReduceReserveFromSource(
+                  payment.cashSource
+                )
               ) {
                 return;
               }
@@ -6672,51 +6629,6 @@ export default function Finance({
             }
           );
 
-
-          const visibleMovementNet =
-            roundMoney(
-              rows.reduce(
-                (sum, row) =>
-                  sum
-                  + (
-                    row.direction === 'in'
-                      ? row.amount
-                      : -row.amount
-                  ),
-                0
-              )
-            );
-
-          const derivedOpeningReserve =
-            roundMoney(
-              Math.max(
-                0,
-                liveRemainingReserveCash
-                - visibleMovementNet
-              )
-            );
-
-          if (derivedOpeningReserve > 0) {
-            rows.push({
-              id:
-                'reserve-derived-opening-balance',
-
-              date:
-                openSession.startTime,
-
-              type:
-                'Opening Reserve',
-
-              details:
-                'Opening balance derived from reserve movements',
-
-              amount:
-                derivedOpeningReserve,
-
-              direction:
-                'in',
-            });
-          }
 
           return rows.sort(
             (a, b) =>

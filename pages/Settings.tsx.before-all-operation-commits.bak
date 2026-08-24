@@ -190,124 +190,11 @@ export default function Settings() {
   const [recentActivityDetail, setRecentActivityDetail] =
     useState<RecentActivityDetail | null>(null);
 
-  const [recentActivityCopyStatus, setRecentActivityCopyStatus] =
-    useState<'operation' | 'audit' | null>(null);
-
   useEscapeLayer(
     Boolean(recentActivityDetail),
     () => setRecentActivityDetail(null),
     { priority: 110 }
   );
-
-  const copyTextToClipboard = async (text: string) => {
-    if (navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return;
-      } catch {
-        // Fall through to legacy clipboard fallback.
-      }
-    }
-
-    const textarea =
-      document.createElement('textarea');
-
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '0';
-
-    document.body.appendChild(textarea);
-
-    textarea.focus();
-    textarea.select();
-
-    const copied =
-      document.execCommand('copy');
-
-    document.body.removeChild(textarea);
-
-    if (!copied) {
-      throw new Error(
-        'Unable to copy recent activity to clipboard.'
-      );
-    }
-  };
-
-  const copyRecentActivityData =
-    async (
-      kind: 'operation' | 'audit'
-    ) => {
-      try {
-        const generatedAt =
-          new Date().toISOString();
-
-        const payload =
-          kind === 'operation'
-            ? {
-                exportType:
-                  'operationCommits',
-
-                range:
-                  'last-7-days',
-
-                generatedAt,
-
-                count:
-                  recentOperationCommits.length,
-
-                entries:
-                  recentOperationCommits,
-              }
-            : {
-                exportType:
-                  'auditEvents',
-
-                range:
-                  'last-7-days',
-
-                generatedAt,
-
-                count:
-                  recentAuditEvents.length,
-
-                entries:
-                  recentAuditEvents,
-              };
-
-        await copyTextToClipboard(
-          JSON.stringify(
-            payload,
-            null,
-            2
-          )
-        );
-
-        setRecentActivityCopyStatus(
-          kind
-        );
-
-        window.setTimeout(
-          () => {
-            setRecentActivityCopyStatus(
-              (current) =>
-                current === kind
-                  ? null
-                  : current
-            );
-          },
-          1500
-        );
-      } catch (error) {
-        setRecentActivityError(
-          getFriendlyErrorMessage(
-            error,
-            'settings.copy_recent_activity'
-          )
-        );
-      }
-    };
   useEffect(() => {
     const refreshData = () => {
       const data = loadData();
@@ -919,226 +806,8 @@ export default function Settings() {
           };
         });
 
-      // The durable operationCommits collection currently contains only
-      // critical processTransaction commits.
-      //
-      // Build the complete operational history by also exposing successful
-      // CREATE / UPDATE / DELETE audit events as operation entries.
-      //
-      // BLOCKED_WRITE and SECURITY_EVENT remain audit-only because they did
-      // not represent a successfully committed business operation.
-
-      const durableTransactionIds =
-        new Set(
-          operationCommits
-            .map((commit) =>
-              String(
-                commit.transactionId
-                || commit.operationId
-                || ''
-              )
-            )
-            .filter(Boolean)
-        );
-
-      const auditBackedOperationCommits: OperationCommitEntry[] =
-        auditEvents
-          .filter((event) =>
-            event.operation === 'CREATE'
-            || event.operation === 'UPDATE'
-            || event.operation === 'DELETE'
-          )
-          .filter((event) => {
-            const context =
-              event.context || {};
-
-            const transactionId =
-              String(
-                context.transactionId
-                || context.transactionID
-                || ''
-              );
-
-            // Do not duplicate a real durable processTransaction commit.
-            return (
-              !transactionId
-              || !durableTransactionIds.has(transactionId)
-            );
-          })
-          .map((event) => {
-            const context =
-              event.context || {};
-
-            const reason =
-              String(
-                context.reason
-                || context.operation
-                || context.action
-                || event.operation
-                || 'UNKNOWN'
-              );
-
-            const operationId =
-              String(
-                context.operationId
-                || context.transactionId
-                || context.transactionID
-                || context.purchaseOrderId
-                || context.supplierPaymentId
-                || context.expenseId
-                || context.productId
-                || context.customerId
-                || context.purchasePartyId
-                || context.upfrontOrderId
-                || context.cashSessionId
-                || context.cashAdjustmentId
-                || context.manualCashbookEntryId
-                || context.repairHistoryEntryId
-                || context.freightInquiryId
-                || context.freightConfirmedOrderId
-                || context.freightPurchaseId
-                || context.freightBrokerId
-                || context.paymentId
-                || context.orderId
-                || event.id
-              );
-
-            const transactionId =
-              String(
-                context.transactionId
-                || context.transactionID
-                || ''
-              );
-
-            const transactionType =
-              String(
-                context.transactionType
-                || context.type
-                || ''
-              );
-
-            const customerId =
-              String(
-                context.customerId
-                || ''
-              );
-
-            const directProductId =
-              String(
-                context.productId
-                || ''
-              );
-
-            const directCustomerId =
-              String(
-                context.customerId
-                || ''
-              );
-
-            const touchedProductIds =
-              Array.isArray(
-                context.touchedProductIds
-              )
-                ? context.touchedProductIds.map(String)
-                : directProductId
-                  ? [directProductId]
-                  : [];
-
-            const touchedCustomerIds =
-              Array.isArray(
-                context.touchedCustomerIds
-              )
-                ? context.touchedCustomerIds.map(String)
-                : directCustomerId
-                  ? [directCustomerId]
-                  : [];
-
-            return {
-              id:
-                `audit-operation-${event.id}`,
-
-              operationType:
-                reason,
-
-              operationId,
-
-              status:
-                'committed',
-
-              committedAt:
-                event.createdAt,
-
-              actorUid:
-                event.actorUid,
-
-              actorEmail:
-                event.actorEmail,
-
-              migrationPhase:
-                'audit-backed-operation',
-
-              transactionId,
-
-              transactionType,
-
-              customerId,
-
-              touchedProductIds,
-
-              touchedCustomerIds,
-
-              payloadVersion:
-                null,
-
-              raw: {
-                source:
-                  'auditEvent',
-
-                auditEventId:
-                  event.id,
-
-                operation:
-                  event.operation,
-
-                actorUid:
-                  event.actorUid,
-
-                actorEmail:
-                  event.actorEmail,
-
-                createdAt:
-                  event.createdAt,
-
-                context:
-                  event.context,
-
-                originalDocument:
-                  event.raw,
-              },
-            };
-          });
-
-      const allOperationCommits =
-        [
-          ...operationCommits,
-          ...auditBackedOperationCommits,
-        ]
-          .sort((a, b) => {
-            const aTime =
-              new Date(
-                a.committedAt || 0
-              ).getTime();
-
-            const bTime =
-              new Date(
-                b.committedAt || 0
-              ).getTime();
-
-            return bTime - aTime;
-          });
-
       setRecentOperationCommits(
-        allOperationCommits
+        operationCommits
       );
 
       setRecentAuditEvents(
@@ -1312,37 +981,18 @@ export default function Settings() {
 
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-xl border border-slate-200 bg-white">
-                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">
-                      Operation Commits
-                    </div>
-
-                    <div className="text-xs text-slate-500">
-                      {recentOperationCommits.length}{' '}
-                      commit
-                      {recentOperationCommits.length === 1
-                        ? ''
-                        : 's'}
-                    </div>
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">
+                    Operation Commits
                   </div>
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={recentOperationCommits.length === 0}
-                    onClick={() =>
-                      void copyRecentActivityData(
-                        'operation'
-                      )
-                    }
-                    className="shrink-0"
-                  >
-                    {recentActivityCopyStatus === 'operation'
-                      ? 'Copied'
-                      : 'Copy All'}
-                  </Button>
+                  <div className="text-xs text-slate-500">
+                    {recentOperationCommits.length}{' '}
+                    commit
+                    {recentOperationCommits.length === 1
+                      ? ''
+                      : 's'}
+                  </div>
                 </div>
 
                 <div className="max-h-96 overflow-auto divide-y divide-slate-200">
@@ -1406,37 +1056,18 @@ export default function Settings() {
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white">
-                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">
-                      Audit Events
-                    </div>
-
-                    <div className="text-xs text-slate-500">
-                      {recentAuditEvents.length}{' '}
-                      event
-                      {recentAuditEvents.length === 1
-                        ? ''
-                        : 's'}
-                    </div>
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">
+                    Audit Events
                   </div>
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={recentAuditEvents.length === 0}
-                    onClick={() =>
-                      void copyRecentActivityData(
-                        'audit'
-                      )
-                    }
-                    className="shrink-0"
-                  >
-                    {recentActivityCopyStatus === 'audit'
-                      ? 'Copied'
-                      : 'Copy All'}
-                  </Button>
+                  <div className="text-xs text-slate-500">
+                    {recentAuditEvents.length}{' '}
+                    event
+                    {recentAuditEvents.length === 1
+                      ? ''
+                      : 's'}
+                  </div>
                 </div>
 
                 <div className="max-h-96 overflow-auto divide-y divide-slate-200">

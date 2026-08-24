@@ -190,124 +190,11 @@ export default function Settings() {
   const [recentActivityDetail, setRecentActivityDetail] =
     useState<RecentActivityDetail | null>(null);
 
-  const [recentActivityCopyStatus, setRecentActivityCopyStatus] =
-    useState<'operation' | 'audit' | null>(null);
-
   useEscapeLayer(
     Boolean(recentActivityDetail),
     () => setRecentActivityDetail(null),
     { priority: 110 }
   );
-
-  const copyTextToClipboard = async (text: string) => {
-    if (navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return;
-      } catch {
-        // Fall through to legacy clipboard fallback.
-      }
-    }
-
-    const textarea =
-      document.createElement('textarea');
-
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '0';
-
-    document.body.appendChild(textarea);
-
-    textarea.focus();
-    textarea.select();
-
-    const copied =
-      document.execCommand('copy');
-
-    document.body.removeChild(textarea);
-
-    if (!copied) {
-      throw new Error(
-        'Unable to copy recent activity to clipboard.'
-      );
-    }
-  };
-
-  const copyRecentActivityData =
-    async (
-      kind: 'operation' | 'audit'
-    ) => {
-      try {
-        const generatedAt =
-          new Date().toISOString();
-
-        const payload =
-          kind === 'operation'
-            ? {
-                exportType:
-                  'operationCommits',
-
-                range:
-                  'last-7-days',
-
-                generatedAt,
-
-                count:
-                  recentOperationCommits.length,
-
-                entries:
-                  recentOperationCommits,
-              }
-            : {
-                exportType:
-                  'auditEvents',
-
-                range:
-                  'last-7-days',
-
-                generatedAt,
-
-                count:
-                  recentAuditEvents.length,
-
-                entries:
-                  recentAuditEvents,
-              };
-
-        await copyTextToClipboard(
-          JSON.stringify(
-            payload,
-            null,
-            2
-          )
-        );
-
-        setRecentActivityCopyStatus(
-          kind
-        );
-
-        window.setTimeout(
-          () => {
-            setRecentActivityCopyStatus(
-              (current) =>
-                current === kind
-                  ? null
-                  : current
-            );
-          },
-          1500
-        );
-      } catch (error) {
-        setRecentActivityError(
-          getFriendlyErrorMessage(
-            error,
-            'settings.copy_recent_activity'
-          )
-        );
-      }
-    };
   useEffect(() => {
     const refreshData = () => {
       const data = loadData();
@@ -1312,37 +1199,18 @@ export default function Settings() {
 
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-xl border border-slate-200 bg-white">
-                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">
-                      Operation Commits
-                    </div>
-
-                    <div className="text-xs text-slate-500">
-                      {recentOperationCommits.length}{' '}
-                      commit
-                      {recentOperationCommits.length === 1
-                        ? ''
-                        : 's'}
-                    </div>
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">
+                    Operation Commits
                   </div>
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={recentOperationCommits.length === 0}
-                    onClick={() =>
-                      void copyRecentActivityData(
-                        'operation'
-                      )
-                    }
-                    className="shrink-0"
-                  >
-                    {recentActivityCopyStatus === 'operation'
-                      ? 'Copied'
-                      : 'Copy All'}
-                  </Button>
+                  <div className="text-xs text-slate-500">
+                    {recentOperationCommits.length}{' '}
+                    commit
+                    {recentOperationCommits.length === 1
+                      ? ''
+                      : 's'}
+                  </div>
                 </div>
 
                 <div className="max-h-96 overflow-auto divide-y divide-slate-200">
@@ -1406,37 +1274,18 @@ export default function Settings() {
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-white">
-                <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900">
-                      Audit Events
-                    </div>
-
-                    <div className="text-xs text-slate-500">
-                      {recentAuditEvents.length}{' '}
-                      event
-                      {recentAuditEvents.length === 1
-                        ? ''
-                        : 's'}
-                    </div>
+                <div className="border-b border-slate-200 px-4 py-3">
+                  <div className="text-sm font-semibold text-slate-900">
+                    Audit Events
                   </div>
 
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={recentAuditEvents.length === 0}
-                    onClick={() =>
-                      void copyRecentActivityData(
-                        'audit'
-                      )
-                    }
-                    className="shrink-0"
-                  >
-                    {recentActivityCopyStatus === 'audit'
-                      ? 'Copied'
-                      : 'Copy All'}
-                  </Button>
+                  <div className="text-xs text-slate-500">
+                    {recentAuditEvents.length}{' '}
+                    event
+                    {recentAuditEvents.length === 1
+                      ? ''
+                      : 's'}
+                  </div>
                 </div>
 
                 <div className="max-h-96 overflow-auto divide-y divide-slate-200">

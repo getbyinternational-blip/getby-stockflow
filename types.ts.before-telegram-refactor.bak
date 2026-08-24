@@ -1,3 +1,4 @@
+
 export interface Product {
   id: string;
   barcode: string;
@@ -107,13 +108,7 @@ export interface Transaction {
     creditDue: number;
   };
   date: string;
-  type:
-    | 'sale'
-    | 'return'
-    | 'payment'
-    | 'historical_reference'
-    | 'customer_credit'
-    | 'customer_cash_out';
+  type: 'sale' | 'return' | 'payment' | 'historical_reference' | 'customer_credit' | 'customer_cash_out';
   referenceTransactionType?: string;
   customerId?: string;
   customerName?: string;
@@ -147,51 +142,10 @@ export interface DocumentSeriesConfig {
   prefix?: string;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Telegram                                                                   */
-/* -------------------------------------------------------------------------- */
+export type TelegramPostMode = 'selected' | 'filtered' | 'out_of_stock';
+export type TelegramCollectionRepeatMode = 'once' | 'loop';
+export type TelegramCollectionFrequencyUnit = 'seconds' | 'minutes' | 'hours';
 
-export type TelegramPostMode =
-  | 'selected'
-  | 'filtered'
-  | 'out_of_stock';
-
-export type TelegramCollectionRepeatMode =
-  | 'once'
-  | 'loop';
-
-export type TelegramCollectionFrequencyUnit =
-  | 'seconds'
-  | 'minutes'
-  | 'hours';
-
-export type TelegramCollectionStatus =
-  | 'running'
-  | 'paused'
-  | 'stopped'
-  | 'completed'
-  | 'failed';
-
-export type TelegramCollectionBatchSize =
-  | 1
-  | 2
-  | 4
-  | 6
-  | 8;
-
-export interface TelegramCollectionFrequency {
-  value: number;
-  unit: TelegramCollectionFrequencyUnit;
-}
-
-/**
- * Existing persisted frontend Telegram collection.
- *
- * This remains backward-compatible while storage.ts and
- * TelegramPosts.tsx are migrated.
- *
- * Backend runtime fields must not be inferred from this object.
- */
 export interface TelegramPostCollection {
   id: string;
   name: string;
@@ -201,75 +155,20 @@ export interface TelegramPostCollection {
   notes: string;
   postMode: TelegramPostMode;
   queuedProductIds: string[];
-
   frequencyValue?: number;
   frequencyUnit?: TelegramCollectionFrequencyUnit;
   batchSize?: number;
-
-  /**
-   * Canonical schedule field used by the new frontend contract.
-   */
-  startAt?: string | null;
-
-  /**
-   * Legacy frontend fields.
-   * These stay temporarily so existing code continues compiling.
-   */
   autoStartTime?: string;
   endTime?: string;
-
   repeatMode?: TelegramCollectionRepeatMode;
   maxFailuresBeforePause?: number;
-
   createdAt: string;
   updatedAt: string;
-
-  /**
-   * Existing frontend/manual-post summary fields.
-   */
   lastPostedAt?: string;
   lastPostedProductName?: string;
   totalPostsSent?: number;
 }
 
-/**
- * Canonical frontend-only collection draft.
- *
- * This represents configuration the user can save before starting
- * a backend collection.
- *
- * It intentionally does not contain backend runtime state such as
- * cursor, sentCount, failedCount or nextRunAt.
- */
-export interface TelegramCollectionDraft {
-  id: string;
-  name: string;
-  category: string;
-  channelId: string;
-  template: string;
-  notes: string;
-
-  postMode: TelegramPostMode;
-  queuedProductIds: string[];
-
-  frequencyValue: number;
-  frequencyUnit: TelegramCollectionFrequencyUnit;
-  batchSize: TelegramCollectionBatchSize;
-
-  startAt: string | null;
-
-  repeatMode: TelegramCollectionRepeatMode;
-  maxFailuresBeforePause: number;
-
-  createdAt: string;
-  updatedAt: string;
-}
-
-/**
- * Frontend summary used by explicit/manual "Send now" operations.
- *
- * Scheduled collection runtime activity comes from the backend.
- */
 export interface TelegramPostActivity {
   id: string;
   collectionId?: string;
@@ -284,9 +183,6 @@ export interface TelegramPostActivity {
   lastPostedProductName?: string;
 }
 
-/**
- * Canonical product shape used by scheduled Telegram collections.
- */
 export interface TelegramSchedulerProduct {
   id: string;
   name: string;
@@ -299,253 +195,40 @@ export interface TelegramSchedulerProduct {
   barcode?: string;
 }
 
-/**
- * Product shape used by the immediate/manual Telegram endpoint.
- */
-export interface TelegramManualPostProduct {
-  id: string;
-  name: string;
-  price: number;
-  image: string;
-  category: string;
-  stock: number;
-  description?: string;
-  keywords?: string;
-}
-
-/**
- * Canonical request for the immediate/manual Telegram post endpoint.
- */
-export interface TelegramManualProductPostRequest {
-  channelId: string;
-  product: TelegramManualPostProduct;
-  template: string;
-  notes: string;
-}
-
-/**
- * Canonical request for:
- *
- * POST /api/telegram/collections/start
- */
-export interface TelegramCollectionStartRequest {
-  collectionId?: string;
-
-  name: string;
-  channelId: string;
-  category: string;
-  template: string;
-  notes: string;
-
-  frequencyValue: number;
-  frequencyUnit: TelegramCollectionFrequencyUnit;
-
-  batchSize: TelegramCollectionBatchSize;
-
-  startAt: string | null;
-
-  repeatMode: TelegramCollectionRepeatMode;
-  maxFailuresBeforePause: number;
-
-  products: TelegramSchedulerProduct[];
-}
-
-/**
- * Shared request body for pause/resume/stop.
- */
-export interface TelegramCollectionControlRequest {
-  collectionId: string;
-}
-
-/**
- * Canonical activity record produced by the backend collection store.
- */
-export interface TelegramCollectionActivityRecord {
-  timestamp: string;
-
-  collectionId: string;
-  collectionName: string;
-
-  event: string;
-
-  productId: string;
-  productName: string;
-
-  maskedChannelId: string;
-  telegramMessageId: string;
-
-  errorCode: string;
-  errorMessage: string;
-}
-
-/**
- * Canonical backend-owned Telegram collection runtime state.
- *
- * New controller/service code should converge on this shape.
- */
-export interface TelegramRuntimeCollection {
-  ownerStoreId?: string;
-
-  id: string;
-
-  name: string;
-  channelId: string;
-  category: string;
-  template: string;
-  notes: string;
-
-  products: TelegramSchedulerProduct[];
-  productsCount: number;
-
-  batchSize: number;
-  productCursor: number;
-
-  status: TelegramCollectionStatus;
-
-  frequencyValue: number;
-  frequencyUnit: TelegramCollectionFrequencyUnit;
-
-  repeatMode: TelegramCollectionRepeatMode;
-
-  startAt: string | null;
-  nextRunAt: string | null;
-  lastRunAt: string | null;
-
-  lastPostedProductName: string;
-  lastTelegramMessageId: string;
-
-  sentCount: number;
-  failedCount: number;
-  consecutiveFailures: number;
-
-  maxFailuresBeforePause: number;
-
-  activity: TelegramCollectionActivityRecord[];
-
-  createdAt: string;
-  updatedAt: string;
-
-  startedAt: string | null;
-  stoppedAt: string | null;
-}
-
-/**
- * Existing live collection type used by the current Telegram page.
- *
- * Legacy names stay here temporarily so services/telegram.ts and
- * TelegramPosts.tsx can be migrated without breaking the frontend
- * between steps.
- *
- * Canonical backend names are added alongside them.
- */
 export interface TelegramLiveCollection {
   id: string;
   collectionId?: string;
-
   name: string;
   channelId: string;
   category: string;
-
-  status: TelegramCollectionStatus | string;
-
+  status: string;
   productsCount: number;
-
-  /**
-   * Legacy frontend cursor.
-   */
   currentCursor: number;
-
-  /**
-   * Canonical backend cursor.
-   */
-  productCursor?: number;
-
   sentCount: number;
   failedCount: number;
-  consecutiveFailures?: number;
-
-  /**
-   * Legacy + canonical last-product fields.
-   */
   lastPostedProduct?: string;
-  lastPostedProductName?: string;
-
-  lastTelegramMessageId?: string;
-
-  /**
-   * Legacy frontend time fields.
-   */
   lastPostedAt?: string;
   nextPostAt?: string;
-  autoStartTime?: string;
-
-  /**
-   * Canonical backend time fields.
-   */
-  startAt?: string | null;
-  lastRunAt?: string | null;
-  nextRunAt?: string | null;
-
   frequencyValue: number;
-  frequencyUnit:
-    | TelegramCollectionFrequencyUnit
-    | string;
-
+  frequencyUnit: TelegramCollectionFrequencyUnit | string;
   batchSize?: number;
-
-  repeatMode?:
-    | TelegramCollectionRepeatMode
-    | string;
-
+  autoStartTime?: string;
+  repeatMode?: TelegramCollectionRepeatMode | string;
   maxFailuresBeforePause?: number;
-
-  createdAt?: string;
-  updatedAt?: string;
-
-  startedAt?: string | null;
-  stoppedAt?: string | null;
 }
 
-/**
- * Existing activity type used by the current Telegram page.
- *
- * Canonical backend fields are included now.
- * Legacy fields remain temporarily for compatibility.
- */
 export interface TelegramCollectionActivityItem {
   id: string;
-
   collectionId?: string;
   collectionName?: string;
-
-  /**
-   * Canonical backend fields.
-   */
-  timestamp?: string;
-  event?: string;
-
+  status?: string;
   productId?: string;
   productName?: string;
-
-  maskedChannelId?: string;
-  telegramMessageId?: string;
-
-  errorCode?: string;
-  errorMessage?: string;
-
-  /**
-   * Legacy frontend fields.
-   */
-  status?: string;
   error?: string;
   postedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Store profile                                                              */
-/* -------------------------------------------------------------------------- */
 
 export interface StoreProfile {
   storeName: string;
@@ -569,22 +252,14 @@ export interface StoreProfile {
   customerCatalogFirstPageMimeType?: string;
   invoiceFormat?: 'standard' | 'thermal';
   thermalPaperWidth?: '58mm' | '80mm';
-  thermalStyle?:
-    | 'classic'
-    | 'grocery'
-    | 'boxed'
-    | 'minimal';
-  thermalDensity?:
-    | 'compact'
-    | 'balanced'
-    | 'comfortable';
+  thermalStyle?: 'classic' | 'grocery' | 'boxed' | 'minimal';
+  thermalDensity?: 'compact' | 'balanced' | 'comfortable';
   thermalFontScale?: number;
   thermalPaddingX?: number;
   thermalPaddingY?: number;
   autoSendInvoiceAfterCreation?: boolean;
   repairCenterEnabled?: boolean;
   adminPin?: string;
-
   telegramChannels?: string[];
   telegramChannelId?: string;
   telegramTemplate?: string;
@@ -593,6 +268,7 @@ export interface StoreProfile {
   telegramPostActivity?: TelegramPostActivity[];
   telegramActiveCollectionId?: string;
 }
+
 
 export interface OperatorUser {
   id: string;
@@ -641,9 +317,7 @@ export interface UpfrontOrder {
   totalCost: number;
   advancePaid: number;
   remainingAmount: number;
-  accountingMode?:
-    | 'legacy_untrusted'
-    | 'modern_receivable';
+  accountingMode?: 'legacy_untrusted' | 'modern_receivable';
   date: string;
   reminderDate?: string;
   status: 'unpaid' | 'cleared';
@@ -659,16 +333,9 @@ export interface UpfrontOrder {
     paidAt: string;
     effectiveAt?: string;
     amount: number;
-    method?:
-      | 'Cash'
-      | 'Online'
-      | 'Credit'
-      | 'Advance'
-      | string;
+    method?: 'Cash' | 'Online' | 'Credit' | 'Advance' | string;
     note?: string;
-    kind:
-      | 'initial_advance'
-      | 'additional_payment';
+    kind: 'initial_advance' | 'additional_payment';
     receivableOnlyRepair?: boolean;
     remainingAfterPayment: number;
     advancePaidAfterPayment: number;
@@ -684,16 +351,8 @@ export interface UpfrontOrderLedgerEffect {
   customerName: string;
   productName: string;
   description: string;
-  type:
-    | 'custom_order_receivable'
-    | 'custom_order_payment'
-    | 'legacy_custom_order_info';
-  paymentMethod:
-    | 'Cash'
-    | 'Online'
-    | 'Mixed'
-    | 'Unknown'
-    | 'Advance';
+  type: 'custom_order_receivable' | 'custom_order_payment' | 'legacy_custom_order_info';
+  paymentMethod: 'Cash' | 'Online' | 'Mixed' | 'Unknown' | 'Advance';
   cashIn: number;
   bankIn: number;
   receivableIncrease: number;
@@ -705,6 +364,7 @@ export interface UpfrontOrderLedgerEffect {
   isLegacyInfoOnly?: boolean;
   isReceivableOnlyRepair?: boolean;
 }
+
 
 export interface CashSession {
   id: string;
@@ -731,10 +391,7 @@ export interface CashSession {
   approvedByOperatorId?: string;
   approvedByOperatorName?: string;
   adminOverrideAt?: string;
-  closingDenominationCounts?: Record<
-    string,
-    number
-  >;
+  closingDenominationCounts?: Record<string, number>;
   closingEditedAt?: string;
   closingEditNote?: string;
   deletedAt?: string;
@@ -743,9 +400,7 @@ export interface CashSession {
   status: 'open' | 'closed';
 }
 
-export type CashSource =
-  | 'drawer'
-  | 'reserve';
+export type CashSource = 'drawer' | 'reserve';
 
 export interface Expense {
   id: string;
@@ -753,38 +408,18 @@ export interface Expense {
   amount: number;
   category: string;
   note?: string;
-  paymentMethod?:
-    | 'Cash'
-    | 'Online'
-    | string;
+  paymentMethod?: 'Cash' | 'Online' | string;
   cashSource?: CashSource;
   effectiveAt?: string;
   createdAt: string;
   updatedAt?: string;
 }
 
-export type FreightInquiryStatus =
-  | 'draft'
-  | 'saved'
-  | 'confirmed'
-  | 'converted';
 
-export type ProcurementSourceType =
-  | 'inventory'
-  | 'new';
-
-export type FreightConfirmedOrderStatus =
-  | 'draft'
-  | 'confirmed'
-  | 'converted_to_purchase'
-  | 'cancelled';
-
-export type FreightPurchaseStatus =
-  | 'draft'
-  | 'approved'
-  | 'partially_received'
-  | 'received'
-  | 'cancelled';
+export type FreightInquiryStatus = 'draft' | 'saved' | 'confirmed' | 'converted';
+export type ProcurementSourceType = 'inventory' | 'new';
+export type FreightConfirmedOrderStatus = 'draft' | 'confirmed' | 'converted_to_purchase' | 'cancelled';
+export type FreightPurchaseStatus = 'draft' | 'approved' | 'partially_received' | 'received' | 'cancelled';
 
 export interface ProcurementLineSnapshot {
   id: string;
@@ -825,26 +460,11 @@ export interface FreightBroker {
   updatedAt: string;
 }
 
-export type VariantSelectionMode =
-  | 'none'
-  | 'exact'
-  | 'unknown';
-
-export type InquiryPricingMode =
-  | 'common'
-  | 'line_wise';
-
-export type InquiryQuantityMode =
-  | 'order_level'
-  | 'line_level';
-
-export type InquiryFreightMode =
-  | 'order_level'
-  | 'line_level';
-
-export type InquiryCbmInputMode =
-  | 'from_cartons'
-  | 'manual_total';
+export type VariantSelectionMode = 'none' | 'exact' | 'unknown';
+export type InquiryPricingMode = 'common' | 'line_wise';
+export type InquiryQuantityMode = 'order_level' | 'line_level';
+export type InquiryFreightMode = 'order_level' | 'line_level';
+export type InquiryCbmInputMode = 'from_cartons' | 'manual_total';
 
 export interface FreightInquiry {
   id: string;
@@ -858,14 +478,10 @@ export interface FreightInquiry {
   color?: string;
   category?: string;
   baseProductDetails?: string;
-  orderType:
-    | 'in_house'
-    | 'customer_trade';
+  orderType: 'in_house' | 'customer_trade';
   brokerId?: string;
   brokerName?: string;
-  brokerType:
-    | 'broker'
-    | 'owner';
+  brokerType: 'broker' | 'owner';
   inquiryDate?: string;
   totalPieces: number;
   piecesPerCartoon: number;
@@ -913,14 +529,10 @@ export interface FreightConfirmedOrder {
   variant?: string;
   color?: string;
   category?: string;
-  orderType:
-    | 'in_house'
-    | 'customer_trade';
+  orderType: 'in_house' | 'customer_trade';
   brokerId?: string;
   brokerName?: string;
-  brokerType:
-    | 'broker'
-    | 'owner';
+  brokerType: 'broker' | 'owner';
   totalPieces: number;
   piecesPerCartoon: number;
   numberOfCartoons: number;
@@ -961,14 +573,10 @@ export interface FreightPurchase {
   variant?: string;
   color?: string;
   category?: string;
-  orderType:
-    | 'in_house'
-    | 'customer_trade';
+  orderType: 'in_house' | 'customer_trade';
   brokerId?: string;
   brokerName?: string;
-  brokerType:
-    | 'broker'
-    | 'owner';
+  brokerType: 'broker' | 'owner';
   totalPieces: number;
   piecesPerCartoon: number;
   numberOfCartoons: number;
@@ -1046,9 +654,7 @@ export interface PurchaseParty {
 
 export interface PurchaseOrderLine {
   id: string;
-  sourceType:
-    | 'inventory'
-    | 'new';
+  sourceType: 'inventory' | 'new';
   productId?: string;
   productName: string;
   pendingProductBarcode?: string;
@@ -1088,12 +694,7 @@ export interface PurchaseOrder {
   gstPercent?: number;
   taxableAmount?: number;
   gstAmount?: number;
-  status:
-    | 'draft'
-    | 'ordered'
-    | 'partially_received'
-    | 'received'
-    | 'cancelled';
+  status: 'draft' | 'ordered' | 'partially_received' | 'received' | 'cancelled';
   orderDate: string;
   effectiveAt?: string;
   notes?: string;
@@ -1106,17 +707,12 @@ export interface PurchaseOrder {
     id: string;
     paidAt: string;
     amount: number;
-    method?:
-      | 'cash'
-      | 'online'
-      | 'party_credit';
+    method?: 'cash' | 'online' | 'party_credit';
     cashSource?: CashSource;
     note?: string;
     supplierPaymentId?: string;
     creditLedgerEntryId?: string;
-    sourceType?:
-      | 'purchase'
-      | 'freight';
+    sourceType?: 'purchase' | 'freight';
   }>;
   receivedQuantity?: number;
   createdAt: string;
@@ -1130,9 +726,7 @@ export interface PartyCreditUsage {
   amount: number;
   usedAt: string;
   sourceRef?: string;
-  sourceType?:
-    | 'purchase'
-    | 'freight';
+  sourceType?: 'purchase' | 'freight';
 }
 
 export interface PartyCreditLedgerEntry {
@@ -1143,12 +737,7 @@ export interface PartyCreditLedgerEntry {
   remainingAmount: number;
   sourcePaymentId?: string;
   sourceVoucherNo?: string;
-  method:
-    | 'cash'
-    | 'online'
-    | 'Cash'
-    | 'Online'
-    | string;
+  method: 'cash' | 'online' | 'Cash' | 'Online' | string;
   paidAt: string;
   note?: string;
   type: 'supplier_overpayment';
@@ -1163,9 +752,7 @@ export interface SupplierPaymentLedgerEntry {
   partyId: string;
   partyName: string;
   amount: number;
-  method:
-    | 'cash'
-    | 'online';
+  method: 'cash' | 'online';
   cashSource?: CashSource;
   paidAt: string;
   effectiveAt?: string;
@@ -1173,33 +760,21 @@ export interface SupplierPaymentLedgerEntry {
   createdAt: string;
   updatedAt?: string;
   deletedAt?: string;
-  allocations?: Array<{
-    orderId: string;
-    orderRef?: string;
-    amount: number;
-  }>;
+  allocations?: Array<{ orderId: string; orderRef?: string; amount: number }>;
   paymentAppliedToPayable?: number;
   partyCreditCreated?: number;
 }
 
 export interface ExpenseActivity {
   id: string;
-  action:
-    | 'add_expense'
-    | 'delete_expense'
-    | 'add_category'
-    | 'delete_category'
-    | 'cash_addition'
-    | 'cash_withdrawal';
+  action: 'add_expense' | 'delete_expense' | 'add_category' | 'delete_category' | 'cash_addition' | 'cash_withdrawal';
   message: string;
   createdAt: string;
 }
 
 export interface CashAdjustment {
   id: string;
-  type:
-    | 'cash_addition'
-    | 'cash_withdrawal';
+  type: 'cash_addition' | 'cash_withdrawal';
   amount: number;
   method?: string;
   cashSource?: CashSource;
@@ -1213,10 +788,9 @@ export interface CashAdjustment {
   sessionId?: string;
 }
 
+
 export interface CustomerProductStatsBackfillMarker {
-  status:
-    | 'pending'
-    | 'completed';
+  status: 'pending' | 'completed';
   completedAt?: string;
   version?: string;
   strictModeEnabled?: boolean;
@@ -1240,9 +814,7 @@ export interface DeleteCompensationRecord {
   customerName?: string;
   amount: number;
   mode: 'cash_refund';
-  source?:
-    | 'explicit_refund'
-    | 'legacy_auto';
+  source?: 'explicit_refund' | 'legacy_auto';
   isExplicitRefund?: boolean;
   refundConfirmed?: boolean;
   reason?: string;
@@ -1256,9 +828,7 @@ export interface DeletedTransactionRecord {
   deletedAt: string;
   deleteReason?: string;
   deleteReasonNote?: string;
-  deleteCompensationMode?:
-    | 'cash_refund'
-    | 'store_credit';
+  deleteCompensationMode?: 'cash_refund' | 'store_credit';
   deleteCompensationAmount?: number;
   deletedBy?: string;
   deletedByRole?: string;
@@ -1308,9 +878,7 @@ export interface UpdatedTransactionRecord {
 export interface ManualCashbookEntry {
   id: string;
   date: string;
-  type:
-    | 'cash_in'
-    | 'cash_out';
+  type: 'cash_in' | 'cash_out';
   amount: number;
   details: string;
   paymentMethod: 'Cash';
@@ -1322,41 +890,10 @@ export interface ManualCashbookEntry {
 
 export interface RepairHistoryEntry {
   id: string;
-  entityType:
-    | 'customer'
-    | 'purchase_party'
-    | 'expense'
-    | 'cash_adjustment';
+  entityType: 'customer' | 'purchase_party' | 'expense' | 'cash_adjustment';
   entityId: string;
   entityName: string;
-  repairKind:
-    | 'add_payment'
-    | 'edit_payment'
-    | 'delete_payment'
-    | 'edit_sale'
-    | 'add_sale'
-    | 'delete_sale'
-    | 'add_return'
-    | 'edit_return'
-    | 'delete_return'
-    | 'add_purchase'
-    | 'edit_purchase'
-    | 'delete_purchase'
-    | 'add_supplier_payment'
-    | 'edit_supplier_payment'
-    | 'delete_supplier_payment'
-    | 'add_expense'
-    | 'edit_expense'
-    | 'delete_expense'
-    | 'add_cash_withdrawal'
-    | 'edit_cash_withdrawal'
-    | 'delete_cash_withdrawal'
-    | 'add_advance_order'
-    | 'edit_advance_order'
-    | 'delete_advance_order'
-    | 'add_advance_payment'
-    | 'edit_advance_payment'
-    | 'delete_advance_payment';
+  repairKind: 'add_payment' | 'edit_payment' | 'delete_payment' | 'edit_sale' | 'add_sale' | 'delete_sale' | 'add_return' | 'edit_return' | 'delete_return' | 'add_purchase' | 'edit_purchase' | 'delete_purchase' | 'add_supplier_payment' | 'edit_supplier_payment' | 'delete_supplier_payment' | 'add_expense' | 'edit_expense' | 'delete_expense' | 'add_cash_withdrawal' | 'edit_cash_withdrawal' | 'delete_cash_withdrawal' | 'add_advance_order' | 'edit_advance_order' | 'delete_advance_order' | 'add_advance_payment' | 'edit_advance_payment' | 'delete_advance_payment';
   targetTransactionId?: string;
   reason: string;
   notes?: string;
@@ -1402,39 +939,31 @@ export interface AppState {
   categories: string[];
   customers: Customer[];
   profile: StoreProfile;
-
   documentSeries?: {
     salesInvoice?: DocumentSeriesConfig;
     salesCreditNote?: DocumentSeriesConfig;
     customerPaymentReceipt?: DocumentSeriesConfig;
     supplierPaymentVoucher?: DocumentSeriesConfig;
   };
-
   upfrontOrders: UpfrontOrder[];
-
   cashSessions?: CashSession[];
   expenses?: Expense[];
   expenseCategories?: string[];
   expenseActivities?: ExpenseActivity[];
   cashAdjustments?: CashAdjustment[];
-
   freightInquiries?: FreightInquiry[];
   freightConfirmedOrders?: FreightConfirmedOrder[];
   freightPurchases?: FreightPurchase[];
   purchaseReceiptPostings?: PurchaseReceiptPosting[];
   freightBrokers?: FreightBroker[];
-
   purchaseParties?: PurchaseParty[];
   purchaseOrders?: PurchaseOrder[];
   supplierPayments?: SupplierPaymentLedgerEntry[];
   partyCreditLedger?: PartyCreditLedgerEntry[];
-
   manualCashbookEntries?: ManualCashbookEntry[];
   operatorUsers?: OperatorUser[];
-
   variantsMaster?: string[];
   colorsMaster?: string[];
-
   migrationMarkers?: MigrationMarkers;
   repairHistoryEntries?: RepairHistoryEntry[];
 }
@@ -1442,147 +971,39 @@ export interface AppState {
 export type TaxOption = {
   label: string;
   value: number;
-  mode?:
-    | 'none'
-    | 'cgst_sgst'
-    | 'igst';
+  mode?: 'none' | 'cgst_sgst' | 'igst';
   legacyAliases?: string[];
 };
 
 export const TAX_OPTIONS: TaxOption[] = [
-  {
-    label: 'None',
-    value: 0,
-    mode: 'none',
-  },
-  {
-    label: 'Exempted',
-    value: 0,
-    mode: 'none',
-  },
-  {
-    label: 'CGST+SGST@0%',
-    value: 0,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@0%'],
-  },
-  {
-    label: 'IGST@0%',
-    value: 0,
-    mode: 'igst',
-  },
-  {
-    label: 'CGST+SGST@0.25%',
-    value: 0.25,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@0.25%'],
-  },
-  {
-    label: 'IGST@0.25%',
-    value: 0.25,
-    mode: 'igst',
-  },
-  {
-    label: 'CGST+SGST@3%',
-    value: 3,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@3%'],
-  },
-  {
-    label: 'IGST@3%',
-    value: 3,
-    mode: 'igst',
-  },
-  {
-    label: 'CGST+SGST@5%',
-    value: 5,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@5%'],
-  },
-  {
-    label: 'IGST@5%',
-    value: 5,
-    mode: 'igst',
-  },
-  {
-    label: 'CGST+SGST@12%',
-    value: 12,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@12%'],
-  },
-  {
-    label: 'IGST@12%',
-    value: 12,
-    mode: 'igst',
-  },
-  {
-    label: 'CGST+SGST@18%',
-    value: 18,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@18%'],
-  },
-  {
-    label: 'IGST@18%',
-    value: 18,
-    mode: 'igst',
-  },
-  {
-    label: 'CGST+SGST@28%',
-    value: 28,
-    mode: 'cgst_sgst',
-    legacyAliases: ['GST@28%'],
-  },
-  {
-    label: 'IGST@28%',
-    value: 28,
-    mode: 'igst',
-  },
+    { label: 'None', value: 0, mode: 'none' },
+    { label: 'Exempted', value: 0, mode: 'none' },
+    { label: 'CGST+SGST@0%', value: 0, mode: 'cgst_sgst', legacyAliases: ['GST@0%'] },
+    { label: 'IGST@0%', value: 0, mode: 'igst' },
+    { label: 'CGST+SGST@0.25%', value: 0.25, mode: 'cgst_sgst', legacyAliases: ['GST@0.25%'] },
+    { label: 'IGST@0.25%', value: 0.25, mode: 'igst' },
+    { label: 'CGST+SGST@3%', value: 3, mode: 'cgst_sgst', legacyAliases: ['GST@3%'] },
+    { label: 'IGST@3%', value: 3, mode: 'igst' },
+    { label: 'CGST+SGST@5%', value: 5, mode: 'cgst_sgst', legacyAliases: ['GST@5%'] },
+    { label: 'IGST@5%', value: 5, mode: 'igst' },
+    { label: 'CGST+SGST@12%', value: 12, mode: 'cgst_sgst', legacyAliases: ['GST@12%'] },
+    { label: 'IGST@12%', value: 12, mode: 'igst' },
+    { label: 'CGST+SGST@18%', value: 18, mode: 'cgst_sgst', legacyAliases: ['GST@18%'] },
+    { label: 'IGST@18%', value: 18, mode: 'igst' },
+    { label: 'CGST+SGST@28%', value: 28, mode: 'cgst_sgst', legacyAliases: ['GST@28%'] },
+    { label: 'IGST@28%', value: 28, mode: 'igst' }
 ];
 
-export const resolveTaxOption = (
-  label?: string,
-  rate?: number,
-): TaxOption => {
-  const normalizedLabel =
-    String(label || '').trim();
-
-  const normalizedRate =
-    Number(rate);
-
-  const exact =
-    TAX_OPTIONS.find(
-      (option) =>
-        option.label === normalizedLabel,
-    );
-
-  if (exact) {
-    return exact;
-  }
-
-  const alias =
-    TAX_OPTIONS.find(
-      (option) =>
-        option.legacyAliases?.includes(
-          normalizedLabel,
-        ),
-    );
-
-  if (alias) {
-    return alias;
-  }
-
+export const resolveTaxOption = (label?: string, rate?: number): TaxOption => {
+  const normalizedLabel = String(label || '').trim();
+  const normalizedRate = Number(rate);
+  const exact = TAX_OPTIONS.find((option) => option.label === normalizedLabel);
+  if (exact) return exact;
+  const alias = TAX_OPTIONS.find((option) => option.legacyAliases?.includes(normalizedLabel));
+  if (alias) return alias;
   if (Number.isFinite(normalizedRate)) {
-    const byRate =
-      TAX_OPTIONS.find(
-        (option) =>
-          option.value === normalizedRate &&
-          option.mode === 'cgst_sgst',
-      );
-
-    if (byRate) {
-      return byRate;
-    }
+    const byRate = TAX_OPTIONS.find((option) => option.value === normalizedRate && option.mode === 'cgst_sgst');
+    if (byRate) return byRate;
   }
-
   return TAX_OPTIONS[0];
 };

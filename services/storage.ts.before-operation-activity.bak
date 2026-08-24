@@ -1,3 +1,4 @@
+this one is bakcup file of what i dontknow
 import {
   Product,
   CartItem,
@@ -2674,22 +2675,12 @@ const commitProcessTransactionAtomically = async ({
       migrationPhase: TRANSACTIONS_MIGRATION_PHASE,
       status: OPERATION_COMMIT_STATUS.COMMITTED,
       committedAt: serverTimestamp(),
-
-      actorUid: user.uid,
-      actorEmail: user.email || null,
-
       transactionId: transaction.id,
       transactionType: transaction.type,
       customerId: transaction.customerId || null,
-
       touchedProductIds: productIds,
-      touchedCustomerIds: transaction.customerId
-        ? [transaction.customerId]
-        : [],
-
-      transactionSnapshot: sanitizeData(transaction),
-
-      payloadVersion: 2,
+      touchedCustomerIds: transaction.customerId ? [transaction.customerId] : [],
+      payloadVersion: 1,
     }, { merge: true });
 
     return { created: true, committedProducts, committedCustomer };
