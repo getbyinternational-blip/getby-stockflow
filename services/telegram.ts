@@ -1,4 +1,4 @@
-import {
+import type {
   TelegramCollectionActivityItem,
   TelegramCollectionFrequencyUnit,
   TelegramCollectionRepeatMode,
@@ -6,130 +6,231 @@ import {
   TelegramSchedulerProduct,
 } from '../types';
 
-let hasLoggedTelegramServerUrl = false;
-const TELEGRAM_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_TELEGRAM_LOGS || 'false').toLowerCase() === 'true';
-const TELEGRAM_SERVER_URL = String(
-  import.meta.env.VITE_TELEGRAM_SERVER_URL || ''
-).trim().replace(/\/+$/, '');
+import {
+  getTelegramHeaders,
+  getTelegramServerUrl,
+  logTelegramDebug,
+} from './telegramConfig';
 
-const logTelegramDebug = (event: string, payload: Record<string, unknown>) => {
-  if (!TELEGRAM_DEBUG_LOGS_ENABLED) return;
-  console.log(event, payload);
+import {
+  createTelegramHttpError,
+  toTelegramClientError,
+} from './telegramErrors';
+
+import {
+  extractTelegramActivityRows,
+  extractTelegramCollectionRow,
+  extractTelegramCollectionRows,
+  mapTelegramCollectionActivityItem,
+  mapTelegramLiveCollection,
+} from './telegramMapper';
+
+import {
+  buildTelegramCollectionControlRequest,
+  buildTelegramCollectionStartRequest,
+  buildTelegramManualPostRequest,
+} from './telegramPayloads';
+
+type UnknownRecord =
+  Record<string, unknown>;
+
+const isRecord = (
+  value: unknown,
+): value is UnknownRecord => {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value)
+  );
 };
 
-const getTelegramServerUrl = () => {
-  if (!hasLoggedTelegramServerUrl) {
-    logTelegramDebug('telegram.server_url', {
-      telegramServerUrl: TELEGRAM_SERVER_URL,
-      hasTelegramServerUrl: Boolean(TELEGRAM_SERVER_URL),
-    });
-    hasLoggedTelegramServerUrl = true;
-  }
-  if (!TELEGRAM_SERVER_URL) {
-    throw new Error('Telegram server URL is not configured. Set VITE_TELEGRAM_SERVER_URL and try again.');
-  }
-  return TELEGRAM_SERVER_URL;
+const safeText = (
+  value: unknown,
+): string => {
+  return String(
+    value ?? '',
+  ).trim();
 };
 
-const getTelegramHeaders = () => {
-  const apiKey = String((import.meta as any)?.env?.VITE_TELEGRAM_API_KEY || '').trim();
+const safeJson = async (
+  response: Response,
+): Promise<unknown> => {
+  const text =
+    await response.text();
+
+  if (!text) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      message: text,
+    };
+  }
+};
+
+const getErrorDetails = (
+  data: unknown,
+): {
+  message?: unknown;
+  code?: unknown;
+  retryAfterSeconds?: unknown;
+} => {
+  if (!isRecord(data)) {
+    return {};
+  }
+
+  const nestedError =
+    isRecord(data.error)
+      ? data.error
+      : {};
+
+  const stringError =
+    typeof data.error === 'string'
+      ? data.error
+      : undefined;
+
   return {
-    'Content-Type': 'application/json',
-    ...(apiKey ? { 'x-stockflow-telegram-key': apiKey } : {}),
+    message:
+      data.message ??
+      nestedError.message ??
+      stringError,
+
+    code:
+      data.code ??
+      data.errorCode ??
+      nestedError.code ??
+      nestedError.errorCode,
+
+    retryAfterSeconds:
+      data.retryAfterSeconds ??
+      data.retryAfter ??
+      nestedError.retryAfterSeconds ??
+      nestedError.retryAfter,
   };
 };
 
-const safeJson = async (response: Response) => {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch {
-    return {};
-  }
-};
+const readResponseData = async <T>(
+  response: Response,
+  fallback: string,
+): Promise<T> => {
+  const data =
+    await safeJson(response);
 
-const getTelegramErrorMessage = (error: unknown, fallback: string) => {
-  const message = error instanceof Error ? error.message : String(error || '');
-  const normalized = message.toLowerCase();
-  if (normalized.includes('failed to fetch') || normalized.includes('networkerror') || normalized.includes('network request failed')) {
-    return 'Backend not reachable';
-  }
-  if (normalized.includes('401') || normalized.includes('403') || normalized.includes('unauthorized') || normalized.includes('forbidden') || normalized.includes('telegram auth')) {
-    return 'Telegram auth failed';
-  }
-  return message || fallback;
-};
-
-const readResponseData = async <T>(response: Response, fallback: string): Promise<T> => {
-  const data = await safeJson(response);
   if (!response.ok) {
-    throw new Error(data?.message || data?.error || fallback);
+    const details =
+      getErrorDetails(data);
+
+    const retryAfterHeader =
+      response.headers.get(
+        'retry-after',
+      );
+
+    throw createTelegramHttpError({
+      status:
+        response.status,
+
+      message:
+        details.message ||
+        fallback,
+
+      code:
+        details.code,
+
+      retryAfterSeconds:
+        details.retryAfterSeconds ??
+        (
+          retryAfterHeader
+            ? Number(
+                retryAfterHeader,
+              )
+            : undefined
+        ),
+
+      cause:
+        data,
+    });
   }
+
   return data as T;
 };
 
-const toNonNegativeNumber = (value: unknown, fallback = 0) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-};
-
-const safeText = (value: unknown, fallback = '') => {
-  const text = String(value ?? '').trim();
-  return text || fallback;
-};
-
-const normalizeLiveCollection = (entry: any): TelegramLiveCollection => ({
-  id: safeText(entry?.id || entry?._id || entry?.collectionId || entry?.name || `telegram-live-${Date.now()}`),
-  collectionId: safeText(entry?.collectionId || entry?.id) || undefined,
-  name: safeText(entry?.name || entry?.collectionName, 'Unnamed collection'),
-  channelId: safeText(entry?.channelId || entry?.channel, ''),
-  category: safeText(entry?.category, 'all'),
-  status: safeText(entry?.status, 'unknown'),
-  productsCount: toNonNegativeNumber(entry?.productsCount ?? entry?.productCount ?? entry?.products?.length),
-  currentCursor: toNonNegativeNumber(entry?.currentCursor ?? entry?.cursor),
-  sentCount: toNonNegativeNumber(entry?.sentCount ?? entry?.postedCount ?? entry?.successCount),
-  failedCount: toNonNegativeNumber(entry?.failedCount ?? entry?.failureCount),
-  lastPostedProduct: safeText(entry?.lastPostedProduct || entry?.lastPostedProductName) || undefined,
-  lastPostedAt: safeText(entry?.lastPostedAt) || undefined,
-  nextPostAt: safeText(entry?.nextPostAt || entry?.nextRunAt) || undefined,
-  frequencyValue: toNonNegativeNumber(entry?.frequencyValue ?? entry?.frequency?.value, 1),
-  frequencyUnit: safeText(entry?.frequencyUnit || entry?.frequency?.unit, 'minutes') as TelegramCollectionFrequencyUnit | string,
-  batchSize: toNonNegativeNumber(entry?.batchSize, 2),
-  autoStartTime: safeText(entry?.autoStartTime) || undefined,
-  repeatMode: safeText(entry?.repeatMode, 'loop') as TelegramCollectionRepeatMode | string,
-  maxFailuresBeforePause: toNonNegativeNumber(entry?.maxFailuresBeforePause, 3),
-});
-
-const normalizeActivityItem = (entry: any): TelegramCollectionActivityItem => ({
-  id: safeText(entry?.id || entry?._id || `${entry?.collectionId || 'activity'}-${entry?.postedAt || entry?.createdAt || Date.now()}`),
-  collectionId: safeText(entry?.collectionId) || undefined,
-  collectionName: safeText(entry?.collectionName || entry?.name) || undefined,
-  status: safeText(entry?.status) || undefined,
-  productId: safeText(entry?.productId) || undefined,
-  productName: safeText(entry?.productName || entry?.lastPostedProductName) || undefined,
-  error: safeText(entry?.error || entry?.message) || undefined,
-  postedAt: safeText(entry?.postedAt) || undefined,
-  createdAt: safeText(entry?.createdAt) || undefined,
-  updatedAt: safeText(entry?.updatedAt) || undefined,
-});
-
-const requestTelegram = async <T>(path: string, options?: RequestInit, fallback = 'Telegram request failed.') => {
+const requestTelegram = async <T>(
+  path: string,
+  options: RequestInit = {},
+  fallback =
+    'Telegram request failed',
+): Promise<T> => {
   try {
-    const response = await fetch(`${getTelegramServerUrl()}${path}`, {
-      ...options,
-      headers: {
-        ...getTelegramHeaders(),
-        ...(options?.headers || {}),
-      },
-    });
-    return await readResponseData<T>(response, fallback);
+    const response =
+      await fetch(
+        `${getTelegramServerUrl()}${path}`,
+        {
+          ...options,
+
+          headers: {
+            ...getTelegramHeaders(),
+            ...(options.headers || {}),
+          },
+        },
+      );
+
+    return await readResponseData<T>(
+      response,
+      fallback,
+    );
   } catch (error) {
-    throw new Error(getTelegramErrorMessage(error, fallback));
+    throw toTelegramClientError(
+      error,
+      fallback,
+    );
   }
 };
 
+const hasCollectionIdentity = (
+  value: UnknownRecord,
+): boolean => {
+  return Boolean(
+    safeText(
+      value.id ??
+        value.collectionId ??
+        value._id,
+    ),
+  );
+};
+
+const mapCollectionResponse = (
+  data: unknown,
+): TelegramLiveCollection | null => {
+  const row =
+    extractTelegramCollectionRow(
+      data,
+    );
+
+  if (
+    !isRecord(row) ||
+    !hasCollectionIdentity(row)
+  ) {
+    return null;
+  }
+
+  return mapTelegramLiveCollection(
+    row,
+  );
+};
+
+/**
+ * Compatibility type for the current
+ * TelegramPosts.tsx manual Send Now flow.
+ *
+ * This can be removed after the page has
+ * migrated to the canonical request type.
+ */
 export type TelegramProductPostPayload = {
   channelId: string;
+
   product: {
     id: string;
     name: string;
@@ -140,183 +241,425 @@ export type TelegramProductPostPayload = {
     description?: string;
     keywords?: string;
   };
+
   template: string;
   notes: string;
 };
 
+/**
+ * Compatibility type for the current
+ * TelegramPosts.tsx collection-start flow.
+ *
+ * Legacy fields remain accepted here so
+ * the large page can be migrated safely
+ * in later steps.
+ *
+ * Only canonical backend fields are sent.
+ */
 export type TelegramCollectionSchedulerPayload = {
   id?: string;
   collectionId?: string;
   collectionName?: string;
+
   name: string;
   channelId: string;
+
   template: string;
   notes: string;
   category: string;
+
   frequency?: {
     value: number;
     unit: TelegramCollectionFrequencyUnit;
   };
+
   frequencyValue: number;
-  frequencyUnit: TelegramCollectionFrequencyUnit;
+
+  frequencyUnit:
+    TelegramCollectionFrequencyUnit;
+
   batchSize?: number;
+
+  startAt?: string | null;
+
+  /**
+   * Legacy page compatibility.
+   * Converted to canonical startAt.
+   */
   autoStartTime?: string;
+
+  /**
+   * Legacy page field.
+   * Backend scheduler no longer uses it.
+   */
   endTime?: string;
-  repeatMode: TelegramCollectionRepeatMode;
+
+  repeatMode:
+    TelegramCollectionRepeatMode;
+
   maxFailuresBeforePause: number;
+
+  /**
+   * Legacy frontend-only field.
+   * Not sent to the backend.
+   */
   postMode?: string;
-  products: TelegramSchedulerProduct[];
+
+  products:
+    TelegramSchedulerProduct[];
 };
 
-export const createTelegramProductPost = async (payload: TelegramProductPostPayload) => {
-  return requestTelegram(
-    '/api/telegram/post-product',
-    {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    },
-    'Telegram product post request failed.',
-  );
-};
+export const createTelegramProductPost =
+  async (
+    payload:
+      TelegramProductPostPayload,
+  ): Promise<unknown> => {
+    const requestPayload =
+      buildTelegramManualPostRequest({
+        channelId:
+          payload.channelId,
 
-export const startTelegramCollection = async (payload: TelegramCollectionSchedulerPayload) => {
-  const normalizedBatchSize = toNonNegativeNumber(payload.batchSize, 2) || 2;
-  const normalizedPayload = {
-    collectionId: payload.collectionId || payload.id,
-    name: payload.name,
-    channelId: payload.channelId,
-    category: payload.category,
-    template: payload.template,
-    notes: payload.notes,
-    frequencyValue: payload.frequencyValue,
-    frequencyUnit: payload.frequencyUnit,
-    frequency: {
-      value: payload.frequencyValue,
-      unit: payload.frequencyUnit,
-    },
-    batchSize: normalizedBatchSize,
-    batch: {
-      size: normalizedBatchSize,
-    },
-    productsPerBatch: normalizedBatchSize,
-    batchCount: normalizedBatchSize,
-    itemsPerRun: normalizedBatchSize,
-    autoStartTime: payload.autoStartTime,
-    endTime: payload.endTime,
-    repeatMode: payload.repeatMode,
-    maxFailuresBeforePause: payload.maxFailuresBeforePause,
-    schedulerOptions: {
-      frequencyValue: payload.frequencyValue,
-      frequencyUnit: payload.frequencyUnit,
-      batchSize: normalizedBatchSize,
-      autoStartTime: payload.autoStartTime,
-      endTime: payload.endTime,
-      repeatMode: payload.repeatMode,
-      maxFailuresBeforePause: payload.maxFailuresBeforePause,
-    },
-    products: payload.products.map((product) => ({
-      id: product.id,
-      name: product.name,
-      description: product.description,
-      price: product.price,
-      salePrice: product.salePrice,
-      imageUrl: product.imageUrl,
-      category: product.category,
-      stock: product.stock,
-      barcode: product.barcode,
-    })),
+        product:
+          payload.product,
+
+        template:
+          payload.template,
+
+        notes:
+          payload.notes,
+      });
+
+    logTelegramDebug(
+      'telegram.product_post.request',
+      {
+        productId:
+          requestPayload.product.id,
+
+        channelIdPresent:
+          Boolean(
+            requestPayload.channelId,
+          ),
+
+        hasImage:
+          Boolean(
+            requestPayload.product.image,
+          ),
+      },
+    );
+
+    return requestTelegram<unknown>(
+      '/api/telegram/post-product',
+      {
+        method: 'POST',
+
+        body:
+          JSON.stringify(
+            requestPayload,
+          ),
+      },
+      'Telegram product post request failed.',
+    );
   };
-  logTelegramDebug('telegram.collection.start.payload', {
-    collectionId: normalizedPayload.collectionId,
-    name: normalizedPayload.name,
-    channelIdPresent: Boolean(normalizedPayload.channelId),
-    productsCount: normalizedPayload.products.length,
-    firstProduct: normalizedPayload.products[0] ? {
-      id: normalizedPayload.products[0].id,
-      name: normalizedPayload.products[0].name,
-      hasImageUrl: Boolean(normalizedPayload.products[0].imageUrl),
-      category: normalizedPayload.products[0].category,
-      stock: normalizedPayload.products[0].stock,
-    } : null,
-    frequencyValue: normalizedPayload.frequencyValue,
-    frequencyUnit: normalizedPayload.frequencyUnit,
-    batchSize: normalizedPayload.batchSize,
-    productsPerBatch: normalizedPayload.productsPerBatch,
-    itemsPerRun: normalizedPayload.itemsPerRun,
-    autoStartTime: normalizedPayload.autoStartTime,
-    repeatMode: normalizedPayload.repeatMode,
-    maxFailuresBeforePause: normalizedPayload.maxFailuresBeforePause,
-  });
-  return requestTelegram(
-    '/api/telegram/collections/start',
-    {
-      method: 'POST',
-      body: JSON.stringify(normalizedPayload),
-    },
-    'Could not start Telegram collection.',
-  );
-};
 
-export const stopTelegramCollection = async (collectionId: string) => {
-  return requestTelegram(
-    '/api/telegram/collections/stop',
-    {
-      method: 'POST',
-      body: JSON.stringify({ collectionId }),
-    },
-    'Could not stop Telegram collection.',
-  );
-};
+export const startTelegramCollection =
+  async (
+    payload:
+      TelegramCollectionSchedulerPayload,
+  ): Promise<
+    TelegramLiveCollection | null
+  > => {
+    const frequencyValue =
+      Number.isFinite(
+        Number(
+          payload.frequencyValue,
+        ),
+      )
+        ? Number(
+            payload.frequencyValue,
+          )
+        : Number(
+            payload.frequency?.value,
+          );
 
-export const pauseTelegramCollection = async (collectionId: string) => {
-  return requestTelegram(
-    '/api/telegram/collections/pause',
-    {
-      method: 'POST',
-      body: JSON.stringify({ collectionId }),
-    },
-    'Could not pause Telegram collection.',
-  );
-};
+    const frequencyUnit =
+      payload.frequencyUnit ||
+      payload.frequency?.unit ||
+      'minutes';
 
-export const resumeTelegramCollection = async (collectionId: string) => {
-  return requestTelegram(
-    '/api/telegram/collections/resume',
-    {
-      method: 'POST',
-      body: JSON.stringify({ collectionId }),
-    },
-    'Could not resume Telegram collection.',
-  );
-};
+    const requestPayload =
+      buildTelegramCollectionStartRequest({
+        id:
+          payload.id,
 
-export const getLiveTelegramCollections = async (): Promise<TelegramLiveCollection[]> => {
-  const data = await requestTelegram<any>(
-    '/api/telegram/collections/live',
-    { method: 'GET' },
-    'Could not load live Telegram collections.',
-  );
-  const rows = Array.isArray(data) ? data : Array.isArray(data?.collections) ? data.collections : Array.isArray(data?.data) ? data.data : [];
-  return rows.map(normalizeLiveCollection);
-};
+        collectionId:
+          payload.collectionId,
 
-export const getTelegramCollection = async (id: string): Promise<TelegramLiveCollection | null> => {
-  const data = await requestTelegram<any>(
-    `/api/telegram/collections/${encodeURIComponent(id)}`,
-    { method: 'GET' },
-    'Could not load Telegram collection.',
-  );
-  const row = data?.collection || data?.data || data;
-  if (!row || typeof row !== 'object') return null;
-  return normalizeLiveCollection(row);
-};
+        name:
+          payload.name ||
+          payload.collectionName ||
+          '',
 
-export const getTelegramCollectionActivity = async (id: string): Promise<TelegramCollectionActivityItem[]> => {
-  const data = await requestTelegram<any>(
-    `/api/telegram/collections/${encodeURIComponent(id)}/activity`,
-    { method: 'GET' },
-    'Could not load Telegram collection activity.',
-  );
-  const rows = Array.isArray(data) ? data : Array.isArray(data?.activity) ? data.activity : Array.isArray(data?.data) ? data.data : [];
-  return rows.map(normalizeActivityItem);
-};
+        channelId:
+          payload.channelId,
+
+        category:
+          payload.category,
+
+        template:
+          payload.template,
+
+        notes:
+          payload.notes,
+
+        frequencyValue,
+
+        frequencyUnit,
+
+        batchSize:
+          payload.batchSize ??
+          2,
+
+        startAt:
+          payload.startAt,
+
+        autoStartTime:
+          payload.autoStartTime,
+
+        repeatMode:
+          payload.repeatMode ||
+          'loop',
+
+        maxFailuresBeforePause:
+          payload.maxFailuresBeforePause ||
+          3,
+
+        products:
+          payload.products,
+      });
+
+    logTelegramDebug(
+      'telegram.collection.start.request',
+      {
+        collectionId:
+          requestPayload.collectionId,
+
+        name:
+          requestPayload.name,
+
+        channelIdPresent:
+          Boolean(
+            requestPayload.channelId,
+          ),
+
+        productsCount:
+          requestPayload.products.length,
+
+        frequencyValue:
+          requestPayload.frequencyValue,
+
+        frequencyUnit:
+          requestPayload.frequencyUnit,
+
+        batchSize:
+          requestPayload.batchSize,
+
+        repeatMode:
+          requestPayload.repeatMode,
+
+        startAt:
+          requestPayload.startAt,
+      },
+    );
+
+    const data =
+      await requestTelegram<unknown>(
+        '/api/telegram/collections/start',
+        {
+          method: 'POST',
+
+          body:
+            JSON.stringify(
+              requestPayload,
+            ),
+        },
+        'Could not start Telegram collection.',
+      );
+
+    return mapCollectionResponse(
+      data,
+    );
+  };
+
+const sendCollectionControlRequest =
+  async (
+    action:
+      | 'pause'
+      | 'resume'
+      | 'stop',
+
+    collectionId: string,
+  ): Promise<
+    TelegramLiveCollection | null
+  > => {
+    const requestPayload =
+      buildTelegramCollectionControlRequest(
+        collectionId,
+      );
+
+    logTelegramDebug(
+      `telegram.collection.${action}.request`,
+      {
+        collectionId:
+          requestPayload.collectionId,
+      },
+    );
+
+    const data =
+      await requestTelegram<unknown>(
+        `/api/telegram/collections/${action}`,
+        {
+          method: 'POST',
+
+          body:
+            JSON.stringify(
+              requestPayload,
+            ),
+        },
+        `Could not ${action} Telegram collection.`,
+      );
+
+    return mapCollectionResponse(
+      data,
+    );
+  };
+
+export const stopTelegramCollection =
+  async (
+    collectionId: string,
+  ): Promise<
+    TelegramLiveCollection | null
+  > => {
+    return sendCollectionControlRequest(
+      'stop',
+      collectionId,
+    );
+  };
+
+export const pauseTelegramCollection =
+  async (
+    collectionId: string,
+  ): Promise<
+    TelegramLiveCollection | null
+  > => {
+    return sendCollectionControlRequest(
+      'pause',
+      collectionId,
+    );
+  };
+
+export const resumeTelegramCollection =
+  async (
+    collectionId: string,
+  ): Promise<
+    TelegramLiveCollection | null
+  > => {
+    return sendCollectionControlRequest(
+      'resume',
+      collectionId,
+    );
+  };
+
+export const getLiveTelegramCollections =
+  async (): Promise<
+    TelegramLiveCollection[]
+  > => {
+    const data =
+      await requestTelegram<unknown>(
+        '/api/telegram/collections/live',
+        {
+          method: 'GET',
+        },
+        'Could not load live Telegram collections.',
+      );
+
+    const rows =
+      extractTelegramCollectionRows(
+        data,
+      );
+
+    return rows
+      .filter(isRecord)
+      .map(
+        (
+          row,
+          index,
+        ) =>
+          mapTelegramLiveCollection(
+            row,
+            index,
+          ),
+      );
+  };
+
+export const getTelegramCollection =
+  async (
+    id: string,
+  ): Promise<
+    TelegramLiveCollection | null
+  > => {
+    const collectionId =
+      safeText(id);
+
+    if (!collectionId) {
+      return null;
+    }
+
+    const data =
+      await requestTelegram<unknown>(
+        `/api/telegram/collections/${encodeURIComponent(
+          collectionId,
+        )}`,
+        {
+          method: 'GET',
+        },
+        'Could not load Telegram collection.',
+      );
+
+    return mapCollectionResponse(
+      data,
+    );
+  };
+
+export const getTelegramCollectionActivity =
+  async (
+    id: string,
+  ): Promise<
+    TelegramCollectionActivityItem[]
+  > => {
+    const collectionId =
+      safeText(id);
+
+    if (!collectionId) {
+      return [];
+    }
+
+    const data =
+      await requestTelegram<unknown>(
+        `/api/telegram/collections/${encodeURIComponent(
+          collectionId,
+        )}/activity`,
+        {
+          method: 'GET',
+        },
+        'Could not load Telegram collection activity.',
+      );
+
+    const rows =
+      extractTelegramActivityRows(
+        data,
+      );
+
+    return rows.map(
+      mapTelegramCollectionActivityItem,
+    );
+  };

@@ -712,6 +712,7 @@ export interface CashSession {
   endTime?: string;
   openingBalance: number;
   closingBalance?: number;
+  activeSystemCashTotal?: number;
   reservedCashOnHand?: number;
   reservedCashSavedAt?: string;
   reserveCashLedger?: Array<{

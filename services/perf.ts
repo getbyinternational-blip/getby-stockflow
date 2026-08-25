@@ -21,7 +21,7 @@ const getPerfNow = () => {
   return performance.now();
 };
 
-export const PERF_ENABLED = Boolean((import.meta as any).env?.DEV) && typeof window !== 'undefined';
+export const PERF_ENABLED = false;
 
 export const createPerfRunId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -60,13 +60,9 @@ const appendPerfHistory = (label: string, detail: PerfDetail) => {
 };
 
 export const perfLog = (label: string, detail: PerfDetail = {}) => {
-  if (!PERF_ENABLED) return;
-  const entry = appendPerfHistory(label, detail);
-  console.log(`${PERF_PREFIX} ${JSON.stringify(entry ?? {
-    event: label,
-    timestampMs: roundDuration(getPerfNow()),
-    data: sanitizePerfValue(detail),
-  })}`);
+  void label;
+  void detail;
+  return;
 };
 
 export const perfMark = (markName: string, detail: PerfDetail = {}) => {

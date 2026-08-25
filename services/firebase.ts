@@ -1,7 +1,7 @@
 
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
+import { getAuth, initializeAuth, browserSessionPersistence } from 'firebase/auth';
 
 const getEnv = (key: string) => {
     // @ts-ignore
@@ -20,13 +20,28 @@ let app: any = null;
 let db: any = null;
 let auth: any = null;
 
-if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "your_api_key") {
+const hasFirebaseConfig = Boolean(
+    firebaseConfig.apiKey &&
+    firebaseConfig.authDomain &&
+    firebaseConfig.projectId &&
+    firebaseConfig.appId &&
+    firebaseConfig.apiKey !== "your_api_key"
+);
+
+if (hasFirebaseConfig) {
     try {
         app = initializeApp(firebaseConfig);
         db = getFirestore(app);
-        auth = getAuth(app);
+        try {
+            auth = initializeAuth(app, {
+                persistence: browserSessionPersistence,
+            });
+        } catch (authInitError) {
+            auth = getAuth(app);
+        }
     } catch (e) {
     }
+} else {
 }
 
 export { app, db, auth };

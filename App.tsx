@@ -57,6 +57,7 @@ const ADMIN_REMINDER_START_DATE = '2026-07-19T00:00:00';
 const ADMIN_REMINDER_REPEAT_MS = 7 * 24 * 60 * 60 * 1000;
 const ADMIN_REMINDER_STORAGE_KEY = 'stockflow:admin-reminder:last-shown';
 const NAVIGATION_SAFETY_TIMEOUT_MS = 10000;
+const AUTH_BOOT_TIMEOUT_MS = 4000;
 
 const ROUTE_PRELOADERS: Partial<Record<string, () => Promise<unknown>>> = {
   '/': loadAdmin,
@@ -537,7 +538,7 @@ function AppContent() {
 
     // Always preserve the real Firebase identity. The test-bypass flag is
     // handled by the access-role/OTP UI; it must never replace auth.currentUser.
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const resolveAuthStatus = (user: typeof auth.currentUser) => {
       if (!user) {
         clearAccessSession();
         setCurrentEmail(null);
@@ -547,9 +548,36 @@ function AppContent() {
 
       setCurrentEmail(user.email || null);
       setAuthStatus(user.emailVerified ? 'authenticated' : 'unverified');
-    });
+    };
 
-    return () => unsubscribe();
+    const bootstrapFallback = window.setTimeout(() => {
+      const fallbackUser = auth.currentUser;
+      perfLog('auth.bootstrap.timeout_fallback', {
+        hasCurrentUser: Boolean(fallbackUser),
+        emailVerified: fallbackUser?.emailVerified ?? null,
+      });
+      resolveAuthStatus(fallbackUser);
+    }, AUTH_BOOT_TIMEOUT_MS);
+
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        window.clearTimeout(bootstrapFallback);
+        resolveAuthStatus(user);
+      },
+      (error) => {
+        window.clearTimeout(bootstrapFallback);
+        perfLog('auth.bootstrap.error', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        resolveAuthStatus(auth.currentUser);
+      }
+    );
+
+    return () => {
+      window.clearTimeout(bootstrapFallback);
+      unsubscribe();
+    };
   }, []);
 
 

@@ -16,6 +16,7 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { getEffectiveAdminPin } from '../src/auth/permissions';
 import { isAdmin } from '../src/auth/simplePermissions';
 import { getNormalizedInvoicePrintPreferences, getStoredInvoicePrintPreferences, saveInvoicePrintPreferences } from '../services/invoicePrintPreferences';
+import { buildThermalInvoiceHtmlFromProfile } from '../services/pdf';
 const isValidOperatorPin = (value: string) => /^\d{6,8}$/.test(value.trim());
 
 type OperationCommitEntry = {
@@ -1164,28 +1165,39 @@ export default function Settings() {
     () => THERMAL_PREVIEW_ITEMS.reduce((sum, item) => sum + item.amount, 0),
     []
   );
-  const thermalPreviewReceiptWidth = profile.thermalPaperWidth === '58mm' ? 240 : 320;
-  const thermalPreviewFontScale = Math.min(1.25, Math.max(0.85, Number(profile.thermalFontScale || 1)));
-  const thermalPreviewPaddingX = Math.min(4, Math.max(0.5, Number(profile.thermalPaddingX || 2)));
-  const thermalPreviewPaddingY = Math.min(4, Math.max(0.5, Number(profile.thermalPaddingY || 1.5)));
-  const thermalPreviewDensityClass = profile.thermalDensity === 'comfortable'
-    ? 'space-y-2'
-    : profile.thermalDensity === 'balanced'
-      ? 'space-y-1.5'
-      : 'space-y-1';
-  const thermalPreviewSurfaceClass = profile.thermalStyle === 'boxed'
-    ? 'border-2 border-slate-900 shadow-md'
-    : profile.thermalStyle === 'minimal'
-      ? 'border border-slate-300'
-      : profile.thermalStyle === 'classic'
-        ? 'border border-dashed border-slate-500 shadow-sm'
-        : 'border border-slate-900 shadow-sm';
-  const thermalPreviewRuleClass = profile.thermalStyle === 'minimal' ? 'border-slate-300' : 'border-slate-900';
-  const thermalPreviewHeaderClass = profile.thermalStyle === 'boxed'
-    ? 'bg-slate-900 text-white px-2 py-1 rounded-sm'
-    : profile.thermalStyle === 'classic'
-      ? 'uppercase tracking-[0.2em]'
-      : '';
+  const thermalPreviewHtml = useMemo(() => {
+    const previewTransaction = {
+      id: 'settings-preview-thermal',
+      type: 'sale',
+      date: '2026-08-25T11:58:00.000Z',
+      invoiceNo: 'IN-302981',
+      customerName: 'Walk-in Customer',
+      subtotal: thermalPreviewSubtotal,
+      discount: 0,
+      tax: 0,
+      taxLabel: '0%',
+      total: thermalPreviewSubtotal,
+      saleSettlement: { cashPaid: thermalPreviewSubtotal, onlinePaid: 0, creditDue: 0 },
+      items: THERMAL_PREVIEW_ITEMS.map((item, index) => ({
+        id: `preview-${index}`,
+        barcode: '',
+        name: item.name,
+        description: '',
+        buyPrice: 0,
+        sellPrice: item.rate,
+        stock: 0,
+        image: '',
+        category: 'Preview',
+        quantity: item.qty,
+        discountPercent: 0,
+        discountAmount: 0,
+      })),
+    } as any;
+    return buildThermalInvoiceHtmlFromProfile(previewTransaction, [], profile, {
+      cashReceived: thermalPreviewSubtotal,
+      changeReturned: 0,
+    });
+  }, [profile, thermalPreviewSubtotal]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20">
@@ -1255,6 +1267,123 @@ export default function Settings() {
                   Standard Indian GST brackets included.
               </div>
            </CardContent>
+        </Card>
+        <Card className="md:col-span-2">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-primary" />
+              Invoice Print Defaults
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Choose what `Pay & Print` should use by default.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Default invoice format</Label>
+                <Select
+                  value={profile.invoiceFormat === 'thermal' ? 'thermal' : 'standard'}
+                  onChange={(e) => setProfile((prev) => ({ ...prev, invoiceFormat: e.target.value === 'thermal' ? 'thermal' : 'standard' }))}
+                >
+                  <option value="standard">A4 Invoice</option>
+                  <option value="thermal">Thermal Print</option>
+                </Select>
+              </div>
+              {profile.invoiceFormat === 'thermal' && (
+                <div className="space-y-2">
+                  <Label>Thermal paper width</Label>
+                  <Select
+                    value={profile.thermalPaperWidth === '58mm' ? '58mm' : '80mm'}
+                    onChange={(e) => setProfile((prev) => ({ ...prev, thermalPaperWidth: e.target.value === '58mm' ? '58mm' : '80mm' }))}
+                  >
+                    <option value="80mm">80 mm</option>
+                    <option value="58mm">58 mm</option>
+                  </Select>
+                </div>
+              )}
+            </div>
+
+            {profile.invoiceFormat === 'thermal' && (
+              <>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="space-y-2">
+                    <Label>Thermal style</Label>
+                    <Select
+                      value={profile.thermalStyle === 'classic' || profile.thermalStyle === 'boxed' || profile.thermalStyle === 'minimal' ? profile.thermalStyle : 'grocery'}
+                      onChange={(e) => setProfile((prev) => ({ ...prev, thermalStyle: e.target.value as StoreProfile['thermalStyle'] }))}
+                    >
+                      {THERMAL_STYLE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Density</Label>
+                    <Select
+                      value={profile.thermalDensity === 'balanced' || profile.thermalDensity === 'comfortable' ? profile.thermalDensity : 'compact'}
+                      onChange={(e) => setProfile((prev) => ({ ...prev, thermalDensity: e.target.value as StoreProfile['thermalDensity'] }))}
+                    >
+                      {THERMAL_DENSITY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Font scale</Label>
+                    <Input
+                      type="number"
+                      min="0.85"
+                      max="1.25"
+                      step="0.05"
+                      value={profile.thermalFontScale ?? 1}
+                      onChange={(e) => setProfile((prev) => ({ ...prev, thermalFontScale: Number(e.target.value || 1) }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Padding X / Y</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Input
+                        type="number"
+                        min="0.5"
+                        max="4"
+                        step="0.1"
+                        value={profile.thermalPaddingX ?? 2}
+                        onChange={(e) => setProfile((prev) => ({ ...prev, thermalPaddingX: Number(e.target.value || 2) }))}
+                      />
+                      <Input
+                        type="number"
+                        min="0.5"
+                        max="4"
+                        step="0.1"
+                        value={profile.thermalPaddingY ?? 1.5}
+                        onChange={(e) => setProfile((prev) => ({ ...prev, thermalPaddingY: Number(e.target.value || 1.5) }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border bg-slate-100/70 p-4">
+                  <div className="mb-3 text-sm font-semibold text-slate-700">Thermal preview</div>
+                  <div className="overflow-auto rounded-lg border bg-white">
+                    <iframe
+                      title="Thermal receipt preview"
+                      srcDoc={thermalPreviewHtml}
+                      className="h-[640px] w-full bg-white"
+                    />
+                  </div>
+                  <div className="space-y-2 pt-3">
+                    <Label>Generated thermal receipt HTML</Label>
+                    <textarea
+                      readOnly
+                      value={thermalPreviewHtml}
+                      className="min-h-[260px] w-full rounded-lg border bg-slate-950 p-3 font-mono text-xs text-slate-100"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+          </CardContent>
         </Card>
         {adminAccess && <Card className='md:col-span-2'>
            <CardHeader><CardTitle className="flex items-center gap-2"><Landmark className="w-5 h-5 text-primary" /> Bank Details</CardTitle></CardHeader>

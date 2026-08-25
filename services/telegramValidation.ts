@@ -247,8 +247,23 @@ export const validateTelegramStartAt = (
     );
   }
 
-  const parsed =
-    Date.parse(startAt);
+  const text = startAt.trim();
+
+  if (!text) {
+    return valid();
+  }
+
+  // Compatibility with the current TelegramPosts.tsx
+  // <input type="time"> value, for example "14:30".
+  if (
+    /^([01]\d|2[0-3]):([0-5]\d)$/.test(
+      text,
+    )
+  ) {
+    return valid();
+  }
+
+  const parsed = Date.parse(text);
 
   if (!Number.isFinite(parsed)) {
     return invalid(

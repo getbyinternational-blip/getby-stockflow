@@ -18,6 +18,11 @@ const GENERIC_AUTH_ERROR =
 const GENERIC_RESET_RESPONSE =
   'If the email exists, a password reset link has been sent.';
 
+const AUTH_REQUEST_TIMEOUT_MS = 12000;
+
+const AUTH_TIMEOUT_MESSAGE =
+  'Login timed out. Please check your internet connection and try again.';
+
 const VERIFICATION_SENT_RESPONSE =
   'If the email address is valid, a verification link has been sent.';
 
@@ -29,6 +34,28 @@ type AuthResult = {
 type LoginResult = AuthResult & {
   requiresVerification?: boolean;
 };
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      window.clearTimeout(timer);
+    }
+  }
+};
+
 
 /**
  * Safely signs out Firebase without replacing the original
@@ -56,13 +83,21 @@ const safeSignOut = async (): Promise<void> => {
 const hasVerifiedEmailToken = async (
   user: User,
 ): Promise<boolean> => {
-  await reload(user);
+  await withTimeout(
+    reload(user),
+    AUTH_REQUEST_TIMEOUT_MS,
+    AUTH_TIMEOUT_MESSAGE,
+  );
 
   if (!user.emailVerified) {
     return false;
   }
 
-  const tokenResult = await getIdTokenResult(user, true);
+  const tokenResult = await withTimeout(
+    getIdTokenResult(user, true),
+    AUTH_REQUEST_TIMEOUT_MS,
+    AUTH_TIMEOUT_MESSAGE,
+  );
 
   return (
     user.emailVerified === true &&
@@ -93,10 +128,14 @@ export const login = async (
 
   try {
     const userCredential =
-      await signInWithEmailAndPassword(
-        auth,
-        email.trim(),
-        password,
+      await withTimeout(
+        signInWithEmailAndPassword(
+          auth,
+          email.trim(),
+          password,
+        ),
+        AUTH_REQUEST_TIMEOUT_MS,
+        AUTH_TIMEOUT_MESSAGE,
       );
 
     const user = userCredential.user;
@@ -160,12 +199,29 @@ export const login = async (
     return {
       success: true,
     };
-  } catch {
+  } catch (error: unknown) {
+    const code =
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : null;
+
+    if (error instanceof Error && error.message === AUTH_TIMEOUT_MESSAGE) {
+      await safeSignOut();
+
+      return {
+        success: false,
+        message: AUTH_TIMEOUT_MESSAGE,
+      };
+    }
+
     await safeSignOut();
 
     return {
       success: false,
-      message: GENERIC_AUTH_ERROR,
+      message: code ? `Login failed (${code}). Please try again.` : GENERIC_AUTH_ERROR,
     };
   }
 };

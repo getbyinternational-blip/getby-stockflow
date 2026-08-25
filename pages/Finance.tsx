@@ -600,15 +600,22 @@ const evaluateCarryForwardSession = (session: CashSession) => {
     };
   }
 
-  const closing = session.closingBalance ?? 0;
+  const explicitCarryForward = Number(session.carryForwardBalance);
+
+  const closing =
+    Number.isFinite(explicitCarryForward) && explicitCarryForward >= 0
+      ? roundMoney(explicitCarryForward)
+      : roundMoney(session.closingBalance ?? 0);
 
   const opening = Number.isFinite(session.openingBalance)
     ? session.openingBalance
     : 0;
 
-  const system = Number.isFinite(session.systemCashTotal)
-    ? (session.systemCashTotal as number)
-    : 0;
+  const system = Number.isFinite(session.activeSystemCashTotal)
+    ? (session.activeSystemCashTotal as number)
+    : Number.isFinite(session.systemCashTotal)
+      ? (session.systemCashTotal as number)
+      : 0;
 
   const expected = opening + system;
 
@@ -673,10 +680,36 @@ const getSessionCarryForwardBalance = (session: CashSession) => {
     return 0;
   }
 
-  return roundMoney(
-    Math.max(0, countedClosing - getSessionReservedCash(session)),
-  );
+  return roundMoney(Math.max(0, countedClosing));
 };
+
+const getSessionActiveSystemCashTotal = (
+  session: CashSession,
+  fallbackSystemCashTotal = 0,
+) => {
+  if (Number.isFinite(session.activeSystemCashTotal)) {
+    return roundMoney(session.activeSystemCashTotal as number);
+  }
+
+  if (Number.isFinite(fallbackSystemCashTotal)) {
+    return roundMoney(fallbackSystemCashTotal);
+  }
+
+  if (Number.isFinite(session.systemCashTotal)) {
+    return roundMoney(session.systemCashTotal as number);
+  }
+
+  return 0;
+};
+
+const getSessionExpectedCarryForward = (
+  session: CashSession,
+  fallbackSystemCashTotal = 0,
+) =>
+  roundMoney(
+    (Number.isFinite(session.openingBalance) ? session.openingBalance : 0) +
+      getSessionActiveSystemCashTotal(session, fallbackSystemCashTotal),
+  );
 
 const EMPTY_FINANCE_SESSION_TOTALS = {
   cashSales: 0,
@@ -1917,8 +1950,9 @@ const buildShiftCashMovementBreakdown = (
     cashOutRows,
     cashInTotal,
     cashOutTotal,
-    expectedCash: roundMoney(
-      session.openingBalance + computedTotals.systemCashTotal,
+    expectedCash: getSessionExpectedCarryForward(
+      session,
+      computedTotals.activeSystemCashTotal,
     ),
   };
 };
@@ -2807,13 +2841,15 @@ export default function Finance({
               data.supplierPayments || [],
             );
 
-            const systemCashTotal =
-              session.systemCashTotal ?? computedTotals.systemCashTotal;
+            const systemCashTotal = getSessionActiveSystemCashTotal(
+              session,
+              computedTotals.activeSystemCashTotal,
+            );
 
             const difference =
               session.difference ??
-              (session.closingBalance ?? 0) -
-                (session.openingBalance + systemCashTotal);
+              getSessionCarryForwardBalance(session) -
+                getSessionExpectedCarryForward(session, systemCashTotal);
 
             if (difference === 0) {
               matched += 1;
@@ -3399,16 +3435,13 @@ export default function Finance({
   }, [dailyCashTotals]);
 
   const expectedClosingForOpenSession = openSession
-    ? openSession.openingBalance + dailyCashTotals.systemCashTotal
+    ? openSession.openingBalance +
+      (dailyCashTotals.activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)
     : 0;
 
   const activeClosingForOpenSession = openSession
     ? openSession.openingBalance +
-      ((
-        dailyCashTotals as typeof dailyCashTotals & {
-          activeSystemCashTotal?: number;
-        }
-      ).activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)
+      (dailyCashTotals.activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)
     : 0;
 
   const currentShiftTotalCash = useMemo(
@@ -3814,32 +3847,6 @@ export default function Finance({
             return [] as ReserveLedgerRow[];
           }
 
-          /*
-           * Ledger/history window is intentionally different
-           * from the live reserve calculation window.
-           *
-           * Live reserve:
-           *   latest reserve snapshot -> now
-           *
-           * Visible ledger:
-           *   shift start -> now
-           *
-           * This lets historical reserve-funded transactions
-           * remain visible without subtracting them again from
-           * the current saved reserve snapshot.
-           */
-          const ledgerStartMs = new Date(openSession.startTime).getTime();
-
-          if (!Number.isFinite(ledgerStartMs)) {
-            return [] as ReserveLedgerRow[];
-          }
-
-          const inWindow = (iso?: string) => {
-            const at = new Date(iso || "").getTime();
-
-            return Number.isFinite(at) && at >= ledgerStartMs;
-          };
-
           const rows: ReserveLedgerRow[] = [];
 
           const purchaseOrderList = (data.purchaseOrders || []) as any[];
@@ -3996,6 +4003,41 @@ export default function Finance({
           const visiblePersistedLedger = persistedLedger.filter(
             (entry) => !isReserveReconstructionPlaceholder(entry),
           );
+
+          /*
+           * Ledger/history window is intentionally different
+           * from the live reserve calculation window.
+           *
+           * Live reserve:
+           *   latest reserve snapshot -> now
+           *
+           * Visible ledger:
+           *   inherited reserve ledger start -> now
+           *
+           * This keeps reserve history continuous across shifts
+           * while the active shift cash logic still resets at the
+           * current shift start.
+           */
+          const earliestLedgerDate = visiblePersistedLedger
+            .map((entry) => new Date(entry.date || "").getTime())
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b)[0];
+
+          const fallbackLedgerStartMs = new Date(openSession.startTime).getTime();
+
+          const ledgerStartMs = Number.isFinite(earliestLedgerDate)
+            ? earliestLedgerDate
+            : fallbackLedgerStartMs;
+
+          if (!Number.isFinite(ledgerStartMs)) {
+            return [] as ReserveLedgerRow[];
+          }
+
+          const inWindow = (iso?: string) => {
+            const at = new Date(iso || "").getTime();
+
+            return Number.isFinite(at) && at >= ledgerStartMs;
+          };
 
           visiblePersistedLedger.forEach((entry, index) => {
             const amount = Math.max(0, Number(entry.amount || 0));
@@ -4449,26 +4491,6 @@ export default function Finance({
               0,
             ),
           );
-
-          const derivedOpeningReserve = roundMoney(
-            Math.max(0, liveRemainingReserveCash - visibleMovementNet),
-          );
-
-          if (derivedOpeningReserve > 0) {
-            rows.push({
-              id: "reserve-derived-opening-balance",
-
-              date: openSession.startTime,
-
-              type: "Opening Reserve",
-
-              details: "Opening balance derived from reserve movements",
-
-              amount: derivedOpeningReserve,
-
-              direction: "in",
-            });
-          }
 
           return rows.sort(
             (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
@@ -5107,7 +5129,7 @@ export default function Finance({
 
           onlineIn: 0,
 
-          onlineOut: normalizedMethod === "online" ? amount : 0,
+          onlineOut: normalizedMethod === "non_cash" ? amount : 0,
 
           netCashEffect: normalizedMethod === "cash" ? -amount : 0,
 
@@ -5999,9 +6021,9 @@ export default function Finance({
       return null;
     }
 
-    const transactionMap = new Map(
-      (data.transactions || []).map((tx) => [tx.id, tx]),
-    );
+const transactionMap = new Map<string, Transaction>(
+  (data.transactions || []).map((tx: Transaction) => [tx.id, tx] as const),
+);
 
     const productMap = new Map(
       ((data as AppState).products || []).map((product) => [
@@ -6055,10 +6077,9 @@ export default function Finance({
   }, [currentClosingShiftMovement, data]);
 
   const currentClosingBreakdownDisplayRows = useMemo(() => {
-    const transactionMap = new Map(
-      (data.transactions || []).map((tx) => [tx.id, tx]),
-    );
-
+const transactionMap = new Map<string, Transaction>(
+  (data.transactions || []).map((tx: Transaction) => [tx.id, tx] as const),
+);
     const productMap = new Map(
       ((data as AppState).products || []).map((product) => [
         product.id,
@@ -7105,12 +7126,28 @@ export default function Finance({
       localSessionCount: cashSessions.length,
     });
 
+    const inheritedReserveSession = latestCarryForwardSession;
+
     const session: CashSession = {
       id: buildCashSessionId(freshCashSessions),
 
       startTime: new Date().toISOString(),
 
       openingBalance: value,
+
+      ...(inheritedReserveSession
+        ? {
+            reservedCashOnHand: getSessionReservedCash(
+              inheritedReserveSession,
+            ),
+            reservedCashSavedAt: inheritedReserveSession.reservedCashSavedAt,
+            reserveCashLedger: Array.isArray(
+              inheritedReserveSession.reserveCashLedger,
+            )
+              ? [...inheritedReserveSession.reserveCashLedger]
+              : undefined,
+          }
+        : {}),
 
       status: "open",
     };
@@ -7157,8 +7194,9 @@ export default function Finance({
       : [];
 
     const counted = roundMoney(
-      (closingBalance.trim() ? Number(closingBalance) : closingCountTotal) +
-        closingReserveValue,
+      closingBalance.trim()
+        ? Number(closingBalance)
+        : closingCountTotal - closingReserveValue,
     );
 
     if (!Number.isFinite(counted) || counted < 0) {
@@ -7171,15 +7209,10 @@ export default function Finance({
       return setErrors("Please enter a valid reserved cash amount.");
     }
 
-    if (reservedCash > counted) {
-      return setErrors(
-        "Reserved cash cannot be more than counted closing cash.",
-      );
-    }
-
     const closedAt = new Date().toISOString();
 
-    const { systemCashTotal, expenseTotal } = getSessionCashTotals(
+    const { systemCashTotal, activeSystemCashTotal, expenseTotal } =
+      getSessionCashTotals(
       fresh.transactions,
       freshExpenses,
       freshCashAdjustments,
@@ -7192,13 +7225,15 @@ export default function Finance({
       freshOpenSession.id,
       Array.isArray(fresh.upfrontOrders) ? fresh.upfrontOrders : [],
       fresh.supplierPayments || [],
-    );
+      );
 
-    const expectedClosing = freshOpenSession.openingBalance + systemCashTotal;
+    const expectedClosing = roundMoney(
+      freshOpenSession.openingBalance + activeSystemCashTotal,
+    );
 
     const difference = counted - expectedClosing;
 
-    const carryForwardBalance = roundMoney(Math.max(0, counted - reservedCash));
+    const carryForwardBalance = roundMoney(Math.max(0, counted));
 
     const currentRole = getCurrentRole();
 
@@ -7269,6 +7304,8 @@ export default function Finance({
             reservedCashOnHand: reservedCash,
 
             carryForwardBalance,
+
+            activeSystemCashTotal,
 
             systemCashTotal,
 
@@ -7343,12 +7380,6 @@ export default function Finance({
       return setErrors("Please enter a valid reserved cash amount.");
     }
 
-    if (nextReservedCash > nextClosing) {
-      return setErrors(
-        "Reserved cash cannot be more than counted closing cash.",
-      );
-    }
-
     const fresh = loadData();
 
     const freshSessions = Array.isArray(fresh.cashSessions)
@@ -7370,9 +7401,7 @@ export default function Finance({
 
         reservedCashOnHand: nextReservedCash,
 
-        carryForwardBalance: roundMoney(
-          Math.max(0, nextClosing - nextReservedCash),
-        ),
+        carryForwardBalance: roundMoney(Math.max(0, nextClosing)),
 
         difference: nextClosing - expectedClosing,
 
@@ -10056,7 +10085,8 @@ export default function Finance({
         return session;
       }
 
-      const { systemCashTotal, expenseTotal } = getSessionCashTotals(
+      const { systemCashTotal, activeSystemCashTotal, expenseTotal } =
+        getSessionCashTotals(
         data.transactions,
         expenses,
         cashAdjustments,
@@ -10069,11 +10099,19 @@ export default function Finance({
         session.id,
         upfrontOrders,
         data.supplierPayments || [],
+        );
+
+      const expectedClosing = getSessionExpectedCarryForward(
+        session,
+        activeSystemCashTotal,
       );
 
-      const expectedClosing = session.openingBalance + systemCashTotal;
+      const difference = getSessionCarryForwardBalance(session) - expectedClosing;
 
-      const difference = (session.closingBalance ?? 0) - expectedClosing;
+      const activeSystemChanged =
+        !Number.isFinite(session.activeSystemCashTotal) ||
+        Math.abs((session.activeSystemCashTotal ?? 0) - activeSystemCashTotal) >
+          0.0001;
 
       const systemChanged =
         !Number.isFinite(session.systemCashTotal) ||
@@ -10087,12 +10125,18 @@ export default function Finance({
         !Number.isFinite(session.sessionExpenseTotal) ||
         Math.abs((session.sessionExpenseTotal ?? 0) - expenseTotal) > 0.0001;
 
-      if (!systemChanged && !differenceChanged && !expenseChanged) {
+      if (
+        !systemChanged &&
+        !activeSystemChanged &&
+        !differenceChanged &&
+        !expenseChanged
+      ) {
         return session;
       }
 
       return {
         ...session,
+        activeSystemCashTotal,
         systemCashTotal,
         sessionExpenseTotal: expenseTotal,
         difference,
@@ -12097,10 +12141,10 @@ export default function Finance({
                   data.supplierPayments || [],
                 );
 
-                const expectedClosing =
-                  editingClosingSession.openingBalance +
-                  (editingClosingSession.systemCashTotal ??
-                    computedTotals.systemCashTotal);
+                const expectedClosing = getSessionExpectedCarryForward(
+                  editingClosingSession,
+                  computedTotals.activeSystemCashTotal,
+                );
 
                 const previewClosing = Number(editingClosingAmount);
 
@@ -12117,8 +12161,8 @@ export default function Finance({
 
                       <CardContent className="space-y-3">
                         <p className="text-xs text-muted-foreground">
-                          This only corrects the counted closing amount. It does
-                          not change transactions or cash movements.
+                          This only corrects the active closing cash. It does not
+                          change transactions or cash movements.
                         </p>
 
                         <div className="grid grid-cols-2 gap-2 text-sm">
@@ -12149,7 +12193,7 @@ export default function Finance({
 
                           <div>
                             <span className="text-muted-foreground">
-                              Current closing
+                              Current active closing
                             </span>
                             <div>
                               {formatINR(
@@ -12334,16 +12378,18 @@ export default function Finance({
                     data.supplierPayments || [],
                   );
 
-                  const systemCashTotal =
-                    session.systemCashTotal ?? computedTotals.systemCashTotal;
+                  const systemCashTotal = getSessionActiveSystemCashTotal(
+                    session,
+                    computedTotals.activeSystemCashTotal,
+                  );
 
                   const sessionExpenseTotal =
                     session.sessionExpenseTotal ?? computedTotals.expenseTotal;
 
                   const difference =
                     session.difference ??
-                    (session.closingBalance ?? 0) -
-                      (session.openingBalance + systemCashTotal);
+                    getSessionCarryForwardBalance(session) -
+                      getSessionExpectedCarryForward(session, systemCashTotal);
 
                   const isOpen = activeHistoryDetailSessionId === session.id;
 
@@ -12562,16 +12608,20 @@ export default function Finance({
                   upfrontOrders,
                   data.supplierPayments || [],
                 );
-                const systemCashTotal =
-                  activeHistorySession.systemCashTotal ??
-                  computedTotals.systemCashTotal;
+                const systemCashTotal = getSessionActiveSystemCashTotal(
+                  activeHistorySession,
+                  computedTotals.activeSystemCashTotal,
+                );
                 const sessionExpenseTotal =
                   activeHistorySession.sessionExpenseTotal ??
                   computedTotals.expenseTotal;
                 const difference =
                   activeHistorySession.difference ??
-                  (activeHistorySession.closingBalance ?? 0) -
-                    (activeHistorySession.openingBalance + systemCashTotal);
+                  getSessionCarryForwardBalance(activeHistorySession) -
+                    getSessionExpectedCarryForward(
+                      activeHistorySession,
+                      systemCashTotal,
+                    );
                 const isMatch = difference === 0;
                 const isShort = difference < 0;
                 const statusLabel =
@@ -12684,8 +12734,9 @@ export default function Finance({
                   cashOutRows: [],
                   cashInTotal: 0,
                   cashOutTotal: 0,
-                  expectedCash: roundMoney(
-                    activeHistorySession.openingBalance + systemCashTotal,
+                  expectedCash: getSessionExpectedCarryForward(
+                    activeHistorySession,
+                    systemCashTotal,
                   ),
                 };
 
@@ -13180,14 +13231,18 @@ export default function Finance({
                   data.supplierPayments || [],
                 );
 
-                const systemCashTotal =
-                  deletingSession.systemCashTotal ??
-                  computedTotals.systemCashTotal;
+                const systemCashTotal = getSessionActiveSystemCashTotal(
+                  deletingSession,
+                  computedTotals.activeSystemCashTotal,
+                );
 
-                const expectedClosing =
-                  deletingSession.openingBalance + systemCashTotal;
+                const expectedClosing = getSessionExpectedCarryForward(
+                  deletingSession,
+                  systemCashTotal,
+                );
 
-                const countedClosing = deletingSession.closingBalance ?? 0;
+                const countedClosing =
+                  getSessionCarryForwardBalance(deletingSession);
 
                 const difference =
                   deletingSession.difference ??
@@ -13236,7 +13291,7 @@ export default function Finance({
 
                           <div>
                             <span className="text-muted-foreground">
-                              Counted closing
+                              Active closing
                             </span>
 
                             <div>{formatINR(countedClosing)}</div>
@@ -14720,3 +14775,5 @@ export default function Finance({
     </div>
   );
 }
+
+

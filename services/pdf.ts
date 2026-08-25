@@ -2481,13 +2481,14 @@ export const generateProductCatalogPDF = async (
     doc.save(options?.fileName ?? 'product-catalog.pdf');
 };
 
-const buildThermalInvoiceHtml = (
+export const buildThermalInvoiceHtmlFromProfile = (
   transaction: Transaction,
   customers: Customer[],
+  profile: Partial<StoreProfile> | null | undefined,
   paymentDetails?: ReceiptPaymentDetails,
 ) => {
     const data = loadData();
-    const profile = resolveInvoicePrintProfile(data.profile);
+    const resolvedProfile = resolveInvoicePrintProfile(profile);
     const customer = customers.find((entry) => entry.id === transaction.customerId);
     const canonicalBalance = customer ? getCanonicalCustomerBalanceResult(customer, data.transactions || [], data.upfrontOrders || []) : null;
     const settlement = transaction.saleSettlement || { cashPaid: 0, onlinePaid: 0, creditDue: 0 };
@@ -2507,12 +2508,12 @@ const buildThermalInvoiceHtml = (
       : 0;
     const previousBalanceLabel = canonicalBalance?.status === 'ok' ? `${formatMoneyWhole(previousBalanceValue)}` : 'Ledger unavailable';
     const currentBalanceLabel = canonicalBalance?.status === 'ok' ? `${formatMoneyWhole(currentBalanceValue)}` : 'Ledger unavailable';
-    const paperWidth = getThermalPaperWidth(profile);
-    const thermalStyle = getThermalStyle(profile);
-    const thermalDensity = getThermalDensity(profile);
-    const thermalFontScale = getThermalFontScale(profile);
-    const thermalPaddingX = getThermalPaddingX(profile);
-    const thermalPaddingY = getThermalPaddingY(profile);
+    const paperWidth = getThermalPaperWidth(resolvedProfile);
+    const thermalStyle = getThermalStyle(resolvedProfile);
+    const thermalDensity = getThermalDensity(resolvedProfile);
+    const thermalFontScale = getThermalFontScale(resolvedProfile);
+    const thermalPaddingX = getThermalPaddingX(resolvedProfile);
+    const thermalPaddingY = getThermalPaddingY(resolvedProfile);
     const currency = (value: number) => `${formatMoneyPrecise(Math.max(0, Number(value || 0)))}`;
     const invoiceNo = transaction.type === 'return'
       ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-6)}`)
@@ -2855,7 +2856,7 @@ const buildThermalInvoiceHtml = (
 <body class="thermal-print-body">
   <div class="receipt">
     <div class="center">
-      <div class="header-title">${escapeHtml(profile.storeName || 'StockFlow')}</div>
+      <div class="header-title">${escapeHtml(resolvedProfile.storeName || 'StockFlow')}</div>
       <div class="document-title">${escapeHtml(invoiceTitle)}</div>
     </div>
 
@@ -2905,6 +2906,15 @@ const buildThermalInvoiceHtml = (
 </html>`;
 };
 
+const buildThermalInvoiceHtml = (
+  transaction: Transaction,
+  customers: Customer[],
+  paymentDetails?: ReceiptPaymentDetails,
+) => {
+  const { profile } = loadData();
+  return buildThermalInvoiceHtmlFromProfile(transaction, customers, profile, paymentDetails);
+};
+
 export const generateReceiptPDF = async (
   transaction: Transaction,
   customers: Customer[],
@@ -2939,274 +2949,6 @@ export const generateReceiptPDFDataUrl = async (
   const out = await generateReceiptPDF(transaction, customers, paymentDetails, { returnDataUrl: true });
   if (typeof out !== 'string') throw new Error('Unable to generate canonical invoice preview.');
   return out;
-};
-
-const printThermalInvoiceLegacy = (transaction: Transaction, customers: Customer[], paymentDetails?: ReceiptPaymentDetails) => {
-    const data = loadData();
-    const profile = resolveInvoicePrintProfile(data.profile);
-    const customer = customers.find(c => c.id === transaction.customerId);
-    const canonicalBalance = customer ? getCanonicalCustomerBalanceResult(customer, data.transactions || [], data.upfrontOrders || []) : null;
-    const currentBalanceLabel = canonicalBalance?.status === 'ok' ? `${formatMoneyWhole(canonicalBalance.currentDue)}` : 'Ledger unavailable';
-    const previousBalanceValue = canonicalBalance?.status === 'ok'
-      ? Math.max(0, canonicalBalance.currentDue + (transaction.paymentMethod === 'Credit' ? -transaction.total : 0))
-      : 0;
-    const previousBalanceLabel = canonicalBalance?.status === 'ok' ? `${formatMoneyWhole(previousBalanceValue)}` : 'Ledger unavailable';
-    
-    // Utility: Number to words (Simple version)
-    const numberToWords = (num: number) => {
-        const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
-        const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-        const teens = ['Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
-        
-        const convert = (n: number): string => {
-            if (n < 10) return ones[n];
-            if (n < 20) return teens[n - 10];
-            if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 !== 0 ? ' ' + ones[n % 10] : '');
-            if (n < 1000) return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 !== 0 ? ' and ' + convert(n % 100) : '');
-            if (n < 1000000) return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 !== 0 ? ' ' + convert(n % 1000) : '');
-            return n.toString();
-        };
-
-        const absNum = Math.floor(Math.abs(num));
-        return convert(absNum) + " Rupees only";
-    };
-
-    const invoiceNo = transaction.type === 'return'
-      ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-6)}`)
-      : (transaction.invoiceNo || `IN-${transaction.id.slice(-6)}`);
-    const date = new Date(transaction.date).toLocaleDateString();
-    const time = new Date(transaction.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const shouldShowCustomerGst = Boolean(
-      String(transaction.gstName || '').trim()
-      || String(transaction.gstNumber || '').trim()
-      || String(customer?.gstName || '').trim()
-      || String(customer?.gstNumber || '').trim()
-    );
-    const customerGstName = String(transaction.gstName || customer?.gstName || '-').trim() || '-';
-    const customerGstNumber = String(transaction.gstNumber || customer?.gstNumber || '-').trim() || '-';
-
-    const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Invoice ${invoiceNo}</title>
-  <style>
-    body {
-      font-family: 'Arial', sans-serif;
-      background: #fff;
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      color: #000;
-    }
-    .invoice-container {
-      width: 100%;
-      max-width: 100%;
-      margin: 0;
-      background: #fff;
-      padding: 10px;
-      box-sizing: border-box;
-    }
-    .top-bar {
-      display: flex;
-      justify-content: space-between;
-      border-bottom: 1px solid #000;
-      padding-bottom: 5px;
-      margin-bottom: 5px;
-    }
-    .company-info h3 { margin: 0; font-size: 16px; }
-    .company-info p { margin: 1px 0; font-size: 11px; }
-    .title {
-      text-align: center;
-      margin: 10px 0;
-      font-size: 18px;
-      text-transform: uppercase;
-      font-weight: bold;
-    }
-    .details-section {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 10px;
-      gap: 5px;
-    }
-    .bill-to, .invoice-details {
-      width: 49%;
-    }
-    .bill-to h4, .invoice-details h4 {
-      margin: 0 0 3px 0;
-      border-bottom: 1px solid #000;
-      padding-bottom: 2px;
-      font-size: 12px;
-    }
-    .bill-to p, .invoice-details p {
-      margin: 1px 0;
-      font-size: 10px;
-      line-height: 1.2;
-    }
-    .items-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 10px;
-    }
-    .items-table th, .items-table td {
-      padding: 4px 2px;
-      font-size: 10px;
-      border-bottom: 1px solid #000;
-      text-align: left;
-    }
-    .items-table th {
-      background: #f0f0f0;
-      border-top: 1px solid #000;
-      font-weight: bold;
-    }
-    .items-table td.amount { text-align: right; }
-    .summary-section {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-    }
-    .amount-words { width: 50%; }
-    .amount-words p { margin: 3px 0; font-size: 9px; line-height: 1.2; }
-    .terms h4 { margin: 5px 0 2px 0; font-size: 10px; }
-    .terms p { margin: 0; font-size: 8px; }
-    .totals {
-      width: 45%;
-      border-top: 1px solid #000;
-    }
-    .totals .row {
-      display: flex;
-      justify-content: space-between;
-      padding: 3px 0;
-      border-bottom: 1px solid #000;
-      font-size: 10px;
-    }
-    .totals .row:last-child { border-bottom: none; }
-    .total { font-weight: bold; font-size: 12px; }
-    
-    @media print {
-      body { margin: 0; padding: 0; }
-      .invoice-container { width: 100%; padding: 5px; }
-      @page { margin: 0; }
-    }
-  </style>
-</head>
-<body>
-<div class="invoice-container">
-  <div class="top-bar">
-    <div class="company-info">
-      <h3>${profile.storeName}</h3>
-      <p>Phone: ${profile.phone || '-'}</p>
-    </div>
-  </div>
-  <h1 class="title">${transaction.type === 'return' ? 'CREDIT NOTE' : 'INVOICE'}</h1>
-  <div class="details-section">
-    <div class="bill-to">
-      <h4>Bill To</h4>
-      <p><strong>${transaction.customerName || 'Walk-in Customer'}</strong></p>
-      <p>Contact: ${customer?.phone || '-'}</p>
-      ${shouldShowCustomerGst ? `<p><strong>GST Name:</strong> ${customerGstName}</p>` : ''}
-      ${shouldShowCustomerGst ? `<p><strong>GST Number:</strong> ${customerGstNumber}</p>` : ''}
-    </div>
-    <div class="invoice-details">
-      <h4>Details</h4>
-      <p><strong>${transaction.type === 'return' ? 'Credit Note No' : 'Invoice No'}:</strong> ${invoiceNo}</p>
-      <p><strong>Date:</strong> ${date}</p>
-      <p><strong>Time:</strong> ${time}</p>
-    </div>
-  </div>
-  <table class="items-table">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Item</th>
-        <th>Qty</th>
-        <th>Price</th>
-        <th class="amount">Total</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${normalizeTransactionItems(transaction.items).map((item, idx) => `
-        <tr>
-          <td>${idx + 1}</td>
-          <td>
-            <strong>${item.name}${item.selectedVariant && item.selectedVariant !== NO_VARIANT ? ` - ${item.selectedVariant}` : ''}${item.selectedColor && item.selectedColor !== NO_COLOR ? ` - ${item.selectedColor}` : ''}</strong>
-            ${item.hsn ? `<br><small>HSN: ${item.hsn}</small>` : ''}
-          </td>
-          <td>${item.quantity}</td>
-          <td>${formatMoneyWhole(item.sellPrice)}</td>
-          <td class="amount">${formatMoneyWhole(item.sellPrice * item.quantity - (item.discountAmount || 0))}</td>
-        </tr>
-      `).join('')}
-    </tbody>
-  </table>
-  <div class="summary-section">
-    <div class="amount-words">
-      <p><strong>Amount in Words:</strong></p>
-      <p>${numberToWords(transaction.total)}</p>
-      <div class="terms">
-        <h4>Terms</h4>
-        <p>Thank you for your business!</p>
-      </div>
-    </div>
-    <div class="totals">
-      <div class="row">
-        <span>Sub Total</span>
-        <span>${formatMoneyWhole(transaction.subtotal || transaction.total)}</span>
-      </div>
-      <div class="row total">
-        <span>Total</span>
-        <span>${formatMoneyWhole(transaction.total)}</span>
-      </div>
-      <div class="row">
-        <span>Received</span>
-        <span>${formatMoneyWhole(transaction.type === 'sale' && transaction.paymentMethod === 'Cash' ? (paymentDetails?.cashReceived ?? transaction.cashReceived ?? transaction.total) : transaction.total)}</span>
-      </div>
-      <div class="row">
-        <span>${transaction.type === 'sale' && transaction.paymentMethod === 'Cash' ? 'Change Returned' : 'Balance'}</span>
-        <span>${formatMoneyWhole(transaction.type === 'sale' && transaction.paymentMethod === 'Cash' ? Math.max(0, paymentDetails?.changeReturned ?? transaction.changeReturned ?? ((paymentDetails?.cashReceived ?? transaction.cashReceived ?? transaction.total) - transaction.total)) : 0)}</span>
-      </div>
-      <div class="row">
-        <span>Prev Bal</span>
-        <span>${previousBalanceLabel}</span>
-      </div>
-      <div class="row">
-        <span>Curr Bal</span>
-        <span>${currentBalanceLabel}</span>
-      </div>
-    </div>
-  </div>
-</div>
-</body>
-</html>
-    `;
-
-    const printFrame = document.createElement('iframe');
-    printFrame.name = "print_frame";
-    printFrame.style.position = "absolute";
-    printFrame.style.top = "-1000px";
-    printFrame.style.left = "-1000px";
-    document.body.appendChild(printFrame);
-
-    const frameDoc = printFrame.contentWindow?.document || printFrame.contentDocument;
-    if (frameDoc) {
-        frameDoc.open();
-        frameDoc.write(html);
-        frameDoc.close();
-
-        // Use a small delay to ensure rendering is complete
-        setTimeout(() => {
-            if (printFrame.contentWindow) {
-                printFrame.contentWindow.focus();
-                printFrame.contentWindow.print();
-                
-                // Remove the frame after a delay
-                setTimeout(() => {
-                    document.body.removeChild(printFrame);
-                }, 1000);
-            }
-        }, 250);
-    }
 };
 
 export const printThermalInvoice = async (
