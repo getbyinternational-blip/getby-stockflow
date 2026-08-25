@@ -1659,7 +1659,11 @@ const buildShiftCashMovementBreakdown = (
       });
     }
 
-    if (tx.type === "customer_cash_out" && tx.paymentMethod === "Cash") {
+    if (
+      tx.type === "customer_cash_out" &&
+      tx.paymentMethod === "Cash" &&
+      shouldAffectActiveDrawerFromSource((tx as any).cashSource)
+    ) {
       pushRow({
         id: `cashout-${tx.id}`,
         date: tx.date,
@@ -1677,7 +1681,10 @@ const buildShiftCashMovementBreakdown = (
     if (tx.type === "return") {
       const effects = getReturnFinancialEffectsForFinance(tx);
 
-      if (effects.affectsCash) {
+      if (
+        effects.affectsCash &&
+        shouldAffectActiveDrawerFromSource((tx as any).cashSource)
+      ) {
         pushRow({
           id: `ret-${tx.id}`,
           date: tx.date,
@@ -1715,7 +1722,10 @@ const buildShiftCashMovementBreakdown = (
       });
     }
 
-    if (entry.type === "cash_withdrawal") {
+    if (
+      entry.type === "cash_withdrawal" &&
+      shouldAffectActiveDrawerFromSource(entry.cashSource)
+    ) {
       pushRow({
         id: `adj-out-${entry.id}`,
         date: entry.createdAt,
@@ -1739,6 +1749,13 @@ const buildShiftCashMovementBreakdown = (
       const at = new Date(entry.date || entry.createdAt).getTime();
 
       if (!Number.isFinite(at) || at < start || at > end) {
+        return;
+      }
+
+      if (
+        entry.type === "cash_out" &&
+        !shouldAffectActiveDrawerFromSource(entry.cashSource)
+      ) {
         return;
       }
 
@@ -1768,6 +1785,10 @@ const buildShiftCashMovementBreakdown = (
       return;
     }
 
+    if (!shouldAffectActiveDrawerFromSource(e.cashSource)) {
+      return;
+    }
+
     pushRow({
       id: `exp-${e.id}`,
       date: getExpenseEffectiveDate(e),
@@ -1781,6 +1802,15 @@ const buildShiftCashMovementBreakdown = (
     });
   });
 
+  const deletedByOriginalId = new Map<string, DeletedTransactionRecord>(
+    (state.deletedTransactions || []).map((record) => [
+      String(
+        record.originalTransactionId || record.originalTransaction?.id || "",
+      ),
+      record,
+    ]),
+  );
+
   (state.deleteCompensations || []).forEach((d) => {
     const at = new Date(d.createdAt).getTime();
 
@@ -1791,6 +1821,35 @@ const buildShiftCashMovementBreakdown = (
       !isExplicitDeleteRefund(d)
     ) {
       return;
+    }
+
+    const linkedDeleted = deletedByOriginalId.get(
+      String(d.transactionId || ""),
+    );
+
+    const original = linkedDeleted?.originalTransaction;
+
+    if (original && isSaleLikeTx(original)) {
+      const settlement = getSaleSettlementBreakdown(original);
+      const deletedSaleCash = Math.max(
+        0,
+        Number(settlement.cashPaid || 0),
+      );
+
+      if (deletedSaleCash > 0) {
+        pushRow({
+          id: `deleted-sale-${d.id}`,
+          date: d.createdAt,
+          type: "Deleted Cash Sale",
+          direction: "in",
+          name: d.customerName || original.customerName || "Customer",
+          ref: String(d.transactionId || original.id).slice(-6),
+          description: "Original cash sale included for delete compensation reconciliation",
+          amount: deletedSaleCash,
+          source: "deletedSaleCashIncluded",
+          sourceTxId: original.id,
+        });
+      }
     }
 
     pushRow({
@@ -1818,7 +1877,8 @@ const buildShiftCashMovementBreakdown = (
       at < start ||
       at > end ||
       p.deletedAt ||
-      normalizedMethod !== "cash"
+      normalizedMethod !== "cash" ||
+      !shouldAffectActiveDrawerFromSource(p.cashSource)
     ) {
       return;
     }
@@ -1851,7 +1911,11 @@ const buildShiftCashMovementBreakdown = (
 
   (state.purchaseOrders || []).forEach((o) =>
     (o.paymentHistory || []).forEach((ph: any) => {
-      if (ph.supplierPaymentId || (ph.method || "cash") !== "cash") {
+      if (
+        ph.supplierPaymentId ||
+        (ph.method || "cash") !== "cash" ||
+        !shouldAffectActiveDrawerFromSource(ph.cashSource)
+      ) {
         return;
       }
 
