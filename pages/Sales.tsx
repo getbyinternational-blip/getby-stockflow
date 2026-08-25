@@ -37,6 +37,7 @@ const safeNumber = (value: unknown, fallback = 0): number => {
 };
 const normalizeCashSource = (rawSource: unknown): CashSource => String(rawSource || '').trim().toLowerCase() === 'reserve' ? 'reserve' : 'drawer';
 const formatCashSourceLabel = (rawSource: unknown) => normalizeCashSource(rawSource) === 'reserve' ? 'Reserve Cash' : 'Active Cash';
+const CUSTOMER_VIEW_STORAGE_KEY = 'stockflow_customer_view_payload';
 const isInCashSourceWindow = (iso: unknown, start: number, end = Number.POSITIVE_INFINITY) => {
   const at = new Date(String(iso || '')).getTime();
   return Number.isFinite(at) && at >= start && at <= end;
@@ -1691,6 +1692,28 @@ export default function Sales() {
   const cashChangeRawValue = Math.max(0, roundMoneyWhole(cashPaidValue - cashAppliedToSaleValue));
   const storeCreditToCreate = storeOverpaymentAsCredit && resolvedSelectedCustomer ? cashChangeRawValue : 0;
   const cashChangeValue = storeOverpaymentAsCredit && resolvedSelectedCustomer ? 0 : cashChangeRawValue;
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const payload = {
+      items: cart
+        .filter((item) => Math.max(0, Number(item.quantity) || 0) > 0)
+        .map((item) => ({
+          id: `${item.id}-${item.selectedVariant || NO_VARIANT}-${item.selectedColor || NO_COLOR}`,
+          name: formatItemNameWithVariant(item.name, item.selectedVariant, item.selectedColor),
+          image: item.image,
+          sellPrice: Number(item.sellPrice || 0),
+          quantity: Math.max(0, Number(item.quantity) || 0),
+        })),
+      grandTotal: Number(grandTotal || 0),
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      window.localStorage.setItem(CUSTOMER_VIEW_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore passive customer display sync failures
+    }
+    window.dispatchEvent(new CustomEvent('customer-view-cart-state', { detail: payload }));
+  }, [cart, grandTotal]);
 
   const handleToggleStoreCredit = () => {
     if (isReturnMode || !hasResolvedSelectedCustomer) return;

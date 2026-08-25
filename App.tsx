@@ -37,6 +37,7 @@ const loadProductAnalytics = () => import('./pages/ProductAnalytics');
 const loadDashboard = () => import('./pages/Dashboard');
 const loadCashbook = () => import('./pages/Cashbook');
 const loadTelegramPosts = () => import('./pages/TelegramPosts');
+const loadCustomerView = () => import('./pages/CustomerView');
 
 const WhatsAppLogs = lazy(loadWhatsAppLogs);
 const Admin = lazy(loadAdmin);
@@ -51,6 +52,7 @@ const ProductAnalytics = lazy(loadProductAnalytics);
 const Dashboard = lazy(loadDashboard);
 const Cashbook = lazy(loadCashbook);
 const TelegramPosts = lazy(loadTelegramPosts);
+const CustomerView = lazy(loadCustomerView);
 const ADMIN_REMINDER_START_DATE = '2026-07-19T00:00:00';
 const ADMIN_REMINDER_REPEAT_MS = 7 * 24 * 60 * 60 * 1000;
 const ADMIN_REMINDER_STORAGE_KEY = 'stockflow:admin-reminder:last-shown';
@@ -82,7 +84,9 @@ const PERSISTENT_ROUTE_CONFIGS: PersistentRouteConfig[] = [
 
 const getPersistentPageInstanceId = (path: string) => path === '/' ? 'persistent:inventory' : `persistent:${path.slice(1)}`;
 const getRouteContainerClass = (path: string) => (
-  path === '/finance'
+  path === '/customer-view'
+    ? 'min-h-full p-0'
+    : path === '/finance'
     ? 'min-h-full pb-20 md:pb-8'
     : 'min-h-full p-4 md:p-8 pb-20 md:pb-8 max-w-7xl mx-auto'
 );
@@ -693,6 +697,7 @@ function AppContent() {
 
   const publicPaths = new Set(['/privacy-policy', '/terms', '/data-deletion']);
   const isPublicRoute = publicPaths.has(location.pathname);
+  const isCustomerViewRoute = location.pathname === '/customer-view';
 
   if (authStatus === 'loading') {
     if (isPublicRoute) {
@@ -787,6 +792,8 @@ function AppContent() {
             <div>{opStatus.message}</div>
           </div>
         )}
+        {!isCustomerViewRoute && (
+        <>
         {/* Sidebar */}
         <div className="w-64 border-r bg-card flex flex-col hidden md:flex">
           <div className="p-6">
@@ -905,6 +912,9 @@ function AppContent() {
             </div>
         )}
 
+        </>
+        )}
+
         {/* Main Content */}
         <main className="flex-1 overflow-auto bg-background">
           {renderedPersistentPaths.map((path) => {
@@ -941,6 +951,7 @@ function AppContent() {
                 
                 {/* Unprotected Route (POS) */}
                 <Route path="/sales" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/sales" routeLabel="Sales" pageInstanceId="route:sales" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><Sales /></RouteReadyBoundary></ProtectedRoute>} />
+                <Route path="/customer-view" element={<ProtectedRoute isVerified={authStatus === "authenticated"}><RouteReadyBoundary routePath="/customer-view" routeLabel="Customer View" pageInstanceId="route:customer-view" isActive transitionId={navigationTraceRef.current?.transitionId ?? null} onReady={(routePath, routeLabel) => clearNavigationState('route_ready', routePath, routeLabel)}><CustomerView /></RouteReadyBoundary></ProtectedRoute>} />
                 
                 <Route path="/verify-email" element={<VerificationRequired email={currentEmail || undefined} />} />
                 <Route path="*" element={<Navigate to="/" />} />
@@ -1006,3 +1017,4 @@ function AppContent() {
 export default function App() {
   return <RoleSessionProvider><Router><AppContent /></Router></RoleSessionProvider>;
 }
+
