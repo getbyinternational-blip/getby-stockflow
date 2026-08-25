@@ -23,7 +23,7 @@ import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { auth, db } from '../services/firebase';
 import { getCanonicalCustomerBalanceView } from '../services/customerBalanceView';
 import { normalizeTransactionItems } from '../utils/transactionItems';
-import { can } from '../src/auth/simplePermissions';
+import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { buildCustomerSeriesMap } from '../src/utils/customerSeries';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
@@ -134,10 +134,10 @@ const ProductGridItem: React.FC<{ product: Product, isReturnMode: boolean, cartQ
       setQtyInput(String(Math.max(0, cartQty)));
     }, [cartQty, product.id]);
 
-    const handleAdd = () => {
+    const handleAdd = (explicitQty?: number) => {
         if (isOutOfStock && !isReturnMode) return;
 
-        const parsedQty = Math.floor(Number(qtyInput || 1));
+        const parsedQty = explicitQty ?? Math.floor(Number(qtyInput || 1));
         if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
             setFlashMsg('Enter a valid quantity');
             setTimeout(() => setFlashMsg(null), 1500);
@@ -166,21 +166,45 @@ const ProductGridItem: React.FC<{ product: Product, isReturnMode: boolean, cartQ
 
     const handlePlus = (e: React.MouseEvent) => {
         e.stopPropagation();
-        handleAdd();
+        const nextQty = Math.max(1, cartQty + 1);
+        const updated = onSetQty(nextQty);
+        if (!updated) return;
+        setQtyInput(String(nextQty));
     };
 
     const isDisabled = (isOutOfStock && !isReturnMode) || (isReturnMode && !canReturn);
     const productImage = getProductCardImage(product);
+    const handleCardClick = () => {
+        if (isDisabled) return;
+        const nextQty = Math.max(1, cartQty + 1);
+        const updated = onSetQty(nextQty);
+        if (!updated) return;
+        setQtyInput(String(nextQty));
+        if (navigator.vibrate) navigator.vibrate(30);
+    };
 
     return (
         <div
-            className={`group relative flex min-w-0 w-full items-center gap-3 overflow-hidden rounded-xl border border-border/80 bg-card p-3 text-card-foreground shadow-sm transition-colors duration-200 ${isDisabled ? 'opacity-60 grayscale' : 'hover:border-border hover:bg-accent/20'} ${cartQty > 0 ? 'border-primary/30 bg-primary/[0.04]' : ''}`}
+            className={`group relative flex min-w-0 w-full items-center gap-3 overflow-hidden rounded-xl border border-border/80 bg-card p-3 text-card-foreground shadow-sm transition-colors duration-200 ${isDisabled ? 'opacity-60 grayscale' : 'cursor-pointer hover:border-border hover:bg-accent/20'} ${cartQty > 0 ? 'border-primary/30 bg-primary/[0.04]' : ''}`}
+            onClick={handleCardClick}
+            onKeyDown={(e) => {
+                if (isDisabled) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleCardClick();
+                }
+            }}
+            role="button"
+            tabIndex={isDisabled ? -1 : 0}
         >
             <button
                 type="button"
                 aria-label={`Add ${getProductName(product)} to cart`}
                 className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted"
-                onClick={() => !isDisabled && onAdd(1)}
+                onClick={(e) => {
+                    e.stopPropagation();
+                    handleCardClick();
+                }}
                 disabled={isDisabled}
             >
                 {productImage ? (
@@ -192,16 +216,16 @@ const ProductGridItem: React.FC<{ product: Product, isReturnMode: boolean, cartQ
                 )}
             </button>
 
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 pr-1">
                 <h3 className="truncate text-sm font-semibold sm:text-[15px]" title={getProductName(product)}>{getProductName(product)}</h3>
-                <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <span>{formatMoneyPrecise(product.sellPrice)}</span>
-                    <span className="text-muted-foreground/50">|</span>
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground">{formatMoneyPrecise(product.sellPrice)}</span>
+                    <span className="text-muted-foreground/40">|</span>
                     <span>{isReturnMode ? `Ret ${maxReturnable}` : isOutOfStock ? 'Out of stock' : `Stock ${product.stock}`}</span>
                     {cartQty > 0 && (
                         <>
-                            <span className="text-muted-foreground/50">|</span>
-                            <span>In Cart {cartQty}</span>
+                            <span className="text-muted-foreground/40">|</span>
+                            <span className="font-medium text-primary">In Cart {cartQty}</span>
                         </>
                     )}
                 </div>
@@ -1824,8 +1848,12 @@ export default function Sales() {
 
   const categories = ['All', ...Array.from(new Set(products.map((p) => getProductCategory(p))))];
   const filteredProducts = products.filter(p => {
-    const query = safeLower(productSearch);
-    const searchMatch = safeLower(getProductSearchText(p)).includes(query);
+    const query = safeLower(productSearch).trim();
+    const queryTokens = query.split(/\s+/).filter(Boolean);
+    const haystack = safeLower(getProductSearchText(p))
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+    const searchMatch = queryTokens.length === 0 || queryTokens.every((token) => haystack.includes(token));
     const categoryMatch = selectedCategory === 'All' || getProductCategory(p) === selectedCategory;
     return searchMatch && categoryMatch;
   }).sort((a, b) => {
@@ -2479,7 +2507,7 @@ export default function Sales() {
               <div className="space-y-1 min-w-0">
                 <p className="text-sm font-semibold truncate">{formatItemNameWithVariant(item.name, item.selectedVariant, item.selectedColor)}</p>
                 <p className="text-[11px] text-muted-foreground">
-                  Stock left: {Math.max(0, getLineAvailableStock(item, item.selectedVariant, item.selectedColor) + (isReturnMode ? item.quantity : -item.quantity))}{can('inventoryBuyPrice') ? ` · Buy: ${formatMoneyPrecise(item.buyPrice)}` : ''}
+                  Stock left: {Math.max(0, getLineAvailableStock(item, item.selectedVariant, item.selectedColor) + (isReturnMode ? item.quantity : -item.quantity))}{isAdmin() && can('inventoryBuyPrice') ? ` · Buy: ${formatMoneyPrecise(item.buyPrice)}` : ''}
                 </p>
                 <div className="grid grid-cols-[92px_80px_1fr] gap-2 items-center">
                   <div className="flex items-center border rounded-md h-7 overflow-hidden">
