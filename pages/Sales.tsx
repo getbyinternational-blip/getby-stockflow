@@ -493,6 +493,50 @@ export default function Sales() {
   const updateActiveCartMeta = (patch: Partial<InvoiceCart>, source = 'cart_update', stackHint = 'updateActiveCartMeta') => {
     setInvoiceCarts(prev => prev.map(c => c.id === activeCartId ? { ...c, ...patch, updatedAt: new Date().toISOString() } : c));
   };
+  const clearActiveCart = () => {
+    setInvoiceCarts(prev => prev.map((cartRow) => (
+      cartRow.id === activeCartId
+        ? {
+            ...cartRow,
+            items: [],
+            cashPaidInput: '',
+            onlinePaidInput: '',
+            creditDueInput: '',
+            cashReceivedInput: '',
+            customerId: '',
+            customerSearch: '',
+            cashPaidManuallyEdited: false,
+            onlinePaidManuallyEdited: false,
+            allCreditMode: false,
+            updatedAt: new Date().toISOString(),
+          }
+        : cartRow
+    )));
+    setCartError(null);
+    setCheckoutError(null);
+    setSettlementHint(null);
+    setSendInvoiceMessage(null);
+    setUseStoreCreditApplied(false);
+    setStoreCreditInput('0');
+    setStoreOverpaymentAsCredit(false);
+    setCashPaidInput('');
+    setOnlinePaidInput('');
+    setCreditDueInput('');
+    setCashReceivedInput('');
+    setCashReceivedDirty(false);
+    setCashManuallyEdited(false);
+    setOnlineManuallyEdited(false);
+    setAllCreditMode(false);
+    setCustomerSearch('');
+    setInvoiceGstName('');
+    setInvoiceGstNumber('');
+  };
+  const removeCartLine = (id: string, variant?: string, color?: string) => {
+    const key = lineKey(id, variant, color);
+    setActiveCartItems(prev => prev.filter(i => lineKey(i.id, i.selectedVariant, i.selectedColor) !== key));
+    setCartError(null);
+    setCheckoutError(null);
+  };
   const removeCompletedCartAfterSuccess = (completedCartId: string) => {
     setInvoiceCarts(prev => {
       const remaining = prev.filter(c => c.id !== completedCartId);
@@ -2292,12 +2336,14 @@ export default function Sales() {
             </div>
           </div>
           {!isReturnMode && (
-          <div className="flex flex-wrap gap-2">
+          <div className="-mx-1 overflow-x-auto px-1 pb-1">
+            <div className="flex w-max min-w-full flex-nowrap gap-2">
             {categories.map((category) => (
-              <Button key={category} variant={selectedCategory === category ? 'default' : 'outline'} size="sm" className={`h-10 rounded-lg px-4 text-sm ${selectedCategory === category && isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} onClick={() => setSelectedCategory(category)}>
+              <Button key={category} variant={selectedCategory === category ? 'default' : 'outline'} size="sm" className={`h-10 shrink-0 rounded-lg px-4 text-sm ${selectedCategory === category && isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} onClick={() => setSelectedCategory(category)}>
                 {category}
               </Button>
             ))}
+            </div>
           </div>
           )}
         </div>
@@ -2497,7 +2543,7 @@ export default function Sales() {
             )}
           </div>
           {!isReturnMode && cart.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => setActiveCartItems(() => [])}>Clear</Button>
+            <Button variant="outline" size="sm" onClick={clearActiveCart}>Clear</Button>
           )}
         </div>
 
@@ -2542,7 +2588,7 @@ export default function Sales() {
                   <p className="text-right font-bold text-sm">{formatMoneyPrecise(item.sellPrice * item.quantity)}</p>
                 </div>
               </div>
-              <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => updateQuantity(String(item.id), -item.quantity, item.selectedVariant, item.selectedColor)}>
+              <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" onClick={() => removeCartLine(String(item.id), item.selectedVariant, item.selectedColor)}>
                 <Trash2 className="w-4 h-4" />
               </Button>
             </div>

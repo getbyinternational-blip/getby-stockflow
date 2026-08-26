@@ -251,31 +251,6 @@ const sanitizeTelegramTemplate = (value?: string | null) => {
   );
 };
 
-const toTelegramTimeInputValue = (value: unknown): string => {
-  const text = safeText(value);
-
-  if (!text) {
-    return '';
-  }
-
-  const timeOnlyMatch = text.match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d+)?)?$/);
-
-  if (timeOnlyMatch) {
-    return `${timeOnlyMatch[1]}:${timeOnlyMatch[2]}`;
-  }
-
-  const parsed = new Date(text);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return '';
-  }
-
-  const hours = String(parsed.getHours()).padStart(2, '0');
-  const minutes = String(parsed.getMinutes()).padStart(2, '0');
-
-  return `${hours}:${minutes}`;
-};
-
 const normalizeCollections = (
   profile?: StoreProfile | null,
 ): TelegramPostCollection[] =>
@@ -331,7 +306,8 @@ const normalizeCollections = (
           ),
         startAt:
           safeText(
-            (collection as any).startAt,
+            (collection as any).startAt ||
+              (collection as any).autoStartTime,
           ) || null,
 
         repeatMode: safeText(
@@ -354,7 +330,11 @@ const normalizeCollections = (
           collection.updatedAt,
           new Date().toISOString(),
         ),
-}))
+
+        totalPostsSent: toNonNegativeNumber(
+          collection.totalPostsSent,
+        ),
+      }))
     : [];
 
 export default function TelegramPosts() {
@@ -470,8 +450,8 @@ const [
     );
 
   const [
-    startTimeInput,
-    setStartTimeInput,
+    autoStartTime,
+    setAutoStartTime,
   ] = useState('');
 
 const [
@@ -732,10 +712,12 @@ setTelegramChannelId(
           DEFAULT_BATCH_SIZE,
       ),
     );
-    setStartTimeInput(
+    setAutoStartTime(
       safeText(
         (selectedCollection as any)
-          ?.startAt,
+          ?.startAt ||
+          (selectedCollection as any)
+            ?.autoStartTime,
       ),
     );
 
@@ -810,7 +792,7 @@ setTelegramChannelId(
         ),
       );
 
-      setStartTimeInput('');
+      setAutoStartTime('');
 
 
       setRepeatMode(
@@ -2113,7 +2095,7 @@ return saved;
         ),
       );
 
-      setStartTimeInput('');
+      setAutoStartTime('');
 
 
       setRepeatMode(
@@ -2175,10 +2157,12 @@ return saved;
           DEFAULT_BATCH_SIZE,
       ),
     );
-    setStartTimeInput(
+    setAutoStartTime(
       safeText(
         (collection as any)
-          .startAt,
+          .startAt ||
+          (collection as any)
+            .autoStartTime,
       ),
     );
 
@@ -2288,7 +2272,7 @@ return saved;
       const trimmedName =
         collectionName.trim();
       const trimmedStartTime =
-        startTimeInput.trim();
+        autoStartTime.trim();
 
       if (!trimmedName) {
         setCollectionValidationMessage(
@@ -2371,7 +2355,18 @@ return saved;
               now,
 
             updatedAt: now,
-};
+
+            lastPostedAt:
+              activeCollection?.lastPostedAt,
+
+            lastPostedProductName:
+              activeCollection?.lastPostedProductName,
+
+            totalPostsSent:
+              toNonNegativeNumber(
+                activeCollection?.totalPostsSent,
+              ),
+          };
 
         const nextCollections =
           activeCollection
@@ -2595,7 +2590,7 @@ return saved;
         ),
       );
 
-      setStartTimeInput('');
+      setAutoStartTime('');
 
 
       setRepeatMode(
@@ -2656,7 +2651,7 @@ return saved;
       const trimmedName =
         collectionName.trim();
       const trimmedStartTime =
-        startTimeInput.trim();
+        autoStartTime.trim();
 
       if (!trimmedName) {
         setCollectionValidationMessage(
@@ -2727,7 +2722,18 @@ return saved;
 
           updatedAt:
             now,
-};
+
+          lastPostedAt:
+            activeCollection?.lastPostedAt,
+
+          lastPostedProductName:
+            activeCollection?.lastPostedProductName,
+
+          totalPostsSent:
+            toNonNegativeNumber(
+              activeCollection?.totalPostsSent,
+            ),
+        };
 
       const nextCollections =
         activeCollection
@@ -3026,6 +3032,8 @@ setActiveCollectionId(
           startAt:
             (collection as any)
               .startAt ??
+            (collection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -3148,6 +3156,8 @@ setNotice({
           startAt:
             (savedCollection as any)
               .startAt ??
+            (savedCollection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -4387,9 +4397,9 @@ if (
                   </Label>
                   <Input
                     type="time"
-                    value={toTelegramTimeInputValue(startTimeInput)}
+                    value={autoStartTime}
                     onChange={(event) => {
-                      setStartTimeInput(event.target.value);
+                      setAutoStartTime(event.target.value);
                       if (
                         collectionValidationMessage &&
                         collectionName.trim()

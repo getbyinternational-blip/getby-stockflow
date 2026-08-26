@@ -2717,6 +2717,7 @@ const defaultProfile: StoreProfile = {
   autoSendInvoiceAfterCreation: false,
   repairCenterEnabled: false,
   telegramCollections: [],
+  telegramPostActivity: [],
   telegramActiveCollectionId: '',
 };
 
@@ -3151,6 +3152,7 @@ const buildHydratedTelegramProfile = (
     telegramCollections: Array.isArray(telegramData.telegramCollections)
       ? (telegramData.telegramCollections as any[])
       : [],
+    telegramPostActivity: [],
     telegramActiveCollectionId: String(telegramData.telegramActiveCollectionId || '').trim(),
   });
 };
@@ -5356,6 +5358,7 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
       .map((channelId) => String(channelId || '').trim())
       .filter(Boolean)
   )),
+  telegramPostActivity: [],
   telegramActiveCollectionId: String(profile.telegramActiveCollectionId || '').trim(),
 });
 
@@ -5409,7 +5412,7 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
   return safeProfile;
 };
 
-export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
+export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramPostActivity' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
   const nextProfile = sanitizeStoreProfileForPersistence({
     ...memoryState.profile,
     ...profilePatch,

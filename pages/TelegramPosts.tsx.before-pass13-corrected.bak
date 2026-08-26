@@ -13,6 +13,7 @@ import {
   TelegramCollectionFrequencyUnit,
   TelegramCollectionRepeatMode,
   TelegramLiveCollection,
+  TelegramPostActivity,
   TelegramPostCollection,
   TelegramPostMode,
   TelegramSchedulerProduct,
@@ -34,6 +35,7 @@ Order now while stock lasts!`;
 
 const TELEGRAM_MESSAGE_BOARD_BG = '/telegram/message-board-bg.jpg';
 
+const MAX_ACTIVITY_ENTRIES = 25;
 const TELEGRAM_FREQUENCY_UNITS = [
   'seconds',
   'minutes',
@@ -251,31 +253,6 @@ const sanitizeTelegramTemplate = (value?: string | null) => {
   );
 };
 
-const toTelegramTimeInputValue = (value: unknown): string => {
-  const text = safeText(value);
-
-  if (!text) {
-    return '';
-  }
-
-  const timeOnlyMatch = text.match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d+)?)?$/);
-
-  if (timeOnlyMatch) {
-    return `${timeOnlyMatch[1]}:${timeOnlyMatch[2]}`;
-  }
-
-  const parsed = new Date(text);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return '';
-  }
-
-  const hours = String(parsed.getHours()).padStart(2, '0');
-  const minutes = String(parsed.getMinutes()).padStart(2, '0');
-
-  return `${hours}:${minutes}`;
-};
-
 const normalizeCollections = (
   profile?: StoreProfile | null,
 ): TelegramPostCollection[] =>
@@ -331,7 +308,8 @@ const normalizeCollections = (
           ),
         startAt:
           safeText(
-            (collection as any).startAt,
+            (collection as any).startAt ||
+              (collection as any).autoStartTime,
           ) || null,
 
         repeatMode: safeText(
@@ -354,7 +332,52 @@ const normalizeCollections = (
           collection.updatedAt,
           new Date().toISOString(),
         ),
-}))
+
+        totalPostsSent: toNonNegativeNumber(
+          collection.totalPostsSent,
+        ),
+      }))
+    : [];
+
+const normalizeActivity = (
+  profile?: StoreProfile | null,
+): TelegramPostActivity[] =>
+  Array.isArray(profile?.telegramPostActivity)
+    ? profile!.telegramPostActivity!.map((entry) => ({
+        ...entry,
+
+        category: safeText(
+          entry.category,
+          'all',
+        ),
+
+        channelId: safeText(
+          entry.channelId,
+        ),
+
+        postMode:
+          entry.postMode === 'out_of_stock' ||
+          entry.postMode === 'filtered'
+            ? entry.postMode
+            : 'selected',
+
+        productCount: toNonNegativeNumber(
+          entry.productCount,
+        ),
+
+        successCount: toNonNegativeNumber(
+          entry.successCount,
+        ),
+
+        failureCount: toNonNegativeNumber(
+          entry.failureCount,
+        ),
+
+        postedAt: safeText(
+          entry.postedAt,
+          new Date().toISOString(),
+        ),
+      }))
     : [];
 
 export default function TelegramPosts() {
@@ -425,7 +448,12 @@ export default function TelegramPosts() {
     setTelegramCollections,
   ] = useState<TelegramPostCollection[]>([]);
 
-const [
+  const [
+    telegramActivity,
+    setTelegramActivity,
+  ] = useState<TelegramPostActivity[]>([]);
+
+  const [
     activeCollectionId,
     setActiveCollectionId,
   ] = useState('');
@@ -470,8 +498,8 @@ const [
     );
 
   const [
-    startTimeInput,
-    setStartTimeInput,
+    autoStartTime,
+    setAutoStartTime,
   ] = useState('');
 
 const [
@@ -601,7 +629,13 @@ const [
       normalizeCollections(
         safeProfile,
       );
-setProducts(
+
+    const activity =
+      normalizeActivity(
+        safeProfile,
+      );
+
+    setProducts(
       Array.isArray(data.products)
         ? data.products
         : [],
@@ -612,7 +646,12 @@ setProducts(
     setTelegramCollections(
       collections,
     );
-setTelegramChannelId(
+
+    setTelegramActivity(
+      activity,
+    );
+
+    setTelegramChannelId(
       safeText(
         safeProfile?.telegramChannelId,
       ),
@@ -732,10 +771,12 @@ setTelegramChannelId(
           DEFAULT_BATCH_SIZE,
       ),
     );
-    setStartTimeInput(
+    setAutoStartTime(
       safeText(
         (selectedCollection as any)
-          ?.startAt,
+          ?.startAt ||
+          (selectedCollection as any)
+            ?.autoStartTime,
       ),
     );
 
@@ -810,7 +851,7 @@ setTelegramChannelId(
         ),
       );
 
-      setStartTimeInput('');
+      setAutoStartTime('');
 
 
       setRepeatMode(
@@ -1219,6 +1260,31 @@ setTelegramChannelId(
         collection.id ===
         activeCollectionId,
     ) || null;
+
+  const recentActivity = [
+    ...telegramActivity,
+  ].sort(
+    (left, right) =>
+      new Date(
+        right.postedAt,
+      ).getTime() -
+      new Date(
+        left.postedAt,
+      ).getTime(),
+  );
+
+  const lastPostedEntry =
+    recentActivity[0] || null;
+
+  const totalPostedCount =
+    recentActivity.reduce(
+      (sum, entry) =>
+        sum +
+        toNonNegativeNumber(
+          entry.successCount,
+        ),
+      0,
+    );
 
   const categoryCollections =
     telegramCollections.filter(
@@ -1832,6 +1898,7 @@ setTelegramChannelId(
         telegramTemplate?: string;
         telegramNotes?: string;
         telegramCollections?: TelegramPostCollection[];
+        telegramPostActivity?: TelegramPostActivity[];
         telegramActiveCollectionId?: string;
       },
 
@@ -1870,7 +1937,12 @@ setTelegramChannelId(
           telegramCollections:
             nextValues.telegramCollections ??
             telegramCollections,
-telegramActiveCollectionId:
+
+          telegramPostActivity:
+            nextValues.telegramPostActivity ??
+            telegramActivity,
+
+          telegramActiveCollectionId:
             nextValues.telegramActiveCollectionId ??
             activeCollectionId,
         };
@@ -1892,7 +1964,11 @@ telegramActiveCollectionId:
 
             telegramCollections:
               nextProfile.telegramCollections,
-telegramActiveCollectionId:
+
+            telegramPostActivity:
+              nextProfile.telegramPostActivity,
+
+            telegramActiveCollectionId:
               nextProfile.telegramActiveCollectionId,
           },
         );
@@ -1918,7 +1994,14 @@ telegramActiveCollectionId:
           saved,
         ),
       );
-return saved;
+
+      setTelegramActivity(
+        normalizeActivity(
+          saved,
+        ),
+      );
+
+      return saved;
     };
 
   const addTelegramChannel =
@@ -2113,7 +2196,7 @@ return saved;
         ),
       );
 
-      setStartTimeInput('');
+      setAutoStartTime('');
 
 
       setRepeatMode(
@@ -2175,10 +2258,12 @@ return saved;
           DEFAULT_BATCH_SIZE,
       ),
     );
-    setStartTimeInput(
+    setAutoStartTime(
       safeText(
         (collection as any)
-          .startAt,
+          .startAt ||
+          (collection as any)
+            .autoStartTime,
       ),
     );
 
@@ -2288,7 +2373,7 @@ return saved;
       const trimmedName =
         collectionName.trim();
       const trimmedStartTime =
-        startTimeInput.trim();
+        autoStartTime.trim();
 
       if (!trimmedName) {
         setCollectionValidationMessage(
@@ -2371,7 +2456,18 @@ return saved;
               now,
 
             updatedAt: now,
-};
+
+            lastPostedAt:
+              activeCollection?.lastPostedAt,
+
+            lastPostedProductName:
+              activeCollection?.lastPostedProductName,
+
+            totalPostsSent:
+              toNonNegativeNumber(
+                activeCollection?.totalPostsSent,
+              ),
+          };
 
         const nextCollections =
           activeCollection
@@ -2595,7 +2691,7 @@ return saved;
         ),
       );
 
-      setStartTimeInput('');
+      setAutoStartTime('');
 
 
       setRepeatMode(
@@ -2656,7 +2752,7 @@ return saved;
       const trimmedName =
         collectionName.trim();
       const trimmedStartTime =
-        startTimeInput.trim();
+        autoStartTime.trim();
 
       if (!trimmedName) {
         setCollectionValidationMessage(
@@ -2727,7 +2823,18 @@ return saved;
 
           updatedAt:
             now,
-};
+
+          lastPostedAt:
+            activeCollection?.lastPostedAt,
+
+          lastPostedProductName:
+            activeCollection?.lastPostedProductName,
+
+          totalPostsSent:
+            toNonNegativeNumber(
+              activeCollection?.totalPostsSent,
+            ),
+        };
 
       const nextCollections =
         activeCollection
@@ -3026,6 +3133,8 @@ setActiveCollectionId(
           startAt:
             (collection as any)
               .startAt ??
+            (collection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -3148,6 +3257,8 @@ setNotice({
           startAt:
             (savedCollection as any)
               .startAt ??
+            (savedCollection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -3268,7 +3379,82 @@ setNotice({
           }
         }
 
-if (
+        const now =
+          new Date().toISOString();
+
+        const lastProductName =
+          targetProducts[
+            targetProducts.length -
+              1
+          ]
+            ? getProductName(
+                targetProducts[
+                  targetProducts.length -
+                    1
+                ],
+              )
+            : '';
+
+        const activityEntry: TelegramPostActivity =
+          {
+            id:
+              `telegram-activity-${Date.now()}`,
+
+            collectionId:
+              activeCollection?.id ||
+              undefined,
+
+            collectionName:
+              activeCollection?.name ||
+              (
+                collectionName.trim() ||
+                undefined
+              ),
+
+            category:
+              categoryFilter,
+
+            channelId,
+
+            postMode,
+
+            productCount:
+              targetProducts.length,
+
+            successCount,
+
+            failureCount:
+              failures.length,
+
+            postedAt:
+              now,
+
+            lastPostedProductName:
+              lastProductName ||
+              undefined,
+          };
+
+        const nextActivity = [
+          activityEntry,
+          ...telegramActivity,
+        ].slice(
+          0,
+          MAX_ACTIVITY_ENTRIES,
+        );
+
+        await persistTelegramProfile(
+          {
+            telegramPostActivity:
+              nextActivity,
+          },
+
+          {
+            suppressNotice:
+              true,
+          },
+        );
+
+        if (
           !failures.length
         ) {
           setNotice({
@@ -4387,9 +4573,9 @@ if (
                   </Label>
                   <Input
                     type="time"
-                    value={toTelegramTimeInputValue(startTimeInput)}
+                    value={autoStartTime}
                     onChange={(event) => {
-                      setStartTimeInput(event.target.value);
+                      setAutoStartTime(event.target.value);
                       if (
                         collectionValidationMessage &&
                         collectionName.trim()

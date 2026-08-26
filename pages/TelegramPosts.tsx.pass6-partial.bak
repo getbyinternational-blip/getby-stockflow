@@ -13,6 +13,7 @@ import {
   TelegramCollectionFrequencyUnit,
   TelegramCollectionRepeatMode,
   TelegramLiveCollection,
+  TelegramPostActivity,
   TelegramPostCollection,
   TelegramPostMode,
   TelegramSchedulerProduct,
@@ -34,6 +35,7 @@ Order now while stock lasts!`;
 
 const TELEGRAM_MESSAGE_BOARD_BG = '/telegram/message-board-bg.jpg';
 
+const MAX_ACTIVITY_ENTRIES = 25;
 const TELEGRAM_FREQUENCY_UNITS = [
   'seconds',
   'minutes',
@@ -251,31 +253,6 @@ const sanitizeTelegramTemplate = (value?: string | null) => {
   );
 };
 
-const toTelegramTimeInputValue = (value: unknown): string => {
-  const text = safeText(value);
-
-  if (!text) {
-    return '';
-  }
-
-  const timeOnlyMatch = text.match(/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d+)?)?$/);
-
-  if (timeOnlyMatch) {
-    return `${timeOnlyMatch[1]}:${timeOnlyMatch[2]}`;
-  }
-
-  const parsed = new Date(text);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return '';
-  }
-
-  const hours = String(parsed.getHours()).padStart(2, '0');
-  const minutes = String(parsed.getMinutes()).padStart(2, '0');
-
-  return `${hours}:${minutes}`;
-};
-
 const normalizeCollections = (
   profile?: StoreProfile | null,
 ): TelegramPostCollection[] =>
@@ -329,9 +306,11 @@ const normalizeCollections = (
           normalizeTelegramBatchSize(
             (collection as any).batchSize,
           ),
+
         startAt:
           safeText(
-            (collection as any).startAt,
+            (collection as any).startAt ||
+              (collection as any).autoStartTime,
           ) || null,
 
         repeatMode: safeText(
@@ -354,7 +333,52 @@ const normalizeCollections = (
           collection.updatedAt,
           new Date().toISOString(),
         ),
-}))
+
+        totalPostsSent: toNonNegativeNumber(
+          collection.totalPostsSent,
+        ),
+      }))
+    : [];
+
+const normalizeActivity = (
+  profile?: StoreProfile | null,
+): TelegramPostActivity[] =>
+  Array.isArray(profile?.telegramPostActivity)
+    ? profile!.telegramPostActivity!.map((entry) => ({
+        ...entry,
+
+        category: safeText(
+          entry.category,
+          'all',
+        ),
+
+        channelId: safeText(
+          entry.channelId,
+        ),
+
+        postMode:
+          entry.postMode === 'out_of_stock' ||
+          entry.postMode === 'filtered'
+            ? entry.postMode
+            : 'selected',
+
+        productCount: toNonNegativeNumber(
+          entry.productCount,
+        ),
+
+        successCount: toNonNegativeNumber(
+          entry.successCount,
+        ),
+
+        failureCount: toNonNegativeNumber(
+          entry.failureCount,
+        ),
+
+        postedAt: safeText(
+          entry.postedAt,
+          new Date().toISOString(),
+        ),
+      }))
     : [];
 
 export default function TelegramPosts() {
@@ -425,7 +449,12 @@ export default function TelegramPosts() {
     setTelegramCollections,
   ] = useState<TelegramPostCollection[]>([]);
 
-const [
+  const [
+    telegramActivity,
+    setTelegramActivity,
+  ] = useState<TelegramPostActivity[]>([]);
+
+  const [
     activeCollectionId,
     setActiveCollectionId,
   ] = useState('');
@@ -470,8 +499,8 @@ const [
     );
 
   const [
-    startTimeInput,
-    setStartTimeInput,
+    autoStartTime,
+    setAutoStartTime,
   ] = useState('');
 
 const [
@@ -505,10 +534,19 @@ const [
     setIsSending,
   ] = useState(false);
 
-const {
+  const [
+    isStartingCollection,
+    setIsStartingCollection,
+  ] = useState(false);
+
+  const {
     collections:
       runningCollections,
-start:
+
+    refresh:
+      refreshTelegramCollections,
+
+    start:
       startTelegramCollection,
 
     pause:
@@ -519,9 +557,7 @@ start:
 
     stop:
       stopTelegramCollection,
-  
-    isActionPending,
-} = useTelegramCollections();
+  } = useTelegramCollections();
 
   const {
     selectedCollectionId:
@@ -537,7 +573,12 @@ start:
       loadTelegramActivity,
   } = useTelegramActivity();
 
-const [
+  const [
+    collectionActionId,
+    setCollectionActionId,
+  ] = useState('');
+
+  const [
     selectedChannelId,
     setSelectedChannelId,
   ] = useState('');
@@ -601,7 +642,13 @@ const [
       normalizeCollections(
         safeProfile,
       );
-setProducts(
+
+    const activity =
+      normalizeActivity(
+        safeProfile,
+      );
+
+    setProducts(
       Array.isArray(data.products)
         ? data.products
         : [],
@@ -612,7 +659,12 @@ setProducts(
     setTelegramCollections(
       collections,
     );
-setTelegramChannelId(
+
+    setTelegramActivity(
+      activity,
+    );
+
+    setTelegramChannelId(
       safeText(
         safeProfile?.telegramChannelId,
       ),
@@ -732,10 +784,13 @@ setTelegramChannelId(
           DEFAULT_BATCH_SIZE,
       ),
     );
-    setStartTimeInput(
+
+    setAutoStartTime(
       safeText(
         (selectedCollection as any)
-          ?.startAt,
+          ?.startAt ||
+          (selectedCollection as any)
+            ?.autoStartTime,
       ),
     );
 
@@ -810,8 +865,7 @@ setTelegramChannelId(
         ),
       );
 
-      setStartTimeInput('');
-
+      setAutoStartTime('');
 
       setRepeatMode(
         DEFAULT_REPEAT_MODE,
@@ -850,6 +904,30 @@ setTelegramChannelId(
       );
     };
   }, []);
+
+  const refreshRunningCollections =
+    async (options?: {
+      silent?: boolean;
+    }) => {
+      try {
+        await refreshTelegramCollections({
+          silent:
+            options?.silent ??
+            false,
+        });
+      } catch (error) {
+        if (!options?.silent) {
+          setNotice({
+            type: 'error',
+
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Backend not reachable',
+          });
+        }
+      }
+    };
 
   const filterCategories =
     useMemo(
@@ -1219,6 +1297,31 @@ setTelegramChannelId(
         collection.id ===
         activeCollectionId,
     ) || null;
+
+  const recentActivity = [
+    ...telegramActivity,
+  ].sort(
+    (left, right) =>
+      new Date(
+        right.postedAt,
+      ).getTime() -
+      new Date(
+        left.postedAt,
+      ).getTime(),
+  );
+
+  const lastPostedEntry =
+    recentActivity[0] || null;
+
+  const totalPostedCount =
+    recentActivity.reduce(
+      (sum, entry) =>
+        sum +
+        toNonNegativeNumber(
+          entry.successCount,
+        ),
+      0,
+    );
 
   const categoryCollections =
     telegramCollections.filter(
@@ -1832,6 +1935,7 @@ setTelegramChannelId(
         telegramTemplate?: string;
         telegramNotes?: string;
         telegramCollections?: TelegramPostCollection[];
+        telegramPostActivity?: TelegramPostActivity[];
         telegramActiveCollectionId?: string;
       },
 
@@ -1870,7 +1974,12 @@ setTelegramChannelId(
           telegramCollections:
             nextValues.telegramCollections ??
             telegramCollections,
-telegramActiveCollectionId:
+
+          telegramPostActivity:
+            nextValues.telegramPostActivity ??
+            telegramActivity,
+
+          telegramActiveCollectionId:
             nextValues.telegramActiveCollectionId ??
             activeCollectionId,
         };
@@ -1892,7 +2001,11 @@ telegramActiveCollectionId:
 
             telegramCollections:
               nextProfile.telegramCollections,
-telegramActiveCollectionId:
+
+            telegramPostActivity:
+              nextProfile.telegramPostActivity,
+
+            telegramActiveCollectionId:
               nextProfile.telegramActiveCollectionId,
           },
         );
@@ -1918,7 +2031,14 @@ telegramActiveCollectionId:
           saved,
         ),
       );
-return saved;
+
+      setTelegramActivity(
+        normalizeActivity(
+          saved,
+        ),
+      );
+
+      return saved;
     };
 
   const addTelegramChannel =
@@ -2113,8 +2233,7 @@ return saved;
         ),
       );
 
-      setStartTimeInput('');
-
+      setAutoStartTime('');
 
       setRepeatMode(
         DEFAULT_REPEAT_MODE,
@@ -2175,10 +2294,13 @@ return saved;
           DEFAULT_BATCH_SIZE,
       ),
     );
-    setStartTimeInput(
+
+    setAutoStartTime(
       safeText(
         (collection as any)
-          .startAt,
+          .startAt ||
+          (collection as any)
+            .autoStartTime,
       ),
     );
 
@@ -2287,8 +2409,9 @@ return saved;
     async () => {
       const trimmedName =
         collectionName.trim();
+
       const trimmedStartTime =
-        startTimeInput.trim();
+        autoStartTime.trim();
 
       if (!trimmedName) {
         setCollectionValidationMessage(
@@ -2304,8 +2427,7 @@ return saved;
         return;
       }
 
-
-      setIsSavingCollection(
+setIsSavingCollection(
         true,
       );
 
@@ -2357,9 +2479,10 @@ return saved;
 
             batchSize:
               resolveBatchSize(),
-          startAt:
-            trimmedStartTime ||
-            null,
+
+            startAt:
+              trimmedStartTime ||
+              null,
 
             repeatMode,
 
@@ -2371,7 +2494,18 @@ return saved;
               now,
 
             updatedAt: now,
-};
+
+            lastPostedAt:
+              activeCollection?.lastPostedAt,
+
+            lastPostedProductName:
+              activeCollection?.lastPostedProductName,
+
+            totalPostsSent:
+              toNonNegativeNumber(
+                activeCollection?.totalPostsSent,
+              ),
+          };
 
         const nextCollections =
           activeCollection
@@ -2595,8 +2729,7 @@ return saved;
         ),
       );
 
-      setStartTimeInput('');
-
+      setAutoStartTime('');
 
       setRepeatMode(
         DEFAULT_REPEAT_MODE,
@@ -2655,8 +2788,9 @@ return saved;
     async () => {
       const trimmedName =
         collectionName.trim();
+
       const trimmedStartTime =
-        startTimeInput.trim();
+        autoStartTime.trim();
 
       if (!trimmedName) {
         setCollectionValidationMessage(
@@ -2667,8 +2801,7 @@ return saved;
         );
       }
 
-
-      const channelId =
+const channelId =
         safeText(
           collectionChannelId,
         ).trim() ||
@@ -2712,9 +2845,12 @@ return saved;
 
           batchSize:
             resolveBatchSize(),
-          startAt:
-            trimmedStartTime ||
-            null,
+
+          autoStartTime:
+            trimmedStartTime,
+
+          endTime:
+            trimmedEndTime,
 
           repeatMode,
 
@@ -2727,7 +2863,18 @@ return saved;
 
           updatedAt:
             now,
-};
+
+          lastPostedAt:
+            activeCollection?.lastPostedAt,
+
+          lastPostedProductName:
+            activeCollection?.lastPostedProductName,
+
+          totalPostsSent:
+            toNonNegativeNumber(
+              activeCollection?.totalPostsSent,
+            ),
+        };
 
       const nextCollections =
         activeCollection
@@ -2867,7 +3014,12 @@ return saved;
 
         return;
       }
-try {
+
+      setCollectionActionId(
+        collectionId,
+      );
+
+      try {
         await handler();
 
         setNotice({
@@ -2876,7 +3028,14 @@ try {
           message:
             successMessage,
         });
-if (
+
+        await refreshRunningCollections(
+          {
+            silent: true,
+          },
+        );
+
+        if (
           selectedActivityCollectionId ===
           collectionId
         ) {
@@ -2893,6 +3052,8 @@ if (
               ? error.message
               : 'Backend not reachable',
         });
+      } finally {
+        setCollectionActionId('');
       }
     };
 
@@ -2971,7 +3132,12 @@ if (
 
         return;
       }
-setActiveCollectionId(
+
+      setIsStartingCollection(
+        true,
+      );
+
+      setActiveCollectionId(
         collection.id,
       );
 
@@ -3023,9 +3189,12 @@ setActiveCollectionId(
             (collection as any)
               .batchSize ||
             DEFAULT_BATCH_SIZE,
+
           startAt:
             (collection as any)
               .startAt ??
+            (collection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -3042,7 +3211,14 @@ setActiveCollectionId(
           products:
             schedulerProducts,
         });
-setNotice({
+
+        await refreshRunningCollections(
+          {
+            silent: true,
+          },
+        );
+
+        setNotice({
           type: 'success',
 
           message:
@@ -3057,6 +3233,10 @@ setNotice({
               ? error.message
               : 'Backend not reachable',
         });
+      } finally {
+        setIsStartingCollection(
+          false,
+        );
       }
     };
 
@@ -3093,7 +3273,12 @@ setNotice({
 
         return;
       }
-setNotice({
+
+      setIsStartingCollection(
+        true,
+      );
+
+      setNotice({
         type: 'info',
 
         message:
@@ -3145,9 +3330,12 @@ setNotice({
             (savedCollection as any)
               .batchSize ||
             DEFAULT_BATCH_SIZE,
+
           startAt:
             (savedCollection as any)
               .startAt ??
+            (savedCollection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -3164,7 +3352,14 @@ setNotice({
           products:
             schedulerProducts,
         });
-setNotice({
+
+        await refreshRunningCollections(
+          {
+            silent: true,
+          },
+        );
+
+        setNotice({
           type: 'success',
 
           message:
@@ -3179,6 +3374,10 @@ setNotice({
               ? error.message
               : 'Backend not reachable',
         });
+      } finally {
+        setIsStartingCollection(
+          false,
+        );
       }
     };
 
@@ -3268,7 +3467,114 @@ setNotice({
           }
         }
 
-if (
+        const now =
+          new Date().toISOString();
+
+        const lastProductName =
+          targetProducts[
+            targetProducts.length -
+              1
+          ]
+            ? getProductName(
+                targetProducts[
+                  targetProducts.length -
+                    1
+                ],
+              )
+            : '';
+
+        const activityEntry: TelegramPostActivity =
+          {
+            id:
+              `telegram-activity-${Date.now()}`,
+
+            collectionId:
+              activeCollection?.id ||
+              undefined,
+
+            collectionName:
+              activeCollection?.name ||
+              (
+                collectionName.trim() ||
+                undefined
+              ),
+
+            category:
+              categoryFilter,
+
+            channelId,
+
+            postMode,
+
+            productCount:
+              targetProducts.length,
+
+            successCount,
+
+            failureCount:
+              failures.length,
+
+            postedAt:
+              now,
+
+            lastPostedProductName:
+              lastProductName ||
+              undefined,
+          };
+
+        const nextActivity = [
+          activityEntry,
+          ...telegramActivity,
+        ].slice(
+          0,
+          MAX_ACTIVITY_ENTRIES,
+        );
+
+        const nextCollections =
+          activeCollection
+            ? telegramCollections.map(
+                (collection) =>
+                  collection.id ===
+                  activeCollection.id
+                    ? {
+                        ...collection,
+
+                        updatedAt:
+                          now,
+
+                        lastPostedAt:
+                          now,
+
+                        lastPostedProductName:
+                          lastProductName ||
+                          collection.lastPostedProductName,
+
+                        totalPostsSent:
+                          toNonNegativeNumber(
+                            collection.totalPostsSent,
+                          ) +
+                          successCount,
+                      }
+                    : collection,
+              )
+            : telegramCollections;
+
+        await persistTelegramProfile(
+          {
+            telegramPostActivity:
+              nextActivity,
+
+            telegramCollections:
+              nextCollections,
+          },
+
+          {
+            suppressNotice:
+              true,
+          },
+        );
+
+        if (
           !failures.length
         ) {
           setNotice({
@@ -3816,7 +4122,9 @@ if (
                                         collection,
                                       )
                                     }
-                                    disabled={isActionPending(collection.id)}
+                                    disabled={
+                                      isStartingCollection
+                                    }
                                   >
                                     <Play className="mr-2 h-4 w-4" />
                                     Start
@@ -3841,7 +4149,8 @@ if (
                                       )
                                     }
                                     disabled={
-                                      isActionPending(actionCollectionId)
+                                      collectionActionId ===
+                                      actionCollectionId
                                     }
                                   >
                                     <Pause className="mr-2 h-4 w-4" />
@@ -3867,7 +4176,8 @@ if (
                                       )
                                     }
                                     disabled={
-                                      isActionPending(actionCollectionId)
+                                      collectionActionId ===
+                                      actionCollectionId
                                     }
                                   >
                                     <Play className="mr-2 h-4 w-4" />
@@ -3894,7 +4204,8 @@ if (
                                       )
                                     }
                                     disabled={
-                                      isActionPending(actionCollectionId)
+                                      collectionActionId ===
+                                      actionCollectionId
                                     }
                                   >
                                     <Square className="mr-2 h-4 w-4" />
@@ -4138,7 +4449,8 @@ if (
                                     )
                                   }
                                   disabled={
-                                    isActionPending(backendCollectionId)
+                                    collectionActionId ===
+                                    backendCollectionId
                                   }
                                 >
                                   <Pause className="mr-2 h-4 w-4" />
@@ -4163,7 +4475,8 @@ if (
                                     )
                                   }
                                   disabled={
-                                    isActionPending(backendCollectionId)
+                                    collectionActionId ===
+                                    backendCollectionId
                                   }
                                 >
                                   <Play className="mr-2 h-4 w-4" />
@@ -4187,7 +4500,8 @@ if (
                                   )
                                 }
                                 disabled={
-                                  isActionPending(backendCollectionId)
+                                  collectionActionId ===
+                                  backendCollectionId
                                 }
                               >
                                 <Square className="mr-2 h-4 w-4" />
@@ -4383,16 +4697,18 @@ if (
 
                 <div className="w-[170px] shrink-0 space-y-1.5">
                   <Label className="text-xs font-medium text-slate-600">
-                    Start Time
+                    Start Time <span className="text-red-500">*</span>
                   </Label>
                   <Input
                     type="time"
-                    value={toTelegramTimeInputValue(startTimeInput)}
+                    value={autoStartTime}
                     onChange={(event) => {
-                      setStartTimeInput(event.target.value);
+                      setAutoStartTime(event.target.value);
                       if (
                         collectionValidationMessage &&
-                        collectionName.trim()
+                        collectionName.trim() &&
+                        event.target.value.trim() &&
+                        collectionEndTime.trim()
                       ) {
                         setCollectionValidationMessage('');
                       }

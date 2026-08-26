@@ -2717,6 +2717,7 @@ const defaultProfile: StoreProfile = {
   autoSendInvoiceAfterCreation: false,
   repairCenterEnabled: false,
   telegramCollections: [],
+  telegramPostActivity: [],
   telegramActiveCollectionId: '',
 };
 
@@ -3150,6 +3151,9 @@ const buildHydratedTelegramProfile = (
     telegramNotes: String(telegramData.telegramNotes || '').trim(),
     telegramCollections: Array.isArray(telegramData.telegramCollections)
       ? (telegramData.telegramCollections as any[])
+      : [],
+    telegramPostActivity: Array.isArray(telegramData.telegramPostActivity)
+      ? (telegramData.telegramPostActivity as any[])
       : [],
     telegramActiveCollectionId: String(telegramData.telegramActiveCollectionId || '').trim(),
   });
@@ -5237,116 +5241,22 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
   customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
   customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
   customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
-  telegramCollections: Array.isArray(profile.telegramCollections)
-    ? profile.telegramCollections
-        .map((collection) => {
-          const draftCollection = {
-            ...(collection as any),
-          } as Record<string, any>;
-
-          [
-            'collectionId',
-            'status',
-            'products',
-            'productCursor',
-            'nextRunAt',
-            'lastRunAt',
-            'lastPostedAt',
-            'lastPostedProductName',
-            'lastTelegramMessageId',
-            'totalPostsSent',
-            'sentCount',
-            'failedCount',
-            'consecutiveFailures',
-            'activity',
-            'startedAt',
-            'stoppedAt',
-            'autoStartTime',
-            'endTime',
-          ].forEach((key) => {
-            delete draftCollection[key];
-          });
-
-          return {
-            ...draftCollection,
-
-            id:
-              String(
-                collection?.id || '',
-              ).trim(),
-
-            name:
-              String(
-                collection?.name || '',
-              ).trim(),
-
-            category:
-              String(
-                collection?.category || 'all',
-              ).trim() || 'all',
-
-            channelId:
-              String(
-                collection?.channelId || '',
-              ).trim(),
-
-            template:
-              String(
-                collection?.template || '',
-              ).trim(),
-
-            notes:
-              String(
-                collection?.notes || '',
-              ).trim(),
-
-            postMode:
-              (
-                collection?.postMode === 'out_of_stock' ||
-                collection?.postMode === 'filtered'
-                  ? collection.postMode
-                  : 'selected'
-              ) as any,
-
-            queuedProductIds:
-              Array.isArray(
-                collection?.queuedProductIds,
-              )
-                ? collection.queuedProductIds
-                    .map((productId) =>
-                      String(
-                        productId || '',
-                      ).trim(),
-                    )
-                    .filter(Boolean)
-                : [],
-
-            startAt:
-              String(
-                (collection as any)?.startAt ||
-                  (collection as any)?.autoStartTime ||
-                  '',
-              ).trim() || null,
-
-            createdAt:
-              String(
-                collection?.createdAt ||
-                  new Date().toISOString(),
-              ),
-
-            updatedAt:
-              String(
-                collection?.updatedAt ||
-                  new Date().toISOString(),
-              ),
-          };
-        })
-        .filter(
-          (collection) =>
-            collection.id &&
-            collection.name,
-        )
-    : [],
+  telegramCollections: Array.isArray(profile.telegramCollections) ? profile.telegramCollections.map((collection) => ({
+    ...collection,
+    id: String(collection?.id || '').trim(),
+    name: String(collection?.name || '').trim(),
+    category: String(collection?.category || 'all').trim() || 'all',
+    channelId: String(collection?.channelId || '').trim(),
+    template: String(collection?.template || '').trim(),
+    notes: String(collection?.notes || '').trim(),
+    postMode: (collection?.postMode === 'out_of_stock' || collection?.postMode === 'filtered' ? collection.postMode : 'selected') as any,
+    queuedProductIds: Array.isArray(collection?.queuedProductIds) ? collection.queuedProductIds.map((productId) => String(productId || '').trim()).filter(Boolean) : [],
+    createdAt: String(collection?.createdAt || new Date().toISOString()),
+    updatedAt: String(collection?.updatedAt || new Date().toISOString()),
+    lastPostedAt: String(collection?.lastPostedAt || '').trim() || undefined,
+    lastPostedProductName: String(collection?.lastPostedProductName || '').trim() || undefined,
+    totalPostsSent: Number.isFinite(Number(collection?.totalPostsSent)) ? Math.max(0, Number(collection?.totalPostsSent)) : 0,
+  })).filter((collection) => collection.id && collection.name) : [],
   telegramChannels: Array.from(new Set(
     [
       ...(Array.isArray(profile.telegramChannels) ? profile.telegramChannels : []),
@@ -5356,6 +5266,20 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
       .map((channelId) => String(channelId || '').trim())
       .filter(Boolean)
   )),
+  telegramPostActivity: Array.isArray(profile.telegramPostActivity) ? profile.telegramPostActivity.map((entry) => ({
+    ...entry,
+    id: String(entry?.id || '').trim(),
+    collectionId: String(entry?.collectionId || '').trim() || undefined,
+    collectionName: String(entry?.collectionName || '').trim() || undefined,
+    category: String(entry?.category || 'all').trim() || 'all',
+    channelId: String(entry?.channelId || '').trim(),
+    postMode: (entry?.postMode === 'out_of_stock' || entry?.postMode === 'filtered' ? entry.postMode : 'selected') as any,
+    productCount: Number.isFinite(Number(entry?.productCount)) ? Math.max(0, Number(entry?.productCount)) : 0,
+    successCount: Number.isFinite(Number(entry?.successCount)) ? Math.max(0, Number(entry?.successCount)) : 0,
+    failureCount: Number.isFinite(Number(entry?.failureCount)) ? Math.max(0, Number(entry?.failureCount)) : 0,
+    postedAt: String(entry?.postedAt || new Date().toISOString()),
+    lastPostedProductName: String(entry?.lastPostedProductName || '').trim() || undefined,
+  })).filter((entry) => entry.id) : [],
   telegramActiveCollectionId: String(profile.telegramActiveCollectionId || '').trim(),
 });
 
@@ -5409,7 +5333,7 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
   return safeProfile;
 };
 
-export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
+export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramPostActivity' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
   const nextProfile = sanitizeStoreProfileForPersistence({
     ...memoryState.profile,
     ...profilePatch,
@@ -5420,7 +5344,7 @@ export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile
     telegramTemplate: nextProfile.telegramTemplate || '',
     telegramNotes: nextProfile.telegramNotes || '',
     telegramCollections: Array.isArray(nextProfile.telegramCollections) ? nextProfile.telegramCollections : [],
-
+    telegramPostActivity: Array.isArray(nextProfile.telegramPostActivity) ? nextProfile.telegramPostActivity : [],
     telegramActiveCollectionId: nextProfile.telegramActiveCollectionId || '',
   }) as Record<string, unknown>;
   const nextState = { ...memoryState, profile: nextProfile };
@@ -5439,7 +5363,7 @@ export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile
   await writeAuditEvent('UPDATE', {
     reason: 'updateTelegramProfileState_targeted',
     telegramCollectionsCount: Array.isArray(nextProfile.telegramCollections) ? nextProfile.telegramCollections.length : 0,
-
+    telegramPostActivityCount: Array.isArray(nextProfile.telegramPostActivity) ? nextProfile.telegramPostActivity.length : 0,
   });
   return nextProfile;
 };
@@ -10191,7 +10115,6 @@ export const processTransaction = (transaction: Transaction): AppState => {
     : transaction.type === 'return'
       ? { ...transaction, returnHandlingMode: getResolvedReturnHandlingMode(transaction) }
       : transaction;
-  effectiveTransaction = syncTransactionCustomerIdentity(effectiveTransaction, data.customers);
   const txAmount = Math.abs(transaction?.total || 0);
   if (!transaction || typeof transaction !== 'object') {
     failValidation('INVALID_TRANSACTION_PAYLOAD', 'Transaction payload is invalid.');
@@ -10504,36 +10427,6 @@ export const processTransaction = (transaction: Transaction): AppState => {
   emitDataOpStatus({ phase: DATA_OP_PHASES.SUCCESS, op: OPERATION_TYPES.PROCESS_TRANSACTION, entity: 'transaction', message: 'Transaction saved locally.', transactionId: effectiveTransaction.id });
   emitBehaviorStateChange({ type: effectiveTransaction.type === 'payment' ? 'payment_recorded' : 'order_created', entityId: effectiveTransaction.id, to: 'local_saved', metadata: { transactionType: effectiveTransaction.type, paymentMethod: effectiveTransaction.paymentMethod, total: effectiveTransaction.total } });
   return fallbackState;
-};
-
-const syncTransactionCustomerIdentity = (
-  transaction: Transaction,
-  customers: Array<Pick<Customer, 'id' | 'name' | 'phone'>>
-): Transaction => {
-  const customerId = String(transaction.customerId || '').trim();
-  if (!customerId) {
-    return {
-      ...transaction,
-      customerId: undefined,
-      customerName: transaction.customerName ? String(transaction.customerName).trim() : undefined,
-      customerPhone: transaction.customerPhone ? String(transaction.customerPhone).trim() : undefined,
-    };
-  }
-
-  const matchedCustomer = customers.find((customer) => customer.id === customerId);
-  if (!matchedCustomer) {
-    return {
-      ...transaction,
-      customerId,
-    };
-  }
-
-  return {
-    ...transaction,
-    customerId: matchedCustomer.id,
-    customerName: matchedCustomer.name,
-    customerPhone: matchedCustomer.phone || undefined,
-  };
 };
 
 export const fulfillUpfrontOrderAsSale = (
@@ -11000,17 +10893,13 @@ export const updateTransaction = async (updatedTransaction: Transaction): Promis
     failValidation('TRANSACTION_NOT_FOUND', 'Transaction to update was not found.', { transactionId: updatedTransaction.id });
   }
 
-  const preparedUpdatedTransaction: Transaction = updatedTransaction.type === 'sale'
+  const effectiveUpdatedTransaction: Transaction = updatedTransaction.type === 'sale'
     ? { ...updatedTransaction, saleSettlement: getSaleSettlementBreakdown(updatedTransaction) }
     : updatedTransaction.type === 'return'
       ? { ...updatedTransaction, returnHandlingMode: getResolvedReturnHandlingMode(updatedTransaction) }
       : updatedTransaction;
 
   const stateWithoutOriginal = reconcileStateAfterDeleteTransaction(data, originalTransaction);
-  const effectiveUpdatedTransaction = syncTransactionCustomerIdentity(
-    preparedUpdatedTransaction,
-    stateWithoutOriginal.customers
-  );
   if (effectiveUpdatedTransaction.customerId) {
     const customerExists = stateWithoutOriginal.customers.some(c => c.id === effectiveUpdatedTransaction.customerId);
     if (!customerExists) {

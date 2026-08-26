@@ -281,7 +281,20 @@ export type TelegramCollectionSchedulerPayload = {
   batchSize?: number;
 
   startAt?: string | null;
-repeatMode:
+
+  /**
+   * Legacy page compatibility.
+   * Converted to canonical startAt.
+   */
+  autoStartTime?: string;
+
+  /**
+   * Legacy page field.
+   * Backend scheduler no longer uses it.
+   */
+  endTime?: string;
+
+  repeatMode:
     TelegramCollectionRepeatMode;
 
   maxFailuresBeforePause: number;
@@ -408,7 +421,11 @@ export const startTelegramCollection =
 
         startAt:
           payload.startAt,
-repeatMode:
+
+        autoStartTime:
+          payload.autoStartTime,
+
+        repeatMode:
           payload.repeatMode ||
           'loop',
 

@@ -185,6 +185,106 @@ export interface TelegramCollectionFrequency {
 }
 
 /**
+ * Existing persisted frontend Telegram collection.
+ *
+ * This remains backward-compatible while storage.ts and
+ * TelegramPosts.tsx are migrated.
+ *
+ * Backend runtime fields must not be inferred from this object.
+ */
+export interface TelegramPostCollection {
+  id: string;
+  name: string;
+  category: string;
+  channelId: string;
+  template: string;
+  notes: string;
+  postMode: TelegramPostMode;
+  queuedProductIds: string[];
+
+  frequencyValue?: number;
+  frequencyUnit?: TelegramCollectionFrequencyUnit;
+  batchSize?: number;
+
+  /**
+   * Canonical schedule field used by the new frontend contract.
+   */
+  startAt?: string | null;
+
+  /**
+   * Legacy frontend fields.
+   * These stay temporarily so existing code continues compiling.
+   */
+  autoStartTime?: string;
+  endTime?: string;
+
+  repeatMode?: TelegramCollectionRepeatMode;
+  maxFailuresBeforePause?: number;
+
+  createdAt: string;
+  updatedAt: string;
+
+  /**
+   * Existing frontend/manual-post summary fields.
+   */
+  lastPostedAt?: string;
+  lastPostedProductName?: string;
+  totalPostsSent?: number;
+}
+
+/**
+ * Canonical frontend-only collection draft.
+ *
+ * This represents configuration the user can save before starting
+ * a backend collection.
+ *
+ * It intentionally does not contain backend runtime state such as
+ * cursor, sentCount, failedCount or nextRunAt.
+ */
+export interface TelegramCollectionDraft {
+  id: string;
+  name: string;
+  category: string;
+  channelId: string;
+  template: string;
+  notes: string;
+
+  postMode: TelegramPostMode;
+  queuedProductIds: string[];
+
+  frequencyValue: number;
+  frequencyUnit: TelegramCollectionFrequencyUnit;
+  batchSize: TelegramCollectionBatchSize;
+
+  startAt: string | null;
+
+  repeatMode: TelegramCollectionRepeatMode;
+  maxFailuresBeforePause: number;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Frontend summary used by explicit/manual "Send now" operations.
+ *
+ * Scheduled collection runtime activity comes from the backend.
+ */
+export interface TelegramPostActivity {
+  id: string;
+  collectionId?: string;
+  collectionName?: string;
+  category: string;
+  channelId: string;
+  postMode: TelegramPostMode;
+  productCount: number;
+  successCount: number;
+  failureCount: number;
+  postedAt: string;
+  lastPostedProductName?: string;
+}
+
+/**
  * Canonical product shape used by scheduled Telegram collections.
  */
 export interface TelegramSchedulerProduct {
@@ -490,6 +590,7 @@ export interface StoreProfile {
   telegramTemplate?: string;
   telegramNotes?: string;
   telegramCollections?: TelegramPostCollection[];
+  telegramPostActivity?: TelegramPostActivity[];
   telegramActiveCollectionId?: string;
 }
 

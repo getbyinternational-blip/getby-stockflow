@@ -128,6 +128,11 @@ export const transactionMatchesCustomer = (tx: Transaction, customer: Customer):
   if (!customer) return false;
   if (tx.customerId === customer.id) return true;
 
+  const assignedCustomerId = String(tx.customerId || '').trim();
+  if (assignedCustomerId) {
+    return false;
+  }
+
   const customerPhone = normalizePhone(customer.phone);
   const transactionPhone = normalizePhone(tx.customerPhone);
   if (customerPhone && transactionPhone && customerPhone === transactionPhone) {

@@ -1037,7 +1037,6 @@ const renderFrameAndCommonSections = async (
     .flatMap((line) => wrapAndClipText(doc, line, companyAddressMaxWidth, 1))
     .slice(0, 2);
   const companyContactLines = [
-    sanitizeText(invoice.company.email) ? `Email: ${sanitizeText(invoice.company.email)}` : '',
     sanitizeText(invoice.company.mobile) ? `Phone: ${sanitizeText(invoice.company.mobile)}` : '',
   ].filter(Boolean)
     .flatMap((line) => wrapAndClipText(doc, line, companyAddressMaxWidth, 1));
@@ -1595,7 +1594,6 @@ const buildExactInvoiceSvgPage = ({
     2,
   );
   const companyContactLines = [
-    sanitizeText(invoice.company.email) ? `Email: ${sanitizeText(invoice.company.email)}` : '',
     sanitizeText(invoice.company.mobile) ? `Phone: ${sanitizeText(invoice.company.mobile)}` : '',
   ].filter(Boolean)
     .flatMap((line) => wrapSvgText(line, 320, 10, 400, 'Roboto, Arial, sans-serif', 1));

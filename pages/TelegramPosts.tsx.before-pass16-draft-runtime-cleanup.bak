@@ -331,7 +331,8 @@ const normalizeCollections = (
           ),
         startAt:
           safeText(
-            (collection as any).startAt,
+            (collection as any).startAt ||
+              (collection as any).autoStartTime,
           ) || null,
 
         repeatMode: safeText(
@@ -354,7 +355,11 @@ const normalizeCollections = (
           collection.updatedAt,
           new Date().toISOString(),
         ),
-}))
+
+        totalPostsSent: toNonNegativeNumber(
+          collection.totalPostsSent,
+        ),
+      }))
     : [];
 
 export default function TelegramPosts() {
@@ -735,7 +740,9 @@ setTelegramChannelId(
     setStartTimeInput(
       safeText(
         (selectedCollection as any)
-          ?.startAt,
+          ?.startAt ||
+          (selectedCollection as any)
+            ?.autoStartTime,
       ),
     );
 
@@ -2178,7 +2185,9 @@ return saved;
     setStartTimeInput(
       safeText(
         (collection as any)
-          .startAt,
+          .startAt ||
+          (collection as any)
+            .autoStartTime,
       ),
     );
 
@@ -2371,7 +2380,18 @@ return saved;
               now,
 
             updatedAt: now,
-};
+
+            lastPostedAt:
+              activeCollection?.lastPostedAt,
+
+            lastPostedProductName:
+              activeCollection?.lastPostedProductName,
+
+            totalPostsSent:
+              toNonNegativeNumber(
+                activeCollection?.totalPostsSent,
+              ),
+          };
 
         const nextCollections =
           activeCollection
@@ -2727,7 +2747,18 @@ return saved;
 
           updatedAt:
             now,
-};
+
+          lastPostedAt:
+            activeCollection?.lastPostedAt,
+
+          lastPostedProductName:
+            activeCollection?.lastPostedProductName,
+
+          totalPostsSent:
+            toNonNegativeNumber(
+              activeCollection?.totalPostsSent,
+            ),
+        };
 
       const nextCollections =
         activeCollection
@@ -3026,6 +3057,8 @@ setActiveCollectionId(
           startAt:
             (collection as any)
               .startAt ??
+            (collection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
@@ -3148,6 +3181,8 @@ setNotice({
           startAt:
             (savedCollection as any)
               .startAt ??
+            (savedCollection as any)
+              .autoStartTime ??
             null,
 
           repeatMode:
