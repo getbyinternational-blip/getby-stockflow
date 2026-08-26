@@ -38,3 +38,4 @@ migration/phase3f/out/
 node_modules/
 .vercel
 .env*
+*.bak
