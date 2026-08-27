@@ -2,7 +2,6 @@ import { Customer, StoreProfile, Transaction } from '../types';
 import { getFriendlyErrorMessage } from './errorMessages';
 import { getConfiguredMetaWhatsAppServerUrl, getOfficialWhatsAppConfigDiagnostics, sendInvoiceViaMetaWhatsApp, sendStatementPdfViaMetaWhatsApp } from './metaWhatsAppStatus';
 import { normalizeTransactionItems } from '../utils/transactionItems';
-
 export type MetaWhatsAppShareResult = {
   ok: boolean;
   reason: 'META_WHATSAPP_NOT_CONFIGURED' | 'META_WHATSAPP_KEY_MISSING' | 'META_WHATSAPP_PHONE_MISSING' | 'META_WHATSAPP_FILE_MISSING' | 'META_WHATSAPP_SEND_FAILED' | 'META_WHATSAPP_SENT';
@@ -11,12 +10,10 @@ export type MetaWhatsAppShareResult = {
   whatsappMediaId?: string;
   backendUrl?: string;
 };
-
 const safeAmount = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
-
 const getPaymentMethodLabel = (transaction: Transaction) => {
   if (transaction.paymentMethod && String(transaction.paymentMethod).trim()) return String(transaction.paymentMethod);
   const settlement = transaction.saleSettlement;
@@ -31,22 +28,20 @@ const getPaymentMethodLabel = (transaction: Transaction) => {
   }
   return 'Cash';
 };
-
 const buildStoreAddress = (profile?: Partial<StoreProfile> | null) => {
   return [profile?.addressLine1 || '', profile?.addressLine2 || '']
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .join(', ');
 };
-
-const blobToBase64 = async (blob: Blob) => {
+const blobToBase64 = async (blob: Blob): Promise<string> => {
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(reader.error || new Error('Failed to read PDF blob.'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Unable to read PDF blob.'));
     reader.readAsDataURL(blob);
   });
-  return dataUrl.replace(/^data:application\/pdf;base64,/, '');
+  return dataUrl.replace(/^data:application\/pdf;base64,/i, '');
 };
 const buildMetaInvoicePayload = (
   transaction: Transaction,
@@ -67,7 +62,6 @@ const buildMetaInvoicePayload = (
     0,
     safeAmount(transaction.saleSettlement?.creditDue, safeAmount(transaction.receivableIncrease, 0)),
   );
-
   return {
     to: customerPhone,
     customerName,
@@ -99,7 +93,6 @@ const buildMetaInvoicePayload = (
     total,
   };
 };
-
 export const shareTransactionInvoiceViaMetaWhatsApp = async (
   transaction: Transaction,
   customers: Customer[],
@@ -114,7 +107,6 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
       message: `Official WhatsApp backend URL is not configured. Missing env: ${diagnostics.missingVars.join(', ') || 'VITE_META_WHATSAPP_SERVER_URL'}.`,
     };
   }
-
   const publicKey = String(import.meta.env.VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY || '').trim();
   if (!publicKey) {
     return {
@@ -123,7 +115,6 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
       message: 'Official WhatsApp backend key is not configured. Missing env: VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY.',
     };
   }
-
   const payload = buildMetaInvoicePayload(transaction, customers, profile);
   if (!payload.customerPhone) {
     return {
@@ -132,7 +123,6 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
       message: 'Customer phone number is missing.',
     };
   }
-
   try {
     const response = await sendInvoiceViaMetaWhatsApp(payload);
     return {
@@ -147,7 +137,6 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
     const message = error instanceof Error
       ? error.message
       : getFriendlyErrorMessage(error, 'whatsapp.meta_invoice');
-
     return {
       ok: false,
       reason: 'META_WHATSAPP_SEND_FAILED',
@@ -161,7 +150,7 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
   fileName,
   pdfBlob,
 }: {
-  phone?: string | null;
+  phone: string;
   fileName: string;
   pdfBlob: Blob | null;
 }): Promise<MetaWhatsAppShareResult> => {
@@ -174,7 +163,6 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
       message: `Official WhatsApp backend URL is not configured. Missing env: ${diagnostics.missingVars.join(', ') || 'VITE_META_WHATSAPP_SERVER_URL'}.`,
     };
   }
-
   const publicKey = String(import.meta.env.VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY || '').trim();
   if (!publicKey) {
     return {
@@ -183,7 +171,6 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
       message: 'Official WhatsApp backend key is not configured. Missing env: VITE_META_WHATSAPP_BACKEND_PUBLIC_KEY.',
     };
   }
-
   const to = String(phone || '').trim();
   if (!to) {
     return {
@@ -192,8 +179,7 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
       message: 'Phone number is missing.',
     };
   }
-
-  if (!(pdfBlob instanceof Blob)) {
+  if (!(pdfBlob instanceof Blob) || pdfBlob.size <= 0) {
     return {
       ok: false,
       reason: 'META_WHATSAPP_FILE_MISSING',
@@ -201,7 +187,6 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
       backendUrl: configuredUrl,
     };
   }
-
   try {
     const pdfBase64 = await blobToBase64(pdfBlob);
     const response = await sendStatementPdfViaMetaWhatsApp({
@@ -212,7 +197,7 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
     return {
       ok: true,
       reason: 'META_WHATSAPP_SENT',
-      message: response.message || 'Message accepted by WhatsApp',
+      message: response.message || 'Statement PDF accepted by WhatsApp',
       whatsappMessageId: response.whatsappMessageId,
       whatsappMediaId: response.whatsappMediaId,
       backendUrl: configuredUrl,
@@ -220,8 +205,7 @@ export const shareStatementPdfViaMetaWhatsApp = async ({
   } catch (error) {
     const message = error instanceof Error
       ? error.message
-      : getFriendlyErrorMessage(error, 'whatsapp.meta_statement');
-
+      : getFriendlyErrorMessage(error, 'whatsapp.meta_statement_pdf');
     return {
       ok: false,
       reason: 'META_WHATSAPP_SEND_FAILED',

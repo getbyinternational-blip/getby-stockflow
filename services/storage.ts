@@ -5324,7 +5324,6 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
             startAt:
               String(
                 (collection as any)?.startAt ||
-                  (collection as any)?.autoStartTime ||
                   '',
               ).trim() || null,
 

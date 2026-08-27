@@ -535,8 +535,7 @@ export const mapTelegramRuntimeCollection = (
 
     startAt:
       nullableText(
-        entry.startAt ??
-          entry.autoStartTime,
+        entry.startAt,
       ),
 
     nextRunAt:
@@ -671,12 +670,7 @@ export const mapTelegramLiveCollection = (
     nextPostAt:
       runtime.nextRunAt ||
       undefined,
-
-    autoStartTime:
-      runtime.startAt ||
-      undefined,
-
-    startAt:
+startAt:
       runtime.startAt,
 
     lastRunAt:

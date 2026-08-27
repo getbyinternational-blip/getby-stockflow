@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getProductBarcode, getProductCategory, getProductName, getProductSearchText, safeLower } from '../utils/productText';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
 import { AppState, CashSource, PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
@@ -9,6 +9,9 @@ import { getProductStockRows, NO_COLOR, NO_VARIANT } from '../services/productVa
 import { ArrowLeft, ArrowRight, ArrowUpDown, Building2, CalendarDays, Check, ChevronRight, ClipboardList, Filter, IndianRupee, Package, Pencil, Plus, Search, Trash2, Truck, User, X } from 'lucide-react';
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { buildPurchasePartyLedger } from '../services/purchaseLedger';
+import { generateLedgerStatementPDF } from '../services/pdf';
+import { buildSupplierStatementRowsFromCanonicalLedger } from '../services/ledgerStatements';
+import { shareStatementPdfViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import {
   LegacyProductPurchaseHistoryFallbackRow,
   PurchaseOrderDerivedHistoryRow,
@@ -764,6 +767,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
   const [partyPaymentError, setPartyPaymentError] = useState<string | null>(null);
   const [deletePartyError, setDeletePartyError] = useState<string | null>(null);
   const [expandedPartyId, setExpandedPartyId] = useState<string | null>(null);
+  const [sendingPartyLedgerId, setSendingPartyLedgerId] = useState<string | null>(null);
   const [repairPartyDetailTab, setRepairPartyDetailTab] = useState<'overview' | 'ledger' | 'repair_history'>('overview');
   const [purchaseRowsSearch, setPurchaseRowsSearch] = useState('.');
   const [purchaseRowsPartyFilter, setPurchaseRowsPartyFilter] = useState('all');
@@ -2663,6 +2667,40 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       : [],
     [expandedPartyId, supplierPayments, canonicalPartyView],
   );
+  const sendPartyLedgerViaWhatsApp = async (party: PurchaseParty) => {
+    try {
+      setPartyPaymentError(null);
+      setSendingPartyLedgerId(party.id);
+      const fileName = `party-statement-${party.name.replace(/\s+/g, '-').toLowerCase()}.pdf`;
+      const statement = buildSupplierStatementRowsFromCanonicalLedger(
+        party,
+        orders,
+        supplierPayments,
+        partyCreditLedger,
+        getRelatedPartyIds(party.id),
+      );
+      const pdfBlob = await generateLedgerStatementPDF({
+        profile: loadData().profile,
+        ...statement,
+        fileName,
+        returnBlob: true,
+      });
+      const result = await shareStatementPdfViaMetaWhatsApp({
+        phone: party.phone,
+        fileName,
+        pdfBlob: pdfBlob instanceof Blob ? pdfBlob : null,
+      });
+      if (!result.ok) throw new Error(result.message);
+      window.alert(`Party ledger sent to ${party.phone || party.name}.`);
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error, 'Failed to send party ledger on WhatsApp.');
+      setPartyPaymentError(message);
+      window.alert(message);
+    } finally {
+      setSendingPartyLedgerId((current) => current === party.id ? null : current);
+    }
+  };
+
   const isPurchaseLedgerDebugEnabled = useMemo(() => {
     if (typeof window === 'undefined') return false;
     if (!(import.meta.env.DEV || isAdmin())) return false;
@@ -2829,17 +2867,28 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                           <td className="p-3 text-right">{formatNumber(partySummary?.currentCredit || partySummary?.ourCredit || 0)}</td>
                           <td className="p-3 text-right font-semibold">{formatNumber(partySummary?.netPayable || 0)}</td>
                           <td className="p-3 text-right">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                setExpandedPartyId(party.id);
-                                setRepairPartyDetailTab('overview');
-                              }}
-                            >
-                              View Details
-                            </Button>
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={sendingPartyLedgerId === party.id}
+                                onClick={() => void sendPartyLedgerViaWhatsApp(party)}
+                              >
+                                {sendingPartyLedgerId === party.id ? 'Sending...' : 'Send Ledger'}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setExpandedPartyId(party.id);
+                                  setRepairPartyDetailTab('overview');
+                                }}
+                              >
+                                View Details
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -2870,6 +2919,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                 </div>
                 <div className="flex gap-2">
                   <Button type="button" size="sm" onClick={() => openCreateOrderForParty(selectedRepairParty)}>Add Purchase</Button>
+                  <Button type="button" size="sm" variant="outline" disabled={sendingPartyLedgerId === selectedRepairParty.id} onClick={() => void sendPartyLedgerViaWhatsApp(selectedRepairParty)}>{sendingPartyLedgerId === selectedRepairParty.id ? 'Sending...' : 'Send Ledger'}</Button>
                   <Button type="button" size="sm" variant="outline" onClick={() => openPartyPaymentModal(selectedRepairParty)}>Add Payment</Button>
                 </div>
               </div>
@@ -3576,6 +3626,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                         <div className="flex flex-wrap justify-end gap-1.5">
                       {repairMode && <Button type="button" variant="outline" size="sm" onClick={() => openCreateOrderForParty(p)} className="h-8 px-2 text-xs">Add Purchase</Button>}
                       <Button type="button" variant="outline" size="sm" onClick={() => openPartyPaymentModal(p)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p)}>{repairMode ? 'Add Supplier Payment' : 'Give Payment'}</Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => void sendPartyLedgerViaWhatsApp(p)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p) || sendingPartyLedgerId === p.id}>{sendingPartyLedgerId === p.id ? 'Sending...' : 'Send Ledger'}</Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => startEditingParty(p, true)} className="h-8 px-2 text-xs" disabled={isHistoricalOnlyParty(p)}><Pencil className="mr-1 h-3.5 w-3.5" />Edit</Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => void deletePartySafely(p)} className="h-8 px-2 text-xs text-red-600" disabled={isHistoricalOnlyParty(p)}><Trash2 className="mr-1 h-3.5 w-3.5" />Delete</Button>
                         </div>

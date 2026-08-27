@@ -113,6 +113,9 @@ export const useTelegramCollections = (
   const hasLoadedRef =
     useRef(false);
 
+  const refreshVersionRef =
+    useRef(0);
+
   useEffect(() => {
     mountedRef.current = true;
 
@@ -160,6 +163,12 @@ export const useTelegramCollections = (
           silent = false,
         } = refreshOptions;
 
+        const requestVersion =
+          refreshVersionRef.current + 1;
+
+        refreshVersionRef.current =
+          requestVersion;
+
         if (
           !silent &&
           mountedRef.current
@@ -178,7 +187,11 @@ export const useTelegramCollections = (
           const nextCollections =
             await getLiveTelegramCollections();
 
-          if (mountedRef.current) {
+          if (
+            mountedRef.current &&
+            refreshVersionRef.current ===
+              requestVersion
+          ) {
             setCollections(
               nextCollections,
             );
@@ -202,7 +215,11 @@ export const useTelegramCollections = (
               'Could not load Telegram collections.',
             );
 
-          if (mountedRef.current) {
+          if (
+            mountedRef.current &&
+            refreshVersionRef.current ===
+              requestVersion
+          ) {
             setErrors(
               (current) => ({
                 ...current,
@@ -213,7 +230,11 @@ export const useTelegramCollections = (
 
           throw error;
         } finally {
-          if (mountedRef.current) {
+          if (
+            mountedRef.current &&
+            refreshVersionRef.current ===
+              requestVersion
+          ) {
             setLoading(false);
             setRefreshing(false);
           }

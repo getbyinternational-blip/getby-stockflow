@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { getFriendlyErrorMessage } from '../services/errorMessages';
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Select, LightweightLoader } from '../components/ui';
 import { AppState, CashAdjustment, CashSession, CashSource, Customer, DeleteCompensationRecord, Expense, ManualCashbookEntry, PartyCreditLedgerEntry, PurchaseOrder, PurchaseParty, SupplierPaymentLedgerEntry, Transaction, UpfrontOrder } from '../types';
@@ -11,6 +11,7 @@ import { buildPurchasePartyCanonicalView, normalizePurchasePartyNameForMatch } f
 import { analyzeSupplierPurchaseLedger, repairSupplierPurchaseLedgerDryRun, SupplierLedgerAnalysis, SupplierLedgerDryRunPlan } from '../services/supplierLedgerReconciliation';
 import { generateLedgerStatementPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay, buildSupplierStatementRowsFromCanonicalLedger } from '../services/ledgerStatements';
+import { shareStatementPdfViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { CanonicalCustomerBalanceResult, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { Package, Search } from 'lucide-react';
@@ -329,6 +330,8 @@ export default function Dashboard() {
   const [supplierLedgerDryRun, setSupplierLedgerDryRun] = useState<SupplierLedgerDryRunPlan | null>(null);
   const [isGeneratingCustomerPdf, setIsGeneratingCustomerPdf] = useState(false);
   const [isGeneratingPartyPdf, setIsGeneratingPartyPdf] = useState(false);
+  const [sendingCustomerStatementId, setSendingCustomerStatementId] = useState<string | null>(null);
+  const [sendingPartyStatementId, setSendingPartyStatementId] = useState<string | null>(null);
   const [statementPdfError, setStatementPdfError] = useState<string | null>(null);
   const [customerDashboardTab, setCustomerDashboardTab] = useState<'receivable' | 'storeCredit' | 'withoutDue'>('receivable');
   const [supplierDashboardTab, setSupplierDashboardTab] = useState<'payable' | 'credit' | 'withoutDue'>('payable');
@@ -1258,6 +1261,50 @@ export default function Dashboard() {
     return blob instanceof Blob ? blob : null;
   };
 
+  const sendCustomerStatementViaWhatsApp = async (customer: Customer) => {
+    try {
+      setStatementPdfError(null);
+      setSendingCustomerStatementId(customer.id);
+      const fileName = `customer-statement-${customer.name.replace(/\s+/g, '-').toLowerCase()}.pdf`;
+      const pdfBlob = await generateCustomerStatementPdfBlob(customer);
+      const result = await shareStatementPdfViaMetaWhatsApp({
+        phone: customer.phone,
+        fileName,
+        pdfBlob,
+      });
+      if (!result.ok) throw new Error(result.message);
+      window.alert(`Customer ledger sent to ${customer.phone || customer.name}.`);
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error, 'Failed to send customer ledger on WhatsApp.');
+      setStatementPdfError(message);
+      window.alert(message);
+    } finally {
+      setSendingCustomerStatementId((current) => current === customer.id ? null : current);
+    }
+  };
+
+  const sendPartyStatementViaWhatsApp = async (party: PurchaseParty) => {
+    try {
+      setStatementPdfError(null);
+      setSendingPartyStatementId(party.id);
+      const fileName = `party-statement-${party.name.replace(/\s+/g, '-').toLowerCase()}.pdf`;
+      const pdfBlob = await generatePartyStatementPdfBlob(party);
+      const result = await shareStatementPdfViaMetaWhatsApp({
+        phone: party.phone,
+        fileName,
+        pdfBlob,
+      });
+      if (!result.ok) throw new Error(result.message);
+      window.alert(`Party ledger sent to ${party.phone || party.name}.`);
+    } catch (error) {
+      const message = getFriendlyErrorMessage(error, 'Failed to send party ledger on WhatsApp.');
+      setStatementPdfError(message);
+      window.alert(message);
+    } finally {
+      setSendingPartyStatementId((current) => current === party.id ? null : current);
+    }
+  };
+
   const downloadCustomerStatementPdf = async () => {
     if (!selectedCustomer) return;
     try {
@@ -1503,6 +1550,7 @@ export default function Dashboard() {
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementCustomerId(c.id)}>View Statement</Button>
+                    <Button size="sm" variant="outline" disabled={sendingCustomerStatementId === c.id} onClick={() => void sendCustomerStatementViaWhatsApp(c)}>{sendingCustomerStatementId === c.id ? 'Sending...' : 'Send Ledger'}</Button>
                     {customerDashboardTab === 'receivable' && <Button size="sm" onClick={() => openReceiveModal(c)}>Receive</Button>}
                   </div>
                 </div>
@@ -1545,6 +1593,7 @@ export default function Dashboard() {
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementPartyId(p.id)}>View Statement</Button>
+                    <Button size="sm" variant="outline" disabled={sendingPartyStatementId === p.id} onClick={() => void sendPartyStatementViaWhatsApp(p)}>{sendingPartyStatementId === p.id ? 'Sending...' : 'Send Ledger'}</Button>
                     {supplierDashboardTab === 'payable' && <Button size="sm" variant="outline" onClick={() => openPayModal(p)}>{Math.max(0, Number(p.payable || 0)) > 0 ? 'Pay' : 'View'}</Button>}
                   </div>
                   {supplierDashboardTab === 'payable' && Math.max(0, Number(p.partyCredit || 0)) > 0 && <div className="mt-1 text-xs text-emerald-700">Credit Available {formatINRPrecise(p.partyCredit || 0)}</div>}
@@ -1663,7 +1712,10 @@ export default function Dashboard() {
       <StatementModal open={!!selectedCustomer && !!customerStatement} title="Customer Statement" subtitle={selectedCustomer ? joinDisplayParts(selectedCustomer.name, formatOptionalText(selectedCustomer.phone)) : undefined} onClose={() => setStatementCustomerId(null)}>
         {selectedCustomer && customerStatement && (
           <div className="space-y-4">
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" disabled={sendingCustomerStatementId === selectedCustomer.id} onClick={() => void sendCustomerStatementViaWhatsApp(selectedCustomer)}>
+                {sendingCustomerStatementId === selectedCustomer.id ? 'Sending...' : 'Send Ledger'}
+              </Button>
               <Button type="button" variant="outline" size="sm" disabled={isGeneratingCustomerPdf} onClick={() => void downloadCustomerStatementPdf()}>
                 {isGeneratingCustomerPdf ? 'Generating PDF...' : 'Download Statement PDF'}
               </Button>
@@ -1770,9 +1822,14 @@ export default function Dashboard() {
         subtitle={selectedParty ? joinDisplayParts(selectedParty.name, formatOptionalText(selectedParty.phone)) : undefined}
         onClose={() => setStatementPartyId(null)}
         headerActions={
-          <Button type="button" variant="outline" size="sm" disabled={isGeneratingPartyPdf} onClick={() => void downloadPartyStatementPdf()}>
-            {isGeneratingPartyPdf ? 'Generating PDF...' : 'Download Statement PDF'}
-          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={sendingPartyStatementId === selectedParty?.id} onClick={() => selectedParty && void sendPartyStatementViaWhatsApp(selectedParty)}>
+              {sendingPartyStatementId === selectedParty?.id ? 'Sending...' : 'Send Ledger'}
+            </Button>
+            <Button type="button" variant="outline" size="sm" disabled={isGeneratingPartyPdf} onClick={() => void downloadPartyStatementPdf()}>
+              {isGeneratingPartyPdf ? 'Generating PDF...' : 'Download Statement PDF'}
+            </Button>
+          </div>
         }
       >
         {selectedParty && partyStatement && (

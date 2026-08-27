@@ -4595,6 +4595,24 @@ export default function Finance({
     ],
   );
 
+  const reserveLedgerKpis = useMemo(() => {
+    let reserveCashIn = 0;
+    let reserveCashOut = 0;
+
+    reserveLedgerRows.forEach((row) => {
+      if (row.direction === "in") {
+        reserveCashIn = roundMoney(reserveCashIn + row.amount);
+      } else {
+        reserveCashOut = roundMoney(reserveCashOut + row.amount);
+      }
+    });
+
+    return {
+      reserveCashIn,
+      reserveCashOut,
+    };
+  }, [reserveLedgerRows]);
+
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
 
@@ -10923,9 +10941,9 @@ const transactionMap = new Map<string, Transaction>(
                           </div>
 
                           <div
-                            className={`mt-1 text-sm font-semibold ${activeReserveOutflowSinceSave > 0 ? "text-rose-700" : "text-slate-700"}`}
+                            className={`mt-1 text-sm font-semibold ${reserveLedgerKpis.reserveCashOut > 0 ? "text-rose-700" : "text-slate-700"}`}
                           >
-                            {formatINRSummary(activeReserveOutflowSinceSave)}
+                            {formatINRSummary(reserveLedgerKpis.reserveCashOut)}
                           </div>
                         </div>
 
@@ -10935,7 +10953,11 @@ const transactionMap = new Map<string, Transaction>(
                           </div>
 
                           <div className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatINRSummary(activeReserveBase)}
+                            {formatINRSummary(
+                              reserveLedgerKpis.reserveCashIn > 0
+                                ? reserveLedgerKpis.reserveCashIn
+                                : activeReserveBase,
+                            )}
                           </div>
                         </div>
 

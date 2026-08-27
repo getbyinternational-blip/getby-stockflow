@@ -40,14 +40,7 @@ export type TelegramCollectionStartInput = {
   batchSize: number;
 
   startAt?: string | null;
-
-  /**
-   * Temporary compatibility with the current
-   * TelegramPosts.tsx form.
-   */
-  autoStartTime?: string;
-
-  repeatMode: TelegramCollectionRepeatMode;
+repeatMode: TelegramCollectionRepeatMode;
   maxFailuresBeforePause: number;
 
   products: TelegramSchedulerProduct[];
@@ -96,7 +89,7 @@ export const normalizeTelegramStartAt = (
 
   // Current TelegramPosts.tsx uses <input type="time">,
   // which produces values such as "14:30".
-  // Convert that legacy value to the next local occurrence.
+  // Convert that form value to the next local occurrence.
   const timeOnlyMatch =
     /^([01]\d|2[0-3]):([0-5]\d)$/.exec(text);
 
@@ -219,10 +212,7 @@ export const buildTelegramCollectionStartRequest = (
     ),
   );
 
-  const rawStartAt =
-    input.startAt ??
-    input.autoStartTime ??
-    null;
+  const rawStartAt = input.startAt ?? null;
 
   throwTelegramValidationError(
     validateTelegramStartAt(

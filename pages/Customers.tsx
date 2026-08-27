@@ -1,4 +1,4 @@
-﻿
+
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -7,6 +7,7 @@ import { Customer, RepairHistoryEntry, Transaction, Product, UpfrontOrder } from
 import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, allocateCustomerPaymentAgainstCompositeReceivable, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, getStorageHydrationState, loadData, processTransaction, deleteCustomer, addCustomer, addUpfrontOrder, updateUpfrontOrder, collectUpfrontPayment, updateCustomer, updateTransaction, auditCustomerPaymentAllocations, previewCustomerRepairedAllocationView, applyCustomerLedgerBalanceSnapshotPatch, appendRepairHistoryEntry, deleteTransaction, deleteUpfrontOrder, updateUpfrontOrderPayment, deleteUpfrontOrderPayment, recomputeUpfrontOrderPaymentState, getUpfrontOrderAccountingMode, getUpfrontOrderAdvancePaidAmount, getUpfrontOrderCurrentDueImpact, getUpfrontOrderLegacyDueImpact, getUpfrontOrderTotalAmount, buildReceivableOnlyRepairAdvanceEntries } from '../services/storage';
 import { generateLedgerStatementPDF, generateReceiptPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay } from '../services/ledgerStatements';
+import { shareStatementPdfViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { auth } from '../services/firebase';
 import { ExportModal } from '../components/ExportModal';
 import { exportCustomersToExcel, exportInvoiceToExcel, exportCustomerStatementToExcel } from '../services/excel';
@@ -719,6 +720,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   const [batchEditCustomerIndex, setBatchEditCustomerIndex] = useState(0);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportType, setExportType] = useState<'statement' | 'dues_report' | 'invoice'>('statement');
+  const [sendingCustomerLedgerId, setSendingCustomerLedgerId] = useState<string | null>(null);
   const [txToExport, setTxToExport] = useState<Transaction | null>(null);
 
   // Form State
@@ -2248,6 +2250,31 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       });
   };
 
+  const sendCustomerLedgerViaWhatsApp = async (customer: Customer) => {
+      try {
+          setSendingCustomerLedgerId(customer.id);
+          const statement = buildCustomerStatementRowsFromCanonicalReplay(customer, transactions, upfrontOrders);
+          const fileName = `Statement_${customer.name.replace(/\s+/g, '_')}.pdf`;
+          const pdfBlob = await generateLedgerStatementPDF({
+              profile: loadData().profile,
+              ...statement,
+              fileName,
+              returnBlob: true,
+          });
+          const result = await shareStatementPdfViaMetaWhatsApp({
+              phone: customer.phone,
+              fileName,
+              pdfBlob: pdfBlob instanceof Blob ? pdfBlob : null,
+          });
+          if (!result.ok) throw new Error(result.message);
+          window.alert(`Customer ledger sent to ${customer.phone || customer.name}.`);
+      } catch (error) {
+          window.alert(getFriendlyErrorMessage(error, 'Failed to send customer ledger on WhatsApp.'));
+      } finally {
+          setSendingCustomerLedgerId((current) => current === customer.id ? null : current);
+      }
+  };
+
   const generateAllCustomersPDF = () => {
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.getWidth();
@@ -2755,6 +2782,17 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                     <Button
                       size="sm"
                       variant="outline"
+                      className="h-9 px-2"
+                      title="Send Ledger"
+                      aria-label={`Send ledger for ${customer.name}`}
+                      disabled={sendingCustomerLedgerId === customer.id}
+                      onClick={() => void sendCustomerLedgerViaWhatsApp(customer)}
+                    >
+                      {sendingCustomerLedgerId === customer.id ? '...' : 'WA'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
                       className="h-9 w-9 px-0"
                       title="Edit"
                       aria-label={`Edit ${customer.name}`}
@@ -2888,6 +2926,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                           </div>
                           <div className="flex flex-wrap items-center justify-start gap-1.5 lg:justify-end [&_button]:h-[34px] [&_button]:rounded-lg [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:font-semibold">
                               <Button size="sm" className={repairMode ? 'bg-amber-600 text-white shadow-none hover:bg-amber-700' : 'bg-emerald-700 text-white shadow-none hover:bg-emerald-800'} onClick={() => openRepairDraft(createCustomerRepairAddDraft())}>{repairMode ? <Plus className="mr-1.5 h-4 w-4" /> : <Coins className="mr-1.5 h-4 w-4" />}{repairMode ? 'Add Transaction' : 'Receive Payment'}</Button>
+                              <Button size="sm" variant="outline" disabled={sendingCustomerLedgerId === viewingCustomer?.id} onClick={() => viewingCustomer && void sendCustomerLedgerViaWhatsApp(viewingCustomer)}>{sendingCustomerLedgerId === viewingCustomer?.id ? 'Sending...' : 'Send Ledger'}</Button>
                               <Button size="sm" variant="outline" onClick={() => { setExportType('statement'); setIsExportModalOpen(true); }}><FileText className="mr-1.5 h-4 w-4" /> Statement</Button>
                               {can('analytics') && <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px] font-medium text-slate-500 hover:bg-transparent hover:text-slate-700" onClick={() => { if (!viewingCustomer) return; setUpdatedViewPreview(previewCustomerRepairedAllocationView(viewingCustomer.id)); setUpdatedViewOpen(true); }}>Updated View</Button>}
                               {can('analytics') && customerLedgerDebugEnabled && (

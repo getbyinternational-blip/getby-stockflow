@@ -228,6 +228,35 @@ export interface TelegramManualProductPostRequest {
  *
  * POST /api/telegram/collections/start
  */
+/**
+ * Saved Telegram collection draft used by existing page/storage wiring.
+ *
+ * This object contains configuration only.
+ * Backend scheduler runtime state must not be persisted here.
+ */
+export interface TelegramPostCollection {
+  id: string;
+  name: string;
+  category: string;
+  channelId: string;
+  template: string;
+  notes: string;
+  postMode: TelegramPostMode;
+  queuedProductIds: string[];
+
+  frequencyValue?: number;
+  frequencyUnit?: TelegramCollectionFrequencyUnit;
+  batchSize?: number;
+
+  startAt?: string | null;
+
+  repeatMode?: TelegramCollectionRepeatMode;
+  maxFailuresBeforePause?: number;
+
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TelegramCollectionStartRequest {
   collectionId?: string;
 
@@ -377,7 +406,6 @@ export interface TelegramLiveCollection {
    */
   lastPostedAt?: string;
   nextPostAt?: string;
-  autoStartTime?: string;
 
   /**
    * Canonical backend time fields.

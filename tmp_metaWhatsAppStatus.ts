@@ -162,22 +162,8 @@ export const sendInvoiceViaMetaWhatsApp = async (
 export const sendStatementPdfViaMetaWhatsApp = async (
   payload: MetaWhatsAppStatementPdfRequest,
 ): Promise<MetaWhatsAppInvoiceResponse> => {
-  const diagnostics = getOfficialWhatsAppConfigDiagnostics();
   const backendKey = getMetaPublicKey().trim();
   const finalUrl = `${getMetaBaseUrl()}/api/whatsapp/send-statement-pdf`;
-
-  console.info('[OFFICIAL_WHATSAPP_STATEMENT_SEND][REQUEST]', {
-    finalUrl,
-    hasBackendKey: Boolean(backendKey),
-    hasExplicitUrlEnv: diagnostics.hasExplicitUrlEnv,
-    usingDevFallback: diagnostics.usingDevFallback,
-    missingVars: diagnostics.missingVars,
-    payloadSummary: {
-      to: payload.to,
-      fileName: payload.fileName,
-      hasPdfBase64: Boolean(payload.pdfBase64),
-    },
-  });
 
   let response: Response;
   try {
@@ -190,16 +176,8 @@ export const sendStatementPdfViaMetaWhatsApp = async (
       body: JSON.stringify(payload),
     });
   } catch (error) {
-    console.error('[OFFICIAL_WHATSAPP_STATEMENT_SEND][FETCH_ERROR]', {
-      finalUrl,
-      hasBackendKey: Boolean(backendKey),
-      hasExplicitUrlEnv: diagnostics.hasExplicitUrlEnv,
-      usingDevFallback: diagnostics.usingDevFallback,
-      missingVars: diagnostics.missingVars,
-      errorName: error instanceof Error ? error.name : 'UnknownError',
-      errorMessage: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not reach Official WhatsApp statement backend at ${finalUrl}. ${detail}`);
   }
 
   const text = await response.text();
@@ -210,19 +188,16 @@ export const sendStatementPdfViaMetaWhatsApp = async (
     data = {};
   }
 
-  console.info('[OFFICIAL_WHATSAPP_STATEMENT_SEND][RESPONSE]', {
-    finalUrl,
-    status: response.status,
-    ok: response.ok,
-    data,
-  });
-
-  if (!response.ok) {
+  if (!response.ok || data?.ok === false) {
     if (response.status === 401 || response.status === 403) {
       throw new Error('WhatsApp backend key is invalid. Check frontend Vercel env key.');
     }
-    throw new Error(data?.message || 'Failed to send statement via Official WhatsApp.');
+    throw new Error(data?.message || 'Failed to send ledger statement PDF via Official WhatsApp.');
   }
 
-  return data;
+  return {
+    ...data,
+    ok: data?.ok ?? true,
+    message: data?.message || 'Statement PDF accepted by WhatsApp',
+  };
 };
