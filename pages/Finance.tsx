@@ -4595,23 +4595,20 @@ export default function Finance({
     ],
   );
 
-  const reserveLedgerKpis = useMemo(() => {
-    let reserveCashIn = 0;
-    let reserveCashOut = 0;
+  const displayedReserveCardBalance = useMemo(() => {
+    if (!reserveLedgerRows.length) {
+      return liveRemainingReserveCash;
+    }
 
-    reserveLedgerRows.forEach((row) => {
-      if (row.direction === "in") {
-        reserveCashIn = roundMoney(reserveCashIn + row.amount);
-      } else {
-        reserveCashOut = roundMoney(reserveCashOut + row.amount);
-      }
-    });
-
-    return {
-      reserveCashIn,
-      reserveCashOut,
-    };
-  }, [reserveLedgerRows]);
+    return roundMoney(
+      Math.max(
+        0,
+        reserveLedgerRows.reduce((sum, row) => {
+          return sum + (row.direction === "in" ? row.amount : -row.amount);
+        }, 0),
+      ),
+    );
+  }, [reserveLedgerRows, liveRemainingReserveCash]);
 
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
@@ -10805,9 +10802,11 @@ const transactionMap = new Map<string, Transaction>(
                         >
                           <StatCard
                             label="Reserved Cash"
-                            value={formatINRSummary(liveRemainingReserveCash)}
+                            value={formatINRSummary(displayedReserveCardBalance)}
                             tone={
-                              liveRemainingReserveCash > 0 ? "good" : "neutral"
+                              displayedReserveCardBalance > 0
+                                ? "good"
+                                : "neutral"
                             }
                             interactive={!!openSession}
                             hint={
@@ -10932,44 +10931,6 @@ const transactionMap = new Map<string, Transaction>(
                             </div>
                           </div>
                         )}
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <div className="text-[11px] font-medium text-slate-500">
-                            Reserve utilized
-                          </div>
-
-                          <div
-                            className={`mt-1 text-sm font-semibold ${reserveLedgerKpis.reserveCashOut > 0 ? "text-rose-700" : "text-slate-700"}`}
-                          >
-                            {formatINRSummary(reserveLedgerKpis.reserveCashOut)}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <div className="text-[11px] font-medium text-slate-500">
-                            Saved reserve
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatINRSummary(
-                              reserveLedgerKpis.reserveCashIn > 0
-                                ? reserveLedgerKpis.reserveCashIn
-                                : activeReserveBase,
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="rounded-lg border border-slate-200 bg-white p-3">
-                          <div className="text-[11px] font-medium text-slate-500">
-                            Usable after reserve
-                          </div>
-
-                          <div className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatINRSummary(displayedUsableCash)}
-                          </div>
-                        </div>
                       </div>
                     </div>
                   )}
@@ -11944,52 +11905,10 @@ const transactionMap = new Map<string, Transaction>(
 
                       return (
                         <>
-                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
-                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                              <div className="text-[11px] font-medium text-slate-500">
-                                Reserve cash in
-                              </div>
-
-                              <div className="mt-1 text-sm font-semibold text-slate-900">
-                                {formatINRSummary(reserveCashIn)}
-                              </div>
-                            </div>
-
-                            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
-                              <div className="text-[11px] font-medium text-rose-700">
-                                Reserve cash out
-                              </div>
-
-                              <div className="mt-1 text-sm font-semibold text-rose-900">
-                                {formatINRSummary(reserveCashOut)}
-                              </div>
-                            </div>
-
-                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                              <div className="text-[11px] font-medium text-emerald-700">
-                                Reserve right now
-                              </div>
-
-                              <div className="mt-1 text-sm font-semibold text-emerald-900">
-                                {formatINRSummary(liveRemainingReserveCash)}
-                              </div>
-                            </div>
-
-                            <div className="rounded-lg border border-slate-200 bg-white p-3">
-                              <div className="text-[11px] font-medium text-slate-500">
-                                Usable cash now
-                              </div>
-
-                              <div className="mt-1 text-sm font-semibold text-slate-900">
-                                {formatINRSummary(currentOperationalCash)}
-                              </div>
-                            </div>
-                          </div>
-
                           {dailyTimeline.length > 0 && (
                             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                               <div className="text-sm font-semibold text-slate-900">
-                                Reserve Timeline
+                                Simple History
                               </div>
 
                               <div className="mt-3 space-y-2">
@@ -12023,7 +11942,7 @@ const transactionMap = new Map<string, Transaction>(
                                     {" • "}
 
                                     <span className="font-semibold text-slate-900">
-                                      {formatINRSummary(day.balanceAfter)} left
+                                      Left {formatINRSummary(day.balanceAfter)}
                                     </span>
                                   </div>
                                 ))}
@@ -12034,13 +11953,9 @@ const transactionMap = new Map<string, Transaction>(
                           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
                             <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                               <div className="col-span-3">Date</div>
-                              <div className="col-span-2">Entry</div>
-                              <div className="col-span-3">Details</div>
-                              <div className="col-span-1 text-right">In</div>
-                              <div className="col-span-1 text-right">Out</div>
-                              <div className="col-span-2 text-right">
-                                Reserve Left
-                              </div>
+                              <div className="col-span-5">What Happened</div>
+                              <div className="col-span-2 text-right">Amount</div>
+                              <div className="col-span-2 text-right">Left</div>
                             </div>
 
                             <div className="max-h-[420px] overflow-auto divide-y divide-slate-200">
@@ -12058,100 +11973,36 @@ const transactionMap = new Map<string, Transaction>(
                                       {formatDateTimeDisplay(row.date)}
                                     </div>
 
-                                    <div className="col-span-2">
-                                      <div className="font-medium text-slate-900">
-                                        {row.type}
-                                      </div>
+                        <div className="col-span-5 min-w-0">
+                          <div className="font-medium text-slate-900">
+                            {row.direction === "in"
+                              ? "Reserve added"
+                              : "Reserve used"}
+                          </div>
 
-                                      {row.partyName && (
-                                        <div className="mt-1 text-xs font-medium text-slate-600">
-                                          {row.partyName}
-                                        </div>
-                                      )}
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {row.partyName ||
+                              row.details ||
+                              (row.direction === "in"
+                                ? "Money added to reserve"
+                                : "Money used from reserve")}
+                          </div>
+                        </div>
 
-                                      {row.reference && (
-                                        <div className="mt-0.5 break-all text-[11px] text-slate-500">
-                                          {row.reference}
-                                        </div>
-                                      )}
-                                    </div>
+                        <div
+                          className={`col-span-2 text-right font-semibold ${
+                            row.direction === "in"
+                              ? "text-emerald-700"
+                              : "text-rose-700"
+                          }`}
+                        >
+                          {row.direction === "in" ? "+" : "-"}
+                          {formatINRSummary(row.amount)}
+                        </div>
 
-                                    <div className="col-span-3 min-w-0 text-slate-600">
-                                      <div className="text-xs">
-                                        {row.details}
-                                      </div>
-
-                                      {!!row.detailItems?.length && (
-                                        <div className="mt-2 space-y-2">
-                                          {row.detailItems.map((item) => (
-                                            <div
-                                              key={item.id}
-                                              className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2"
-                                            >
-                                              {item.image ? (
-                                                <img
-                                                  src={item.image}
-                                                  alt={item.name}
-                                                  loading="lazy"
-                                                  className="h-10 w-10 shrink-0 rounded-md border border-slate-200 bg-white object-cover"
-                                                  onError={(event) => {
-                                                    event.currentTarget.style.display =
-                                                      "none";
-                                                  }}
-                                                />
-                                              ) : (
-                                                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-[10px] font-semibold text-slate-500">
-                                                  PO
-                                                </div>
-                                              )}
-
-                                              <div className="min-w-0 flex-1">
-                                                <div className="truncate text-xs font-semibold text-slate-900">
-                                                  {item.name}
-                                                </div>
-
-                                                {item.reference && (
-                                                  <div className="truncate text-[11px] text-slate-500">
-                                                    {item.reference}
-                                                  </div>
-                                                )}
-
-                                                <div className="mt-0.5 text-[11px] font-medium text-rose-700">
-                                                  Reserve used{" "}
-                                                  {formatINRSummary(
-                                                    item.amount,
-                                                  )}
-                                                </div>
-                                              </div>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
-
-                                    <div className="col-span-1 text-right font-semibold text-emerald-700">
-                                      {row.direction === "in"
-                                        ? formatINRSummary(row.amount)
-                                        : "—"}
-                                    </div>
-
-                                    <div className="col-span-1 text-right font-semibold text-rose-700">
-                                      {row.direction === "out"
-                                        ? formatINRSummary(row.amount)
-                                        : "—"}
-                                    </div>
-
-                                    <div className="col-span-2 text-right">
-                                      <div className="font-semibold text-slate-900">
-                                        {formatINRSummary(row.balanceAfter)}
-                                      </div>
-
-                                      {row.direction === "out" && (
-                                        <div className="mt-0.5 text-[11px] text-slate-500">
-                                          after payment
-                                        </div>
-                                      )}
-                                    </div>
+                        <div className="col-span-2 text-right font-semibold text-slate-900">
+                          {formatINRSummary(row.balanceAfter)}
+                        </div>
                                   </div>
                                 ))
                               )}
