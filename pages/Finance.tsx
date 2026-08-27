@@ -4600,14 +4600,32 @@ export default function Finance({
       return liveRemainingReserveCash;
     }
 
-    return roundMoney(
-      Math.max(
-        0,
-        reserveLedgerRows.reduce((sum, row) => {
-          return sum + (row.direction === "in" ? row.amount : -row.amount);
-        }, 0),
-      ),
-    );
+    const chronologicalRows = [...reserveLedgerRows].sort((left, right) => {
+      const leftTime = new Date(left.date || "").getTime();
+      const rightTime = new Date(right.date || "").getTime();
+
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+
+      if (Number.isFinite(leftTime) && !Number.isFinite(rightTime)) {
+        return -1;
+      }
+
+      if (!Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+        return 1;
+      }
+
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    });
+
+    const runningReserve = chronologicalRows.reduce((sum, row) => {
+      return row.direction === "in"
+        ? roundMoney(sum + row.amount)
+        : roundMoney(Math.max(0, sum - row.amount));
+    }, 0);
+
+    return roundMoney(Math.max(0, runningReserve));
   }, [reserveLedgerRows, liveRemainingReserveCash]);
 
   const expectedClosingBreakdown = useMemo(() => {
