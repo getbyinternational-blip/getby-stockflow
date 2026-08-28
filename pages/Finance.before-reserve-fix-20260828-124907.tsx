@@ -3784,7 +3784,6 @@ export default function Finance({
     ],
   );
 
-
   const canonicalReserveBalance = useMemo(() => {
     if (!openSession) {
       return 0;
@@ -3864,6 +3863,39 @@ export default function Finance({
     [reserveDraftValue],
   );
 
+  const canonicalReserveBalance = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const ledger = Array.isArray(openSession.reserveCashLedger)
+      ? openSession.reserveCashLedger
+      : [];
+
+    return roundMoney(
+      ledger.reduce((balance, entry: any) => {
+        const amount = Math.max(0, Number(entry?.amount || 0));
+
+        if (!(amount > 0)) {
+          return balance;
+        }
+
+        const type = String(entry?.type || "")
+          .trim()
+          .toLowerCase();
+
+        if (type === "in") {
+          return balance + amount;
+        }
+
+        if (type === "out") {
+          return balance - amount;
+        }
+
+        return balance;
+      }, 0),
+    );
+  }, [openSession, openSession?.reserveCashLedger]);
 
   const liveRemainingReserveCash = useMemo(
     () => (openSession ? canonicalReserveBalance : 0),
@@ -3939,6 +3971,13 @@ export default function Finance({
             return [] as ReserveLedgerRow[];
           }
 
+          /*
+           * SINGLE SOURCE OF TRUTH:
+           * openSession.reserveCashLedger
+           *
+           * Never append supplier payments, purchase payments,
+           * expenses, withdrawals, transactions, or manual rows.
+           */
           const persistedLedger = Array.isArray(openSession.reserveCashLedger)
             ? openSession.reserveCashLedger
             : [];

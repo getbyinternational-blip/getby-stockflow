@@ -3784,44 +3784,12 @@ export default function Finance({
     ],
   );
 
-
-  const canonicalReserveBalance = useMemo(() => {
-    if (!openSession) {
-      return 0;
-    }
-
-    const ledger = Array.isArray(openSession.reserveCashLedger)
-      ? openSession.reserveCashLedger
-      : [];
-
-    return roundMoney(
-      ledger.reduce((balance, entry: any) => {
-        const amount = Number(entry?.amount || 0);
-
-        if (!Number.isFinite(amount) || amount <= 0) {
-          return balance;
-        }
-
-        const type = String(entry?.type || "")
-          .trim()
-          .toLowerCase();
-
-        if (type === "in") {
-          return balance + amount;
-        }
-
-        if (type === "out") {
-          return balance - amount;
-        }
-
-        return balance;
-      }, 0),
-    );
-  }, [openSession, openSession?.reserveCashLedger]);
-
   const activeCashInHand = useMemo(
-    () => (openSession ? canonicalReserveBalance : 0),
-    [openSession, canonicalReserveBalance],
+    () =>
+      roundMoney(
+        Math.max(0, activeReserveBase - activeReserveOutflowSinceSave),
+      ),
+    [activeReserveBase, activeReserveOutflowSinceSave],
   );
 
   const currentOperationalCash = useMemo(
@@ -3864,9 +3832,45 @@ export default function Finance({
     [reserveDraftValue],
   );
 
+  const canonicalReserveBalance = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const ledger = Array.isArray(openSession.reserveCashLedger)
+      ? openSession.reserveCashLedger
+      : [];
+
+    return roundMoney(
+      ledger.reduce((balance, entry: any) => {
+        const amount = Math.max(0, Number(entry?.amount || 0));
+
+        if (!(amount > 0)) {
+          return balance;
+        }
+
+        const type = String(entry?.type || "")
+          .trim()
+          .toLowerCase();
+
+        if (type === "in") {
+          return balance + amount;
+        }
+
+        if (type === "out") {
+          return balance - amount;
+        }
+
+        return balance;
+      }, 0),
+    );
+  }, [openSession, openSession?.reserveCashLedger]);
 
   const liveRemainingReserveCash = useMemo(
-    () => (openSession ? canonicalReserveBalance : 0),
+    () =>
+      openSession
+        ? roundMoney(Math.max(0, canonicalReserveBalance))
+        : 0,
     [openSession, canonicalReserveBalance],
   );
 
@@ -3939,18 +3943,36 @@ export default function Finance({
             return [] as ReserveLedgerRow[];
           }
 
+          /*
+           * Canonical reserve history must come only from the
+           * persisted reserve ledger. Derived reserve rows from
+           * supplier payments, purchases, expenses, withdrawals,
+           * returns, or manual cashbook entries cause duplicates.
+           */
           const persistedLedger = Array.isArray(openSession.reserveCashLedger)
             ? openSession.reserveCashLedger
             : [];
 
+          const isReserveReconstructionPlaceholder = (entry: any) => {
+            const note = String(entry?.note || "")
+              .trim()
+              .toLowerCase();
+
+            return (
+              note.includes("testing adjustment: missing reserve movement") ||
+              note.includes(
+                "missing reserve movement needed to match saved reservedcashonhand",
+              )
+            );
+          };
+
           return persistedLedger
-            .map((entry: any): ReserveLedgerRow | null => {
+            .filter((entry: any) => !isReserveReconstructionPlaceholder(entry))
+            .map((entry: any, index: number): ReserveLedgerRow | null => {
               const id = String(entry?.id || "").trim();
               const date = String(entry?.date || "").trim();
-              const amount = Number(entry?.amount || 0);
-
               const dateMs = new Date(date).getTime();
-
+              const amount = Math.max(0, Number(entry?.amount || 0));
               const rawType = String(entry?.type || "")
                 .trim()
                 .toLowerCase();
@@ -3958,8 +3980,7 @@ export default function Finance({
               if (
                 !id ||
                 !Number.isFinite(dateMs) ||
-                !Number.isFinite(amount) ||
-                amount <= 0 ||
+                !(amount > 0) ||
                 (rawType !== "in" && rawType !== "out")
               ) {
                 return null;
@@ -3969,12 +3990,9 @@ export default function Finance({
                 rawType === "in" ? "in" : "out";
 
               return {
-                id: `reserve-ledger-${id}`,
+                id: `reserve-ledger-${id || index}`,
                 date,
-                type:
-                  direction === "in"
-                    ? "Reserve Added"
-                    : "Reserve Used",
+                type: direction === "in" ? "Reserve Added" : "Reserve Removed",
                 details:
                   String(entry?.note || "").trim() ||
                   (direction === "in"
@@ -3984,10 +4002,7 @@ export default function Finance({
                 direction,
               };
             })
-            .filter(
-              (row): row is ReserveLedgerRow =>
-                row !== null,
-            )
+            .filter((row): row is ReserveLedgerRow => row !== null)
             .sort((a, b) => {
               const aTime = new Date(a.date).getTime();
               const bTime = new Date(b.date).getTime();
@@ -3998,15 +4013,664 @@ export default function Finance({
 
               return a.id.localeCompare(b.id);
             });
+
+          /* legacy reserve derivation removed
+          const rows: ReserveLedgerRow[] = [];
+
+          const purchaseOrderList = (data.purchaseOrders || []) as any[];
+
+          const purchaseOrderById = new Map<string, any>(
+            purchaseOrderList
+              .filter((order) => order?.id)
+              .map((order) => [String(order.id), order]),
+          );
+
+          const resolveReserveOrder = (
+            rawOrderId?: unknown,
+            rawOrderRef?: unknown,
+          ) => {
+            const orderId = String(rawOrderId || "").trim();
+
+            if (orderId && purchaseOrderById.has(orderId)) {
+              return purchaseOrderById.get(orderId);
+            }
+
+            const orderRef = String(rawOrderRef || "").trim();
+
+            if (!orderRef) {
+              return undefined;
+            }
+
+            return purchaseOrderList.find((order) => {
+              const possibleRefs = [
+                order?.id,
+                order?.orderRef,
+                order?.reference,
+                order?.poNumber,
+                order?.orderNo,
+                order?.orderNumber,
+              ];
+
+              return possibleRefs.some(
+                (value) => String(value || "").trim() === orderRef,
+              );
+            });
+          };
+
+          const buildReserveOrderDetail = (
+            allocation: any,
+            fallbackOrder: any,
+            fallbackAmount: number,
+            index: number,
+          ) => {
+            const order =
+              fallbackOrder ||
+              resolveReserveOrder(
+                allocation?.orderId || allocation?.purchaseOrderId,
+                allocation?.orderRef,
+              );
+
+            const orderItems = Array.isArray(order?.items)
+              ? order.items
+              : Array.isArray(order?.products)
+                ? order.products
+                : [];
+
+            const firstItem = orderItems[0] || null;
+
+            const productId =
+              allocation?.productId ||
+              firstItem?.productId ||
+              firstItem?.id ||
+              order?.productId ||
+              order?.itemId ||
+              "";
+
+            const product = productId
+              ? productsById.get(String(productId))
+              : undefined;
+
+            const reference = String(
+              allocation?.orderRef ||
+                order?.orderRef ||
+                order?.reference ||
+                order?.poNumber ||
+                order?.orderNo ||
+                order?.orderNumber ||
+                order?.id ||
+                "",
+            ).trim();
+
+            const name = String(
+              allocation?.productName ||
+                allocation?.name ||
+                firstItem?.name ||
+                order?.productName ||
+                order?.itemName ||
+                order?.title ||
+                product?.name ||
+                (reference ? `Purchase Order ${reference}` : "Purchase order"),
+            ).trim();
+
+            const image = String(
+              allocation?.thumbnailImage ||
+                allocation?.image ||
+                allocation?.productImage ||
+                firstItem?.thumbnailImage ||
+                firstItem?.image ||
+                order?.thumbnailImage ||
+                order?.image ||
+                order?.productImage ||
+                product?.thumbnailImage ||
+                product?.image ||
+                "",
+            );
+
+            const amount = Math.max(
+              0,
+              Number(allocation?.amount ?? fallbackAmount ?? 0) || 0,
+            );
+
+            return {
+              id: String(
+                allocation?.id ||
+                  allocation?.orderId ||
+                  order?.id ||
+                  reference ||
+                  `reserve-detail-${index}`,
+              ),
+
+              name,
+              reference,
+              image,
+              amount,
+            };
+          };
+
+          // --------------------------------------------------
+          // MANUAL RESERVE LEDGER
+          // --------------------------------------------------
+
+          const persistedLedger = Array.isArray(openSession.reserveCashLedger)
+            ? openSession.reserveCashLedger
+            : [];
+
+          const isReserveReconstructionPlaceholder = (entry: any) => {
+            const note = String(entry?.note || "")
+              .trim()
+              .toLowerCase();
+
+            return (
+              note.includes("testing adjustment: missing reserve movement") ||
+              note.includes(
+                "missing reserve movement needed to match saved reservedcashonhand",
+              )
+            );
+          };
+
+          const visiblePersistedLedger = persistedLedger.filter(
+            (entry) => !isReserveReconstructionPlaceholder(entry),
+          );
+
+          /*
+           * Ledger/history window is intentionally different
+           * from the live reserve calculation window.
+           *
+           * Live reserve:
+           *   latest reserve snapshot -> now
+           *
+           * Visible ledger:
+           *   inherited reserve ledger start -> now
+           *
+           * This keeps reserve history continuous across shifts
+           * while the active shift cash logic still resets at the
+           * current shift start.
+           */
+          const earliestLedgerDate = visiblePersistedLedger
+            .map((entry) => new Date(entry.date || "").getTime())
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b)[0];
+
+          const fallbackLedgerStartMs = new Date(openSession.startTime).getTime();
+
+          const ledgerStartMs = Number.isFinite(earliestLedgerDate)
+            ? earliestLedgerDate
+            : fallbackLedgerStartMs;
+
+          if (!Number.isFinite(ledgerStartMs)) {
+            return [] as ReserveLedgerRow[];
+          }
+
+          const inWindow = (iso?: string) => {
+            const at = new Date(iso || "").getTime();
+
+            return Number.isFinite(at) && at >= ledgerStartMs;
+          };
+
+          visiblePersistedLedger.forEach((entry, index) => {
+            const amount = Math.max(0, Number(entry.amount || 0));
+
+            if (!amount || !inWindow(entry.date)) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-ledger-${entry.id || index}`,
+
+              date: entry.date,
+
+              type: entry.type === "in" ? "Reserve Added" : "Reserve Removed",
+
+              details:
+                entry.note ||
+                (entry.type === "in"
+                  ? "Reserve cash added"
+                  : "Reserve cash moved out"),
+
+              amount,
+
+              direction: entry.type === "in" ? "in" : "out",
+            });
+          });
+
+          // --------------------------------------------------
+          // OPENING RESERVE
+          // --------------------------------------------------
+
+          const persistedLedgerNetChange = roundMoney(
+            visiblePersistedLedger.reduce((sum, entry) => {
+              const amount = Math.max(0, Number(entry.amount || 0));
+
+              return sum + (entry.type === "in" ? amount : -amount);
+            }, 0),
+          );
+          // --------------------------------------------------
+          // CUSTOMER RESERVE TRANSACTIONS
+          // --------------------------------------------------
+
+          (data.transactions || []).forEach((tx) => {
+            const type = String((tx as any).type || "")
+              .trim()
+              .toLowerCase();
+
+            const returnMode = String((tx as any).returnHandlingMode || "")
+              .trim()
+              .toLowerCase();
+
+            const isCashReturn =
+              type === "return" &&
+              (returnMode === "refund_cash" ||
+                (tx as any).paymentMethod === "Cash");
+
+            const isCustomerCashOut =
+              type === "customer_cash_out" &&
+              (tx as any).paymentMethod === "Cash";
+
+            if (!(isCashReturn || isCustomerCashOut)) {
+              return;
+            }
+
+            if (
+              !inWindow((tx as any).financialDate || tx.date) ||
+              !shouldReduceReserveFromSource((tx as any).cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-tx-${tx.id}`,
+
+              date: (tx as any).financialDate || tx.date,
+
+              type: isCashReturn ? "Return Refund" : "Customer Cash Out",
+
+              details: `${(tx as any).customerName || "Customer"} • ${
+                (tx as any).id || ""
+              }`.trim(),
+
+              partyName: (tx as any).customerName || "Customer",
+
+              reference: String(tx.id || ""),
+
+              amount: Math.max(0, Math.abs(Number((tx as any).total || 0))),
+
+              direction: "out",
+            });
+          });
+
+          // --------------------------------------------------
+          // SUPPLIER PAYMENTS FROM RESERVE
+          // --------------------------------------------------
+
+          (
+            (data.supplierPayments || []) as Array<{
+              id?: string;
+              amount?: unknown;
+              method?: unknown;
+              cashSource?: unknown;
+
+              partyName?: string;
+              voucherNo?: string;
+              note?: string;
+
+              paidAt?: string;
+              paymentDate?: string;
+              date?: string;
+              createdAt?: string;
+
+              deletedAt?: string;
+
+              allocations?: Array<{
+                id?: string;
+                orderId?: string;
+                purchaseOrderId?: string;
+                orderRef?: string;
+                productId?: string;
+                productName?: string;
+                name?: string;
+                image?: string;
+                thumbnailImage?: string;
+                amount?: unknown;
+              }>;
+            }>
+          ).forEach((payment, paymentIndex) => {
+            if (payment.deletedAt) {
+              return;
+            }
+
+            if (getSupplierPaymentMethodForDrawer(payment.method) !== "cash") {
+              return;
+            }
+
+            const paymentDate =
+              payment.paidAt ||
+              payment.paymentDate ||
+              payment.date ||
+              payment.createdAt ||
+              "";
+
+            const reserveFundingPaymentId = String(payment.id || "");
+
+            const reserveFundingHistoryRows = purchaseOrderList.flatMap(
+              (order) =>
+                ((order.paymentHistory || []) as any[])
+                  .filter(
+                    (history) =>
+                      reserveFundingPaymentId &&
+                      String(history?.supplierPaymentId || "") ===
+                        reserveFundingPaymentId,
+                  )
+                  .map((history) => ({
+                    order,
+                    history,
+                  })),
+            );
+
+            const isReserveFundedSupplierPayment =
+              shouldReduceReserveFromSource(payment.cashSource) ||
+              reserveFundingHistoryRows.some(({ history }) =>
+                shouldReduceReserveFromSource(history?.cashSource),
+              );
+
+            if (!inWindow(paymentDate) || !isReserveFundedSupplierPayment) {
+              return;
+            }
+
+            const paymentAmount = Math.max(0, Number(payment.amount || 0));
+
+            const explicitAllocations = Array.isArray(payment.allocations)
+              ? payment.allocations
+              : [];
+
+            /*
+             * Older payment records may not expose
+             * allocations directly. In that case,
+             * recover linked PO payment-history rows
+             * by supplierPaymentId.
+             */
+            const paymentId = String(payment.id || "");
+
+            const linkedAllocations = explicitAllocations.length
+              ? []
+              : purchaseOrderList.flatMap((order) =>
+                  ((order.paymentHistory || []) as any[])
+                    .filter(
+                      (history) =>
+                        paymentId &&
+                        String(history?.supplierPaymentId || "") === paymentId,
+                    )
+                    .map((history) => ({
+                      orderId: order.id,
+
+                      orderRef:
+                        order.orderRef ||
+                        order.reference ||
+                        order.poNumber ||
+                        order.orderNo ||
+                        order.orderNumber ||
+                        order.id,
+
+                      amount: history.amount,
+                    })),
+                );
+
+            const allocationSource = explicitAllocations.length
+              ? explicitAllocations
+              : linkedAllocations;
+
+            const detailItems = allocationSource.map((allocation, index) => {
+              const linkedOrder = resolveReserveOrder(
+                allocation?.orderId || allocation?.purchaseOrderId,
+
+                allocation?.orderRef,
+              );
+
+              return buildReserveOrderDetail(allocation, linkedOrder, 0, index);
+            });
+
+            rows.push({
+              id: `reserve-supplier-${payment.id || paymentIndex}`,
+
+              date: paymentDate,
+
+              type: "Supplier Payment",
+
+              details: payment.note || "Paid from Reserve Cash",
+
+              partyName: payment.partyName || "Supplier",
+
+              reference: payment.voucherNo
+                ? `Voucher ${payment.voucherNo}`
+                : payment.id
+                  ? `Payment ${payment.id}`
+                  : undefined,
+
+              amount: paymentAmount,
+
+              direction: "out",
+
+              detailItems,
+            });
+          });
+
+          // --------------------------------------------------
+          // DIRECT PURCHASE PAYMENTS FROM RESERVE
+          //
+          // supplierPaymentId rows are skipped because the
+          // supplier payment above is already the canonical row.
+          // --------------------------------------------------
+
+          purchaseOrderList.forEach((order) => {
+            (
+              (order.paymentHistory || []) as Array<{
+                id?: string;
+                amount?: unknown;
+                method?: unknown;
+                cashSource?: unknown;
+                paidAt?: string;
+                supplierPaymentId?: string;
+                note?: string;
+              }>
+            ).forEach((payment) => {
+              if (payment.supplierPaymentId) {
+                return;
+              }
+
+              if (
+                String(payment.method || "cash")
+                  .trim()
+                  .toLowerCase() !== "cash"
+              ) {
+                return;
+              }
+
+              const effectiveAt = [
+                payment.paidAt,
+                order.updatedAt,
+                order.effectiveAt,
+                order.orderDate,
+                order.createdAt,
+              ]
+                .map((value) => new Date(value || "").getTime())
+                .filter(Number.isFinite)
+                .sort((a, b) => b - a)[0];
+
+              const effectiveDate = Number.isFinite(effectiveAt)
+                ? new Date(effectiveAt).toISOString()
+                : payment.paidAt ||
+                  order.updatedAt ||
+                  order.effectiveAt ||
+                  order.orderDate ||
+                  order.createdAt;
+
+              if (
+                !inWindow(effectiveDate) ||
+                !shouldReduceReserveFromSource(payment.cashSource)
+              ) {
+                return;
+              }
+
+              const amount = Math.max(0, Number(payment.amount || 0));
+
+              const detailItem = buildReserveOrderDetail(
+                {
+                  id: payment.id,
+
+                  orderId: order.id,
+
+                  orderRef:
+                    order.orderRef ||
+                    order.reference ||
+                    order.poNumber ||
+                    order.orderNo ||
+                    order.orderNumber ||
+                    order.id,
+
+                  amount,
+                },
+                order,
+                amount,
+                0,
+              );
+
+              rows.push({
+                id: `reserve-purchase-${payment.id || order.id}`,
+
+                date: effectiveDate,
+
+                type: "Purchase Payment",
+
+                details: payment.note || "Paid from Reserve Cash",
+
+                partyName: order.partyName || "Supplier",
+
+                reference: detailItem.reference,
+
+                amount,
+
+                direction: "out",
+
+                detailItems: [detailItem],
+              });
+            });
+          });
+
+          // --------------------------------------------------
+          // CASH WITHDRAWALS
+          // --------------------------------------------------
+
+          cashAdjustments.forEach((entry) => {
+            if (entry.type !== "cash_withdrawal") {
+              return;
+            }
+
+            if (
+              !inWindow(entry.effectiveAt || entry.createdAt) ||
+              !shouldReduceReserveFromSource(entry.cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-withdrawal-${entry.id}`,
+
+              date: entry.effectiveAt || entry.createdAt,
+
+              type: "Cash Withdrawal",
+
+              details:
+                entry.note ||
+                entry.title ||
+                entry.reference ||
+                "Manual withdrawal",
+
+              reference: entry.reference,
+
+              amount: Math.max(0, Number(entry.amount || 0)),
+
+              direction: "out",
+            });
+          });
+
+          // --------------------------------------------------
+          // MANUAL CASH OUT
+          // --------------------------------------------------
+
+          (data.manualCashbookEntries || []).forEach((entry) => {
+            if (entry?.isDeleted || entry.type !== "cash_out") {
+              return;
+            }
+
+            if (
+              !inWindow(entry.date || entry.createdAt) ||
+              !shouldReduceReserveFromSource(entry.cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-manual-${entry.id}`,
+
+              date: entry.date || entry.createdAt,
+
+              type: "Manual Cash Out",
+
+              details: entry.details || "Manual cash out",
+
+              amount: Math.max(0, Number(entry.amount || 0)),
+
+              direction: "out",
+            });
+          });
+
+          // --------------------------------------------------
+          // EXPENSES FROM RESERVE
+          // --------------------------------------------------
+
+          expenses.forEach((expense) => {
+            if (
+              !inWindow(getExpenseEffectiveDate(expense)) ||
+              !shouldReduceReserveFromSource((expense as Expense).cashSource)
+            ) {
+              return;
+            }
+
+            rows.push({
+              id: `reserve-expense-${expense.id}`,
+
+              date: getExpenseEffectiveDate(expense),
+
+              type: "Expense",
+
+              details: `${expense.title}${
+                expense.category ? ` • ${expense.category}` : ""
+              }`,
+
+              amount: Math.max(0, Number(expense.amount || 0)),
+
+              direction: "out",
+            });
+          });
+
+          const visibleMovementNet = roundMoney(
+            rows.reduce(
+              (sum, row) =>
+                sum + (row.direction === "in" ? row.amount : -row.amount),
+              0,
+            ),
+          );
+
+          return rows.sort(
+            (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+          );
+          */
         },
         {
           runId: perfRunIdRef.current,
           activeTab,
           isDetailedCashbookReady,
           openSessionId: openSession?.id || null,
-          reserveLedgerEntries: Array.isArray(
-            openSession?.reserveCashLedger,
-          )
+          reserveLedgerEntries: Array.isArray(openSession?.reserveCashLedger)
             ? openSession.reserveCashLedger.length
             : 0,
         },
@@ -4018,6 +4682,39 @@ export default function Finance({
       isDetailedCashbookReady,
     ],
   );
+
+  const displayedReserveCardBalance = useMemo(() => {
+    if (!reserveLedgerRows.length) {
+      return liveRemainingReserveCash;
+    }
+
+    const chronologicalRows = [...reserveLedgerRows].sort((left, right) => {
+      const leftTime = new Date(left.date || "").getTime();
+      const rightTime = new Date(right.date || "").getTime();
+
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+
+      if (Number.isFinite(leftTime) && !Number.isFinite(rightTime)) {
+        return -1;
+      }
+
+      if (!Number.isFinite(leftTime) && Number.isFinite(rightTime)) {
+        return 1;
+      }
+
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    });
+
+    const runningReserve = chronologicalRows.reduce((sum, row) => {
+      return row.direction === "in"
+        ? roundMoney(sum + row.amount)
+        : roundMoney(Math.max(0, sum - row.amount));
+    }, 0);
+
+    return roundMoney(Math.max(0, runningReserve));
+  }, [reserveLedgerRows, liveRemainingReserveCash]);
 
   const expectedClosingBreakdown = useMemo(() => {
     if (!openSession) return null;
