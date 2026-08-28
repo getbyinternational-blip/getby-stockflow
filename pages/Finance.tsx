@@ -3911,6 +3911,77 @@ export default function Finance({
             return [] as ReserveLedgerRow[];
           }
 
+          /*
+           * Canonical reserve history must come only from the
+           * persisted reserve ledger. Derived reserve rows from
+           * supplier payments, purchases, expenses, withdrawals,
+           * returns, or manual cashbook entries cause duplicates.
+           */
+          const persistedLedger = Array.isArray(openSession.reserveCashLedger)
+            ? openSession.reserveCashLedger
+            : [];
+
+          const isReserveReconstructionPlaceholder = (entry: any) => {
+            const note = String(entry?.note || "")
+              .trim()
+              .toLowerCase();
+
+            return (
+              note.includes("testing adjustment: missing reserve movement") ||
+              note.includes(
+                "missing reserve movement needed to match saved reservedcashonhand",
+              )
+            );
+          };
+
+          return persistedLedger
+            .filter((entry: any) => !isReserveReconstructionPlaceholder(entry))
+            .map((entry: any, index: number): ReserveLedgerRow | null => {
+              const id = String(entry?.id || "").trim();
+              const date = String(entry?.date || "").trim();
+              const dateMs = new Date(date).getTime();
+              const amount = Math.max(0, Number(entry?.amount || 0));
+              const rawType = String(entry?.type || "")
+                .trim()
+                .toLowerCase();
+
+              if (
+                !id ||
+                !Number.isFinite(dateMs) ||
+                !(amount > 0) ||
+                (rawType !== "in" && rawType !== "out")
+              ) {
+                return null;
+              }
+
+              const direction: "in" | "out" =
+                rawType === "in" ? "in" : "out";
+
+              return {
+                id: `reserve-ledger-${id || index}`,
+                date,
+                type: direction === "in" ? "Reserve Added" : "Reserve Removed",
+                details:
+                  String(entry?.note || "").trim() ||
+                  (direction === "in"
+                    ? "Reserve cash added"
+                    : "Reserve cash used"),
+                amount,
+                direction,
+              };
+            })
+            .filter((row): row is ReserveLedgerRow => row !== null)
+            .sort((a, b) => {
+              const aTime = new Date(a.date).getTime();
+              const bTime = new Date(b.date).getTime();
+
+              if (aTime !== bTime) {
+                return bTime - aTime;
+              }
+
+              return a.id.localeCompare(b.id);
+            });
+
           const rows: ReserveLedgerRow[] = [];
 
           const purchaseOrderList = (data.purchaseOrders || []) as any[];
@@ -11859,9 +11930,8 @@ const transactionMap = new Map<string, Transaction>(
                               reserveCashOut + row.amount,
                             );
 
-                            runningReserve = Math.max(
-                              0,
-                              roundMoney(runningReserve - row.amount),
+                            runningReserve = roundMoney(
+                              runningReserve - row.amount,
                             );
                           }
 
