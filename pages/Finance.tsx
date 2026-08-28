@@ -3906,6 +3906,12 @@ export default function Finance({
     () => (openSession ? displayedReservedCash : 0),
     [openSession, displayedReservedCash],
   );
+
+  const displayedReserveCardBalance = useMemo(
+    () => roundMoney(Math.max(0, liveRemainingReserveCash)),
+    [liveRemainingReserveCash],
+  );
+
   type ReserveLedgerRow = {
     id: string;
     date: string;
