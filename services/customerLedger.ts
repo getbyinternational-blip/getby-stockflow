@@ -1,6 +1,7 @@
 import { AppState, Customer, Transaction, UpfrontOrder } from '../types';
 import { buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, getHistoricalAwareSaleSettlement, getSaleSettlementBreakdown, loadData } from './storage';
 import { normalizeTransactionItems } from '../utils/transactionItems';
+import { getTransactionDocumentNumber } from './invoiceDocument';
 
 export type EffectiveTransactionType = 'sale' | 'payment' | 'return' | 'customer_credit' | 'customer_cash_out' | 'unknown';
 
@@ -225,7 +226,7 @@ const buildCustomerLedgerPreviewForPolicy = (
     const originalType = String(tx.type || '');
     const referenceType = String((tx as any).referenceTransactionType || (tx.type === 'historical_reference' ? effectiveType : '') || '');
     const amount = positiveMoney(Math.abs(Number(tx.total || 0)));
-    const ref = (tx as any).invoiceNo || (tx as any).receiptNo || (tx as any).creditNoteNo || tx.id.slice(-6);
+    const ref = getTransactionDocumentNumber(tx);
 
     if (tx.type === 'historical_reference' && effectiveType === 'unknown') {
       rowWarnings.push(pushWarning('historical_reference_missing_reference_type', `Historical row ${tx.id.slice(-6)} is missing referenceTransactionType; it is not assumed to be a sale.`, tx.id));

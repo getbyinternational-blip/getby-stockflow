@@ -17,6 +17,7 @@ import { DISPLAY_FALLBACK, formatCurrency, formatCurrencyWhole, formatINRPrecise
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { normalizeTransactionItems } from '../utils/transactionItems';
+import { getTransactionDocumentNumber, requireTransactionDocumentNumber } from '../services/invoiceDocument';
 import { useRoleSession } from '../src/auth/roleSession';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
@@ -93,9 +94,7 @@ export default function Transactions() {
   const { requestAdminOverride } = useRoleSession();
   const COLORED_ROWS_STORAGE_KEY = 'stockflow.transactions.colored_rows';
   const isPurchaseOrderVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('purchase-order-');
-  const getTransactionReference = (tx: Transaction) => (
-    tx.type === 'sale' ? String(tx.invoiceNo || '').trim() : ''
-  );
+  const getTransactionReference = (tx: Transaction) => getTransactionDocumentNumber(tx);
   const isUpfrontVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('upfront-');
   const isSupplierPaymentVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('supplier-payment-');
   const isExpenseVirtualTransaction = (tx?: Transaction | null) => !!tx?.id?.startsWith('expense-');
@@ -2407,13 +2406,14 @@ export default function Transactions() {
         profile,
       );
       const uid = auth?.currentUser?.uid || '';
+      const invoiceNumber = requireTransactionDocumentNumber(tx);
       await appendWhatsAppLog(uid, {
         type: 'invoice',
         customerId: tx.customerId || '',
         customerName: tx.customerName || customers.find((customer) => customer.id === tx.customerId)?.name || '',
         customerPhone,
         invoiceId: tx.id,
-        invoiceNumber: tx.invoiceNo || tx.id,
+        invoiceNumber,
         pdfUrl: '',
         status: result.ok ? 'sent' : 'failed',
         error: result.ok ? null : result.message,

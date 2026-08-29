@@ -2,6 +2,7 @@ import { Customer, StoreProfile, Transaction } from '../types';
 import { getFriendlyErrorMessage } from './errorMessages';
 import { getConfiguredMetaWhatsAppServerUrl, getOfficialWhatsAppConfigDiagnostics, sendInvoiceViaMetaWhatsApp, sendStatementPdfViaMetaWhatsApp } from './metaWhatsAppStatus';
 import { normalizeTransactionItems } from '../utils/transactionItems';
+import { requireTransactionDocumentNumber } from './invoiceDocument';
 
 export type MetaWhatsAppShareResult = {
   ok: boolean;
@@ -56,7 +57,7 @@ const buildMetaInvoicePayload = (
   const customer = customers.find((entry) => entry.id === transaction.customerId);
   const customerName = String(transaction.customerName || customer?.name || 'Customer').trim();
   const customerPhone = String(transaction.customerPhone || customer?.phone || '').trim();
-  const invoiceNo = String((transaction as Transaction & { invoiceNumber?: string }).invoiceNumber || transaction.invoiceNo || transaction.id);
+  const invoiceNo = requireTransactionDocumentNumber(transaction);
   const paymentMethod = getPaymentMethodLabel(transaction);
   const normalizedItems = normalizeTransactionItems(transaction.items);
   const subtotal = Math.max(0, safeAmount(transaction.subtotal, Math.abs(safeAmount(transaction.total))));

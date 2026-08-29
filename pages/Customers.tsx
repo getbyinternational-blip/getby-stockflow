@@ -19,6 +19,7 @@ import { DISPLAY_FALLBACK, formatGstText, formatINRPrecise, formatINRWhole, form
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { analyzeCustomerLedgerBalances, buildCorrectCustomerLedgerPreview, getEffectiveTransactionType, repairCustomerLedgerBalancesDryRun, transactionMatchesCustomer } from '../services/customerLedger';
+import { getTransactionDocumentNumber } from '../services/invoiceDocument';
 import { CanonicalCustomerBalanceResult, assertCanonicalBalanceErrorDoesNotTrustSnapshot, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useRoleSession } from '../src/auth/roleSession';
@@ -1315,7 +1316,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
           productName: primaryProductName,
           extraProductCount: Math.max(0, items.length - 1),
           amount: Math.abs(Number(tx.total || 0)),
-          ref: tx.invoiceNo || tx.receiptNo || tx.creditNoteNo || tx.id.slice(-6),
+          ref: getTransactionDocumentNumber(tx),
           sourceKind: 'transaction' as const,
         };
       });
@@ -1365,7 +1366,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
         description: row.description,
         paymentMethod: sourceTx?.paymentMethod || (sourceOrder ? 'Advance' : undefined),
         image: primaryItem?.image || sourceOrder?.productImage || '',
-        reference: row.ref || sourceTx?.invoiceNo || sourceTx?.receiptNo || sourceTx?.creditNoteNo || sourceOrder?.id.slice(-6) || row.id.slice(-6),
+        reference: row.ref || (sourceTx ? getTransactionDocumentNumber(sourceTx) : '') || sourceOrder?.id.slice(-6) || '',
         amountMovement,
         runningBalance,
         runningLabel: runningBalance > 0 ? 'customer owes store' : runningBalance < 0 ? 'store owes customer' : 'settled',
@@ -4123,7 +4124,7 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
       runningDue = Math.max(0, runningDue + settlement.creditDue);
       runningStoreCredit = Math.max(0, runningStoreCredit - storeCreditUsed);
       saleTotal = amount;
-      statementDescription = `Sale Invoice #${tx.invoiceNo || tx.id.slice(-6)} — ${getTransactionProductSummary(tx)} (Total ${formatINRPrecise(amount)}, Paid ${formatINRPrecise(settlement.cashPaid + settlement.onlinePaid)}, Due +${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? `, Used SC ${formatINRPrecise(storeCreditUsed)}` : ''})`;
+      statementDescription = `${getTransactionDocumentNumber(tx) ? `Sale Invoice #${getTransactionDocumentNumber(tx)}` : 'Sale Invoice'} — ${getTransactionProductSummary(tx)} (Total ${formatINRPrecise(amount)}, Paid ${formatINRPrecise(settlement.cashPaid + settlement.onlinePaid)}, Due +${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? `, Used SC ${formatINRPrecise(storeCreditUsed)}` : ''})`;
       listDescription = `${getTransactionProductSummary(tx)} · Sale ${formatINRPrecise(amount)} · Cash ${formatINRPrecise(settlement.cashPaid)} · Online ${formatINRPrecise(settlement.onlinePaid)} · Due ${formatINRPrecise(settlement.creditDue)}${storeCreditUsed > 0 ? ` · Used SC ${formatINRPrecise(storeCreditUsed)}` : ''}`;
     } else if (txKind === 'payment') {
       const explicitApplied = Math.max(0, Number((tx as any).paymentAppliedToReceivable || 0));
@@ -4138,19 +4139,19 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
       runningStoreCredit = Math.max(0, runningStoreCredit + storeCreditAdded);
       paymentAmount = amount;
       const dueLabel = explicitCustomOrderApplied > 0 ? 'Due/custom order' : 'Due';
-      statementDescription = `Payment Receipt #${tx.receiptNo || tx.id.slice(-6)} (${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)}, Due -${formatINRPrecise(dueReduced)}${storeCreditAdded > 0 ? `, SC +${formatINRPrecise(storeCreditAdded)}` : ''})`;
+      statementDescription = `${getTransactionDocumentNumber(tx) ? `Payment Receipt #${getTransactionDocumentNumber(tx)}` : 'Payment Receipt'} (${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)}, Due -${formatINRPrecise(dueReduced)}${storeCreditAdded > 0 ? `, SC +${formatINRPrecise(storeCreditAdded)}` : ''})`;
       listDescription = `${tx.paymentMethod || 'Cash'} payment ${formatINRPrecise(amount)} · ${dueLabel} -${formatINRPrecise(dueReduced)}${storeCreditAdded > 0 ? ` · Store credit +${formatINRPrecise(storeCreditAdded)}` : ''}`;
     } else if (txKind === 'return') {
       const allocation = getCanonicalReturnAllocation(tx, processed, runningDue);
       runningDue = Math.max(0, runningDue - allocation.dueReduction);
       runningStoreCredit = Math.max(0, runningStoreCredit + allocation.storeCreditIncrease);
-      statementDescription = `Credit Note #${tx.creditNoteNo || tx.id.slice(-6)} — ${getTransactionProductSummary(tx)} (${allocation.mode.replace('_', ' ')}: Cash ${formatINRPrecise(allocation.cashRefund)}, Online ${formatINRPrecise(allocation.onlineRefund)}, Due -${formatINRPrecise(allocation.dueReduction)}, SC +${formatINRPrecise(allocation.storeCreditIncrease)})`;
+      statementDescription = `${getTransactionDocumentNumber(tx) ? `Credit Note #${getTransactionDocumentNumber(tx)}` : 'Credit Note'} — ${getTransactionProductSummary(tx)} (${allocation.mode.replace('_', ' ')}: Cash ${formatINRPrecise(allocation.cashRefund)}, Online ${formatINRPrecise(allocation.onlineRefund)}, Due -${formatINRPrecise(allocation.dueReduction)}, SC +${formatINRPrecise(allocation.storeCreditIncrease)})`;
       listDescription = `Return ${allocation.mode.replace('_', ' ')} · Cash ${formatINRPrecise(allocation.cashRefund)} · Online ${formatINRPrecise(allocation.onlineRefund)} · Due -${formatINRPrecise(allocation.dueReduction)}${allocation.storeCreditIncrease > 0 ? ` · SC +${formatINRPrecise(allocation.storeCreditIncrease)}` : ''}`;
     } else if (txKind === 'customer_credit') {
       runningDue = Math.max(0, runningDue + amount);
       statementDescription = String(tx.sourceRef || '').startsWith(ADVANCE_ORDER_DUE_REPAIR_PREFIX)
         ? `Advance Order Due Repair #${String(tx.sourceTransactionId || tx.sourceRef.replace(ADVANCE_ORDER_DUE_REPAIR_PREFIX, '')).slice(-6)} (+${formatINRPrecise(amount)})`
-        : `Credit Created #${tx.receiptNo || tx.id.slice(-6)} (${formatINRPrecise(amount)})`;
+        : `${getTransactionDocumentNumber(tx) ? `Credit Created #${getTransactionDocumentNumber(tx)}` : 'Credit Created'} (${formatINRPrecise(amount)})`;
       listDescription = String(tx.sourceRef || '').startsWith(ADVANCE_ORDER_DUE_REPAIR_PREFIX)
         ? `Advance Order Due Repair · Due +${formatINRPrecise(amount)}`
         : `Credit Created · Due +${formatINRPrecise(amount)}`;
@@ -4160,7 +4161,7 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
       const receivableIncrease = Math.max(0, amount - storeCreditUsed);
       runningStoreCredit = Math.max(0, runningStoreCredit - storeCreditUsed);
       runningDue = Math.max(0, runningDue + receivableIncrease);
-      statementDescription = `Customer Advance #${tx.receiptNo || tx.id.slice(-6)} (${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)})`;
+      statementDescription = `${getTransactionDocumentNumber(tx) ? `Customer Advance #${getTransactionDocumentNumber(tx)}` : 'Customer Advance'} (${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)})`;
       listDescription = `Cash Given · ${tx.paymentMethod || 'Cash'} ${formatINRPrecise(amount)}${storeCreditUsed > 0 ? ` · Store credit used ${formatINRPrecise(storeCreditUsed)}` : ''} · Due +${formatINRPrecise(receivableIncrease)}`;
     } else {
       statementDescription = `Historical Reference #${tx.id.slice(-6)} (unclassified)`;
@@ -4171,7 +4172,7 @@ const buildCustomerLedgerRows = (transactions: Transaction[], upfrontEffects: Ar
     const netDelta = netAfter - netBefore;
     rows.push({
       tx,
-      reference: tx.type === 'sale' ? (tx.invoiceNo || tx.id.slice(-6)) : tx.type === 'return' ? (tx.creditNoteNo || tx.id.slice(-6)) : (tx.receiptNo || tx.id.slice(-6)),
+      reference: getTransactionDocumentNumber(tx),
       debit: netDelta > 0 ? netDelta : 0,
       credit: netDelta < 0 ? Math.abs(netDelta) : 0,
       saleTotal,

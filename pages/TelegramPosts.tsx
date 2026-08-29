@@ -60,7 +60,7 @@ const TELEGRAM_DEBUG_LOGS_ENABLED =
     (import.meta as any).env?.VITE_DEBUG_TELEGRAM_LOGS || 'false',
   ).toLowerCase() === 'true';
 
-const DEFAULT_MAX_FAILURES_BEFORE_PAUSE = 3;
+const DEFAULT_MAX_FAILURES_BEFORE_PAUSE = 5;
 const DEFAULT_BATCH_SIZE = 2;
 
 const TELEGRAM_CHANNEL_REQUIRED_MESSAGE =
@@ -399,6 +399,11 @@ export default function TelegramPosts() {
     queuedProductIds,
     setQueuedProductIds,
   ] = useState<string[]>([]);
+
+  const [
+    previewProductId,
+    setPreviewProductId,
+  ] = useState('');
 
   const [
     telegramChannelId,
@@ -788,6 +793,12 @@ setTelegramChannelId(
         selectedCollection.queuedProductIds ||
           [],
       );
+      setPreviewProductId(
+        safeText(
+          selectedCollection
+            .queuedProductIds?.[0],
+        ),
+      );
 
       setCategoryFilter(
         selectedCollection.category ||
@@ -822,6 +833,7 @@ setTelegramChannelId(
           DEFAULT_MAX_FAILURES_BEFORE_PAUSE,
         ),
       );
+      setPreviewProductId('');
     }
   };
 
@@ -1139,10 +1151,94 @@ setTelegramChannelId(
       queuedProducts,
     ]);
 
+  const filteredOutOfStockProducts =
+    useMemo(() => {
+      return filteredProducts.filter(
+        (product) =>
+          toNonNegativeNumber(
+            product.stock,
+          ) <= 0,
+      );
+    }, [filteredProducts]);
+
+  const resolveProductsForPostMode =
+    (
+      mode: TelegramPostMode,
+    ) => {
+      if (mode === 'filtered') {
+        return filteredProducts;
+      }
+
+      if (mode === 'out_of_stock') {
+        return filteredOutOfStockProducts;
+      }
+
+      return queuedProducts;
+    };
+
+  const resolveQueuedIdsForPostMode =
+    (
+      mode: TelegramPostMode,
+    ) => {
+      if (mode === 'selected') {
+        return queuedProductIds.filter(Boolean);
+      }
+
+      return Array.from(
+        new Set(
+          resolveProductsForPostMode(mode)
+            .map((product) =>
+              safeText(product.id),
+            )
+            .filter(Boolean),
+        ),
+      );
+    };
+
+  const resolveCollectionCategoryForPostMode =
+    (
+      mode: TelegramPostMode,
+    ) => {
+      if (mode === 'selected') {
+        return (
+          collectionCategory ||
+          categoryFilter ||
+          'all'
+        );
+      }
+
+      return (
+        categoryFilter ||
+        collectionCategory ||
+        'all'
+      );
+    };
+
+  const getPostModeEmptyMessage = (
+    mode: TelegramPostMode,
+  ) => {
+    if (mode === 'filtered') {
+      return 'No products match the current page filters.';
+    }
+
+    if (mode === 'out_of_stock') {
+      return 'No out-of-stock products match the current page filters.';
+    }
+
+    return 'Add at least one product before saving or starting a collection.';
+  };
+
   const targetProducts =
     useMemo(() => {
-      return queuedProducts;
-    }, [queuedProducts]);
+      return resolveProductsForPostMode(
+        postMode,
+      );
+    }, [
+      filteredOutOfStockProducts,
+      filteredProducts,
+      postMode,
+      queuedProducts,
+    ]);
 
   const collectionProducts =
     queuedProducts;
@@ -1208,6 +1304,11 @@ setTelegramChannelId(
       );
 
   const previewProduct =
+    products.find(
+      (product) =>
+        product.id ===
+        previewProductId,
+    ) ||
     targetProducts[0] ||
     queuedProducts[0] ||
     filteredProducts[0] ||
@@ -1685,10 +1786,7 @@ setTelegramChannelId(
     };
 
     let message =
-      (
-        telegramTemplate ||
-        DEFAULT_TEMPLATE
-      ).trim();
+      telegramTemplate.trim();
 
     Object.entries(
       replacements,
@@ -1777,24 +1875,7 @@ setTelegramChannelId(
 
   const resolveMaxFailuresBeforePause =
     () => {
-      const parsed =
-        Number(
-          maxFailuresBeforePause,
-        );
-
-      if (
-        !Number.isFinite(
-          parsed,
-        ) ||
-        parsed <= 0
-      ) {
-        return DEFAULT_MAX_FAILURES_BEFORE_PAUSE;
-      }
-
-      return Math.max(
-        1,
-        Math.floor(parsed),
-      );
+      return DEFAULT_MAX_FAILURES_BEFORE_PAUSE;
     };
 
   const resolveBatchSize =
@@ -1814,6 +1895,23 @@ setTelegramChannelId(
     () => {
       const channelId =
         getResolvedTelegramChannelId();
+
+      if (!channelId) {
+        throw new Error(
+          TELEGRAM_CHANNEL_REQUIRED_MESSAGE,
+        );
+      }
+
+      return channelId;
+    };
+
+  const requireSavedCollectionChannelId =
+    (
+      value?: string | null,
+    ) => {
+      const channelId =
+        safeText(value).trim() ||
+        requireTelegramChannelId();
 
       if (!channelId) {
         throw new Error(
@@ -2029,6 +2127,7 @@ return saved;
               productId,
             ],
     );
+    setPreviewProductId(productId);
   };
 
   const addProductsToQueue = (
@@ -2057,13 +2156,19 @@ return saved;
         (current) =>
           current.filter(
             (id) =>
-              id !== productId,
+            id !== productId,
           ),
+      );
+      setPreviewProductId((current) =>
+        current === productId
+          ? ''
+          : current,
       );
     };
 
   const clearQueue = () => {
     setQueuedProductIds([]);
+    setPreviewProductId('');
   };
 
   const loadCollection = (
@@ -2143,7 +2248,12 @@ return saved;
     );
 
     setPostMode(
-      'selected',
+      collection.postMode ===
+        'filtered' ||
+        collection.postMode ===
+          'out_of_stock'
+        ? collection.postMode
+        : 'selected',
     );
 
     setQueuedProductIds(
@@ -2304,6 +2414,11 @@ return saved;
         return;
       }
 
+      const resolvedQueuedIds =
+        resolveQueuedIdsForPostMode(
+          postMode,
+        );
+
 
       setIsSavingCollection(
         true,
@@ -2333,9 +2448,9 @@ return saved;
             name: trimmedName,
 
             category:
-              collectionCategory ||
-              categoryFilter ||
-              'all',
+              resolveCollectionCategoryForPostMode(
+                postMode,
+              ),
 
             channelId,
 
@@ -2348,7 +2463,8 @@ return saved;
 
             postMode,
 
-            queuedProductIds,
+            queuedProductIds:
+              resolvedQueuedIds,
 
             frequencyValue:
               resolveFrequencyValue(),
@@ -2556,7 +2672,9 @@ return saved;
 
       setCollectionName('');
       setCollectionValidationMessage('');
+      setPostMode('selected');
       setQueuedProductIds([]);
+      setPreviewProductId('');
       setQueueSearchTerm('');
       setCollectionProductSearchTerm('');
 
@@ -2667,6 +2785,22 @@ return saved;
         );
       }
 
+      const resolvedQueuedIds =
+        resolveQueuedIdsForPostMode(
+          postMode,
+        );
+
+      if (!resolvedQueuedIds.length) {
+        const message =
+          getPostModeEmptyMessage(
+            postMode,
+          );
+        setCollectionValidationMessage(
+          message,
+        );
+        throw new Error(message);
+      }
+
 
       const channelId =
         safeText(
@@ -2687,9 +2821,9 @@ return saved;
             trimmedName,
 
           category:
-            collectionCategory ||
-            categoryFilter ||
-            'all',
+            resolveCollectionCategoryForPostMode(
+              postMode,
+            ),
 
           channelId,
 
@@ -2700,10 +2834,10 @@ return saved;
           notes:
             telegramNotes.trim(),
 
-          postMode:
-            'selected',
+          postMode,
 
-          queuedProductIds,
+          queuedProductIds:
+            resolvedQueuedIds,
 
           frequencyValue:
             resolveFrequencyValue(),
@@ -2983,7 +3117,10 @@ setActiveCollectionId(
       });
 
       try {
-        requireTelegramChannelId();
+        const channelId =
+          requireSavedCollectionChannelId(
+            collection.channelId,
+          );
 
         const schedulerProducts =
           buildSchedulerProducts(
@@ -3000,7 +3137,7 @@ setActiveCollectionId(
             collection.name,
 
           channelId:
-            collection.channelId,
+            channelId,
 
           template:
             collection.template,
@@ -3062,21 +3199,28 @@ setNotice({
 
   const startCollectionRun =
     async () => {
+      const resolvedCollectionProducts =
+        resolveProductsForPostMode(
+          postMode,
+        );
+
       if (
-        !collectionProducts.length
+        !resolvedCollectionProducts.length
       ) {
         setNotice({
           type: 'error',
 
           message:
-            'Add at least one product before starting a collection.',
+            getPostModeEmptyMessage(
+              postMode,
+            ),
         });
 
         return;
       }
 
       const missingImageProduct =
-        collectionProducts.find(
+        resolvedCollectionProducts.find(
           (product) =>
             !getProductImageUrl(
               product,
@@ -3093,7 +3237,7 @@ setNotice({
 
         return;
       }
-setNotice({
+      setNotice({
         type: 'info',
 
         message:
@@ -3101,14 +3245,12 @@ setNotice({
       });
 
       try {
-        requireTelegramChannelId();
-
         const savedCollection =
           await ensureCollectionSaved();
 
         const schedulerProducts =
           buildSchedulerProducts(
-            collectionProducts,
+            resolvedCollectionProducts,
           );
 
         await startTelegramCollection({
@@ -3360,11 +3502,17 @@ if (
       product: Product,
       index: number,
       total: number,
+      context: 'available' | 'queued' =
+        'available',
     ) => {
       const isQueued =
         queuedProductIds.includes(
           product.id,
         );
+      const isPreviewActive =
+        context === 'queued' &&
+        previewProduct?.id ===
+          product.id;
 
       const productImage =
         getProductImageUrl(
@@ -3388,15 +3536,31 @@ if (
       return (
         <div
           key={product.id}
+          onClick={() => {
+            if (context === 'queued') {
+              setPreviewProductId(
+                product.id,
+              );
+            }
+          }}
           className={`
             grid
-            grid-cols-[40px_minmax(0,1.15fr)_58px_minmax(0,1fr)_30px]
+            grid-cols-[40px_minmax(0,1.4fr)_62px_minmax(0,1.1fr)_30px]
             items-center
             gap-2
             px-2.5
-            py-2
+            py-2.5
             transition-colors
-            hover:bg-slate-50
+            ${
+              context === 'queued'
+                ? 'cursor-pointer'
+                : ''
+            }
+            ${
+              isPreviewActive
+                ? 'bg-slate-50'
+                : 'hover:bg-slate-50'
+            }
             ${
               index !== total - 1
                 ? 'border-b border-slate-100'
@@ -3497,15 +3661,19 @@ if (
           {/* ACTION */}
           <button
             type="button"
-            onClick={() =>
-              isQueued
-                ? removeProductFromQueue(
-                    product.id,
-                  )
-                : addProductToQueue(
-                    product.id,
-                  )
-            }
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isQueued) {
+                removeProductFromQueue(
+                  product.id,
+                );
+                return;
+              }
+
+              addProductToQueue(
+                product.id,
+              );
+            }}
             className={`
               flex
               h-7
@@ -4356,12 +4524,12 @@ if (
 
       {/* COLLECTION MODAL */}
       {isCollectionModalOpen && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="fixed inset-0 z-[120] flex items-stretch justify-center bg-black/40 p-2 sm:p-4">
+          <div className="flex h-[calc(100vh-1rem)] w-full max-w-[min(1600px,calc(100vw-1rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl sm:h-[calc(100vh-2rem)] sm:max-w-[min(1680px,calc(100vw-2rem))]">
             {/* MODAL HEADER */}
             <div className="border-b border-slate-200 px-6 py-4">
-              <div className="flex items-end gap-3 overflow-x-auto pb-1">
-                <div className="min-w-[320px] flex-1 space-y-1.5">
+              <div className="grid gap-3 xl:grid-cols-[minmax(220px,1.15fr)_220px_170px_180px_140px_180px_minmax(240px,1fr)_auto] xl:items-end">
+                <div className="min-w-0 space-y-1.5">
                   <Label className="text-xs font-medium text-slate-600">
                     Collection Name <span className="text-red-500">*</span>
                   </Label>
@@ -4381,7 +4549,50 @@ if (
                   />
                 </div>
 
-                <div className="w-[170px] shrink-0 space-y-1.5">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-slate-600">
+                    Channel
+                  </Label>
+
+                  {savedChannels.length > 0 ? (
+                    <Select
+                      value={collectionChannelId}
+                      onChange={(event) => {
+                        setCollectionChannelId(event.target.value);
+                        if (
+                          collectionValidationMessage &&
+                          event.target.value.trim()
+                        ) {
+                          setCollectionValidationMessage('');
+                        }
+                      }}
+                      className="h-10"
+                    >
+                      {savedChannels.map((channelId) => (
+                        <option key={channelId} value={channelId}>
+                          {channelId}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Input
+                      value={collectionChannelId}
+                      onChange={(event) => {
+                        setCollectionChannelId(event.target.value);
+                        if (
+                          collectionValidationMessage &&
+                          event.target.value.trim()
+                        ) {
+                          setCollectionValidationMessage('');
+                        }
+                      }}
+                      placeholder="@stockflow_offers"
+                      className="h-10"
+                    />
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-slate-600">
                     Start Time
                   </Label>
@@ -4401,11 +4612,141 @@ if (
                   />
                 </div>
 
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-slate-600">
+                    Post Mode
+                  </Label>
+                  <Select
+                    value={postMode}
+                    onChange={(event) => {
+                      setPostMode(
+                        event.target
+                          .value as TelegramPostMode,
+                      );
+                    }}
+                    className="h-10"
+                  >
+                    <option value="selected">
+                      Selected Products
+                    </option>
+                    <option value="filtered">
+                      Filtered Products
+                    </option>
+                    <option value="out_of_stock">
+                      Out of Stock
+                    </option>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-slate-600">
+                    Batch
+                  </Label>
+                  <Select
+                    value={batchSize}
+                    onChange={(event) =>
+                      setBatchSize(
+                        event.target.value,
+                      )
+                    }
+                    className="h-10"
+                  >
+                    {TELEGRAM_BATCH_OPTIONS.map(
+                      (option) => (
+                        <option
+                          key={option}
+                          value={String(option)}
+                        >
+                          {option} products
+                        </option>
+                      ),
+                    )}
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-slate-600">
+                    Repeat
+                  </Label>
+                  <Select
+                    value={repeatMode}
+                    onChange={(event) =>
+                      setRepeatMode(
+                        event.target
+                          .value as TelegramCollectionRepeatMode,
+                      )
+                    }
+                    className="h-10"
+                  >
+                    <option value="once">
+                      Once
+                    </option>
+                    <option value="loop">
+                      Loop
+                    </option>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-slate-600">
+                    Frequency
+                  </Label>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_132px]">
+                    <Input
+                      type="number"
+                      min={
+                        frequencyUnit ===
+                        'seconds'
+                          ? 5
+                          : 1
+                      }
+                      step="1"
+                      value={
+                        frequencyValue
+                      }
+                      onChange={(
+                        event,
+                      ) =>
+                        setFrequencyValue(
+                          event.target
+                            .value,
+                        )
+                      }
+                      className="h-10"
+                    />
+
+                    <Select
+                      value={
+                        frequencyUnit
+                      }
+                      onChange={(
+                        event,
+                      ) =>
+                        setFrequencyUnit(
+                          event.target
+                            .value as TelegramCollectionFrequencyUnit,
+                        )
+                      }
+                      className="h-10"
+                    >
+                      <option value="seconds">
+                        Seconds
+                      </option>
+                      <option value="minutes">
+                        Minutes
+                      </option>
+                      <option value="hours">
+                        Hours
+                      </option>
+                    </Select>
+                  </div>
+                </div>
+
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="mb-0.5 h-9 w-9 shrink-0"
+                  className="h-10 w-10 shrink-0 self-start xl:self-end"
                   onClick={() =>
                     setIsCollectionModalOpen(
                       false,
@@ -4428,14 +4769,16 @@ if (
             <div
               className="
                 grid
-                h-[78vh]
                 min-h-0
+                flex-1
                 gap-5
                 overflow-hidden
-                px-6
-                py-5
-
-                xl:grid-cols-[minmax(330px,1.05fr)_minmax(300px,0.9fr)_minmax(300px,0.9fr)]
+                px-4
+                py-4
+                sm:px-6
+                sm:py-5
+                xl:grid-cols-[minmax(340px,1.02fr)_minmax(380px,1.08fr)_minmax(360px,0.98fr)]
+                2xl:grid-cols-[minmax(360px,1.02fr)_minmax(420px,1.08fr)_minmax(390px,0.98fr)]
               "
             >
               {/* ========================================= */}
@@ -4446,7 +4789,7 @@ if (
                 <div className="flex min-h-0 flex-1 flex-col gap-3">
                   {/* CATEGORY TABS */}
                   <div className="shrink-0">
-                    <div className="flex gap-2 overflow-x-auto pb-1">
+                    <div className="flex gap-2 overflow-x-auto pb-1 pr-1">
                     {productCategoryGroups.length >
                     0 ? (
                       productCategoryGroups.map(
@@ -4505,7 +4848,7 @@ if (
                   </div>
 
                   {/* AVAILABLE PRODUCT TABLE */}
-                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white">
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                     <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-3 py-2.5">
                       <div className="truncate text-sm font-semibold text-slate-950">
                         {expandedProductCategoryGroup?.category ||
@@ -4557,7 +4900,7 @@ if (
                             )
                           }
                           placeholder="Search products in this category..."
-                          className="pl-9"
+                          className="h-10 pl-9"
                         />
                       </div>
                     </div>
@@ -4598,11 +4941,11 @@ if (
               {/* ========================================= */}
               {/* MIDDLE — PRODUCTS IN COLLECTION */}
               {/* ========================================= */}
-              <div className="flex min-h-0 flex-col gap-3">
+              <div className="flex min-h-0 flex-col gap-3 overflow-hidden">
                 {/* SELECTED HEADER */}
-                <div className="flex shrink-0 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5">
+                <div className="flex shrink-0 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
                   <div className="flex min-w-0 items-center gap-2">
-                    <Label className="whitespace-nowrap">
+                    <Label className="whitespace-nowrap text-xs font-medium text-slate-600">
                       Products In
                       Collection
                     </Label>
@@ -4632,33 +4975,110 @@ if (
                 </div>
 
                 {/* SELECTED PRODUCTS */}
-                <div className="min-h-0 h-[34vh] overflow-y-auto">
+                <div className="flex min-h-[240px] flex-[1.2] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:min-h-[300px]">
                   {queuedProducts.length >
                   0 ? (
-                    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                    <div className="min-h-0 flex-1 overflow-y-auto">
                       {queuedProducts.map(
                         (
                           product,
                           index,
                         ) =>
-                          renderCollectionProductRow(
-                            product,
-                            index,
-                            queuedProducts.length,
-                          ),
+                            renderCollectionProductRow(
+                              product,
+                              index,
+                              queuedProducts.length,
+                              'queued',
+                            ),
                       )}
                     </div>
                   ) : (
-                    <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm text-slate-500">
-                      Add products
-                      from the
-                      category list.
+                    <div className="flex min-h-0 flex-1 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center text-sm leading-6 text-slate-500">
+                      {postMode ===
+                      'selected'
+                        ? 'Add products from the category list.'
+                        : postMode ===
+                            'filtered'
+                          ? 'Filtered mode uses the current page search and category filters when you save or start.'
+                          : 'Out of Stock mode uses the current page filters and only products with zero stock when you save or start.'}
                     </div>
                   )}
                 </div>
 
-                <div className="grid shrink-0 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:grid-cols-2">
-                  <div className="space-y-1.5">
+                <div className="hidden min-h-0 shrink overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <div className="grid gap-3 md:grid-cols-2">
+                  <div className="flex min-h-[132px] flex-col rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+                    <Label className="text-xs font-medium text-slate-600">
+                      Post Mode
+                    </Label>
+                    <Select
+                      value={postMode}
+                      onChange={(event) => {
+                        setPostMode(
+                          event.target
+                            .value as TelegramPostMode,
+                        );
+                        if (
+                          collectionValidationMessage
+                        ) {
+                          setCollectionValidationMessage(
+                            '',
+                          );
+                        }
+                      }}
+                      className="h-10"
+                    >
+                      <option value="selected">
+                        Selected Products
+                      </option>
+                      <option value="filtered">
+                        Filtered Products
+                      </option>
+                      <option value="out_of_stock">
+                        Out of Stock
+                      </option>
+                    </Select>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {postMode ===
+                      'selected'
+                        ? 'Choose products manually for this collection.'
+                        : postMode ===
+                            'filtered'
+                          ? 'Use the current search and category filters.'
+                          : 'Use the current filters and only zero-stock items.'}
+                    </p>
+                  </div>
+
+                  <div className="flex min-h-[132px] flex-col rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+                    <Label className="text-xs font-medium text-slate-600">
+                      Repeat
+                    </Label>
+                    <Select
+                      value={repeatMode}
+                      onChange={(event) =>
+                        setRepeatMode(
+                          event.target
+                            .value as TelegramCollectionRepeatMode,
+                        )
+                      }
+                      className="h-10"
+                    >
+                      <option value="once">
+                        Once
+                      </option>
+                      <option value="loop">
+                        Loop
+                      </option>
+                    </Select>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      {repeatMode ===
+                      'once'
+                        ? 'Post the collection once, then complete.'
+                        : 'Restart from the beginning after the last product.'}
+                    </p>
+                  </div>
+
+                  <div className="flex min-h-[118px] flex-col rounded-lg border border-slate-100 bg-slate-50/70 p-3">
                     <Label className="text-xs font-medium text-slate-600">
                       Batch
                     </Label>
@@ -4669,7 +5089,7 @@ if (
                           event.target.value,
                         )
                       }
-                      className="h-9"
+                      className="h-10"
                     >
                       {TELEGRAM_BATCH_OPTIONS.map(
                         (option) => (
@@ -4684,14 +5104,17 @@ if (
                         ),
                       )}
                     </Select>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      Posts this many products in one cycle.
+                    </p>
                   </div>
 
-                  <div className="space-y-1.5">
+                  <div className="flex min-h-[132px] flex-col rounded-lg border border-slate-100 bg-slate-50/70 p-3 md:col-span-2">
                     <Label className="text-xs font-medium text-slate-600">
                       Frequency
                     </Label>
 
-                    <div className="grid grid-cols-[1fr_120px] gap-2">
+                    <div className="mt-1 grid gap-2 sm:grid-cols-[minmax(0,1fr)_132px]">
                       <Input
                         type="number"
                         min={
@@ -4712,7 +5135,7 @@ if (
                               .value,
                           )
                         }
-                        className="h-9"
+                        className="h-10"
                       />
 
                       <Select
@@ -4727,7 +5150,7 @@ if (
                               .value as TelegramCollectionFrequencyUnit,
                           )
                         }
-                        className="h-9"
+                        className="h-10"
                       >
                         <option value="seconds">
                           Seconds
@@ -4742,6 +5165,40 @@ if (
                         </option>
                       </Select>
                     </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      Choose how often the next batch should be posted.
+                    </p>
+                  </div>
+
+                  <div className="flex min-h-[118px] flex-col rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+                    <Label className="text-xs font-medium text-slate-600">
+                      Max Failures Before Pause
+                    </Label>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={
+                        maxFailuresBeforePause
+                      }
+                      onChange={(event) => {
+                        setMaxFailuresBeforePause(
+                          event.target.value,
+                        );
+                        if (
+                          collectionValidationMessage
+                        ) {
+                          setCollectionValidationMessage(
+                            '',
+                          );
+                        }
+                      }}
+                      className="h-10"
+                    />
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      Pause after this many consecutive failures.
+                    </p>
+                  </div>
                   </div>
                 </div>
 
@@ -4783,15 +5240,15 @@ if (
               {/* ========================================= */}
               {/* RIGHT — PREVIEW */}
               {/* ========================================= */}
-              <div className="flex min-h-0 flex-col gap-2">
-                <Label className="shrink-0">
+              <div className="flex min-h-0 flex-col gap-3 overflow-hidden">
+                <Label className="shrink-0 text-xs font-medium text-slate-600">
                   Preview
                 </Label>
 
                 <div className="min-h-0 flex-1 overflow-y-auto pr-1">
                   <div className="space-y-3">
                     <div
-                      className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-lg"
+                      className="relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-sm"
                       style={{
                         backgroundImage:
                           `linear-gradient(
@@ -4807,8 +5264,8 @@ if (
                           'center',
                       }}
                     >
-                      <div className="relative flex justify-start p-3">
-                        <div className="w-[86%] max-w-[320px] overflow-hidden rounded-xl border border-white/75 bg-white shadow-lg">
+                      <div className="relative flex justify-center p-4">
+                        <div className="w-full max-w-[340px] overflow-hidden rounded-xl border border-white/75 bg-white shadow-lg">
                           {/* TELEGRAM HEADER */}
                           <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-3 py-2">
                             <div className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white">
@@ -4881,24 +5338,10 @@ if (
 
                           {/* MESSAGE CONTENT */}
                           <div className="space-y-2 px-3 py-3 text-slate-950">
-                            <div className="space-y-0.5">
-                              <div className="text-[10px] uppercase text-slate-500">
-                                Product
-                              </div>
-
-                              <div className="text-sm font-bold leading-snug text-slate-950">
-                                {previewProduct
-                                  ? getProductName(
-                                      previewProduct,
-                                    )
-                                  : 'Product name'}
-                              </div>
-                            </div>
-
                             <div className="whitespace-pre-wrap text-[13px] font-medium leading-5 text-slate-900">
                               {buildMessageBoardText(
                                 previewProduct,
-                              )}
+                              ) || 'Write your Telegram message...'}
                             </div>
 
                             {(messageBoardContacts.length >
@@ -4926,7 +5369,7 @@ if (
                       </div>
                     </div>
 
-                    <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                    <div className="flex min-h-[220px] shrink-0 flex-col rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="text-sm font-semibold text-slate-950">
@@ -4968,7 +5411,7 @@ if (
                         )}
                       </div>
 
-                      <div className="mt-3">
+                      <div className="mt-3 min-h-0 flex-1">
                         <textarea
                           ref={messageEditorRef}
                           value={telegramTemplate}
@@ -4978,7 +5421,7 @@ if (
                             )
                           }
                           placeholder="Write your Telegram message..."
-                          className="min-h-[150px] w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[13px] leading-5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                          className="min-h-[190px] w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-[13px] leading-5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                         />
                       </div>
                     </div>

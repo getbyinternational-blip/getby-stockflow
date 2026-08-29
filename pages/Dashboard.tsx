@@ -13,6 +13,7 @@ import { generateLedgerStatementPDF } from '../services/pdf';
 import { buildCustomerStatementRowsFromCanonicalReplay, buildSupplierStatementRowsFromCanonicalLedger } from '../services/ledgerStatements';
 import { shareStatementPdfViaMetaWhatsApp } from '../services/metaWhatsAppShare';
 import { CanonicalCustomerBalanceResult, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
+import { getTransactionDocumentNumber } from '../services/invoiceDocument';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { Package, Search } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
@@ -574,7 +575,7 @@ export default function Dashboard() {
         runningBalance += dueInc;
         totalCreditSales += dueInc;
         totalStoreCreditUsed += storeCreditUsed;
-        rows.push({ id: tx.id, date: tx.date, type: 'Credit Sale', ref: tx.id.slice(-6), description: `Sale Invoice #${(tx as any).invoiceNo || tx.id.slice(-6)} — ${getTransactionProductSummary(tx)} • Due +${formatINRPrecise(dueInc)}${storeCreditUsed > 0 ? ` • SC used ${formatINRPrecise(storeCreditUsed)}` : ''}`, debit: dueInc, credit: 0, balance: runningBalance, tone: 'due' });
+        rows.push({ id: tx.id, date: tx.date, type: 'Credit Sale', ref: getTransactionDocumentNumber(tx), description: `${getTransactionDocumentNumber(tx) ? `Sale Invoice #${getTransactionDocumentNumber(tx)}` : 'Sale Invoice'} — ${getTransactionProductSummary(tx)} • Due +${formatINRPrecise(dueInc)}${storeCreditUsed > 0 ? ` • SC used ${formatINRPrecise(storeCreditUsed)}` : ''}`, debit: dueInc, credit: 0, balance: runningBalance, tone: 'due' });
       } else if (txKind === 'payment') {
         const amount = Math.max(0, Number(tx.total || 0));
         const explicitApplied = Math.max(0, Number((tx as any).paymentAppliedToReceivable || 0));
@@ -590,7 +591,7 @@ export default function Dashboard() {
         const creditReduction = Math.max(0, alloc.dueReduction);
         runningBalance = Math.max(0, runningBalance - creditReduction);
         totalStoreCreditAdded += Math.max(0, alloc.storeCreditIncrease);
-        rows.push({ id: tx.id, date: tx.date, type: 'Return', ref: tx.id.slice(-6), description: `Credit Note #${(tx as any).creditNoteNo || tx.id.slice(-6)} — ${getTransactionProductSummary(tx)} • Due -${formatINRPrecise(creditReduction)} • SC +${formatINRPrecise(alloc.storeCreditIncrease)}`, debit: 0, credit: creditReduction, balance: runningBalance, tone: 'refund' });
+        rows.push({ id: tx.id, date: tx.date, type: 'Return', ref: getTransactionDocumentNumber(tx), description: `${getTransactionDocumentNumber(tx) ? `Credit Note #${getTransactionDocumentNumber(tx)}` : 'Credit Note'} — ${getTransactionProductSummary(tx)} • Due -${formatINRPrecise(creditReduction)} • SC +${formatINRPrecise(alloc.storeCreditIncrease)}`, debit: 0, credit: creditReduction, balance: runningBalance, tone: 'refund' });
       }
       processed.push(tx);
     });

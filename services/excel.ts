@@ -6,6 +6,7 @@ import { getCanonicalReturnAllocation, getResolvedReturnHandlingMode, getSaleSet
 import { formatMoneyPrecise } from './numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { resolveTransactionItemCost } from './costResolution';
+import { getTransactionDocumentNumber, requireTransactionDocumentNumber } from './invoiceDocument';
 
 type TransactionFinanceEffect = {
     txId: string;
@@ -518,6 +519,7 @@ export const exportCustomersToExcel = (customers: Customer[]) => {
  */
 export const exportInvoiceToExcel = (transaction: Transaction) => {
     const { profile } = loadData();
+    const invoiceNumber = requireTransactionDocumentNumber(transaction);
     
     // Header Info
     const header = [
@@ -528,7 +530,7 @@ export const exportInvoiceToExcel = (transaction: Transaction) => {
         [`GSTIN: ${profile.gstin || ''}`],
         [],
         ['INVOICE'],
-        [`Invoice No: IN-${transaction.id.slice(-6)}`],
+        [`Invoice No: ${invoiceNumber}`],
         [`Date: ${new Date(transaction.date).toLocaleString()}`],
         [`Customer: ${transaction.customerName || 'Walk-in'}`],
         [`Payment Method: ${transaction.paymentMethod || 'Cash'}`],
@@ -561,7 +563,7 @@ export const exportInvoiceToExcel = (transaction: Transaction) => {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Invoice');
 
-    downloadExcel(workbook, `Invoice_${transaction.id.slice(-6)}`);
+    downloadExcel(workbook, `Invoice_${invoiceNumber}`);
 };
 
 /**
@@ -599,11 +601,12 @@ export const exportCustomerStatementToExcel = (customer: Customer, history: any[
         }
         const netAfter = runningDue - runningStoreCredit;
         const delta = netAfter - netBefore;
+        const documentNumber = getTransactionDocumentNumber(tx);
         const desc = tx.type === 'sale'
-          ? `Invoice #${tx.id.slice(-6)} (Paid ${formatMoneyPrecise(fx.cashPaid + fx.onlinePaid)}, Due +${formatMoneyPrecise(fx.creditDue)})`
+          ? `${documentNumber ? `Invoice #${documentNumber}` : 'Invoice'} (Paid ${formatMoneyPrecise(fx.cashPaid + fx.onlinePaid)}, Due +${formatMoneyPrecise(fx.creditDue)})`
           : tx.type === 'payment'
-            ? `Payment #${tx.id.slice(-6)} (${tx.paymentMethod || 'Cash'} ${formatMoneyPrecise(amount)}, Due -${formatMoneyPrecise(fx.dueReduction)}${fx.storeCreditCreated > 0 ? `, SC +${formatMoneyPrecise(fx.storeCreditCreated)}` : ''})`
-            : `Return #${tx.id.slice(-6)} (${fx.returnMode}: Cash ${formatMoneyPrecise(fx.cashRefund)}, Online ${formatMoneyPrecise(fx.onlineRefund)}, Due -${formatMoneyPrecise(fx.dueReduction)}, SC +${formatMoneyPrecise(fx.storeCreditCreated)})`;
+            ? `${documentNumber ? `Payment #${documentNumber}` : 'Payment'} (${tx.paymentMethod || 'Cash'} ${formatMoneyPrecise(amount)}, Due -${formatMoneyPrecise(fx.dueReduction)}${fx.storeCreditCreated > 0 ? `, SC +${formatMoneyPrecise(fx.storeCreditCreated)}` : ''})`
+            : `${documentNumber ? `Return #${documentNumber}` : 'Return'} (${fx.returnMode}: Cash ${formatMoneyPrecise(fx.cashRefund)}, Online ${formatMoneyPrecise(fx.onlineRefund)}, Due -${formatMoneyPrecise(fx.dueReduction)}, SC +${formatMoneyPrecise(fx.storeCreditCreated)})`;
         return [
             new Date(tx.date).toLocaleDateString(),
             desc,

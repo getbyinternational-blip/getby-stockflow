@@ -7,6 +7,7 @@ import { NO_COLOR, NO_VARIANT } from './productVariants';
 import { formatMoneyPrecise, formatMoneyWhole, roundMoneyWhole } from './numberFormat';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { resolveInvoicePrintProfile } from './invoicePrintPreferences';
+import { requireTransactionDocumentNumber } from './invoiceDocument';
 
 type ReceiptPaymentDetails = {
     cashReceived?: number;
@@ -217,7 +218,6 @@ type InvoicePdfData = {
     logo?: string;
     addressLines: string[];
     mobile?: string;
-    email?: string;
     gstin?: string;
     pan?: string;
     state?: string;
@@ -565,9 +565,7 @@ const buildExactInvoiceData = (
   const quantitySummary = Array.from(groupedByUnit.entries())
     .map(([unit, quantity]) => `${Number.isInteger(quantity) ? quantity : quantity.toFixed(3)}(${unit})`)
     .join(', ');
-  const documentNo = transaction.type === 'return'
-    ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-4)}`)
-    : (transaction.invoiceNo || `IN-${transaction.id.slice(-4)}`);
+  const documentNo = requireTransactionDocumentNumber(transaction);
   const itemsTotalBeforeTax = normalizedItems.reduce((sum, item) => (
     sum + Math.max(0, (Number(item.sellPrice) || 0) * (Number(item.quantity) || 0) - (Number(item.discountAmount) || 0))
   ), 0);
@@ -631,7 +629,6 @@ const buildExactInvoiceData = (
       logo: profile?.logoImage || '',
       addressLines: companyAddressLines.length ? companyAddressLines : ['-'],
       mobile: profile?.phone || '',
-      email: profile?.email || '',
       gstin: profile?.gstin || '',
       pan: companyPan,
       state: profile?.state || '',
@@ -1998,7 +1995,6 @@ export const generateAccountStatementPDF = async ({
     safeProfile?.addressLine1,
     safeProfile?.addressLine2,
     safeProfile?.phone ? `Phone: ${safeProfile.phone}` : '',
-    safeProfile?.email ? `Email: ${safeProfile.email}` : '',
     safeProfile?.gstin ? `GSTIN: ${safeProfile.gstin}` : '',
   ].filter(Boolean) as string[];
   const leftStartY = 20;
@@ -2513,9 +2509,7 @@ export const buildThermalInvoiceHtmlFromProfile = (
     const thermalPaddingX = getThermalPaddingX(resolvedProfile);
     const thermalPaddingY = getThermalPaddingY(resolvedProfile);
     const currency = (value: number) => `${formatMoneyPrecise(Math.max(0, Number(value || 0)))}`;
-    const invoiceNo = transaction.type === 'return'
-      ? (transaction.creditNoteNo || `CN-${transaction.id.slice(-6)}`)
-      : (transaction.invoiceNo || `IN-${transaction.id.slice(-6)}`);
+    const invoiceNo = requireTransactionDocumentNumber(transaction);
     const invoiceTitle = transaction.type === 'return' ? 'Credit Note' : 'Invoice';
     const issuedAt = new Date(transaction.date);
     const dateLabel = Number.isFinite(issuedAt.getTime()) ? issuedAt.toLocaleDateString('en-GB') : String(transaction.date || '');

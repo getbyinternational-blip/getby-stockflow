@@ -2,6 +2,7 @@ import { getFriendlyErrorMessage } from './errorMessages';
 import { Customer, Transaction } from '../types';
 import { auth } from './firebase';
 import { getConfiguredWhatsAppServerUrl, sendCustomerLedgerViaWhatsAppMultipart, sendInvoiceViaWhatsAppMultipart } from './whatsappStatus';
+import { requireTransactionDocumentNumber } from './invoiceDocument';
 
 export type WhatsAppShareResult = {
   ok: boolean;
@@ -89,6 +90,7 @@ export const shareTransactionInvoiceViaWhatsApp = async (
   if (!phone) return { ok: false, reason: 'WHATSAPP_PHONE_MISSING', message: 'Customer phone number is missing.' };
   if (!(pdfBlobOrUrl instanceof Blob)) return { ok: false, reason: 'WHATSAPP_SEND_FAILED', message: 'Invoice PDF could not be prepared. Please try again.' };
   try {
+    const invoiceNo = requireTransactionDocumentNumber(transaction);
     const uid = String(auth?.currentUser?.uid || '').trim();
     const missingFields = [!uid ? 'userId' : '', !phone ? 'customerPhone' : '', !transaction.customerName ? 'customerName' : '', !pdfBlobOrUrl ? 'pdf' : ''].filter(Boolean);
     if (missingFields.length > 0) {
@@ -98,8 +100,8 @@ export const shareTransactionInvoiceViaWhatsApp = async (
     payload.append('userId', uid);
     payload.append('customerPhone', phone);
     payload.append('customerName', transaction.customerName || 'Customer');
-    payload.append('invoiceNo', (transaction.invoiceNo || transaction.id).toString());
-    payload.append('pdf', pdfBlobOrUrl, `Invoice_${transaction.invoiceNo || transaction.id}.pdf`);
+    payload.append('invoiceNo', invoiceNo);
+    payload.append('pdf', pdfBlobOrUrl, `Invoice_${invoiceNo}.pdf`);
     const formDataKeys = Array.from(payload.keys());
     console.info('[WHATSAPP FORM DEBUG]', {
       type: 'invoice',
@@ -108,9 +110,9 @@ export const shareTransactionInvoiceViaWhatsApp = async (
       customerPhone: phone,
       hasCustomerName: Boolean(transaction.customerName),
       customerName: transaction.customerName || 'Customer',
-      invoiceNo: (transaction.invoiceNo || transaction.id).toString(),
+      invoiceNo,
       hasPdfFile: true,
-      pdfFileName: `Invoice_${transaction.invoiceNo || transaction.id}.pdf`,
+      pdfFileName: `Invoice_${invoiceNo}.pdf`,
       pdfFileSize: pdfBlobOrUrl.size,
       formDataKeys,
     });

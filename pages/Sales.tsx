@@ -22,6 +22,7 @@ import { formatINRPrecise, formatINRWhole, formatMoneyPrecise, formatMoneyWhole,
 import { getPaymentStatusColorClass } from '../utils_paymentStatusStyles';
 import { auth, db } from '../services/firebase';
 import { getCanonicalCustomerBalanceView } from '../services/customerBalanceView';
+import { getTransactionDocumentNumber, requireTransactionDocumentNumber } from '../services/invoiceDocument';
 import { normalizeTransactionItems } from '../utils/transactionItems';
 import { can, isAdmin } from '../src/auth/simplePermissions';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
@@ -1475,6 +1476,10 @@ export default function Sales() {
       setTransactionSyncStatus({ phase: 'pending', message: 'Saving sale locally…' });
       try {
         const newState = processTransaction(tx);
+        const persistedTransaction = newState.transactions.find((entry) => entry.id === tx.id) || tx;
+        if (pendingCheckoutRef.current?.transactionId === tx.id) {
+          pendingCheckoutRef.current = { ...pendingCheckoutRef.current, transaction: persistedTransaction };
+        }
         setProducts(newState.products); setCustomers(newState.customers); setTransactions(newState.transactions);
         
         // Cleanup
@@ -1518,18 +1523,7 @@ export default function Sales() {
   };
   const sendInvoicePreview = async (tx: Transaction, mode: 'manual' | 'auto' = 'manual') => {
     const customerPhone = (tx.customerPhone || customers.find(c => c.id === tx.customerId)?.phone || '').trim();
-    const invoiceNo = ((tx as any).invoiceNumber || tx.invoiceNo || tx.id).toString();
     const customerName = (tx.customerName || customers.find(c => c.id === tx.customerId)?.name || 'Walk-in customer').trim();
-    logInvoiceSendDebug({
-      step: 'send_start',
-      mode,
-      transactionId: tx.id,
-      invoiceNo,
-      customerId: tx.customerId,
-      customerName: tx.customerName,
-      hasTxPhone: Boolean(tx.customerPhone),
-      resolvedPhoneLength: customerPhone.length,
-    });
     if (!customerPhone) {
       const msg = 'Customer WhatsApp number is missing, so invoice cannot be sent.';
       logInvoiceSendDebug({ step: 'missing_phone_stop', message: msg });
@@ -1538,6 +1532,17 @@ export default function Sales() {
       return;
     }
     try {
+      const invoiceNo = requireTransactionDocumentNumber(tx);
+      logInvoiceSendDebug({
+        step: 'send_start',
+        mode,
+        transactionId: tx.id,
+        invoiceNo,
+        customerId: tx.customerId,
+        customerName: tx.customerName,
+        hasTxPhone: Boolean(tx.customerPhone),
+        resolvedPhoneLength: customerPhone.length,
+      });
       setWaSendingStage('Preparing PDF...');
       const canonicalPdfDataUrl = await generateReceiptPDFDataUrl(tx, customers, transactionCashDetails || undefined);
       const invoicePdfBlob = await (await fetch(canonicalPdfDataUrl)).blob();
@@ -1569,6 +1574,7 @@ export default function Sales() {
     }
 
     try {
+      const invoiceNumber = requireTransactionDocumentNumber(tx);
       setWaSendingStage('Preparing invoice data...');
       const { profile } = loadData();
       setWaSendingStage('Sending via Official WhatsApp...');
@@ -1584,7 +1590,7 @@ export default function Sales() {
         customerName,
         customerPhone,
         invoiceId: tx.id,
-        invoiceNumber: ((tx as any).invoiceNumber || tx.invoiceNo || tx.id).toString(),
+        invoiceNumber,
         pdfUrl: '',
         status: result.ok ? 'sent' : 'failed',
         error: result.ok ? null : result.message,
@@ -3499,11 +3505,9 @@ export default function Sales() {
                       </div>
                       <h2 className="text-2xl font-bold">Successful!</h2>
                       <p className="text-muted-foreground text-sm">
-                        Receipt #{transactionComplete.type === 'sale'
-                          ? (transactionComplete.invoiceNo || transactionComplete.id.slice(-6))
-                          : transactionComplete.type === 'return'
-                            ? (transactionComplete.creditNoteNo || transactionComplete.id.slice(-6))
-                            : transactionComplete.id.slice(-6)} has been generated.
+                        {getTransactionDocumentNumber(transactionComplete)
+                          ? `Receipt #${getTransactionDocumentNumber(transactionComplete)} has been generated.`
+                          : 'Receipt has been generated.'}
                       </p>
                       {transactionCashDetails && (
                         <div className="text-sm bg-muted rounded-lg p-3 space-y-1">
