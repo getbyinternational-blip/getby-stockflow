@@ -7,9 +7,18 @@ import {
   vi,
 } from 'vitest';
 
+const TEST_TELEGRAM_SERVER_URL =
+  String(
+    process.env
+      .VITE_TELEGRAM_SERVER_URL ||
+      'http://localhost:4100',
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
 vi.mock('./telegramConfig', () => ({
   getTelegramServerUrl: () =>
-    'http://localhost:4100',
+    TEST_TELEGRAM_SERVER_URL,
 
   getTelegramHeaders: () => ({
     'Content-Type':
@@ -109,7 +118,7 @@ describe('telegram HTTP service', () => {
         getFetchMock().mock.calls[0];
 
       expect(url).toBe(
-        'http://localhost:4100/api/telegram/post-product',
+        `${TEST_TELEGRAM_SERVER_URL}/api/telegram/post-product`,
       );
 
       expect(options).toMatchObject({
@@ -219,7 +228,7 @@ describe('telegram HTTP service', () => {
         getFetchMock().mock.calls[0];
 
       expect(url).toBe(
-        'http://localhost:4100/api/telegram/collections/start',
+        `${TEST_TELEGRAM_SERVER_URL}/api/telegram/collections/start`,
       );
 
       expect(options).toMatchObject({
@@ -322,7 +331,7 @@ describe('telegram HTTP service', () => {
           getFetchMock().mock.calls[0];
 
         expect(url).toBe(
-          `http://localhost:4100/api/telegram/collections/${action}`,
+          `${TEST_TELEGRAM_SERVER_URL}/api/telegram/collections/${action}`,
         );
 
         expect(options).toMatchObject({
@@ -382,7 +391,7 @@ describe('telegram HTTP service', () => {
       expect(
         getFetchMock(),
       ).toHaveBeenCalledWith(
-        'http://localhost:4100/api/telegram/collections/live',
+        `${TEST_TELEGRAM_SERVER_URL}/api/telegram/collections/live`,
         expect.objectContaining({
           method: 'GET',
         }),
@@ -414,7 +423,7 @@ describe('telegram HTTP service', () => {
       expect(
         getFetchMock(),
       ).toHaveBeenCalledWith(
-        'http://localhost:4100/api/telegram/collections/collection%20%2F%201',
+        `${TEST_TELEGRAM_SERVER_URL}/api/telegram/collections/collection%20%2F%201`,
         expect.objectContaining({
           method: 'GET',
         }),
@@ -480,7 +489,7 @@ describe('telegram HTTP service', () => {
       expect(
         getFetchMock(),
       ).toHaveBeenCalledWith(
-        'http://localhost:4100/api/telegram/collections/collection-1/activity',
+        `${TEST_TELEGRAM_SERVER_URL}/api/telegram/collections/collection-1/activity`,
         expect.objectContaining({
           method: 'GET',
         }),

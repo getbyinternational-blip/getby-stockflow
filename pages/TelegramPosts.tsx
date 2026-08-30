@@ -3117,6 +3117,11 @@ setActiveCollectionId(
       });
 
       try {
+        console.log(
+          'startSavedCollectionRun.try',
+          collection.id,
+        );
+
         const channelId =
           requireSavedCollectionChannelId(
             collection.channelId,
@@ -3194,6 +3199,13 @@ setNotice({
               ? error.message
               : 'Backend not reachable',
         });
+
+        console.log(
+          'startSavedCollectionRun.catch',
+          error instanceof Error
+            ? error.message
+            : 'Backend not reachable',
+        );
       }
     };
 

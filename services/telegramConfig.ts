@@ -4,23 +4,40 @@ export const TELEGRAM_POLL_INTERVAL_MS = 5_000;
 
 export const TELEGRAM_DEBUG_LOGS_ENABLED =
   String(
-    (import.meta as any)?.env
-      ?.VITE_DEBUG_TELEGRAM_LOGS || 'false',
+    import.meta.env
+      .VITE_DEBUG_TELEGRAM_LOGS ?? 'false',
   )
     .trim()
     .toLowerCase() === 'true';
 
 export const TELEGRAM_SERVER_URL = String(
-  (import.meta as any)?.env
-    ?.VITE_TELEGRAM_SERVER_URL || '',
+  import.meta.env
+    .VITE_TELEGRAM_SERVER_URL ?? '',
 )
   .trim()
   .replace(/\/+$/, '');
 
 export const TELEGRAM_API_KEY = String(
-  (import.meta as any)?.env
-    ?.VITE_TELEGRAM_API_KEY || '',
+  import.meta.env
+    .VITE_TELEGRAM_API_KEY ?? '',
 ).trim();
+
+console.warn('[TELEGRAM CONFIG LOADED]', {
+  mode: import.meta.env.MODE,
+  dev: import.meta.env.DEV,
+  debugRaw:
+    import.meta.env
+      .VITE_DEBUG_TELEGRAM_LOGS,
+  serverUrlRaw:
+    import.meta.env
+      .VITE_TELEGRAM_SERVER_URL,
+  apiKeyExists: Boolean(
+    import.meta.env
+      .VITE_TELEGRAM_API_KEY,
+  ),
+  resolvedServerUrl:
+    TELEGRAM_SERVER_URL,
+});
 
 export const logTelegramDebug = (
   event: string,
@@ -35,7 +52,7 @@ export const logTelegramDebug = (
 
 export const getTelegramServerUrl = (): string => {
   if (!hasLoggedTelegramServerUrl) {
-    logTelegramDebug('telegram.server_url', {
+    console.warn('[TELEGRAM getTelegramServerUrl]', {
       telegramServerUrl: TELEGRAM_SERVER_URL,
       hasTelegramServerUrl: Boolean(
         TELEGRAM_SERVER_URL,

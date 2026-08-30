@@ -6,6 +6,15 @@ import {
   vi,
 } from 'vitest';
 
+const TEST_TELEGRAM_SERVER_URL =
+  String(
+    process.env
+      .VITE_TELEGRAM_SERVER_URL ||
+      'http://localhost:4100',
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
 const loadConfig = async () => {
   vi.resetModules();
 
@@ -33,7 +42,7 @@ describe('telegramConfig', () => {
   it('normalizes the server URL and API key', async () => {
     vi.stubEnv(
       'VITE_TELEGRAM_SERVER_URL',
-      '  http://localhost:4100/// ',
+      `  ${TEST_TELEGRAM_SERVER_URL}/// `,
     );
 
     vi.stubEnv(
@@ -47,7 +56,7 @@ describe('telegramConfig', () => {
     expect(
       config.TELEGRAM_SERVER_URL,
     ).toBe(
-      'http://localhost:4100',
+      TEST_TELEGRAM_SERVER_URL,
     );
 
     expect(
@@ -57,7 +66,7 @@ describe('telegramConfig', () => {
     expect(
       config.getTelegramServerUrl(),
     ).toBe(
-      'http://localhost:4100',
+      TEST_TELEGRAM_SERVER_URL,
     );
 
     expect(
@@ -73,7 +82,7 @@ describe('telegramConfig', () => {
   it('omits the API-key header when no key is configured', async () => {
     vi.stubEnv(
       'VITE_TELEGRAM_SERVER_URL',
-      'http://localhost:4100',
+      TEST_TELEGRAM_SERVER_URL,
     );
 
     vi.stubEnv(

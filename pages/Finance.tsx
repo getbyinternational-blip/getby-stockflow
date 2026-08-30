@@ -3883,6 +3883,12 @@ export default function Finance({
     [totalAccessibleCash, displayedReservedCash],
   );
 
+  const displayedActiveClosingCash = useMemo(
+    () =>
+      roundMoney(Math.max(0, currentOperationalCash - displayedReservedCash)),
+    [currentOperationalCash, displayedReservedCash],
+  );
+
   const reserveAfterSavePreview = useMemo(
     () =>
       openSession
@@ -6001,30 +6007,14 @@ const transactionMap = new Map<string, Transaction>(
     todayFinanceBreakdown,
   ]);
 
-  // ACTIVE DRAWER closing balance only:
-  //
-  // opening active cash
-  // + active cash inflow
-  // - active cash outflow
-  //
-  // Reserve Cash is intentionally not part of this KPI.
+  // Active closing balance must stay aligned with the cash left in the
+  // drawer after reserve is kept aside.
   const closingBalanceKpiValue = useMemo(
-    () =>
-      roundMoney(
-        Math.max(
-          0,
-          financeMovementSummary.shiftStartingBalance +
-            financeMovementSummary.cashInMovement -
-            financeMovementSummary.cashOutMovement,
-        ),
-      ),
-    [financeMovementSummary],
+    () => roundMoney(Math.max(0, displayedActiveClosingCash)),
+    [displayedActiveClosingCash],
   );
 
-  // closingBalanceKpiValue is already the active bucket.
-  //
-  // Do NOT subtract closingReserveValue again here.
-  // Doing that would remove Reserved Cash twice.
+  // closingBalanceKpiValue is already the active bucket after reserve.
   const autoCarryForwardValue = useMemo(
     () => roundMoney(Math.max(0, closingBalanceKpiValue)),
     [closingBalanceKpiValue],
@@ -10138,7 +10128,7 @@ const transactionMap = new Map<string, Transaction>(
                 </CardHeader>
 
                 <CardContent className="space-y-4">
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
                     <StatCard
                       label={`Opening Balance${openSession?.startTime ? ` • ${formatMonthDayTimeNoYear(openSession.startTime)}` : ""}`}
                       value={formatINRSummary(
@@ -10170,37 +10160,42 @@ const transactionMap = new Map<string, Transaction>(
                       }
                     />
 
+                    <StatCard
+                      label="Active closing cash"
+                      value={formatINRSummary(displayedActiveClosingCash)}
+                      tone={
+                        !openSession
+                          ? "neutral"
+                          : displayedActiveClosingCash < 0
+                            ? "bad"
+                            : "good"
+                      }
+                    />
+
                     <button
                       type="button"
                       className="text-left"
                       onClick={() => {
-                        if (!openSession || isDetailedCashbookPending) return;
-                        setIsCurrentClosingBreakdownOpen(true);
+                        if (!openSession) return;
+                        setIsReserveLedgerOpen(true);
                       }}
-                      disabled={!openSession || isDetailedCashbookPending}
+                      disabled={!openSession}
                     >
                       <StatCard
-                        label="Closing Balance"
-                        value={formatINRSummary(closingBalanceKpiValue)}
+                        label="Reserve closing cash"
+                        value={formatINRSummary(displayedReserveCardBalance)}
                         tone={
-                          !openSession
-                            ? "neutral"
-                            : closingBalanceKpiValue < 0
-                              ? "bad"
-                              : "good"
+                          displayedReserveCardBalance > 0 ? "good" : "neutral"
                         }
-                        interactive={
-                          !!openSession && !isDetailedCashbookPending
-                        }
+                        interactive={!!openSession}
                         hint={
                           openSession
-                            ? isDetailedCashbookPending
-                              ? "Preparing breakdown..."
-                              : "Click to view breakdown"
+                            ? "Click to view reserve ledger"
                             : undefined
                         }
                       />
                     </button>
+
                   </div>
 
                   {openSession && (
@@ -11741,6 +11736,18 @@ const transactionMap = new Map<string, Transaction>(
                     session.difference ??
                     getSessionCarryForwardBalance(session) -
                       getSessionExpectedCarryForward(session, systemCashTotal);
+                  const reserveCarryForward = getSessionReservedCash(session);
+                  const activeCashCarryForward =
+                    session.status === "open"
+                      ? Math.max(
+                          0,
+                          roundMoney(session.openingBalance - reserveCarryForward),
+                        )
+                      : Math.max(
+                          0,
+                          getSessionCarryForwardBalance(session) -
+                            reserveCarryForward,
+                        );
 
                   const isOpen = activeHistoryDetailSessionId === session.id;
 
@@ -11856,7 +11863,7 @@ const transactionMap = new Map<string, Transaction>(
                       )}
 
                       <div className="px-4 pb-4">
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-7">
                           <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                             <div className="text-[11px] text-slate-500">
                               Opening
@@ -11896,6 +11903,26 @@ const transactionMap = new Map<string, Transaction>(
                               {formatINR(
                                 getSessionCarryForwardBalance(session),
                               )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+                            <div className="text-[11px] text-sky-700">
+                              Active cash carry-forward
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-sky-900">
+                              {formatINR(activeCashCarryForward)}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2">
+                            <div className="text-[11px] text-violet-700">
+                              Reserve cash carry-forward
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-violet-900">
+                              {formatINR(reserveCarryForward)}
                             </div>
                           </div>
 
@@ -11973,6 +12000,23 @@ const transactionMap = new Map<string, Transaction>(
                       activeHistorySession,
                       systemCashTotal,
                     );
+                const reserveCarryForward = getSessionReservedCash(
+                  activeHistorySession,
+                );
+                const activeCashCarryForward =
+                  activeHistorySession.status === "open"
+                    ? Math.max(
+                        0,
+                        roundMoney(
+                          activeHistorySession.openingBalance -
+                            reserveCarryForward,
+                        ),
+                      )
+                    : Math.max(
+                        0,
+                        getSessionCarryForwardBalance(activeHistorySession) -
+                          reserveCarryForward,
+                      );
                 const isMatch = difference === 0;
                 const isShort = difference < 0;
                 const statusLabel =
@@ -12208,7 +12252,7 @@ const transactionMap = new Map<string, Transaction>(
                           </Button>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-6">
                           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                             <div className="text-[11px] font-medium text-slate-500">
                               Opening cash
@@ -12254,6 +12298,26 @@ const transactionMap = new Map<string, Transaction>(
                                   activeHistorySession,
                                 ),
                               )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+                            <div className="text-[11px] font-medium text-sky-700">
+                              Active cash carry-forward
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-sky-900">
+                              {formatINR(activeCashCarryForward)}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3">
+                            <div className="text-[11px] font-medium text-violet-700">
+                              Reserve cash carry-forward
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-violet-900">
+                              {formatINR(reserveCarryForward)}
                             </div>
                           </div>
                         </div>

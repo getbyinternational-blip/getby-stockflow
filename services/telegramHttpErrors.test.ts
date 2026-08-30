@@ -7,9 +7,18 @@ import {
   vi,
 } from 'vitest';
 
+const TEST_TELEGRAM_SERVER_URL =
+  String(
+    process.env
+      .VITE_TELEGRAM_SERVER_URL ||
+      'http://localhost:4100',
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
 vi.mock('./telegramConfig', () => ({
   getTelegramServerUrl: () =>
-    'http://localhost:4100',
+    TEST_TELEGRAM_SERVER_URL,
 
   getTelegramHeaders: () => ({
     'Content-Type':
