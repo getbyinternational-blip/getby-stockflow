@@ -711,6 +711,42 @@ const getSessionExpectedCarryForward = (
       getSessionActiveSystemCashTotal(session, fallbackSystemCashTotal),
   );
 
+const getSessionDisplayDifference = (
+  session: CashSession,
+  fallbackSystemCashTotal = 0,
+) => {
+  const expected = getSessionExpectedCarryForward(
+    session,
+    fallbackSystemCashTotal,
+  );
+  const rawDifference = Number.isFinite(session.difference)
+    ? roundMoney(session.difference as number)
+    : roundMoney(getSessionCarryForwardBalance(session) - expected);
+
+  if (session.status !== "closed") {
+    return rawDifference;
+  }
+
+  const reservedCash = getSessionReservedCash(session);
+  const countedClosing = Number(session.closingBalance);
+
+  if (
+    reservedCash <= 0 ||
+    !Number.isFinite(countedClosing) ||
+    countedClosing < 0
+  ) {
+    return rawDifference;
+  }
+
+  const physicalDifference = roundMoney(
+    countedClosing + reservedCash - expected,
+  );
+
+  return Math.abs(physicalDifference) < Math.abs(rawDifference)
+    ? physicalDifference
+    : rawDifference;
+};
+
 const EMPTY_FINANCE_SESSION_TOTALS = {
   cashSales: 0,
   deletedSaleCashIncluded: 0,
@@ -2072,7 +2108,7 @@ function StatCard({
             aria-hidden="true"
             className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600"
           >
-            Breakdown
+            Show
           </span>
         ) : null}
       </div>
@@ -2910,10 +2946,10 @@ export default function Finance({
               computedTotals.activeSystemCashTotal,
             );
 
-            const difference =
-              session.difference ??
-              getSessionCarryForwardBalance(session) -
-                getSessionExpectedCarryForward(session, systemCashTotal);
+            const difference = getSessionDisplayDifference(
+              session,
+              systemCashTotal,
+            );
 
             if (difference === 0) {
               matched += 1;
@@ -3884,9 +3920,8 @@ export default function Finance({
   );
 
   const displayedActiveClosingCash = useMemo(
-    () =>
-      roundMoney(Math.max(0, currentOperationalCash - displayedReservedCash)),
-    [currentOperationalCash, displayedReservedCash],
+    () => roundMoney(Math.max(0, displayedUsableCash)),
+    [displayedUsableCash],
   );
 
   const reserveAfterSavePreview = useMemo(
@@ -3916,6 +3951,14 @@ export default function Finance({
   const displayedReserveCardBalance = useMemo(
     () => roundMoney(Math.max(0, liveRemainingReserveCash)),
     [liveRemainingReserveCash],
+  );
+
+  const preShiftOpeningReserveCash = useMemo(
+    () =>
+      latestCarryForwardSession
+        ? roundMoney(Math.max(0, getSessionReservedCash(latestCarryForwardSession)))
+        : 0,
+    [latestCarryForwardSession],
   );
 
   type ReserveLedgerRow = {
@@ -3954,6 +3997,19 @@ export default function Finance({
           const persistedLedger = Array.isArray(openSession.reserveCashLedger)
             ? openSession.reserveCashLedger
             : [];
+          const supplierPaymentsById = new Map(
+            ((data.supplierPayments || []) as Array<Record<string, unknown>>)
+              .map(
+                (payment) =>
+                  [String(payment?.id || "").trim(), payment] as const,
+              )
+              .filter(([id]) => Boolean(id)),
+          );
+          const purchaseOrdersById = new Map(
+            ((data.purchaseOrders || []) as Array<Record<string, unknown>>)
+              .map((order) => [String(order?.id || "").trim(), order] as const)
+              .filter(([id]) => Boolean(id)),
+          );
 
           return persistedLedger
             .map((entry: any): ReserveLedgerRow | null => {
@@ -3979,6 +4035,107 @@ export default function Finance({
 
               const direction: "in" | "out" =
                 rawType === "in" ? "in" : "out";
+              const rawDetails = String(entry?.note || "").trim();
+              const rawReference = String(
+                entry?.reference || entry?.voucherNo || "",
+              ).trim();
+              const noteReferenceMatch = rawDetails.match(
+                /\b(spp-[A-Za-z0-9-]+)\b/i,
+              );
+              const resolvedReference =
+                rawReference || noteReferenceMatch?.[1] || "";
+              const resolvedSupplierPayment = resolvedReference
+                ? supplierPaymentsById.get(resolvedReference)
+                : undefined;
+              const supplierAllocationOrderId = String(
+                resolvedSupplierPayment?.allocations?.[0]?.orderId || "",
+              ).trim();
+              const rawPurchaseOrderId =
+                String(entry?.purchaseOrderId || entry?.orderId || "").trim() ||
+                supplierAllocationOrderId;
+              const rawPurchaseOrderNoteMatch = rawDetails.match(
+                /\bpo-admin(?:-[A-Za-z0-9]+)*-(\d+)\b/i,
+              );
+              const purchaseOrderIdCandidate =
+                rawPurchaseOrderId ||
+                rawPurchaseOrderNoteMatch?.[0] ||
+                rawReference;
+              const resolvedPurchaseOrder = purchaseOrderIdCandidate
+                ? purchaseOrdersById.get(purchaseOrderIdCandidate)
+                : undefined;
+              const resolvedPartyName =
+                String(
+                  entry?.partyName ||
+                    entry?.customerName ||
+                    entry?.customer ||
+                    resolvedPurchaseOrder?.partyName ||
+                    resolvedSupplierPayment?.partyName ||
+                    resolvedSupplierPayment?.customerName ||
+                    "",
+                ).trim() || undefined;
+              const cleanedDetails = rawDetails
+                .replace(/\breservedCashOnHand\s*\d+(?:\.\d+)?\b/gi, "")
+                .replace(/\bpo-admin(?:-[A-Za-z0-9]+)*-\d+\b/gi, "")
+                .replace(/\b(spp-[A-Za-z0-9-]+)\b/gi, "")
+                .replace(/\b[a-z]+(?:-[a-z0-9]+){1,}-\d{6,}\b/gi, "")
+                .replace(/\s{2,}/g, " ")
+                .replace(/\s+([,:;-])/g, "$1")
+                .replace(/[:,-]\s*$/g, "")
+                .trim();
+              const displayDetails =
+                /^opening reserve from previous closed shift\b/i.test(
+                  cleanedDetails,
+                )
+                  ? `Opening reserve from previous closed shift • ${formatDateTimeDisplay(date)}`
+                  : cleanedDetails ||
+                    (direction === "in"
+                      ? "Reserve cash added"
+                      : "Reserve cash used");
+              const derivedPurchaseOrderItems = Array.isArray(
+                resolvedPurchaseOrder?.lines,
+              )
+                ? resolvedPurchaseOrder.lines
+                    .map((line: any, lineIndex: number) => {
+                      const lineName = String(
+                        line?.productName || line?.name || "",
+                      ).trim();
+                      const lineImage = String(
+                        line?.image || line?.productPhoto || "",
+                      ).trim();
+                      const lineAmount = Number(
+                        line?.totalCost ||
+                          (Number(line?.quantity || 0) *
+                            Number(line?.unitCost || 0)) ||
+                          0,
+                      );
+
+                      if (!lineName && !lineImage) {
+                        return null;
+                      }
+
+                      return {
+                        id:
+                          String(line?.id || "").trim() ||
+                          `reserve-ledger-po-line-${id}-${lineIndex}`,
+                        name: lineName || "Product",
+                        reference: String(
+                          resolvedPurchaseOrder?.billNumber ||
+                            resolvedPurchaseOrder?.id ||
+                            "",
+                        ).trim() || undefined,
+                        image: lineImage || undefined,
+                        amount: Number.isFinite(lineAmount)
+                          ? Math.abs(lineAmount)
+                          : 0,
+                      };
+                    })
+                    .filter(
+                      (
+                        item,
+                      ): item is NonNullable<ReserveLedgerRow["detailItems"]>[number] =>
+                        item !== null,
+                    )
+                : [];
 
               return {
                 id: `reserve-ledger-${id}`,
@@ -3987,13 +4144,52 @@ export default function Finance({
                   direction === "in"
                     ? "Reserve Added"
                     : "Reserve Used",
-                details:
-                  String(entry?.note || "").trim() ||
-                  (direction === "in"
-                    ? "Reserve cash added"
-                    : "Reserve cash used"),
+                details: displayDetails,
                 amount,
                 direction,
+                partyName: resolvedPartyName,
+                reference: resolvedReference || undefined,
+                detailItems: (
+                  Array.isArray(entry?.detailItems)
+                    ? entry.detailItems
+                    : Array.isArray(entry?.items)
+                      ? entry.items
+                      : derivedPurchaseOrderItems
+                )
+                  .map((item, itemIndex) => {
+                    const name = String(
+                      item?.name || item?.productName || "",
+                    ).trim();
+                    const reference = String(
+                      item?.reference || item?.id || item?.sku || "",
+                    ).trim();
+                    const image = String(
+                      item?.image || item?.imageUrl || item?.photo || "",
+                    ).trim();
+                    const itemAmount = Number(item?.amount || 0);
+
+                    if (!name && !reference && !image) {
+                      return null;
+                    }
+
+                    return {
+                      id:
+                        String(item?.id || "").trim() ||
+                        `reserve-ledger-item-${id}-${itemIndex}`,
+                      name: name || reference || "Product",
+                      reference: reference || undefined,
+                      image: image || undefined,
+                      amount: Number.isFinite(itemAmount)
+                        ? Math.abs(itemAmount)
+                        : 0,
+                    };
+                  })
+                  .filter(
+                    (
+                      item,
+                    ): item is NonNullable<ReserveLedgerRow["detailItems"]>[number] =>
+                      item !== null,
+                  ),
               };
             })
             .filter(
@@ -4026,6 +4222,8 @@ export default function Finance({
     [
       openSession,
       openSession?.reserveCashLedger,
+      data.purchaseOrders,
+      data.supplierPayments,
       activeTab,
       isDetailedCashbookReady,
     ],
@@ -5960,11 +6158,20 @@ const transactionMap = new Map<string, Transaction>(
       ? openSession.openingBalance
       : Number(openingBalance || 0) || 0;
 
-    const cashInMovement = roundMoney(
-      (cashManagementKpis.cashAtSale || 0) +
-        (cashManagementKpis.cashCollections || 0) +
-        (dailyCashTotals.cashAdditions || 0),
+    const windowScopedRows = getRowsByLayer(
+      currentWindowRows,
+      reportingLayerMode,
     );
+
+    // Cash-in must follow the active shift window, not the whole calendar day.
+    const shiftScopedCashInMovement = roundMoney(
+      windowScopedRows.reduce(
+        (sum, row) => sum + Math.max(0, Number(row.cashIn) || 0),
+        0,
+      ),
+    );
+
+    const cashInMovement = shiftScopedCashInMovement;
 
     // IMPORTANT:
     // Do not use:
@@ -6002,8 +6209,9 @@ const transactionMap = new Map<string, Transaction>(
   }, [
     openSession,
     openingBalance,
+    currentWindowRows,
+    reportingLayerMode,
     cashManagementKpis,
-    dailyCashTotals,
     todayFinanceBreakdown,
   ]);
 
@@ -9590,7 +9798,10 @@ const transactionMap = new Map<string, Transaction>(
         activeSystemCashTotal,
       );
 
-      const difference = getSessionCarryForwardBalance(session) - expectedClosing;
+      const difference = getSessionDisplayDifference(
+        session,
+        activeSystemCashTotal,
+      );
 
       const activeSystemChanged =
         !Number.isFinite(session.activeSystemCashTotal) ||
@@ -10182,10 +10393,22 @@ const transactionMap = new Map<string, Transaction>(
                       disabled={!openSession}
                     >
                       <StatCard
-                        label="Reserve closing cash"
-                        value={formatINRSummary(displayedReserveCardBalance)}
+                        label={
+                          openSession
+                            ? "Reserve closing cash"
+                            : "Opening reserve cash"
+                        }
+                        value={formatINRSummary(
+                          openSession
+                            ? displayedReserveCardBalance
+                            : preShiftOpeningReserveCash,
+                        )}
                         tone={
-                          displayedReserveCardBalance > 0 ? "good" : "neutral"
+                          (openSession
+                            ? displayedReserveCardBalance
+                            : preShiftOpeningReserveCash) > 0
+                            ? "good"
+                            : "neutral"
                         }
                         interactive={!!openSession}
                         hint={
@@ -11202,7 +11425,7 @@ const transactionMap = new Map<string, Transaction>(
                 >
                   <CardHeader className="flex flex-row items-start justify-between gap-3">
                     <div>
-                      <CardTitle>Reserve Cash Ledger</CardTitle>
+                      <CardTitle className="text-3xl">Reserve Cash Ledger</CardTitle>
 
                       <p className="mt-1 text-sm text-slate-600">
                         Saved{" "}
@@ -11308,61 +11531,13 @@ const transactionMap = new Map<string, Transaction>(
                         dailyTimelineMap.set(dayKey, existing);
                       });
 
-                      const dailyTimeline = Array.from(
-                        dailyTimelineMap.values(),
-                      ).reverse();
-
                       return (
                         <>
-                          {dailyTimeline.length > 0 && (
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                              <div className="text-sm font-semibold text-slate-900">
-                                Simple History
-                              </div>
-
-                              <div className="mt-3 space-y-2">
-                                {dailyTimeline.map((day) => (
-                                  <div
-                                    key={day.key}
-                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                                  >
-                                    <span className="font-semibold text-slate-900">
-                                      {new Date(day.date).toLocaleDateString(
-                                        "en-US",
-                                        {
-                                          day: "numeric",
-                                          month: "short",
-                                        },
-                                      )}
-                                    </span>
-
-                                    {" • "}
-
-                                    {day.reserveIn > 0
-                                      ? `Reserved ${formatINRSummary(day.reserveIn)}`
-                                      : "No reserve added"}
-
-                                    {" • "}
-
-                                    {day.reserveOut > 0
-                                      ? `Utilized ${formatINRSummary(day.reserveOut)}`
-                                      : "No utilization"}
-
-                                    {" • "}
-
-                                    <span className="font-semibold text-slate-900">
-                                      Left {formatINRSummary(day.balanceAfter)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
                           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                            <div className="grid grid-cols-12 gap-2 bg-slate-50 px-4 py-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
                               <div className="col-span-3">Date</div>
-                              <div className="col-span-5">What Happened</div>
+                              <div className="col-span-4">What Happened</div>
+                              <div className="col-span-1 text-right">Type</div>
                               <div className="col-span-2 text-right">Amount</div>
                               <div className="col-span-2 text-right">Left</div>
                             </div>
@@ -11376,26 +11551,82 @@ const transactionMap = new Map<string, Transaction>(
                                 ledgerRows.map((row) => (
                                   <div
                                     key={row.id}
-                                    className="grid grid-cols-12 gap-2 px-4 py-3 text-sm"
+                                    className="grid grid-cols-12 gap-2 px-4 py-3 text-base"
                                   >
                                     <div className="col-span-3 text-slate-600">
                                       {formatDateTimeDisplay(row.date)}
                                     </div>
 
-                        <div className="col-span-5 min-w-0">
-                          <div className="font-medium text-slate-900">
-                            {row.direction === "in"
-                              ? "Reserve added"
-                              : "Reserve used"}
-                          </div>
+                        <div className="col-span-4 min-w-0">
+                          <div className="min-w-0 space-y-2 text-[15px] text-slate-500">
+                            {row.partyName ? (
+                              <div className="truncate text-lg font-medium text-slate-800">
+                                {row.partyName}
+                              </div>
+                            ) : null}
 
-                          <div className="mt-0.5 text-xs text-slate-500">
-                            {row.partyName ||
-                              row.details ||
-                              (row.direction === "in"
-                                ? "Money added to reserve"
-                                : "Money used from reserve")}
+                            {row.detailItems?.length ? (
+                              <div className="space-y-1.5">
+                                {row.detailItems.slice(0, 2).map((item) => (
+                                  <div
+                                    key={item.id}
+                                    className="flex items-center gap-2 min-w-0"
+                                  >
+                                    <div className="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-50">
+                                      {item.image ? (
+                                        <img
+                                          src={item.image}
+                                          alt={item.name}
+                                          className="h-full w-full object-contain"
+                                          loading="lazy"
+                                        />
+                                      ) : (
+                                        <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-400">
+                                          Item
+                                        </div>
+                                      )}
+                                    </div>
+
+                                      <div className="min-w-0">
+                                        <div className="truncate text-lg font-medium text-slate-700">
+                                          {item.name}
+                                        </div>
+                                        {item.amount > 0 ? (
+                                          <div className="text-xs text-slate-500">
+                                            {formatINRSummary(item.amount)}
+                                          </div>
+                                        ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+
+                                {row.detailItems.length > 2 ? (
+                                  <div className="text-[11px] text-slate-400">
+                                    +{row.detailItems.length - 2} more products
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : !row.partyName ? (
+                              <div>
+                                {row.details ||
+                                  (row.direction === "in"
+                                    ? "Money added to reserve"
+                                    : "Money used from reserve")}
+                              </div>
+                            ) : null}
                           </div>
+                        </div>
+
+                        <div
+                          className={`col-span-1 text-right text-lg font-medium ${
+                            row.direction === "in"
+                              ? "text-emerald-700"
+                              : "text-rose-700"
+                          }`}
+                        >
+                          {row.direction === "in"
+                            ? "Reserve added"
+                            : "Reserve used"}
                         </div>
 
                         <div
@@ -11732,10 +11963,10 @@ const transactionMap = new Map<string, Transaction>(
                   const sessionExpenseTotal =
                     session.sessionExpenseTotal ?? computedTotals.expenseTotal;
 
-                  const difference =
-                    session.difference ??
-                    getSessionCarryForwardBalance(session) -
-                      getSessionExpectedCarryForward(session, systemCashTotal);
+                  const difference = getSessionDisplayDifference(
+                    session,
+                    systemCashTotal,
+                  );
                   const reserveCarryForward = getSessionReservedCash(session);
                   const activeCashCarryForward =
                     session.status === "open"
@@ -11993,13 +12224,10 @@ const transactionMap = new Map<string, Transaction>(
                 const sessionExpenseTotal =
                   activeHistorySession.sessionExpenseTotal ??
                   computedTotals.expenseTotal;
-                const difference =
-                  activeHistorySession.difference ??
-                  getSessionCarryForwardBalance(activeHistorySession) -
-                    getSessionExpectedCarryForward(
-                      activeHistorySession,
-                      systemCashTotal,
-                    );
+                const difference = getSessionDisplayDifference(
+                  activeHistorySession,
+                  systemCashTotal,
+                );
                 const reserveCarryForward = getSessionReservedCash(
                   activeHistorySession,
                 );
@@ -12659,9 +12887,10 @@ const transactionMap = new Map<string, Transaction>(
                 const countedClosing =
                   getSessionCarryForwardBalance(deletingSession);
 
-                const difference =
-                  deletingSession.difference ??
-                  countedClosing - expectedClosing;
+                const difference = getSessionDisplayDifference(
+                  deletingSession,
+                  systemCashTotal,
+                );
 
                 return (
                   <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
