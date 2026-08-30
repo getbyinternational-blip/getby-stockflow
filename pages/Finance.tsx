@@ -2946,6 +2946,10 @@ export default function Finance({
               computedTotals.activeSystemCashTotal,
             );
 
+            if (session.status !== "closed") {
+              return { matched, short, over };
+            }
+
             const difference = getSessionDisplayDifference(
               session,
               systemCashTotal,
@@ -3860,19 +3864,90 @@ export default function Finance({
     [openSession, canonicalReserveBalance],
   );
 
+  const reserveAddedFromDrawer = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const ledger = Array.isArray(openSession.reserveCashLedger)
+      ? openSession.reserveCashLedger
+      : [];
+
+    return roundMoney(
+      ledger.reduce((sum, entry: any) => {
+        const amount = Number(entry?.amount || 0);
+        const type = String(entry?.type || "")
+          .trim()
+          .toLowerCase();
+        const note = String(entry?.note || "")
+          .trim()
+          .toLowerCase();
+
+        if (!Number.isFinite(amount) || amount <= 0 || type !== "in") {
+          return sum;
+        }
+
+        return note === "reserve top-up" || note === "reserve created"
+          ? sum + amount
+          : sum;
+      }, 0),
+    );
+  }, [openSession, openSession?.reserveCashLedger]);
+
+  const reserveAddedBackToShift = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const ledger = Array.isArray(openSession.reserveCashLedger)
+      ? openSession.reserveCashLedger
+      : [];
+
+    return roundMoney(
+      ledger.reduce((sum, entry: any) => {
+        const amount = Number(entry?.amount || 0);
+        const type = String(entry?.type || "")
+          .trim()
+          .toLowerCase();
+        const note = String(entry?.note || "")
+          .trim()
+          .toLowerCase();
+
+        if (!Number.isFinite(amount) || amount <= 0 || type !== "out") {
+          return sum;
+        }
+
+        return note === "added back to shift" ? sum + amount : sum;
+      }, 0),
+    );
+  }, [openSession, openSession?.reserveCashLedger]);
+
   const currentOperationalCash = useMemo(
     () => roundMoney(Math.max(0, currentShiftTotalCash)),
     [currentShiftTotalCash],
   );
 
+  const savedDrawerCash = useMemo(
+    () =>
+      roundMoney(
+        Math.max(
+          0,
+          currentOperationalCash -
+            reserveAddedFromDrawer +
+            reserveAddedBackToShift,
+        ),
+      ),
+    [currentOperationalCash, reserveAddedFromDrawer, reserveAddedBackToShift],
+  );
+
   const totalAccessibleCash = useMemo(
-    () => roundMoney(Math.max(0, currentOperationalCash + activeCashInHand)),
-    [currentOperationalCash, activeCashInHand],
+    () => roundMoney(Math.max(0, savedDrawerCash + activeCashInHand)),
+    [savedDrawerCash, activeCashInHand],
   );
 
   const activeReserveInputMax = useMemo(
-    () => roundMoney(Math.max(0, currentOperationalCash)),
-    [currentOperationalCash],
+    () => roundMoney(Math.max(0, savedDrawerCash)),
+    [savedDrawerCash],
   );
 
   const reserveDraftValue = useMemo(() => {
@@ -3892,8 +3967,8 @@ export default function Finance({
       return 0;
     }
 
-    return roundMoney(Math.max(0, Math.min(currentOperationalCash, parsed)));
-  }, [openSession, activeReserveAmount, currentOperationalCash]);
+    return roundMoney(Math.max(0, Math.min(savedDrawerCash, parsed)));
+  }, [openSession, activeReserveAmount, savedDrawerCash]);
 
   const reserveDraftDelta = useMemo(
     () => roundMoney(reserveDraftValue),
@@ -3915,8 +3990,8 @@ export default function Finance({
   );
 
   const displayedUsableCash = useMemo(
-    () => roundMoney(Math.max(0, totalAccessibleCash - displayedReservedCash)),
-    [totalAccessibleCash, displayedReservedCash],
+    () => roundMoney(Math.max(0, savedDrawerCash - reserveDraftValue)),
+    [savedDrawerCash, reserveDraftValue],
   );
 
   const displayedActiveClosingCash = useMemo(
@@ -3941,7 +4016,7 @@ export default function Finance({
   const getAvailableCashBySource = (source: CashSource) =>
     normalizeCashSource(source) === "reserve"
       ? activeCashInHand
-      : currentOperationalCash;
+      : savedDrawerCash;
 
   const closingReserveValue = useMemo(
     () => (openSession ? displayedReservedCash : 0),
@@ -7316,6 +7391,10 @@ const transactionMap = new Map<string, Transaction>(
       cashSessions: updatedSessions,
     });
 
+    setData(loadData());
+
+    setErrors(null);
+
     setClosingBalanceManuallySet(false);
 
     setClosingBalance(
@@ -10460,9 +10539,7 @@ const transactionMap = new Map<string, Transaction>(
                               setIsReserveAmountEditorOpen(true);
                               setErrors(null);
                             }}
-                            disabled={
-                              !openSession || currentOperationalCash <= 0
-                            }
+                            disabled={!openSession || savedDrawerCash <= 0}
                           >
                             Add More Reserve Cash
                           </Button>
@@ -10471,8 +10548,9 @@ const transactionMap = new Map<string, Transaction>(
                             type="button"
                             variant="outline"
                             onClick={() => void saveActiveReserveAmount(0)}
-                            disabled
-                            // disabled={activeCashInHand <= 0 && reserveDraftValue <= 0}
+                            disabled={
+                              !openSession || liveRemainingReserveCash <= 0
+                            }
                           >
                             Add Back to Shift
                           </Button>
@@ -10491,7 +10569,7 @@ const transactionMap = new Map<string, Transaction>(
                                   {formatINRSummary(liveRemainingReserveCash)} →{" "}
                                   {formatINRSummary(reserveAfterSavePreview)} |
                                   Shift{" "}
-                                  {formatINRSummary(currentOperationalCash)} →{" "}
+                                  {formatINRSummary(savedDrawerCash)} →{" "}
                                   {formatINRSummary(usableAfterSavePreview)}
                                 </div>
                               </div>
@@ -11972,13 +12050,12 @@ const transactionMap = new Map<string, Transaction>(
                     session.status === "open"
                       ? Math.max(
                           0,
-                          roundMoney(session.openingBalance - reserveCarryForward),
+                          getSessionExpectedCarryForward(
+                            session,
+                            systemCashTotal,
+                          ),
                         )
-                      : Math.max(
-                          0,
-                          getSessionCarryForwardBalance(session) -
-                            reserveCarryForward,
-                        );
+                      : Math.max(0, getSessionCarryForwardBalance(session));
 
                   const isOpen = activeHistoryDetailSessionId === session.id;
 
@@ -12011,7 +12088,7 @@ const transactionMap = new Map<string, Transaction>(
                     >
                       <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                          <div className="flex flex-wrap items-center gap-2 text-base text-slate-600">
                             <span>Starting date </span>
 
                             <span className="font-medium text-slate-700">
@@ -12031,7 +12108,7 @@ const transactionMap = new Map<string, Transaction>(
                             ) : null}
 
                             <span
-                              className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${statusClass}`}
+                              className={`inline-flex items-center rounded-full px-4 py-2 text-base font-semibold ring-1 ring-inset ${statusClass}`}
                             >
                               {statusLabel}
                             </span>
@@ -12079,7 +12156,6 @@ const transactionMap = new Map<string, Transaction>(
                               variant="outline"
                               size="sm"
                               disabled
-                              title="Close this shift before editing closing amount."
                             >
                               Edit Closing Amount
                             </Button>
@@ -12125,18 +12201,6 @@ const transactionMap = new Map<string, Transaction>(
                             </div>
                           </div>
 
-                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
-                            <div className="text-[11px] text-emerald-700">
-                              Carry-forward
-                            </div>
-
-                            <div className="mt-1 text-sm font-semibold text-emerald-900">
-                              {formatINR(
-                                getSessionCarryForwardBalance(session),
-                              )}
-                            </div>
-                          </div>
-
                           <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
                             <div className="text-[11px] text-sky-700">
                               Active cash carry-forward
@@ -12157,27 +12221,38 @@ const transactionMap = new Map<string, Transaction>(
                             </div>
                           </div>
 
-                          <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
-                            <div className="text-[11px] text-slate-500">
-                              {isMatch
-                                ? "Difference"
-                                : isShort
-                                  ? "Short"
-                                  : "Over"}
-                            </div>
-
-                            <div
-                              className={`mt-1 text-sm font-semibold ${
-                                isMatch
-                                  ? "text-slate-900"
+                          {session.status === "closed" ? (
+                            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                              <div className="text-[11px] text-slate-500">
+                                {isMatch
+                                  ? "Difference"
                                   : isShort
-                                    ? "text-rose-700"
-                                    : "text-slate-900"
-                              }`}
-                            >
-                              {formatINR(Math.abs(difference))}
+                                    ? "Short"
+                                    : "Over"}
+                              </div>
+
+                              <div
+                                className={`mt-1 text-sm font-semibold ${
+                                  isMatch
+                                    ? "text-slate-900"
+                                    : isShort
+                                      ? "text-rose-700"
+                                      : "text-slate-900"
+                                }`}
+                              >
+                                {formatINR(Math.abs(difference))}
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                              <div className="text-[11px] text-slate-500">
+                                Status
+                              </div>
+                              <div className="mt-1 text-sm font-semibold text-amber-00">
+                                Ongoing
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {session.closingEditedAt && (
@@ -12235,15 +12310,14 @@ const transactionMap = new Map<string, Transaction>(
                   activeHistorySession.status === "open"
                     ? Math.max(
                         0,
-                        roundMoney(
-                          activeHistorySession.openingBalance -
-                            reserveCarryForward,
+                        getSessionExpectedCarryForward(
+                          activeHistorySession,
+                          systemCashTotal,
                         ),
                       )
                     : Math.max(
                         0,
-                        getSessionCarryForwardBalance(activeHistorySession) -
-                          reserveCarryForward,
+                        getSessionCarryForwardBalance(activeHistorySession),
                       );
                 const isMatch = difference === 0;
                 const isShort = difference < 0;
@@ -12511,20 +12585,6 @@ const transactionMap = new Map<string, Transaction>(
                             <div className="mt-1 text-sm font-semibold text-amber-900">
                               {formatINR(
                                 getSessionReservedCash(activeHistorySession),
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                            <div className="text-[11px] font-medium text-emerald-700">
-                              Carry-forward
-                            </div>
-
-                            <div className="mt-1 text-sm font-semibold text-emerald-900">
-                              {formatINR(
-                                getSessionCarryForwardBalance(
-                                  activeHistorySession,
-                                ),
                               )}
                             </div>
                           </div>
