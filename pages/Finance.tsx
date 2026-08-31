@@ -672,6 +672,78 @@ const getSessionReservedCash = (session: CashSession) => {
   return roundMoney(reserved);
 };
 
+const getReserveLedgerBalance = (
+  sessions: CashSession[],
+  beforeTime?: string,
+) => {
+  const beforeMs = beforeTime
+    ? new Date(beforeTime).getTime()
+    : Number.POSITIVE_INFINITY;
+  const seenEntries = new Set<string>();
+  const entries = sessions
+    .filter((session) => !session.deletedAt)
+    .flatMap((session) =>
+      Array.isArray(session.reserveCashLedger)
+        ? session.reserveCashLedger
+        : [],
+    )
+    .filter((entry) => {
+      const entryId = String(entry?.id || "").trim();
+      const identity =
+        entryId ||
+        [entry?.date || "", entry?.type || "", entry?.amount || "", entry?.note || ""].join(
+          "|",
+        );
+
+      if (seenEntries.has(identity)) {
+        return false;
+      }
+
+      seenEntries.add(identity);
+      return true;
+    })
+    .filter((entry) => {
+      const date = new Date(entry.date || "").getTime();
+      const amount = Number(entry.amount || 0);
+      return (
+        Number.isFinite(date) &&
+        Number.isFinite(amount) &&
+        amount > 0 &&
+        date < beforeMs &&
+        (entry.type === "in" || entry.type === "out")
+      );
+    })
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  return roundMoney(
+    Math.max(
+      0,
+      entries.reduce(
+        (balance, entry) =>
+          entry.type === "in"
+            ? balance + Number(entry.amount)
+            : balance - Number(entry.amount),
+        0,
+      ),
+    ),
+  );
+};
+
+const hasReserveMovementInSession = (session: CashSession) => {
+  const startAt = new Date(session.startTime).getTime();
+
+  return Array.isArray(session.reserveCashLedger)
+    ? session.reserveCashLedger.some((entry) => {
+        const entryAt = new Date(entry.date || "").getTime();
+        return (
+          Number.isFinite(entryAt) &&
+          Number.isFinite(startAt) &&
+          entryAt >= startAt
+        );
+      })
+    : false;
+};
+
 const getSessionCarryForwardBalance = (session: CashSession) => {
   const explicitCarryForward = Number(session.carryForwardBalance);
 
@@ -719,6 +791,7 @@ const getSessionExpectedCarryForward = (
 const getSessionDisplayDifference = (
   session: CashSession,
   fallbackSystemCashTotal = 0,
+  openingReserveCash = 0,
 ) => {
   const expected = getSessionExpectedCarryForward(
     session,
@@ -734,12 +807,11 @@ const getSessionDisplayDifference = (
 
   const reservedCash = getSessionReservedCash(session);
   const activeCarryForward = getSessionCarryForwardBalance(session);
+  const physicalExpected = roundMoney(
+    expected + Math.max(0, openingReserveCash),
+  );
 
-  if (reservedCash <= 0) {
-    return rawDifference;
-  }
-
-  return roundMoney(activeCarryForward + reservedCash - expected);
+  return roundMoney(activeCarryForward + reservedCash - physicalExpected);
 };
 
 const EMPTY_FINANCE_SESSION_TOTALS = {
@@ -2948,6 +3020,7 @@ export default function Finance({
             const difference = getSessionDisplayDifference(
               session,
               systemCashTotal,
+              getReserveLedgerBalance(cashSessions, session.startTime),
             );
 
             if (difference === 0) {
@@ -3533,13 +3606,26 @@ export default function Finance({
     };
   }, [dailyCashTotals]);
 
+  const carriedReserveForOpenSession = useMemo(() => {
+    if (!openSession || hasReserveMovementInSession(openSession)) {
+      return 0;
+    }
+
+    return getReserveLedgerBalance(
+      cashSessions.filter((session) => session.id !== openSession.id),
+    );
+  }, [cashSessions, openSession]);
+
   const activeReserveBase = useMemo(() => {
     if (!openSession) {
       return 0;
     }
 
-    return getSessionReservedCash(openSession);
-  }, [openSession]);
+    return Math.max(
+      getSessionReservedCash(openSession),
+      carriedReserveForOpenSession,
+    );
+  }, [openSession, carriedReserveForOpenSession]);
 
   const activeReserveSavedAt = useMemo(() => {
     if (!openSession) {
@@ -3787,9 +3873,9 @@ export default function Finance({
   const liveRemainingReserveCash = useMemo(
     () =>
       openSession
-        ? roundMoney(Math.max(0, getSessionReservedCash(openSession)))
+        ? roundMoney(Math.max(0, activeReserveBase))
         : 0,
-    [openSession],
+    [activeReserveBase, openSession],
   );
 
   const displayedReserveCardBalance = useMemo(
@@ -3835,9 +3921,37 @@ export default function Finance({
             return [] as ReserveLedgerRow[];
           }
 
-          const persistedLedger = Array.isArray(openSession.reserveCashLedger)
-            ? openSession.reserveCashLedger
-            : [];
+          // The ledger is an audit/history view, so include reserve movements
+          // from every retained shift. Current reserve balances remain session-local.
+          const seenLedgerEntries = new Set<string>();
+          const persistedLedger = cashSessions.flatMap((session) => {
+            if (session.deletedAt || !Array.isArray(session.reserveCashLedger)) {
+              return [];
+            }
+
+            return session.reserveCashLedger
+              .map((entry) => ({
+                ...entry,
+                sessionId: session.id,
+              }))
+              .filter((entry) => {
+                const entryId = String(entry?.id || "").trim();
+                const legacyFingerprint = [
+                  entry?.date || "",
+                  entry?.type || "",
+                  entry?.amount || "",
+                  entry?.note || "",
+                ].join("|");
+                const identity = entryId || legacyFingerprint;
+
+                if (seenLedgerEntries.has(identity)) {
+                  return false;
+                }
+
+                seenLedgerEntries.add(identity);
+                return true;
+              });
+          });
           const supplierPaymentsById = new Map(
             ((data.supplierPayments || []) as Array<Record<string, unknown>>)
               .map(
@@ -3979,7 +4093,7 @@ export default function Finance({
                 : [];
 
               return {
-                id: `reserve-ledger-${id}`,
+                id: `reserve-ledger-${String(entry?.sessionId || "").trim()}-${id}`,
                 date,
                 type:
                   direction === "in"
@@ -4053,16 +4167,19 @@ export default function Finance({
           activeTab,
           isDetailedCashbookReady,
           openSessionId: openSession?.id || null,
-          reserveLedgerEntries: Array.isArray(
-            openSession?.reserveCashLedger,
-          )
-            ? openSession.reserveCashLedger.length
-            : 0,
+          reserveLedgerEntries: cashSessions.reduce(
+            (count, session) =>
+              count +
+              (!session.deletedAt && Array.isArray(session.reserveCashLedger)
+                ? session.reserveCashLedger.length
+                : 0),
+            0,
+          ),
         },
       ),
     [
       openSession,
-      openSession?.reserveCashLedger,
+      cashSessions,
       data.purchaseOrders,
       data.supplierPayments,
       activeTab,
@@ -6769,12 +6886,19 @@ const transactionMap = new Map<string, Transaction>(
       localSessionCount: cashSessions.length,
     });
 
+    const startedAt = new Date().toISOString();
+    const carriedReserve = getReserveLedgerBalance(freshCashSessions);
+
     const session: CashSession = {
       id: buildCashSessionId(freshCashSessions),
 
-      startTime: new Date().toISOString(),
+      startTime: startedAt,
 
       openingBalance: value,
+
+      reservedCashOnHand: carriedReserve,
+
+      reservedCashSavedAt: carriedReserve > 0 ? startedAt : undefined,
 
       status: "open",
     };
@@ -6857,9 +6981,16 @@ const transactionMap = new Map<string, Transaction>(
     const expectedClosing = roundMoney(
       freshOpenSession.openingBalance + activeSystemCashTotal,
     );
+    const openingReserveCash = getReserveLedgerBalance(
+      freshCashSessions,
+      freshOpenSession.startTime,
+    );
+    const expectedPhysicalClosing = roundMoney(
+      expectedClosing + openingReserveCash,
+    );
 
     const difference = roundMoney(
-      counted + reservedCash - expectedClosing,
+      counted + reservedCash - expectedPhysicalClosing,
     );
 
     const carryForwardBalance = roundMoney(Math.max(0, counted));
@@ -6894,7 +7025,7 @@ const transactionMap = new Map<string, Transaction>(
 
       outflow: expenseTotal,
 
-      expected: expectedClosing,
+      expected: expectedPhysicalClosing,
 
       actual: counted,
 
@@ -6918,7 +7049,7 @@ const transactionMap = new Map<string, Transaction>(
 
       carryForwardBalance,
 
-      expectedClosing,
+      expectedClosing: expectedPhysicalClosing,
     });
 
     const updated = freshCashSessions.map((session) =>
@@ -9836,6 +9967,7 @@ const transactionMap = new Map<string, Transaction>(
       const difference = getSessionDisplayDifference(
         session,
         activeSystemCashTotal,
+        getReserveLedgerBalance(data.cashSessions || [], session.startTime),
       );
 
       const activeSystemChanged =
@@ -11479,12 +11611,10 @@ const transactionMap = new Map<string, Transaction>(
                       <CardTitle className="text-3xl">Reserve Cash Ledger</CardTitle>
 
                       <p className="mt-1 text-sm text-slate-600">
-                        Saved{" "}
-                        {activeReserveSavedAt
-                          ? formatDateTimeDisplay(activeReserveSavedAt)
-                          : "during this shift"}{" "}
-                        • {reserveLedgerRows.length} ledger entr
+                        All shifts • {reserveLedgerRows.length} ledger entr
                         {reserveLedgerRows.length === 1 ? "y" : "ies"}
+                        {" • Current shift reserve: "}
+                        {formatINRSummary(displayedReserveCardBalance)}
                       </p>
                     </div>
 
@@ -11590,7 +11720,9 @@ const transactionMap = new Map<string, Transaction>(
                               <div className="col-span-4">What Happened</div>
                               <div className="col-span-1 text-right">Type</div>
                               <div className="col-span-2 text-right">Amount</div>
-                              <div className="col-span-2 text-right">Left</div>
+                              <div className="col-span-2 text-right">
+                                Balance after event
+                              </div>
                             </div>
 
                             <div className="max-h-[420px] overflow-auto divide-y divide-slate-200">
@@ -12017,6 +12149,7 @@ const transactionMap = new Map<string, Transaction>(
                   const difference = getSessionDisplayDifference(
                     session,
                     systemCashTotal,
+                    getReserveLedgerBalance(cashSessions, session.startTime),
                   );
                   const reserveCarryForward = getSessionReservedCash(session);
                   const activeCashCarryForward =
@@ -12275,6 +12408,10 @@ const transactionMap = new Map<string, Transaction>(
                 const difference = getSessionDisplayDifference(
                   activeHistorySession,
                   systemCashTotal,
+                  getReserveLedgerBalance(
+                    cashSessions,
+                    activeHistorySession.startTime,
+                  ),
                 );
                 const reserveCarryForward = getSessionReservedCash(
                   activeHistorySession,
@@ -12923,6 +13060,10 @@ const transactionMap = new Map<string, Transaction>(
                 const difference = getSessionDisplayDifference(
                   deletingSession,
                   systemCashTotal,
+                  getReserveLedgerBalance(
+                    cashSessions,
+                    deletingSession.startTime,
+                  ),
                 );
 
                 return (
