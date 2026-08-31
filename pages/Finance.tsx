@@ -29,6 +29,7 @@ import {
   refreshDeletedTransactionsFromCloud,
   refreshExpenseActivitiesFromCloud,
 } from "../services/storage";
+import { getAvailableCashAt } from "../services/cashAvailability";
 import { financeLog } from "../services/financeLogger";
 import {
   AppState,
@@ -633,12 +634,16 @@ const evaluateCarryForwardSession = (session: CashSession) => {
       ? Math.max(0, endMs - startMs)
       : null;
 
-  const difference = Number.isFinite(session.difference)
-    ? (session.difference as number)
-    : closing - expected;
+  const reservedCash = Number.isFinite(session.reservedCashOnHand)
+    ? roundMoney(Math.max(0, session.reservedCashOnHand as number))
+    : 0;
+
+  const physicalClosing = roundMoney(closing + reservedCash);
+
+  const difference = roundMoney(physicalClosing - expected);
 
   const suspiciousZeroClose =
-    closing === 0 &&
+    physicalClosing === 0 &&
     expected > 1 &&
     (durationMs === null ||
       durationMs < 15 * 60 * 1000 ||
@@ -728,23 +733,13 @@ const getSessionDisplayDifference = (
   }
 
   const reservedCash = getSessionReservedCash(session);
-  const countedClosing = Number(session.closingBalance);
+  const activeCarryForward = getSessionCarryForwardBalance(session);
 
-  if (
-    reservedCash <= 0 ||
-    !Number.isFinite(countedClosing) ||
-    countedClosing < 0
-  ) {
+  if (reservedCash <= 0) {
     return rawDifference;
   }
 
-  const physicalDifference = roundMoney(
-    countedClosing + reservedCash - expected,
-  );
-
-  return Math.abs(physicalDifference) < Math.abs(rawDifference)
-    ? physicalDifference
-    : rawDifference;
+  return roundMoney(activeCarryForward + reservedCash - expected);
 };
 
 const EMPTY_FINANCE_SESSION_TOTALS = {
@@ -3538,36 +3533,13 @@ export default function Finance({
     };
   }, [dailyCashTotals]);
 
-  const expectedClosingForOpenSession = openSession
-    ? openSession.openingBalance +
-      (dailyCashTotals.activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)
-    : 0;
-
-  const activeClosingForOpenSession = openSession
-    ? openSession.openingBalance +
-      (dailyCashTotals.activeSystemCashTotal ?? dailyCashTotals.systemCashTotal)
-    : 0;
-
-  const currentShiftTotalCash = useMemo(
-    () => roundMoney(Math.max(0, activeClosingForOpenSession)),
-    [activeClosingForOpenSession],
-  );
-
   const activeReserveBase = useMemo(() => {
     if (!openSession) {
       return 0;
     }
 
-    const currentSessionReserve = getSessionReservedCash(openSession);
-
-    if (currentSessionReserve > 0) {
-      return currentSessionReserve;
-    }
-
-    return latestCarryForwardSession
-      ? getSessionReservedCash(latestCarryForwardSession)
-      : 0;
-  }, [openSession, latestCarryForwardSession]);
+    return getSessionReservedCash(openSession);
+  }, [openSession]);
 
   const activeReserveSavedAt = useMemo(() => {
     if (!openSession) {
@@ -3578,21 +3550,8 @@ export default function Finance({
       return openSession.reservedCashSavedAt;
     }
 
-    const priorReserve = latestCarryForwardSession
-      ? getSessionReservedCash(latestCarryForwardSession)
-      : 0;
-
-    if (priorReserve > 0) {
-      return (
-        latestCarryForwardSession?.reservedCashSavedAt ||
-        latestCarryForwardSession?.endTime ||
-        latestCarryForwardSession?.startTime ||
-        openSession.startTime
-      );
-    }
-
     return openSession.startTime;
-  }, [openSession, latestCarryForwardSession]);
+  }, [openSession]);
 
   const activeReserveWindowStart = useMemo(() => {
     if (!openSession) return null;
@@ -3825,202 +3784,12 @@ export default function Finance({
   );
 
 
-  const canonicalReserveBalance = useMemo(() => {
-    if (!openSession) {
-      return 0;
-    }
-
-    const ledger = Array.isArray(openSession.reserveCashLedger)
-      ? openSession.reserveCashLedger
-      : [];
-
-    return roundMoney(
-      ledger.reduce((balance, entry: any) => {
-        const amount = Number(entry?.amount || 0);
-
-        if (!Number.isFinite(amount) || amount <= 0) {
-          return balance;
-        }
-
-        const type = String(entry?.type || "")
-          .trim()
-          .toLowerCase();
-
-        if (type === "in") {
-          return balance + amount;
-        }
-
-        if (type === "out") {
-          return balance - amount;
-        }
-
-        return balance;
-      }, 0),
-    );
-  }, [openSession, openSession?.reserveCashLedger]);
-
-  const activeCashInHand = useMemo(
-    () => (openSession ? canonicalReserveBalance : 0),
-    [openSession, canonicalReserveBalance],
-  );
-
-  const reserveAddedFromDrawer = useMemo(() => {
-    if (!openSession) {
-      return 0;
-    }
-
-    const ledger = Array.isArray(openSession.reserveCashLedger)
-      ? openSession.reserveCashLedger
-      : [];
-
-    return roundMoney(
-      ledger.reduce((sum, entry: any) => {
-        const amount = Number(entry?.amount || 0);
-        const type = String(entry?.type || "")
-          .trim()
-          .toLowerCase();
-        const note = String(entry?.note || "")
-          .trim()
-          .toLowerCase();
-
-        if (!Number.isFinite(amount) || amount <= 0 || type !== "in") {
-          return sum;
-        }
-
-        return note === "reserve top-up" || note === "reserve created"
-          ? sum + amount
-          : sum;
-      }, 0),
-    );
-  }, [openSession, openSession?.reserveCashLedger]);
-
-  const reserveAddedBackToShift = useMemo(() => {
-    if (!openSession) {
-      return 0;
-    }
-
-    const ledger = Array.isArray(openSession.reserveCashLedger)
-      ? openSession.reserveCashLedger
-      : [];
-
-    return roundMoney(
-      ledger.reduce((sum, entry: any) => {
-        const amount = Number(entry?.amount || 0);
-        const type = String(entry?.type || "")
-          .trim()
-          .toLowerCase();
-        const note = String(entry?.note || "")
-          .trim()
-          .toLowerCase();
-
-        if (!Number.isFinite(amount) || amount <= 0 || type !== "out") {
-          return sum;
-        }
-
-        return note === "added back to shift" ? sum + amount : sum;
-      }, 0),
-    );
-  }, [openSession, openSession?.reserveCashLedger]);
-
-  const currentOperationalCash = useMemo(
-    () => roundMoney(Math.max(0, currentShiftTotalCash)),
-    [currentShiftTotalCash],
-  );
-
-  const savedDrawerCash = useMemo(
-    () =>
-      roundMoney(
-        Math.max(
-          0,
-          currentOperationalCash -
-            reserveAddedFromDrawer +
-            reserveAddedBackToShift,
-        ),
-      ),
-    [currentOperationalCash, reserveAddedFromDrawer, reserveAddedBackToShift],
-  );
-
-  const totalAccessibleCash = useMemo(
-    () => roundMoney(Math.max(0, savedDrawerCash + activeCashInHand)),
-    [savedDrawerCash, activeCashInHand],
-  );
-
-  const activeReserveInputMax = useMemo(
-    () => roundMoney(Math.max(0, savedDrawerCash)),
-    [savedDrawerCash],
-  );
-
-  const reserveDraftValue = useMemo(() => {
-    if (!openSession) {
-      return 0;
-    }
-
-    const trimmed = activeReserveAmount.trim();
-
-    if (!trimmed) {
-      return 0;
-    }
-
-    const parsed = Number(trimmed);
-
-    if (!Number.isFinite(parsed)) {
-      return 0;
-    }
-
-    return roundMoney(Math.max(0, Math.min(savedDrawerCash, parsed)));
-  }, [openSession, activeReserveAmount, savedDrawerCash]);
-
-  const reserveDraftDelta = useMemo(
-    () => roundMoney(reserveDraftValue),
-    [reserveDraftValue],
-  );
-
-
   const liveRemainingReserveCash = useMemo(
-    () => (openSession ? canonicalReserveBalance : 0),
-    [openSession, canonicalReserveBalance],
-  );
-
-  const displayedReservedCash = useMemo(
     () =>
       openSession
-        ? roundMoney(liveRemainingReserveCash + reserveDraftValue)
+        ? roundMoney(Math.max(0, getSessionReservedCash(openSession)))
         : 0,
-    [openSession, liveRemainingReserveCash, reserveDraftValue],
-  );
-
-  const displayedUsableCash = useMemo(
-    () => roundMoney(Math.max(0, savedDrawerCash - reserveDraftValue)),
-    [savedDrawerCash, reserveDraftValue],
-  );
-
-  const displayedActiveClosingCash = useMemo(
-    () => roundMoney(Math.max(0, displayedUsableCash)),
-    [displayedUsableCash],
-  );
-
-  const reserveAfterSavePreview = useMemo(
-    () =>
-      openSession
-        ? roundMoney(liveRemainingReserveCash + reserveDraftValue)
-        : 0,
-    [openSession, liveRemainingReserveCash, reserveDraftValue],
-  );
-
-  const usableAfterSavePreview = useMemo(
-    () =>
-      roundMoney(Math.max(0, totalAccessibleCash - reserveAfterSavePreview)),
-    [totalAccessibleCash, reserveAfterSavePreview],
-  );
-
-  const getAvailableCashBySource = (source: CashSource) =>
-    normalizeCashSource(source) === "reserve"
-      ? activeCashInHand
-      : savedDrawerCash;
-
-  const closingReserveValue = useMemo(
-    () => (openSession ? displayedReservedCash : 0),
-    [openSession, displayedReservedCash],
+    [openSession],
   );
 
   const displayedReserveCardBalance = useMemo(
@@ -4029,11 +3798,8 @@ export default function Finance({
   );
 
   const preShiftOpeningReserveCash = useMemo(
-    () =>
-      latestCarryForwardSession
-        ? roundMoney(Math.max(0, getSessionReservedCash(latestCarryForwardSession)))
-        : 0,
-    [latestCarryForwardSession],
+    () => 0,
+    [],
   );
 
   type ReserveLedgerRow = {
@@ -4378,9 +4144,9 @@ export default function Finance({
       grossCashEntered,
       grossCashExited,
       netCashMovement,
-      expectedClosing: expectedClosingForOpenSession,
+      expectedClosing: roundMoney(openSession.openingBalance + netCashMovement),
     };
-  }, [openSession, dailyCashTotals, expectedClosingForOpenSession]);
+  }, [openSession, dailyCashTotals]);
 
   useEffect(() => {
     if (!openSession) {
@@ -6290,6 +6056,118 @@ const transactionMap = new Map<string, Transaction>(
     todayFinanceBreakdown,
   ]);
 
+  const currentShiftTotalCash = useMemo(
+    () =>
+      openSession
+        ? getAvailableCashAt("drawer", new Date().toISOString(), data, openSession)
+        : 0,
+    [data, openSession],
+  );
+
+  const expectedClosingForOpenSession = currentShiftTotalCash;
+
+  const activeClosingForOpenSession = expectedClosingForOpenSession;
+
+  const currentOperationalCash = useMemo(
+    () => roundMoney(Math.max(0, currentShiftTotalCash)),
+    [currentShiftTotalCash],
+  );
+
+  const savedDrawerCash = useMemo(() => currentOperationalCash, [currentOperationalCash]);
+
+  const totalAccessibleCash = useMemo(
+    () => roundMoney(Math.max(0, savedDrawerCash + liveRemainingReserveCash)),
+    [savedDrawerCash, liveRemainingReserveCash],
+  );
+
+  const activeReserveInputMax = useMemo(
+    () => roundMoney(Math.max(0, savedDrawerCash)),
+    [savedDrawerCash],
+  );
+
+  const reserveDraftValue = useMemo(() => {
+    if (!openSession) {
+      return 0;
+    }
+
+    const trimmed = activeReserveAmount.trim();
+
+    if (!trimmed) {
+      return 0;
+    }
+
+    const parsed = Number(trimmed);
+
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+
+    return roundMoney(Math.max(0, Math.min(savedDrawerCash, parsed)));
+  }, [openSession, activeReserveAmount, savedDrawerCash]);
+
+  const reserveDraftDelta = useMemo(
+    () => roundMoney(reserveDraftValue),
+    [reserveDraftValue],
+  );
+
+  const displayedReservedCash = useMemo(
+    () =>
+      openSession
+        ? roundMoney(liveRemainingReserveCash + reserveDraftValue)
+        : 0,
+    [openSession, liveRemainingReserveCash, reserveDraftValue],
+  );
+
+  const displayedUsableCash = useMemo(
+    () => roundMoney(Math.max(0, savedDrawerCash - reserveDraftValue)),
+    [savedDrawerCash, reserveDraftValue],
+  );
+
+  const displayedActiveClosingCash = useMemo(
+    () => roundMoney(Math.max(0, displayedUsableCash)),
+    [displayedUsableCash],
+  );
+
+  const reserveAfterSavePreview = useMemo(
+    () =>
+      openSession
+        ? roundMoney(liveRemainingReserveCash + reserveDraftValue)
+        : 0,
+    [openSession, liveRemainingReserveCash, reserveDraftValue],
+  );
+
+  const usableAfterSavePreview = useMemo(
+    () =>
+      roundMoney(Math.max(0, totalAccessibleCash - reserveAfterSavePreview)),
+    [totalAccessibleCash, reserveAfterSavePreview],
+  );
+
+  const expenseAvailabilityTime = repairMode
+    ? parseDateTimeInput(expenseFinancialDate) || openSession?.startTime || ""
+    : new Date().toISOString();
+
+  const withdrawalAvailabilityTime = repairMode
+    ? parseDateTimeInput(withdrawalFinancialDate) || openSession?.startTime || ""
+    : new Date().toISOString();
+
+  const getAvailableCashBySource = (
+    source: CashSource,
+    eventTime?: string,
+    stateOverride?: AppState,
+    sessionOverride?: CashSession | null,
+  ) =>
+    getAvailableCashAt(
+      source,
+      eventTime || new Date().toISOString(),
+      stateOverride || data,
+      sessionOverride === undefined ? openSession : sessionOverride,
+    );
+
+  const closingReserveValue = useMemo(
+    () => (openSession ? displayedReservedCash : 0),
+    [openSession, displayedReservedCash],
+  );
+
   // Active closing balance must stay aligned with the cash left in the
   // drawer after reserve is kept aside.
   const closingBalanceKpiValue = useMemo(
@@ -6426,7 +6304,6 @@ const transactionMap = new Map<string, Transaction>(
     financeMovementSummary,
     submittedClosingValue,
     currentShiftTotalCash,
-    activeCashInHand,
     currentOperationalCash,
     totalAccessibleCash,
     reserveDraftValue,
@@ -6441,7 +6318,6 @@ const transactionMap = new Map<string, Transaction>(
     activeReserveOutflowSinceSave,
     activeReserveInputMax,
     autoCarryForwardValue,
-    totalAccessibleCash,
     closingVariance,
     dailyCashTotals,
     cashManagementKpis,
@@ -6893,28 +6769,12 @@ const transactionMap = new Map<string, Transaction>(
       localSessionCount: cashSessions.length,
     });
 
-    const inheritedReserveSession = latestCarryForwardSession;
-
     const session: CashSession = {
       id: buildCashSessionId(freshCashSessions),
 
       startTime: new Date().toISOString(),
 
       openingBalance: value,
-
-      ...(inheritedReserveSession
-        ? {
-            reservedCashOnHand: getSessionReservedCash(
-              inheritedReserveSession,
-            ),
-            reservedCashSavedAt: inheritedReserveSession.reservedCashSavedAt,
-            reserveCashLedger: Array.isArray(
-              inheritedReserveSession.reserveCashLedger,
-            )
-              ? [...inheritedReserveSession.reserveCashLedger]
-              : undefined,
-          }
-        : {}),
 
       status: "open",
     };
@@ -6998,7 +6858,9 @@ const transactionMap = new Map<string, Transaction>(
       freshOpenSession.openingBalance + activeSystemCashTotal,
     );
 
-    const difference = counted - expectedClosing;
+    const difference = roundMoney(
+      counted + reservedCash - expectedClosing,
+    );
 
     const carryForwardBalance = roundMoney(Math.max(0, counted));
 
@@ -7170,7 +7032,9 @@ const transactionMap = new Map<string, Transaction>(
 
         carryForwardBalance: roundMoney(Math.max(0, nextClosing)),
 
-        difference: nextClosing - expectedClosing,
+        difference: roundMoney(
+          nextClosing + nextReservedCash - expectedClosing,
+        ),
 
         closingEditedAt: new Date().toISOString(),
 
@@ -7776,21 +7640,32 @@ const transactionMap = new Map<string, Transaction>(
       return setErrors("Please enter valid expense details.");
     }
 
-    const availableFromSelectedSource =
-      getAvailableCashBySource(expenseCashSource);
-
-    if (amount > availableFromSelectedSource) {
-      return setErrors(
-        `${formatCashSourceLabel(expenseCashSource)} cannot cover this expense.`,
-      );
-    }
-
     const financialDate = repairMode
       ? parseDateTimeInput(expenseFinancialDate)
       : new Date().toISOString();
 
     if (repairMode && !financialDate) {
       return setErrors("Please enter a valid financial date and time.");
+    }
+
+    const eventTime = financialDate || new Date().toISOString();
+    const fresh = loadData();
+    const freshOpenSession = (Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : []
+    ).find((session) => session.status === "open");
+
+    const availableFromSelectedSource = getAvailableCashBySource(
+      expenseCashSource,
+      eventTime,
+      fresh,
+      freshOpenSession,
+    );
+
+    if (amount > availableFromSelectedSource) {
+      return setErrors(
+        `${formatCashSourceLabel(expenseCashSource)} cannot cover this expense.`,
+      );
     }
 
     const expense: Expense = {
@@ -7928,8 +7803,19 @@ const transactionMap = new Map<string, Transaction>(
       }
     }
 
-    const availableFromSelectedSource =
-      getAvailableCashBySource(withdrawalCashSource);
+    const eventTime = new Date().toISOString();
+    const fresh = loadData();
+    const freshOpenSession = (Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : []
+    ).find((session) => session.status === "open");
+
+    const availableFromSelectedSource = getAvailableCashBySource(
+      withdrawalCashSource,
+      eventTime,
+      fresh,
+      freshOpenSession,
+    );
 
     if (type === "cash_withdrawal" && amount > availableFromSelectedSource) {
       return setErrors(
@@ -7948,9 +7834,11 @@ const transactionMap = new Map<string, Transaction>(
 
       note: rawNote.trim() || undefined,
 
-      createdAt: new Date().toISOString(),
+      effectiveAt: eventTime,
 
-      sessionId: openSession?.id,
+      createdAt: eventTime,
+
+      sessionId: freshOpenSession?.id,
     };
 
     financeLog.cash(type === "cash_addition" ? "INFLOW" : "OUTFLOW", {
@@ -8072,6 +7960,21 @@ const transactionMap = new Map<string, Transaction>(
       return;
     }
 
+    const availableFromSelectedSource = getAvailableCashBySource(
+      withdrawalCashSource,
+      financialDate,
+    );
+
+    if (
+      (kind === "add_cash_withdrawal" || kind === "edit_cash_withdrawal") &&
+      nextAmount > availableFromSelectedSource
+    ) {
+      setErrors(
+        `${formatCashSourceLabel(withdrawalCashSource)} cannot cover this withdrawal.`,
+      );
+      return;
+    }
+
     if (
       kind === "add_cash_withdrawal" &&
       (!Number.isFinite(nextAmount) || nextAmount <= 0)
@@ -8131,6 +8034,31 @@ const transactionMap = new Map<string, Transaction>(
     setWithdrawalRepairSubmitting(true);
 
     try {
+      if (withdrawalRepairDraft.nextCashAdjustment) {
+        const fresh = loadData();
+        const freshOpenSession = (Array.isArray(fresh.cashSessions)
+          ? fresh.cashSessions
+          : []
+        ).find((session) => session.status === "open");
+
+        const availableFromSelectedSource = getAvailableCashBySource(
+          withdrawalRepairDraft.nextCashAdjustment.cashSource || "drawer",
+          withdrawalRepairDraft.financialDate,
+          fresh,
+          freshOpenSession,
+        );
+
+        if (
+          withdrawalRepairDraft.nextCashAdjustment.amount >
+          availableFromSelectedSource
+        ) {
+          setErrors(
+            `${formatCashSourceLabel(withdrawalRepairDraft.nextCashAdjustment.cashSource)} cannot cover this withdrawal.`,
+          );
+          return;
+        }
+      }
+
       const nextCashAdjustments =
         withdrawalRepairDraft.kind === "add_cash_withdrawal" &&
         withdrawalRepairDraft.nextCashAdjustment
@@ -8273,6 +8201,34 @@ const transactionMap = new Map<string, Transaction>(
     setExpenseRepairSubmitting(true);
 
     try {
+      if (expenseRepairDraft.nextExpense) {
+        const fresh = loadData();
+        const freshOpenSession = (Array.isArray(fresh.cashSessions)
+          ? fresh.cashSessions
+          : []
+        ).find((session) => session.status === "open");
+
+        const expenseEventTime =
+          expenseRepairDraft.nextExpense.effectiveAt ||
+          expenseRepairDraft.nextExpense.createdAt;
+
+        const availableFromSelectedSource = getAvailableCashBySource(
+          expenseRepairDraft.nextExpense.cashSource || "drawer",
+          expenseEventTime,
+          fresh,
+          freshOpenSession,
+        );
+
+        if (
+          expenseRepairDraft.nextExpense.amount > availableFromSelectedSource
+        ) {
+          setErrors(
+            `${formatCashSourceLabel(expenseRepairDraft.nextExpense.cashSource)} cannot cover this expense.`,
+          );
+          return;
+        }
+      }
+
       if (
         expenseRepairDraft.kind === "delete_expense" &&
         expenseRepairDraft.oldExpense
@@ -10450,17 +10406,30 @@ const transactionMap = new Map<string, Transaction>(
                       }
                     />
 
-                    <StatCard
-                      label="Active closing cash"
-                      value={formatINRSummary(displayedActiveClosingCash)}
-                      tone={
-                        !openSession
-                          ? "neutral"
-                          : displayedActiveClosingCash < 0
-                            ? "bad"
-                            : "good"
-                      }
-                    />
+                    <button
+                      type="button"
+                      className="text-left"
+                      onClick={() => {
+                        if (!openSession) return;
+                        setIsCurrentClosingBreakdownOpen(true);
+                      }}
+                      disabled={!openSession}
+                    >
+                      <StatCard
+                        label="Active closing cash"
+                        value={formatINRSummary(
+                          displayedActiveClosingCash,
+                        )}
+                        tone={
+                          !openSession
+                            ? "neutral"
+                            : displayedActiveClosingCash < 0
+                              ? "bad"
+                              : "good"
+                        }
+                        interactive={Boolean(openSession)}
+                      />
+                    </button>
 
                     <button
                       type="button"
@@ -10567,10 +10536,14 @@ const transactionMap = new Map<string, Transaction>(
                                 <div className="whitespace-nowrap text-[15px] font-semibold text-sky-700">
                                   Reserve{" "}
                                   {formatINRSummary(liveRemainingReserveCash)} →{" "}
-                                  {formatINRSummary(reserveAfterSavePreview)} |
+                                  {formatINRSummary(
+                                    reserveAfterSavePreview,
+                                  )} |
                                   Shift{" "}
                                   {formatINRSummary(savedDrawerCash)} →{" "}
-                                  {formatINRSummary(usableAfterSavePreview)}
+                                  {formatINRSummary(
+                                    usableAfterSavePreview,
+                                  )}
                                 </div>
                               </div>
 
@@ -13135,7 +13108,10 @@ const transactionMap = new Map<string, Transaction>(
                         Available in {formatCashSourceLabel(expenseCashSource)}:{" "}
                         <span className="font-semibold text-slate-700">
                           {formatINR(
-                            getAvailableCashBySource(expenseCashSource),
+                            getAvailableCashBySource(
+                              expenseCashSource,
+                              expenseAvailabilityTime,
+                            ),
                           )}
                         </span>
                       </div>
@@ -13227,7 +13203,10 @@ const transactionMap = new Map<string, Transaction>(
                         {formatCashSourceLabel(withdrawalCashSource)}:{" "}
                         <span className="font-semibold">
                           {formatINR(
-                            getAvailableCashBySource(withdrawalCashSource),
+                            getAvailableCashBySource(
+                              withdrawalCashSource,
+                              withdrawalAvailabilityTime,
+                            ),
                           )}
                         </span>
                       </div>
@@ -13693,7 +13672,10 @@ const transactionMap = new Map<string, Transaction>(
                             {formatCashSourceLabel(expenseCashSource)}:{" "}
                             <span className="font-semibold text-slate-700">
                               {formatINR(
-                                getAvailableCashBySource(expenseCashSource),
+                                getAvailableCashBySource(
+                                  expenseCashSource,
+                                  expenseAvailabilityTime,
+                                ),
                               )}
                             </span>
                           </div>
@@ -13758,7 +13740,10 @@ const transactionMap = new Map<string, Transaction>(
                               Available in{" "}
                               {formatCashSourceLabel(withdrawalCashSource)}:{" "}
                               {formatINR(
-                                getAvailableCashBySource(withdrawalCashSource),
+                                getAvailableCashBySource(
+                                  withdrawalCashSource,
+                                  withdrawalAvailabilityTime,
+                                ),
                               )}
                             </div>
                             <Input
