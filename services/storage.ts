@@ -5608,7 +5608,31 @@ export const addCategory = (category: string): string[] => {
       return data.categories;
   }
   const newCategories = [...data.categories, category];
-  void saveData({ ...data, categories: newCategories }, { reason: 'addCategory', auditOperation: 'CREATE' });
+  const newState = { ...data, categories: newCategories };
+  const previousMemoryState = memoryState;
+  memoryState = { ...memoryState, categories: newCategories };
+  emitLocalStorageUpdate();
+  if (db) {
+    void (async () => {
+      const user = await assertCloudWriteReady('addCategory_categories_only');
+      await persistDocumentSeriesState(memoryState.documentSeries, 'addCategory_categories_only');
+      await retryRootStoreWriteAfterLegacyCleanup(
+        user.uid,
+        sanitizeData({ categories: newCategories }) as Record<string, unknown>,
+        'addCategory_categories_only',
+      );
+      await writeAuditEvent('CREATE', {
+        reason: 'addCategory_categories_only',
+        migrationPhase: PRODUCTS_MIGRATION_PHASE,
+        category,
+      });
+    })().catch(() => {
+      memoryState = previousMemoryState;
+      emitLocalStorageUpdate();
+    });
+  } else {
+    void saveData(newState, { reason: 'addCategory', auditOperation: 'CREATE' });
+  }
   return newCategories;
 };
 
