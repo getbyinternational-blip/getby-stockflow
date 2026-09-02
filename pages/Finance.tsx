@@ -11197,7 +11197,7 @@ const transactionMap = new Map<string, Transaction>(
                         </div>
 
                         <div className="min-w-0">
-                          <div className="mb-2 text-lg font-bold text-orange-700">Closing Cash</div>
+                          <div className="mb-2 text-lg font-bold text-orange-700">Total Cash</div>
                           <button
                             type="button"
                             className="w-full min-w-0 text-left"
@@ -11208,7 +11208,7 @@ const transactionMap = new Map<string, Transaction>(
                             }
                           >
                             <StatCard
-                              label="Closing Cash"
+                              label="zzh"
                               value={formatINRSummary(simplifiedTodayCashFlow?.closing || 0)}
                               tone={(simplifiedTodayCashFlow?.closing || 0) < 0 ? "bad" : "amber"}
                               interactive
@@ -12859,7 +12859,7 @@ const transactionMap = new Map<string, Transaction>(
                       <div className="hidden items-center justify-center text-3xl font-black leading-none text-slate-600 lg:flex">-</div>
                       <div className="text-lg font-bold text-red-700">Total Cash Out</div>
                       <div className="hidden items-center justify-center text-3xl font-black leading-none text-slate-600 lg:flex">=</div>
-                      <div className="text-lg font-bold text-orange-700">Closing</div>
+                      <div className="text-lg font-bold text-orange-700">Total</div>
                     </div>
                   </div>
                   {simplifiedDailyCashFlow.map((day) => (
