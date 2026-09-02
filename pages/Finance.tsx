@@ -2150,12 +2150,16 @@ function StatCard({
   tone = "neutral",
   interactive = false,
   hint,
+  size = "normal",
+  hideLabel = false,
 }: {
   label: string;
   value: string;
   tone?: "neutral" | "good" | "bad" | "amber";
   interactive?: boolean;
   hint?: string;
+  size?: "normal" | "large";
+  hideLabel?: boolean;
 }) {
   const toneClasses =
     tone === "good"
@@ -2168,26 +2172,17 @@ function StatCard({
 
   return (
     <div
-      className={`rounded-lg border p-3 ${toneClasses} ${
+      className={`rounded-lg border ${size === "large" ? "min-h-[92px] px-4 py-5" : "min-h-[78px] px-4 py-4"} ${hideLabel ? "flex items-center" : ""} ${toneClasses} ${
         interactive
           ? "cursor-pointer transition hover:shadow-sm hover:ring-1 hover:ring-slate-300"
           : ""
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-xs text-muted-foreground">{label}</p>
+      {!hideLabel ? (
+        <p className={`${size === "large" ? "text-sm" : "text-xs"} text-muted-foreground`}>{label}</p>
+      ) : null}
 
-        {interactive ? (
-          <span
-            aria-hidden="true"
-            className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600"
-          >
-            Show
-          </span>
-        ) : null}
-      </div>
-
-      <p className="text-lg font-semibold">{value}</p>
+      <p className={`${hideLabel ? "mt-0" : "mt-1"} ${size === "large" ? "text-3xl" : "text-2xl"} font-bold leading-tight`}>{value}</p>
     </div>
   );
 }
@@ -11124,87 +11119,104 @@ const transactionMap = new Map<string, Transaction>(
                 <CardContent className="space-y-4">
                   <>
                       <div className="grid grid-cols-1 items-stretch gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)_24px_minmax(0,1fr)_24px_minmax(0,1fr)]">
-                        <button
-                          type="button"
-                          className="min-w-0 text-left"
-                          disabled={!simplifiedTodayCashFlow}
-                          onClick={() =>
-                            simplifiedTodayCashFlow &&
-                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "opening")
-                          }
-                        >
-                          <StatCard
-                            label="Opening Cash"
-                            value={formatINRSummary(
-                              simplifiedTodayCashFlow?.opening || 0,
-                            )}
-                            interactive={Boolean(simplifiedTodayCashFlow)}
-                          />
-                        </button>
-                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                        <div className="min-w-0">
+                          <div className="mb-2 text-lg font-bold text-slate-700">Opening Cash</div>
+                          <button
+                            type="button"
+                            className="w-full min-w-0 text-left"
+                            disabled={!simplifiedTodayCashFlow}
+                            onClick={() =>
+                              simplifiedTodayCashFlow &&
+                              openSimplifiedCashDetail(simplifiedTodayCashFlow, "opening")
+                            }
+                          >
+                            <StatCard
+                              label="Opening Cash"
+                              value={formatINRSummary(
+                                simplifiedTodayCashFlow?.opening || 0,
+                              )}
+                              interactive={Boolean(simplifiedTodayCashFlow)}
+                              hideLabel
+                            />
+                          </button>
+                        </div>
+                        <div className="hidden items-center justify-center pt-7 text-4xl font-black leading-none text-slate-600 lg:flex">
                           +
                         </div>
 
-                        <button
-                          type="button"
-                          className="min-w-0 text-left"
-                          disabled={!simplifiedTodayCashFlow}
-                          onClick={() =>
-                            simplifiedTodayCashFlow &&
-                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "cashIn")
-                          }
-                        >
-                          <StatCard
-                            label="Cash In"
-                            value={formatINRSummary(
-                              simplifiedTodayCashFlow?.cashIn || 0,
-                            )}
-                            tone="good"
-                            interactive={Boolean(simplifiedTodayCashFlow)}
-                          />
-                        </button>
-                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                        <div className="min-w-0">
+                          <div className="mb-2 text-lg font-bold text-emerald-700">Cash In</div>
+                          <button
+                            type="button"
+                            className="w-full min-w-0 text-left"
+                            disabled={!simplifiedTodayCashFlow}
+                            onClick={() =>
+                              simplifiedTodayCashFlow &&
+                              openSimplifiedCashDetail(simplifiedTodayCashFlow, "cashIn")
+                            }
+                          >
+                            <StatCard
+                              label="Cash In"
+                              value={formatINRSummary(
+                                simplifiedTodayCashFlow?.cashIn || 0,
+                              )}
+                              tone="good"
+                              interactive={Boolean(simplifiedTodayCashFlow)}
+                              hideLabel
+                            />
+                          </button>
+                        </div>
+                        <div className="hidden items-center justify-center pt-7 text-4xl font-black leading-none text-slate-600 lg:flex">
                           -
                         </div>
 
-                        <button
-                          type="button"
-                          className="min-w-0 text-left"
-                          disabled={!simplifiedTodayCashFlow}
-                          onClick={() =>
-                            simplifiedTodayCashFlow &&
-                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "cashOut")
-                          }
-                        >
-                          <StatCard
-                            label="Cash Out"
-                            value={formatINRSummary(
-                              simplifiedTodayCashFlow?.cashOut || 0,
-                            )}
-                            tone="bad"
-                            interactive={Boolean(simplifiedTodayCashFlow)}
-                          />
-                        </button>
-                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                        <div className="min-w-0">
+                          <div className="mb-2 text-lg font-bold text-red-700">Cash Out</div>
+                          <button
+                            type="button"
+                            className="w-full min-w-0 text-left"
+                            disabled={!simplifiedTodayCashFlow}
+                            onClick={() =>
+                              simplifiedTodayCashFlow &&
+                              openSimplifiedCashDetail(simplifiedTodayCashFlow, "cashOut")
+                            }
+                          >
+                            <StatCard
+                              label="Cash Out"
+                              value={formatINRSummary(
+                                simplifiedTodayCashFlow?.cashOut || 0,
+                              )}
+                              tone="bad"
+                              interactive={Boolean(simplifiedTodayCashFlow)}
+                              hideLabel
+                            />
+                          </button>
+                        </div>
+                        <div className="hidden items-center justify-center pt-7 text-4xl font-black leading-none text-slate-600 lg:flex">
                           =
                         </div>
 
-                        <button
-                          type="button"
-                          className="min-w-0 text-left"
-                          disabled={!simplifiedTodayCashFlow}
-                          onClick={() =>
-                            simplifiedTodayCashFlow &&
-                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "closing")
-                          }
-                        >
-                          <StatCard
-                            label="Closing Cash"
-                            value={formatINRSummary(simplifiedTodayCashFlow?.closing || 0)}
-                            tone={(simplifiedTodayCashFlow?.closing || 0) < 0 ? "bad" : "amber"}
-                            interactive
-                          />
-                        </button>
+                        <div className="min-w-0">
+                          <div className="mb-2 text-lg font-bold text-orange-700">Closing Cash</div>
+                          <button
+                            type="button"
+                            className="w-full min-w-0 text-left"
+                            disabled={!simplifiedTodayCashFlow}
+                            onClick={() =>
+                              simplifiedTodayCashFlow &&
+                              openSimplifiedCashDetail(simplifiedTodayCashFlow, "closing")
+                            }
+                          >
+                            <StatCard
+                              label="Closing Cash"
+                              value={formatINRSummary(simplifiedTodayCashFlow?.closing || 0)}
+                              tone={(simplifiedTodayCashFlow?.closing || 0) < 0 ? "bad" : "amber"}
+                              interactive
+                              size="large"
+                              hideLabel
+                            />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="w-full max-w-md space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:w-[30%]">
@@ -12837,24 +12849,26 @@ const transactionMap = new Map<string, Transaction>(
 
             {simplifiedShiftAccess && (
               <Card className="border-slate-200 shadow-sm bg-white">
-                <CardHeader className="border-b border-slate-200">
-                  <CardTitle className="flex items-start justify-between gap-3">
-                    <div>
-                      <h2 className="text-base font-semibold text-slate-900">
-                        Daily Cash Flow
-                      </h2>
+                <CardContent className="space-y-3 p-4">
+                  <div className="sticky top-0 z-20 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur">
+                    <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-2 lg:grid-cols-[110px_minmax(0,1fr)_36px_minmax(0,1fr)_36px_minmax(0,1fr)_36px_minmax(0,1fr)]">
+                      <div className="text-base font-bold text-slate-900">Date</div>
+                      <div className="text-lg font-bold text-slate-700">Opening</div>
+                      <div className="hidden items-center justify-center text-3xl font-black leading-none text-slate-600 lg:flex">+</div>
+                      <div className="text-lg font-bold text-emerald-700">Total Cash In</div>
+                      <div className="hidden items-center justify-center text-3xl font-black leading-none text-slate-600 lg:flex">-</div>
+                      <div className="text-lg font-bold text-red-700">Total Cash Out</div>
+                      <div className="hidden items-center justify-center text-3xl font-black leading-none text-slate-600 lg:flex">=</div>
+                      <div className="text-lg font-bold text-orange-700">Closing</div>
                     </div>
-                  </CardTitle>
-                </CardHeader>
-
-                <CardContent className="space-y-3 pt-5">
+                  </div>
                   {simplifiedDailyCashFlow.map((day) => (
                     <div
                       key={day.dateKey}
                       className="rounded-xl border border-slate-200 bg-white shadow-sm"
                     >
-                      <div className="grid grid-cols-1 items-center gap-2 p-3 sm:grid-cols-2 lg:grid-cols-[110px_minmax(0,1fr)_22px_minmax(0,1fr)_22px_minmax(0,1fr)_22px_minmax(0,1fr)]">
-                        <div className="min-w-0 text-sm font-semibold text-slate-900">
+                      <div className="grid grid-cols-1 items-center gap-2 p-3 sm:grid-cols-2 lg:grid-cols-[110px_minmax(0,1fr)_36px_minmax(0,1fr)_36px_minmax(0,1fr)_36px_minmax(0,1fr)]">
+                        <div className="min-w-0 text-2xl font-bold leading-tight text-slate-900">
                           {day.label}
                         </div>
                         <button
@@ -12866,6 +12880,7 @@ const transactionMap = new Map<string, Transaction>(
                             label="Opening"
                             value={formatINRSummary(day.opening)}
                             interactive
+                            hideLabel
                           />
                         </button>
                         <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
@@ -12881,6 +12896,7 @@ const transactionMap = new Map<string, Transaction>(
                             value={formatINRSummary(day.cashIn)}
                             tone="good"
                             interactive
+                            hideLabel
                           />
                         </button>
                         <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
@@ -12896,6 +12912,7 @@ const transactionMap = new Map<string, Transaction>(
                             value={formatINRSummary(day.cashOut)}
                             tone="bad"
                             interactive
+                            hideLabel
                           />
                         </button>
                         <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
@@ -12911,6 +12928,7 @@ const transactionMap = new Map<string, Transaction>(
                             value={formatINRSummary(day.closing)}
                             tone={day.closing >= 0 ? "amber" : "bad"}
                             interactive
+                            hideLabel
                           />
                         </button>
                       </div>
