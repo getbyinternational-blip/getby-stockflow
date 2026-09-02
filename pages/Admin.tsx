@@ -20,6 +20,7 @@ import { buildPurchasePartyCanonicalView, buildPurchasePartyDuplicateCheckReport
 import { getProductAuditSample, getProductBarcode, getProductCategory, getProductName, safeLower, safeText } from '../utils/productText';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 import { createPerfRunId, perfLog, perfMeasureSync } from '../services/perf';
+import { isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
 
 const STORAGE_DEBUG_LOGS_ENABLED = String((import.meta as any).env?.VITE_DEBUG_STORAGE_LOGS || 'false').toLowerCase() === 'true';
 import {
@@ -272,6 +273,7 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [notice, setNotice] = useState<{ type: 'error' | 'success' | 'info'; message: string } | null>(null);
   const [purchaseError, setPurchaseError] = useState<string | null>(null);
   const [appStateSnapshot, setAppStateSnapshot] = useState<any>(initialData);
+  const simplifiedShiftAccess = isSimplifiedShiftAccessEnabled(appStateSnapshot as AppState);
 
   const [purchaseEditTarget, setPurchaseEditTarget] = useState<{ productId: string; historyId: string } | null>(null);
   const [purchaseEditQuantity, setPurchaseEditQuantity] = useState('');
@@ -286,7 +288,7 @@ const [categoryDeleteError, setCategoryDeleteError] = useState<string | null>(nu
   const [isPhotoUploading, setIsPhotoUploading] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [inventoryViewTab, setInventoryViewTab] = useState<'inventory' | 'lost-damage'>('inventory');
+  const [inventoryViewTab, setInventoryViewTab] = useState<'inventory' | 'lost-damage' | 'missing-purchase-ids'>('inventory');
   const [isInventoryTableReady, setIsInventoryTableReady] = useState(false);
   const [openActionMenuProductId, setOpenActionMenuProductId] = useState<string | null>(null);
   const [editingLocationProductId, setEditingLocationProductId] = useState<string | null>(null);
@@ -929,15 +931,16 @@ const displayProductCategory = (value: unknown): string => {
       const quantity = Number(purchaseEditQuantity);
       const unitPrice = Number(purchaseEditUnitPrice);
       const nextTotal = roundAdminMoney(Math.max(0, quantity) * Math.max(0, unitPrice));
-      if (purchaseEditSettlementMethod === 'cash' && nextTotal > getStockSourceAvailableCashBySource(purchaseEditCashSource)) {
-        setPurchaseEditError(`${formatAdminCashSourceLabel(purchaseEditCashSource)} has only ${formatCurrencyWhole(getStockSourceAvailableCashBySource(purchaseEditCashSource))} available for this edit.`);
+      const resolvedPurchaseEditCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : purchaseEditCashSource;
+      if (purchaseEditSettlementMethod === 'cash' && nextTotal > getStockSourceAvailableCashBySource(resolvedPurchaseEditCashSource)) {
+        setPurchaseEditError(`${simplifiedShiftAccess ? 'Cash drawer' : formatAdminCashSourceLabel(resolvedPurchaseEditCashSource)} has only ${formatCurrencyWhole(getStockSourceAvailableCashBySource(resolvedPurchaseEditCashSource))} available for this edit.`);
         return;
       }
       const updatedProducts = await editInventoryPurchaseHistoryEntry(purchaseEditTarget.productId, purchaseEditTarget.historyId, {
         quantity,
         unitPrice,
         settlementMethod: purchaseEditSettlementMethod,
-        cashSource: purchaseEditSettlementMethod === 'cash' ? purchaseEditCashSource : undefined,
+        cashSource: purchaseEditSettlementMethod === 'cash' ? resolvedPurchaseEditCashSource : undefined,
       });
       refreshData();
       const nextTarget = updatedProducts.find((item) => item.id === purchaseEditTarget.productId) || null;
@@ -1913,7 +1916,9 @@ const displayProductCategory = (value: unknown): string => {
     };
   }, [appStateSnapshot, currentShiftPreviewBase.currentSystemCash]);
   const getStockSourceAvailableCashBySource = (source: CashSource) => (
-    normalizeAdminCashSource(source) === 'reserve'
+    simplifiedShiftAccess
+      ? stockSourceCashAvailability.totalCash
+      : normalizeAdminCashSource(source) === 'reserve'
       ? stockSourceCashAvailability.reserveCash
       : stockSourceCashAvailability.activeCash
   );
@@ -2204,8 +2209,9 @@ const displayProductCategory = (value: unknown): string => {
       setStockSourceError('Purchase party is required.');
       return;
     }
+    const resolvedStockSourceCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : stockSourceCashSource;
     if (requestedCashPaidAmount > 0 && requestedCashPaidAmount > selectedCashAvailable) {
-      setStockSourceError(`${formatAdminCashSourceLabel(stockSourceCashSource)} has only ${formatCurrencyWhole(selectedCashAvailable)} available. Reduce cash paid, switch source, or use bank/credit before saving.`);
+      setStockSourceError(`${simplifiedShiftAccess ? 'Cash drawer' : formatAdminCashSourceLabel(resolvedStockSourceCashSource)} has only ${formatCurrencyWhole(selectedCashAvailable)} available. Reduce cash paid or use bank/credit before saving.`);
       return;
     }
 
@@ -2251,7 +2257,7 @@ const displayProductCategory = (value: unknown): string => {
         remainingAmount,
         paymentHistory: [
           ...(cashPaidAmount > 0
-            ? [{ id: `pop-stock-source-cash-${Date.now()}`, paidAt: now, amount: cashPaidAmount, method: 'cash' as const, cashSource: stockSourceCashSource, note: stockSourceNote.trim() || 'Stock source purchase' }]
+            ? [{ id: `pop-stock-source-cash-${Date.now()}`, paidAt: now, amount: cashPaidAmount, method: 'cash' as const, cashSource: resolvedStockSourceCashSource, note: stockSourceNote.trim() || 'Stock source purchase' }]
             : []),
           ...(onlinePaidAmount > 0
             ? [{ id: `pop-stock-source-online-${Date.now()}`, paidAt: now, amount: onlinePaidAmount, method: 'online' as const, note: stockSourceNote.trim() || 'Stock source purchase' }]
@@ -2858,6 +2864,7 @@ const displayProductCategory = (value: unknown): string => {
     const partyName = purchasePartyName.trim();
     const totalAmount = purchaseTotalCost;
     const cashPaid = Math.max(0, Number(purchaseCashPaid) || 0);
+    const resolvedPurchaseCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : purchaseCashSource;
     const bankPaid = Math.max(0, Number(purchaseBankPaid) || 0);
     const paidAmount = Number((cashPaid + bankPaid).toFixed(2));
     if (!partyName) {
@@ -2872,8 +2879,8 @@ const displayProductCategory = (value: unknown): string => {
       setPurchaseError('Payment split exceeds total purchase amount. Please reduce Cash or Bank.');
       return;
     }
-    if (cashPaid > 0 && cashPaid > getStockSourceAvailableCashBySource(purchaseCashSource)) {
-      setPurchaseError(`${formatAdminCashSourceLabel(purchaseCashSource)} cannot cover this cash payment.`);
+    if (cashPaid > 0 && cashPaid > getStockSourceAvailableCashBySource(resolvedPurchaseCashSource)) {
+      setPurchaseError(`${simplifiedShiftAccess ? 'Cash drawer' : formatAdminCashSourceLabel(resolvedPurchaseCashSource)} cannot cover this cash payment.`);
       return;
     }
     if (paidAmount < 0 || !Number.isFinite(paidAmount)) {
@@ -2953,7 +2960,7 @@ const displayProductCategory = (value: unknown): string => {
       totalPaid: paidAmount,
       remainingAmount: Math.max(0, Number((totalAmount - paidAmount).toFixed(2))),
       paymentHistory: [
-        ...(cashPaid > 0 ? [{ id: `pop-init-cash-${Date.now()}`, paidAt: now, amount: cashPaid, method: 'cash' as const, cashSource: purchaseCashSource, note: purchasePaymentNote.trim() || reference || undefined }] : []),
+        ...(cashPaid > 0 ? [{ id: `pop-init-cash-${Date.now()}`, paidAt: now, amount: cashPaid, method: 'cash' as const, cashSource: resolvedPurchaseCashSource, note: purchasePaymentNote.trim() || reference || undefined }] : []),
         ...(bankPaid > 0 ? [{ id: `pop-init-bank-${Date.now()}`, paidAt: now, amount: bankPaid, method: 'online' as const, note: purchasePaymentNote.trim() || reference || undefined }] : []),
       ],
       receivedQuantity: qty,
@@ -3039,7 +3046,7 @@ const displayProductCategory = (value: unknown): string => {
           nextBuyPrice,
           purchaseOrderId: orderId,
           paymentMethod: paidAmount > 0 ? (bankPaid > 0 && cashPaid === 0 ? 'online' : 'cash') : 'credit',
-          cashSource: cashPaid > 0 ? purchaseCashSource : undefined,
+          cashSource: cashPaid > 0 ? resolvedPurchaseCashSource : undefined,
           paidAmount,
           partyName,
           reference,
@@ -3669,6 +3676,47 @@ useEffect(() => {
       })
       .slice(0, 30);
   }, [inventoryPurchaseHistoryAuditRows]);
+  const missingPurchaseIdRows = useMemo(() => {
+    return filteredProducts.flatMap((product) => {
+      const embeddedHistoryIds = new Set(
+        (Array.isArray(product.purchaseHistory) ? product.purchaseHistory : [])
+          .map((entry: any) => String(entry?.id || '').trim())
+          .filter(Boolean)
+      );
+
+      return getResolvedPurchaseHistoryRowsFromPurchaseOrdersForProduct(product, purchaseOrders)
+        .filter((row) => {
+          const legacyHistoryId = String(row.legacyHistoryId || '').trim();
+          return !legacyHistoryId || !embeddedHistoryIds.has(legacyHistoryId);
+        })
+        .map((row) => {
+          const purchaseOrderId = String(row.purchaseOrderId || '').trim();
+          const lineId = String(row.lineId || '').trim();
+          const order = purchaseOrders.find((item) => String(item.id || '').trim() === purchaseOrderId) || null;
+          const orderLine = (order?.lines || []).find((line: any) => String(line.id || '').trim() === lineId) || null;
+          return {
+            product,
+            row,
+            order,
+            orderLine,
+            imageUrl: getProductImageUrl(product),
+            generatedHistoryId: row.id,
+            requestedHistoryId: row.legacyHistoryId || row.id,
+            embeddedHistoryCount: embeddedHistoryIds.size,
+            availableHistoryIds: Array.from(embeddedHistoryIds),
+          };
+        });
+    }).sort((a, b) => {
+      const dateDelta = new Date(b.row.date || '').getTime() - new Date(a.row.date || '').getTime();
+      return Number.isFinite(dateDelta) && dateDelta !== 0 ? dateDelta : getProductName(a.product).localeCompare(getProductName(b.product));
+    });
+  }, [filteredProducts, purchaseOrders]);
+  const missingPurchaseIdSummary = useMemo(() => {
+    const productsAffected = new Set(missingPurchaseIdRows.map((item) => item.product.id)).size;
+    const purchaseValue = missingPurchaseIdRows.reduce((sum, item) => sum + Math.max(0, Number(item.row.lineTotal || 0)), 0);
+    const missingEmbeddedHistories = missingPurchaseIdRows.filter((item) => item.embeddedHistoryCount === 0).length;
+    return { rows: missingPurchaseIdRows.length, productsAffected, purchaseValue, missingEmbeddedHistories };
+  }, [missingPurchaseIdRows]);
   const inventoryTotalPages = Math.max(1, Math.ceil(filteredProducts.length / INVENTORY_PAGE_SIZE));
   const paginatedProducts = useMemo(
     () => filteredProducts.slice((inventoryPage - 1) * INVENTORY_PAGE_SIZE, inventoryPage * INVENTORY_PAGE_SIZE),
@@ -3994,7 +4042,7 @@ useEffect(() => {
     <div className="space-y-6 max-w-[1600px] mx-auto pb-20 md:pb-0">
 
       <section className="space-y-4">
-        <div className={`grid gap-3 ${inventoryViewTab === 'inventory' ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+        <div className={`grid gap-3 ${inventoryViewTab === 'lost-damage' ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
           {inventoryViewTab === 'inventory' ? (
             <>
               <Card className="rounded-2xl border border-blue-100 bg-blue-50/85 shadow-sm">
@@ -4043,6 +4091,30 @@ useEffect(() => {
                 </CardContent>
               </Card>
             </>
+          ) : inventoryViewTab === 'missing-purchase-ids' ? (
+            <>
+              <Card className="rounded-2xl border border-amber-100 bg-amber-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-amber-700">Rows Missing Purchase IDs</p>
+                  <p className="mt-2 text-2xl font-bold leading-none text-amber-950">{missingPurchaseIdSummary.rows}</p>
+                  <p className="mt-2 text-xs text-amber-700/80">Rows that can show the edit lookup error.</p>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border border-blue-100 bg-blue-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-blue-700">Products Affected</p>
+                  <p className="mt-2 text-2xl font-bold leading-none text-blue-950">{missingPurchaseIdSummary.productsAffected}</p>
+                  <p className="mt-2 text-xs text-blue-700/80">Filtered products with missing legacy links.</p>
+                </CardContent>
+              </Card>
+              <Card className="rounded-2xl border border-emerald-100 bg-emerald-50/85 shadow-sm">
+                <CardContent className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Purchase Value</p>
+                  <p className="mt-2 text-2xl font-bold leading-none text-emerald-950">{formatCurrency(missingPurchaseIdSummary.purchaseValue)}</p>
+                  <p className="mt-2 text-xs text-emerald-700/80">{missingPurchaseIdSummary.missingEmbeddedHistories} rows have no embedded history ids.</p>
+                </CardContent>
+              </Card>
+            </>
           ) : (
             <>
               <Card className="rounded-2xl border border-rose-100 bg-rose-50/85 shadow-sm">
@@ -4070,6 +4142,12 @@ useEffect(() => {
                 <div className="flex flex-wrap items-center gap-2">
                   <Button size="sm" variant={inventoryViewTab === 'inventory' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('inventory')} className={inventoryViewTab === 'inventory' ? 'shadow-sm' : ''}>Inventory</Button>
                   <Button size="sm" variant={inventoryViewTab === 'lost-damage' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('lost-damage')} className={inventoryViewTab === 'lost-damage' ? 'shadow-sm' : ''}>Lost & Damage</Button>
+                  <Button size="sm" variant={inventoryViewTab === 'missing-purchase-ids' ? 'default' : 'outline'} onClick={() => setInventoryViewTab('missing-purchase-ids')} className={inventoryViewTab === 'missing-purchase-ids' ? 'shadow-sm' : ''}>
+                    Missing Purchase IDs
+                    {missingPurchaseIdRows.length > 0 && (
+                      <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">{missingPurchaseIdRows.length}</span>
+                    )}
+                  </Button>
                   {selectedProductIds.length > 0 && (
                     <Badge variant="outline" className="h-8 rounded-full border-slate-300 px-3 text-xs font-semibold text-slate-700">
                       {selectedProductIds.length} selected
@@ -4287,6 +4365,101 @@ useEffect(() => {
         )}
       </div>
       </>
+      ) : inventoryViewTab === 'missing-purchase-ids' ? (
+        <div className="space-y-3">
+          <div className="overflow-hidden rounded-xl border bg-card">
+            <div className="border-b bg-amber-50/60 px-4 py-3">
+              <div className="font-semibold text-amber-950">Missing Purchase IDs</div>
+              <div className="text-xs text-amber-800">Purchase-order rows that are visible as product purchase history, but do not have a matching old embedded history id for the edit button.</div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1180px] text-sm">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className="p-3 text-left">Product</th>
+                    <th className="p-3 text-left">Original Transaction</th>
+                    <th className="p-3 text-left">Supplier</th>
+                    <th className="p-3 text-right">Qty / Rate</th>
+                    <th className="p-3 text-right">Amount</th>
+                    <th className="p-3 text-left">Payment</th>
+                    <th className="p-3 text-left">Missing ID Details</th>
+                    <th className="p-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {missingPurchaseIdRows.map((item) => {
+                    const { product, row, order, orderLine } = item;
+                    const availableIdsPreview = item.availableHistoryIds.slice(0, 3).join(', ');
+                    return (
+                      <tr key={`${product.id}-${row.id}`} className="border-t align-top">
+                        <td className="p-3">
+                          <div className="flex min-w-[260px] items-center gap-3">
+                            <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border bg-muted/20 flex items-center justify-center">
+                              {item.imageUrl ? <img src={item.imageUrl} alt={getProductName(product)} className="h-full w-full object-cover" loading="lazy" decoding="async" /> : <Package className="h-4 w-4 text-muted-foreground" />}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-semibold text-slate-950">{displayProductText(getProductName(product))}</div>
+                              <div className="text-xs text-muted-foreground">{displayProductCategory(getProductCategory(product)) || 'Unknown Category'}</div>
+                              <div className="text-xs text-muted-foreground">Barcode: {displayProductText(getProductBarcode(product), '-')}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-3">
+                          <div className="space-y-1">
+                            <div className="font-medium">{order?.billNumber || row.reference || row.purchaseOrderId || 'No bill number'}</div>
+                            <div className="text-xs text-muted-foreground">Date: {row.date ? formatDateDisplay(row.date) : '-'}</div>
+                            <div className="text-xs text-muted-foreground">PO: <span className="font-mono">{row.purchaseOrderId || '-'}</span></div>
+                            <div className="text-xs text-muted-foreground">Line: <span className="font-mono">{row.lineId || orderLine?.id || '-'}</span></div>
+                          </div>
+                        </td>
+                        <td className="p-3">
+                          <div className="font-medium">{row.partyName || order?.partyName || 'No party'}</div>
+                          <div className="text-xs text-muted-foreground">{order?.partyPhone || order?.partyGst || order?.partyLocation || ''}</div>
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="font-semibold">{row.quantity} pcs</div>
+                          <div className="text-xs text-muted-foreground">{formatCurrencyWhole(row.unitPrice)} each</div>
+                          {(row.variant || row.color || orderLine?.variant || orderLine?.color) && (
+                            <div className="mt-1 text-xs text-muted-foreground">{row.variant || orderLine?.variant || NO_VARIANT} / {row.color || orderLine?.color || NO_COLOR}</div>
+                          )}
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="font-semibold">{formatCurrencyWhole(row.lineTotal)}</div>
+                          <div className="text-xs text-muted-foreground">Order: {formatCurrencyWhole(row.orderTotal || order?.totalAmount || 0)}</div>
+                        </td>
+                        <td className="p-3">
+                          <Badge variant="outline" className="capitalize">{row.paymentMethod || 'unknown'}</Badge>
+                          <div className="mt-1 text-xs text-muted-foreground">Paid: {formatCurrencyWhole(row.orderPaid ?? row.paidAmount ?? order?.totalPaid ?? 0)}</div>
+                          <div className="text-xs text-muted-foreground">Due: {formatCurrencyWhole(row.remainingPayable ?? order?.remainingAmount ?? 0)}</div>
+                        </td>
+                        <td className="p-3">
+                          <div className="space-y-1 text-xs">
+                            <div>Requested: <span className="font-mono text-amber-900">{item.requestedHistoryId}</span></div>
+                            <div>Generated: <span className="font-mono">{item.generatedHistoryId}</span></div>
+                            <div>Available old ids: {item.embeddedHistoryCount > 0 ? <span className="font-mono">{availableIdsPreview}{item.availableHistoryIds.length > 3 ? '...' : ''}</span> : 'none'}</div>
+                            {row.notes && <div className="text-muted-foreground">Note: {row.notes}</div>}
+                          </div>
+                        </td>
+                        <td className="p-3 text-right">
+                          <Button size="sm" variant="outline" onClick={() => { openStockSourcePurchaseFlow(product, false); setStockSourceModalTab('history'); }}>
+                            Open History
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {missingPurchaseIdRows.length === 0 && (
+                    <tr>
+                      <td className="p-8 text-center text-muted-foreground" colSpan={8}>
+                        No missing purchase-id rows found for the current filters.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       ) : (
 	        <div className="space-y-3">
 	          <div className="border rounded-xl bg-card overflow-hidden">
@@ -4708,6 +4881,7 @@ useEffect(() => {
                                   placeholder="0.00"
                                 />
                               </div>
+                              {!simplifiedShiftAccess && (
                               <div className="space-y-1">
                                 <Label className="text-[11px] font-bold uppercase text-muted-foreground">Utilize From</Label>
                                 <select
@@ -4730,6 +4904,7 @@ useEffect(() => {
                                   </div>
                                 ) : null}
                               </div>
+                              )}
                               <div className="space-y-1">
                                 <Label className="text-[11px] font-bold uppercase text-muted-foreground">Online/Bank Paid</Label>
                                 <Input
@@ -4801,7 +4976,7 @@ useEffect(() => {
                                   <option value="online">Bank / Online</option>
                                 </select>
                               </div>
-                              {stockSourcePartialPaidVia === 'cash' && (
+                              {stockSourcePartialPaidVia === 'cash' && !simplifiedShiftAccess && (
                                 <div className="space-y-2 md:col-span-2">
                                   <Label>Utilize From</Label>
                                   <select
@@ -4834,7 +5009,7 @@ useEffect(() => {
                               {stockSourcePaymentMethod === 'online' && 'Bank / online purchase will not change physical cash.'}
                             </div>
                           )}
-                          {stockSourcePaymentMethod === 'cash' && (
+                          {stockSourcePaymentMethod === 'cash' && !simplifiedShiftAccess && (
                             <div className="space-y-2 md:col-span-2">
                               <Label>Utilize From</Label>
                               <select
@@ -4943,7 +5118,7 @@ useEffect(() => {
                           <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Money</div>
                           <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium">
                             <span className={`rounded-full px-3 py-1 ${stockSourceComputed.effectivePaid > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-700'}`}>
-                              {stockSourceComputed.cashPaid > 0 ? `${formatAdminCashSourceLabel(stockSourceCashSource)} ` : 'Cash/Bank '}
+                              {stockSourceComputed.cashPaid > 0 ? `${simplifiedShiftAccess ? 'Cash drawer' : formatAdminCashSourceLabel(stockSourceCashSource)} ` : 'Cash/Bank '}
                               {stockSourceComputed.effectivePaid > 0 ? formatCurrencyWhole(stockSourceComputed.effectivePaid) : '—'}
                             </span>
                             <span className={`rounded-full px-3 py-1 ${stockSourceComputed.remainingPayable > 0 ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-700'}`}>
@@ -5215,6 +5390,7 @@ useEffect(() => {
                     <Label>Cash</Label>
                     <Input type="number" min="0" value={purchaseCashPaid} onChange={(e) => setPurchaseCashPaid(e.target.value)} />
                   </div>
+                  {!simplifiedShiftAccess && (
                   <div className="space-y-1">
                     <Label>Utilize From</Label>
                     <select
@@ -5229,6 +5405,7 @@ useEffect(() => {
                       Available: {formatCurrencyWhole(getStockSourceAvailableCashBySource(purchaseCashSource))}
                     </div>
                   </div>
+                  )}
                   <div><Label>Bank</Label><Input type="number" min="0" value={purchaseBankPaid} onChange={(e) => setPurchaseBankPaid(e.target.value)} /></div>
                   <div><Label>Remaining Due Before Party Credit</Label><Input value={purchaseRemainingDue.toFixed(2)} readOnly className="bg-muted/30 font-medium" /></div>
                   <div><Label>Payment Note (optional)</Label><Input value={purchasePaymentNote} onChange={(e) => setPurchasePaymentNote(e.target.value)} /></div>
@@ -5237,7 +5414,7 @@ useEffect(() => {
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Paid</div><div className="font-semibold">{purchaseEffectiveCashPaid.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Bank Paid</div><div className="font-semibold">{purchaseEffectiveBankPaid.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Amount Paid</div><div className="font-semibold">{purchaseEffectivePaidAmount.toFixed(2)}</div></div>
-                    <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Source</div><div className="font-semibold">{formatAdminCashSourceLabel(purchaseCashSource)}</div></div>
+                    {!simplifiedShiftAccess && <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Cash Source</div><div className="font-semibold">{formatAdminCashSourceLabel(purchaseCashSource)}</div></div>}
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Due Before Party Credit</div><div className="font-semibold">{purchaseRemainingDue.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Available</div><div className="font-semibold">{purchaseAvailablePartyCredit.toFixed(2)}</div></div>
                     <div className="rounded-lg border bg-muted/20 p-2"><div className="text-[10px] uppercase text-muted-foreground">Party Credit Applied</div><div className="font-semibold">{purchaseCreditAppliedPreview.toFixed(2)}</div></div>
@@ -5770,6 +5947,7 @@ useEffect(() => {
                       <option value="cash">Cash</option>
                     </select>
                   </div>
+                  {!simplifiedShiftAccess && (
                   <div>
                     <Label>Use money from</Label>
                     <select
@@ -5782,10 +5960,11 @@ useEffect(() => {
                       <option value="reserve">Reserve Cash</option>
                     </select>
                   </div>
+                  )}
                 </div>
                 {purchaseEditSettlementMethod === 'cash' && !unsupportedSettlementEntries ? (
                   <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                    Money available here: {formatCurrencyWhole(getStockSourceAvailableCashBySource(purchaseEditCashSource))}
+                    Money available here: {formatCurrencyWhole(getStockSourceAvailableCashBySource(simplifiedShiftAccess ? 'drawer' : purchaseEditCashSource))}
                   </div>
                 ) : null}
                 <div className="grid grid-cols-2 gap-2">

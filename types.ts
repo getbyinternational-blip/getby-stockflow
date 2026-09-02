@@ -511,6 +511,7 @@ export interface StoreProfile {
   thermalPaddingY?: number;
   autoSendInvoiceAfterCreation?: boolean;
   repairCenterEnabled?: boolean;
+  simplifiedShiftAccess?: boolean;
   adminPin?: string;
 
   telegramChannels?: string[];

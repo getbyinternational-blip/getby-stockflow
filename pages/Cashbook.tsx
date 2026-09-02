@@ -9,6 +9,7 @@ import { BanknoteArrowDown, BanknoteArrowUp, ChevronDown, CreditCard, Receipt, S
 import { ResolvedCostSource, resolveTransactionItemCost } from '../services/costResolution';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 import { perfLog } from '../services/perf';
+import { isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -362,6 +363,7 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
 export default function Cashbook() {
   const [reloadKey, setReloadKey] = useState(0);
   const data = useMemo(() => loadData(), [reloadKey]);
+  const simplifiedShiftAccess = isSimplifiedShiftAccessEnabled(data);
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [datePreset, setDatePreset] = useState<'all' | 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'custom'>('all');
   const [payFilter, setPayFilter] = useState<'all' | 'cash' | 'online' | 'credit' | 'mixed'>('all');
@@ -489,10 +491,10 @@ export default function Cashbook() {
     if (!manualDate) throw new Error('Date is required.');
     if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0.');
     if (manualType === 'cash_out') {
-      const selectedSource = normalizeCashSource(cashSource);
-      const available = selectedSource === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash;
+      const selectedSource = simplifiedShiftAccess ? 'drawer' : normalizeCashSource(cashSource);
+      const available = simplifiedShiftAccess ? cashSourceAvailability.totalCash : selectedSource === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash;
       if (amount > available) {
-        throw new Error(`${formatCashSourceLabel(selectedSource)} cannot cover this cash out.`);
+        throw new Error(`${simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(selectedSource)} cannot cover this cash out.`);
       }
     }
     const now = new Date();
@@ -505,7 +507,7 @@ export default function Cashbook() {
       type: manualType,
       amount,
       details: details.trim(),
-      cashSource: manualType === 'cash_out' ? cashSource : undefined,
+      cashSource: manualType === 'cash_out' ? (simplifiedShiftAccess ? 'drawer' : cashSource) : undefined,
       isDeleted: false,
     });
     setIsAddCashOpen(false);
@@ -1924,6 +1926,7 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
       <ManualCashEntryModal
         type={manualType}
         cashSourceAvailability={cashSourceAvailability}
+        simplifiedShiftAccess={simplifiedShiftAccess}
         onClose={() => setIsAddCashOpen(false)}
         onSave={handleSaveManualEntry}
       />
@@ -1934,11 +1937,12 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
 type ManualCashEntryModalProps = {
   type: 'cash_in' | 'cash_out';
   cashSourceAvailability: { activeCash: number; reserveCash: number; totalCash: number };
+  simplifiedShiftAccess: boolean;
   onClose: () => void;
   onSave: (payload: { amount: number; details: string; manualDate: string; cashSource?: CashSource; }) => Promise<void>;
 };
 
-function ManualCashEntryModal({ type, cashSourceAvailability, onClose, onSave }: ManualCashEntryModalProps) {
+function ManualCashEntryModal({ type, cashSourceAvailability, simplifiedShiftAccess, onClose, onSave }: ManualCashEntryModalProps) {
   const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
   const [manualAmount, setManualAmount] = useState('');
   const [manualDetails, setManualDetails] = useState('');
@@ -1965,20 +1969,20 @@ function ManualCashEntryModal({ type, cashSourceAvailability, onClose, onSave }:
         amount: Number(manualAmount),
         details: manualDetails,
         manualDate,
-        cashSource: type === 'cash_out' ? manualCashSource : undefined,
+        cashSource: type === 'cash_out' ? (simplifiedShiftAccess ? 'drawer' : manualCashSource) : undefined,
       });
     } catch (error) {
       setManualError(error instanceof Error ? error.message : 'Unable to save cash entry.');
       setIsSaving(false);
     }
   };
-  const selectedSourceAvailable = manualCashSource === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash;
+  const selectedSourceAvailable = simplifiedShiftAccess ? cashSourceAvailability.totalCash : manualCashSource === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md space-y-3 rounded-lg border bg-white p-4 shadow-lg">
         <h2 className="text-lg font-semibold">{type === 'cash_in' ? 'Add Cash In' : 'Add Cash Out'}</h2>
-        {type === 'cash_out' && (
+        {type === 'cash_out' && !simplifiedShiftAccess && (
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">Utilize From</label>
             <select

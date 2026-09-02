@@ -10,6 +10,7 @@ import { AppState, CashSession, CashSource, Product, CartItem, Transaction, Cust
 import { formatItemNameWithVariant, getAvailableStockForCombination, getProductStockRows, getResolvedBuyPriceForCombination, getResolvedSellPriceForCombination, NO_COLOR, NO_VARIANT, productHasCombinationStock } from '../services/productVariants';
 import { getStockBucketKey } from '../services/stockBuckets';
 import { loadData, processTransaction, addCustomer, updateCustomer, clampCreditDueAmount, getCanonicalReturnPreviewForDraft, fulfillUpfrontOrderAsSale, getSaleSettlementBreakdown } from '../services/storage';
+import { ensureSimplifiedShiftForToday, isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
 import { generateReceiptPDF, generateReceiptPDFDataUrl, printReceipt } from '../services/pdf';
 import { shareTransactionInvoiceViaWhatsApp } from '../services/whatsappShare';
 import { shareTransactionInvoiceViaMetaWhatsApp } from '../services/metaWhatsAppShare';
@@ -1171,13 +1172,25 @@ export default function Sales() {
   };
 
 
-  const hasOpenShift = () => {
-      const sessions = loadData().cashSessions || [];
+  const hasOpenShift = (state: AppState = loadData()) => {
+      const sessions = state.cashSessions || [];
       return sessions.some(session => session.status === 'open');
   };
 
-  const validateOpenShiftForPos = () => {
-      if (hasOpenShift()) return true;
+  const validateOpenShiftForPos = async () => {
+      const freshState = loadData();
+      if (hasOpenShift(freshState)) return true;
+      if (isSimplifiedShiftAccessEnabled(freshState)) {
+        try {
+          const result = await ensureSimplifiedShiftForToday({ reason: 'sales.simplifiedShift.ensureBeforeCheckout' });
+          if (result.openSession || hasOpenShift(result.state)) return true;
+        } catch (error) {
+          const message = getFriendlyErrorMessage(error, 'sales.simplifiedShift.ensureBeforeCheckout');
+          setCheckoutError(message);
+          setCartError(message);
+          return false;
+        }
+      }
       const message = 'Shift is closed. Start a shift in Finance before making a transaction.';
       setCheckoutError(message);
       setCartError(message);
@@ -1198,10 +1211,10 @@ export default function Sales() {
       return true;
   };
 
-  const initiateCheckout = (e?: React.MouseEvent) => {
+  const initiateCheckout = async (e?: React.MouseEvent) => {
       e?.stopPropagation();
       if (!validateCartItemsForCheckout()) return;
-      if (!validateOpenShiftForPos()) return;
+      if (!(await validateOpenShiftForPos())) return;
       setCheckoutError(null);
       setUseStoreCreditApplied(false);
       setStoreOverpaymentAsCredit(false);
@@ -1246,7 +1259,7 @@ export default function Sales() {
   const completeCheckout = async ({ printAfterSave = false }: { printAfterSave?: boolean } = {}) => {
       setCheckoutError(null);
       if (!validateCartItemsForCheckout()) return;
-      if (!validateOpenShiftForPos()) return;
+      if (!(await validateOpenShiftForPos())) return;
       let finalCustomer = resolvedSelectedCustomer;
       const isGstApplied = !isReturnMode && Number(selectedTax.value || 0) > 0;
 
@@ -1435,11 +1448,11 @@ export default function Sales() {
           })();
       if (isReturnMode && returnHandlingMode === 'refund_cash') {
         const freshAvailability = getSalesCashSourceAvailability(loadData());
-        const selectedSource = normalizeCashSource(returnCashSource);
+        const selectedSource = simplifiedShiftAccess ? 'drawer' : normalizeCashSource(returnCashSource);
         const available = selectedSource === 'reserve' ? freshAvailability.reserveCash : freshAvailability.activeCash;
         const refundAmount = Math.max(0, Math.abs(Number(total || 0)));
         if (refundAmount > available) {
-          setCheckoutError(`${formatCashSourceLabel(selectedSource)} cannot cover this cash refund.`);
+          setCheckoutError(`${simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(selectedSource)} cannot cover this cash refund.`);
           return;
         }
       }
@@ -1464,7 +1477,7 @@ export default function Sales() {
           gstNumber: isReturnMode ? undefined : (invoiceGstNumber.trim() || finalCustomer?.gstNumber),
           gstApplied: isReturnMode ? false : isGstApplied,
           returnHandlingMode: isReturnMode ? returnHandlingMode : undefined,
-          cashSource: isReturnMode && returnHandlingMode === 'refund_cash' ? returnCashSource : undefined,
+          cashSource: isReturnMode && returnHandlingMode === 'refund_cash' ? (simplifiedShiftAccess ? 'drawer' : returnCashSource) : undefined,
           saleSettlement: isReturnMode ? undefined : {
             cashPaid: settlementCashPaid,
             onlinePaid: settlementOnlinePaid,
@@ -1637,8 +1650,9 @@ export default function Sales() {
     products: products.length,
     customers: customers.length,
   }), [transactions, products, customers]);
+  const simplifiedShiftAccess = isSimplifiedShiftAccessEnabled(loadData());
   const getAvailableCashBySource = (source: CashSource) => (
-    normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+    !simplifiedShiftAccess && normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
   );
   const pendingAdvanceOrders = useMemo(() => perfMeasureSync('page.Sales.derive.pendingAdvanceOrders', () => {
     const q = advanceSearch.trim().toLowerCase();
@@ -2241,18 +2255,19 @@ export default function Sales() {
     }
   };
 
-  const createReturnFromSelectedTransaction = () => {
+  const createReturnFromSelectedTransaction = async () => {
     if (!selectedReturnTx || !returnDraftTransaction || returnPreview.total <= 0 || selectedReturnQty <= 0) {
       setReturnSubmitError('Unable to create return safely. Use preview details and adjust quantities.');
       return;
     }
+    if (!(await validateOpenShiftForPos())) return;
     if (resolvedReturnMode === 'refund_cash') {
       const freshAvailability = getSalesCashSourceAvailability(loadData());
-      const selectedSource = normalizeCashSource(returnCashSource);
+      const selectedSource = simplifiedShiftAccess ? 'drawer' : normalizeCashSource(returnCashSource);
       const available = selectedSource === 'reserve' ? freshAvailability.reserveCash : freshAvailability.activeCash;
       const refundAmount = Math.max(0, Number(returnPreview.cashRefund || 0));
       if (refundAmount > available) {
-        setReturnSubmitError(`${formatCashSourceLabel(selectedSource)} cannot cover this cash refund.`);
+        setReturnSubmitError(`${simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(selectedSource)} cannot cover this cash refund.`);
         return;
       }
     }
@@ -2271,7 +2286,7 @@ export default function Sales() {
       customerName: selectedReturnTx.customerName,
       paymentMethod: resolvedReturnMode === 'refund_online' ? 'Online' : resolvedReturnMode === 'reduce_due' || resolvedReturnMode === 'store_credit' ? 'Credit' : 'Cash',
       returnHandlingMode: resolvedReturnMode,
-      cashSource: resolvedReturnMode === 'refund_cash' ? returnCashSource : undefined,
+      cashSource: resolvedReturnMode === 'refund_cash' ? (simplifiedShiftAccess ? 'drawer' : returnCashSource) : undefined,
       sourceTransactionId: selectedReturnTx.id,
       sourceTransactionDate: selectedReturnTx.date,
       notes: `Return against sale bill ${selectedReturnTx.id}`,
@@ -2619,7 +2634,7 @@ export default function Sales() {
           </button>
           <div className="h-px bg-border" />
           <div className="flex justify-between items-center"><span className="text-lg font-bold">Total</span><span className={`text-xl font-extrabold ${isReturnMode ? 'text-orange-600' : ''}`}>{isReturnMode ? '-' : ''}{formatMoneyWhole(Math.abs(grandTotal))}</span></div>
-          <Button className={`w-full h-10 font-semibold ${isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} disabled={cart.length === 0} onClick={() => initiateCheckout()}>
+          <Button className={`w-full h-10 font-semibold ${isReturnMode ? 'bg-orange-600 hover:bg-orange-700' : ''}`} disabled={cart.length === 0} onClick={() => void initiateCheckout()}>
             {isReturnMode ? 'Create Return Invoice' : 'Create Invoice'}
           </Button>
           </>
@@ -3047,7 +3062,7 @@ export default function Sales() {
                       <div className="rounded border bg-white p-2 flex justify-between"><span>Estimated Cash Outflow</span><span className="font-semibold">{formatMoneyPrecise(returnPreview.cashRefund)}</span></div>
                       <div className="rounded border bg-white p-2 flex justify-between"><span>Estimated Online Outflow</span><span className="font-semibold">{formatMoneyPrecise(returnPreview.onlineRefund)}</span></div>
                       <div className="rounded border bg-white p-2 flex justify-between"><span>Store Credit to be Created</span><span className="font-semibold">{formatMoneyPrecise(returnPreview.storeCreditCreated)}</span></div>
-                      {resolvedReturnMode === 'refund_cash' && returnPreview.cashRefund > 0 && (
+                      {resolvedReturnMode === 'refund_cash' && returnPreview.cashRefund > 0 && !simplifiedShiftAccess && (
                         <div className="rounded border bg-white p-2 space-y-1">
                           <Label className="text-[11px] font-bold uppercase text-muted-foreground">Refund From</Label>
                           <select
@@ -3076,7 +3091,7 @@ export default function Sales() {
             <div className="border-t p-3 grid grid-cols-3 gap-2">
               <Button variant="outline" onClick={() => setIsReturnPopupOpen(false)}>Cancel</Button>
               <Button variant="outline" onClick={() => setReturnSubmitError(null)}>Generate Return Preview</Button>
-              <Button className="bg-orange-600 hover:bg-orange-700" disabled={returnPreview.total <= 0 || selectedReturnQty <= 0} onClick={createReturnFromSelectedTransaction}>Create Return</Button>
+              <Button className="bg-orange-600 hover:bg-orange-700" disabled={returnPreview.total <= 0 || selectedReturnQty <= 0} onClick={() => void createReturnFromSelectedTransaction()}>Create Return</Button>
             </div>
           </Card>
         </div>
@@ -3358,7 +3373,7 @@ export default function Sales() {
                       <Button size="sm" variant={returnHandlingMode === 'refund_online' ? 'default' : 'outline'} onClick={() => setReturnHandlingMode('refund_online')}>Refund Online</Button>
                       <Button size="sm" variant={returnHandlingMode === 'store_credit' ? 'default' : 'outline'} onClick={() => setReturnHandlingMode('store_credit')}>Store Credit</Button>
                     </div>
-                    {returnHandlingMode === 'refund_cash' && (
+                    {returnHandlingMode === 'refund_cash' && !simplifiedShiftAccess && (
                       <div className="space-y-1 rounded-md border bg-white p-2">
                         <Label className="text-[11px] font-bold uppercase text-muted-foreground">Refund From</Label>
                         <select
@@ -3375,7 +3390,7 @@ export default function Sales() {
                       </div>
                     )}
                     <p className="text-[11px] text-muted-foreground">
-                      {returnHandlingMode === 'refund_cash' && <span className={getPaymentStatusColorClass('refund').replace('bg-red-50 border-red-200 ', '')}>Cash outflow from {formatCashSourceLabel(returnCashSource)}.</span>}
+                      {returnHandlingMode === 'refund_cash' && <span className={getPaymentStatusColorClass('refund').replace('bg-red-50 border-red-200 ', '')}>Cash outflow from {simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(returnCashSource)}.</span>}
                       {returnHandlingMode === 'refund_online' && 'Online/bank refund (no drawer cash impact).'}
                       {returnHandlingMode === 'reduce_due' && 'Apply against customer due (customer required).'}
                       {returnHandlingMode === 'store_credit' && 'Convert to customer store credit (customer required).'}

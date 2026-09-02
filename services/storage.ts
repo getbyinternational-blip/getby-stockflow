@@ -2716,6 +2716,7 @@ const defaultProfile: StoreProfile = {
   thermalPaddingY: 1.5,
   autoSendInvoiceAfterCreation: false,
   repairCenterEnabled: false,
+  simplifiedShiftAccess: false,
   telegramCollections: [],
   telegramActiveCollectionId: '',
 };
@@ -5237,6 +5238,7 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
   customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
   customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
   customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
+  simplifiedShiftAccess: Boolean(profile.simplifiedShiftAccess),
   telegramCollections: Array.isArray(profile.telegramCollections)
     ? profile.telegramCollections
         .map((collection) => {
@@ -5402,6 +5404,7 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
       'invoiceFormat',
       'thermalPaperWidth',
       'autoSendInvoiceAfterCreation',
+      'simplifiedShiftAccess',
       'adminPin',
     ],
   });

@@ -30,6 +30,11 @@ import {
   refreshExpenseActivitiesFromCloud,
 } from "../services/storage";
 import { getAvailableCashAt } from "../services/cashAvailability";
+import {
+  ensureSimplifiedShiftForToday,
+  isSimplifiedShiftAccessEnabled,
+  saveSimplifiedShiftNote,
+} from "../services/simplifiedShift";
 import { financeLog } from "../services/financeLogger";
 import {
   AppState,
@@ -2148,7 +2153,7 @@ function StatCard({
 }: {
   label: string;
   value: string;
-  tone?: "neutral" | "good" | "bad";
+  tone?: "neutral" | "good" | "bad" | "amber";
   interactive?: boolean;
   hint?: string;
 }) {
@@ -2157,7 +2162,9 @@ function StatCard({
       ? "border-emerald-200 bg-emerald-50 text-emerald-900"
       : tone === "bad"
         ? "border-red-200 bg-red-50 text-red-900"
-        : "border-border bg-muted/30";
+        : tone === "amber"
+          ? "border-orange-200 bg-orange-50 text-orange-950"
+          : "border-border bg-muted/30";
 
   return (
     <div
@@ -2529,6 +2536,16 @@ export default function Finance({
   const [closingCounts, setClosingCounts] = useState<Record<number, number>>(
     () => buildEmptyCounts(),
   );
+  const [simplifiedShiftNote, setSimplifiedShiftNote] = useState("");
+  const [simplifiedShiftNoteStatus, setSimplifiedShiftNoteStatus] =
+    useState<string | null>(null);
+  const [simplifiedCashDetail, setSimplifiedCashDetail] = useState<{
+    dateKey: string;
+    label: string;
+    metric: "opening" | "cashIn" | "cashOut" | "closing";
+    rows: CashbookRow[];
+    amount: number;
+  } | null>(null);
   const [isOpeningUnlockModalOpen, setIsOpeningUnlockModalOpen] =
     useState(false);
   const [unlockPinInput, setUnlockPinInput] = useState("");
@@ -2680,6 +2697,12 @@ export default function Finance({
   useEscapeLayer(
     isCurrentClosingBreakdownOpen,
     () => setIsCurrentClosingBreakdownOpen(false),
+    { priority: 101 },
+  );
+
+  useEscapeLayer(
+    Boolean(simplifiedCashDetail),
+    () => setSimplifiedCashDetail(null),
     { priority: 101 },
   );
 
@@ -2901,7 +2924,47 @@ export default function Finance({
       0,
     );
 
+  const makeCashbookRow = (
+    row: Pick<
+      CashbookRow,
+      | "id"
+      | "date"
+      | "billNo"
+      | "type"
+      | "customer"
+      | "notes"
+      | "cashIn"
+      | "cashOut"
+      | "netCashEffect"
+      | "effectSummary"
+    > &
+      Partial<CashbookRow>,
+  ): CashbookRow =>
+    normalizeCashbookRowMoney({
+      eventType: "transaction",
+      isSynthetic: false,
+      grossSales: 0,
+      salesReturn: 0,
+      netSales: 0,
+      creditDueCreated: 0,
+      onlineSale: 0,
+      currentDueEffect: 0,
+      currentStoreCreditEffect: 0,
+      onlineIn: 0,
+      onlineOut: 0,
+      cogsEffect: 0,
+      grossProfitEffect: 0,
+      expense: 0,
+      netProfitEffect: 0,
+      layerType: "operational",
+      isCorrectionImpact: false,
+      isRealActivity: true,
+      correctionImpactClass: "n/a",
+      ...row,
+    });
+
   const openSession = cashSessions.find((s) => s.status === "open");
+  const simplifiedShiftAccess = isSimplifiedShiftAccessEnabled(data);
 
   const visibleCashSessions = useMemo(
     () => cashSessions.filter((session) => !session.deletedAt),
@@ -2970,6 +3033,34 @@ export default function Finance({
       setActiveHistoryDetailSessionId(null);
     }
   }, [activeHistoryDetailSessionId, activeHistorySession]);
+
+  useEffect(() => {
+    if (!simplifiedShiftAccess) return;
+
+    void ensureSimplifiedShiftForToday({
+      reason: "finance.simplifiedShift.ensureToday",
+    })
+      .then((result) => {
+        if (result.changed) setData(result.state);
+        setErrors(null);
+      })
+      .catch((error) => {
+        setErrors(
+          getFriendlyErrorMessage(error, "finance.simplifiedShift.ensureToday"),
+        );
+      });
+  }, [simplifiedShiftAccess]);
+
+  useEffect(() => {
+    setSimplifiedShiftNote(openSession?.closingEditNote || "");
+    setSimplifiedShiftNoteStatus(null);
+  }, [openSession?.id, openSession?.closingEditNote]);
+
+  useEffect(() => {
+    if (!simplifiedShiftAccess) return;
+    setExpenseCashSource("drawer");
+    setWithdrawalCashSource("drawer");
+  }, [simplifiedShiftAccess]);
 
   const cashHistorySummary = useMemo(
     () =>
@@ -5593,6 +5684,491 @@ export default function Finance({
     });
   }, [cashbookRows]);
 
+  const simplifiedCashMovementRows = useMemo(() => {
+    const rows: CashbookRow[] = [];
+
+    (data.transactions || []).forEach((tx) => {
+      const txDate = (tx as any).financialDate || tx.date;
+      const txAmount = Math.abs(Number(tx.total || 0));
+
+      if (!txDate || !Number.isFinite(new Date(txDate).getTime())) return;
+
+      if (isSaleLikeTx(tx)) {
+        const settlement = getSaleSettlementBreakdown(tx);
+        const cashPaid = Math.max(0, Number(settlement.cashPaid || 0));
+        const cogsAmount = getTxCogs(tx);
+
+        if (cashPaid > 0) {
+          rows.push(
+            makeCashbookRow({
+              id: `simplified-sale-${tx.id}`,
+              date: txDate,
+              billNo: tx.receiptNo || tx.id,
+              type: "sale",
+              eventType: "transaction",
+              sourceTxId: tx.id,
+              customer: tx.customerName || "Walk-in customer",
+              notes: `Cash sale received`,
+              grossSales: txAmount,
+              netSales: txAmount,
+              creditDueCreated: Math.max(0, Number(settlement.creditDue || 0)),
+              onlineSale: Math.max(0, Number(settlement.onlinePaid || 0)),
+              cashIn: cashPaid,
+              cashOut: 0,
+              netCashEffect: cashPaid,
+              cogsEffect: cogsAmount,
+              grossProfitEffect: txAmount - cogsAmount,
+              netProfitEffect: txAmount - cogsAmount,
+              effectSummary: `Cash ${cashPaid.toFixed(2)}`,
+            }),
+          );
+        }
+
+        return;
+      }
+
+      if (tx.type === "payment" && tx.paymentMethod === "Cash" && txAmount > 0) {
+        rows.push(
+          makeCashbookRow({
+            id: `simplified-payment-${tx.id}`,
+            date: txDate,
+            billNo: tx.receiptNo || tx.id,
+            type: "payment",
+            eventType: "transaction",
+            sourceTxId: tx.id,
+            customer: tx.customerName || "Customer",
+            notes: "Cash collection",
+            cashIn: txAmount,
+            cashOut: 0,
+            netCashEffect: txAmount,
+            effectSummary: "Customer cash collection",
+          }),
+        );
+
+        return;
+      }
+
+      if (tx.type === "customer_cash_out" && tx.paymentMethod === "Cash" && txAmount > 0) {
+        rows.push(
+          makeCashbookRow({
+            id: `simplified-customer-cash-out-${tx.id}`,
+            date: txDate,
+            billNo: tx.receiptNo || tx.id,
+            type: "customer_cash_out",
+            eventType: "transaction",
+            sourceTxId: tx.id,
+            customer: tx.customerName || "Customer",
+            notes: "Customer cash out",
+            cashIn: 0,
+            cashOut: txAmount,
+            netCashEffect: -txAmount,
+            effectSummary: "Customer cash out",
+          }),
+        );
+
+        return;
+      }
+
+      if (tx.type === "return") {
+        const effects = getReturnFinancialEffectsForFinance(tx);
+        const cashRefund = Math.max(0, Number(effects.cashRefund || 0));
+
+        if (cashRefund > 0) {
+          rows.push(
+            makeCashbookRow({
+              id: `simplified-return-${tx.id}`,
+              date: txDate,
+              billNo: tx.receiptNo || tx.id,
+              type: "return",
+              eventType: "transaction",
+              sourceTxId: tx.id,
+              customer: tx.customerName || "Customer",
+              notes: "Cash refund / return",
+              grossSales: 0,
+              salesReturn: txAmount,
+              netSales: -txAmount,
+              cashIn: 0,
+              cashOut: cashRefund,
+              netCashEffect: -cashRefund,
+              effectSummary: "Cash refund",
+            }),
+          );
+        }
+      }
+    });
+
+    (expenses || []).forEach((expense) => {
+      const expenseDate = getExpenseEffectiveDate(expense);
+      const amount = Math.max(0, Number(expense.amount || 0));
+      const method = String((expense as any).paymentMethod || "Cash");
+
+      if (
+        !expenseDate ||
+        method === "Online" ||
+        amount <= 0 ||
+        !Number.isFinite(new Date(expenseDate).getTime())
+      ) {
+        return;
+      }
+
+      rows.push(
+        makeCashbookRow({
+          id: `simplified-expense-${expense.id}`,
+          date: expenseDate,
+          billNo: expense.id,
+          type: "expense",
+          eventType: "transaction",
+          customer: expense.title || expense.category || "Expense",
+          notes: expense.note || expense.category || "Expense cash out",
+          cashIn: 0,
+          cashOut: amount,
+          netCashEffect: -amount,
+          expense: amount,
+          netProfitEffect: -amount,
+          effectSummary: "Expense cash out",
+        }),
+      );
+    });
+
+    const supplierPaymentIds = new Set(
+      (data.supplierPayments || [])
+        .map((payment: any) => String(payment?.id || "").trim())
+        .filter(Boolean),
+    );
+
+    (data.supplierPayments || []).forEach((payment: any) => {
+      if (payment.deletedAt) return;
+
+      const paymentDate =
+        payment.paidAt || payment.paymentDate || payment.date || payment.createdAt;
+      const amount = Math.max(0, Number(payment.amount || 0));
+
+      if (
+        getSupplierPaymentMethodForDrawer(payment.method) !== "cash" ||
+        amount <= 0 ||
+        !paymentDate ||
+        !Number.isFinite(new Date(paymentDate).getTime())
+      ) {
+        return;
+      }
+
+      rows.push(
+        makeCashbookRow({
+          id: `simplified-supplier-payment-${payment.id}`,
+          date: paymentDate,
+          billNo: payment.voucherNo || payment.id,
+          type: "supplier_payment",
+          eventType: "supplier_payment",
+          isSynthetic: true,
+          customer: payment.partyName || "Supplier",
+          notes: payment.note || "Cash supplier payment",
+          cashIn: 0,
+          cashOut: amount,
+          netCashEffect: -amount,
+          effectSummary: "Supplier cash payment",
+        }),
+      );
+    });
+
+    (data.purchaseOrders || []).forEach((order: any) => {
+      (order.paymentHistory || []).forEach((payment: any) => {
+        if (payment.supplierPaymentId && supplierPaymentIds.has(String(payment.supplierPaymentId))) {
+          return;
+        }
+
+        const paymentDate =
+          payment.paidAt || payment.paymentDate || payment.date || order.effectiveAt || order.orderDate || order.createdAt;
+        const amount = Math.max(0, Number(payment.amount || 0));
+
+        if (
+          String(payment.method || "").trim().toLowerCase() !== "cash" ||
+          amount <= 0 ||
+          !paymentDate ||
+          !Number.isFinite(new Date(paymentDate).getTime())
+        ) {
+          return;
+        }
+
+        rows.push(
+          makeCashbookRow({
+            id: `simplified-purchase-payment-${order.id}-${payment.id || paymentDate}`,
+            date: paymentDate,
+            billNo: order.billNumber || payment.id || order.id,
+            type: "supplier_payment",
+            eventType: "supplier_payment",
+            isSynthetic: true,
+            customer: order.partyName || "Supplier",
+            notes: payment.note || "Purchase cash payment",
+            cashIn: 0,
+            cashOut: amount,
+            netCashEffect: -amount,
+            expense: amount,
+            netProfitEffect: -amount,
+            effectSummary: "Purchase cash payment",
+          }),
+        );
+      });
+    });
+
+    (data.deleteCompensations || []).forEach((compensation) => {
+      const amount = Math.max(0, Number(compensation.amount || 0));
+      const createdAt = compensation.createdAt;
+
+      if (
+        !isExplicitDeleteRefund(compensation) ||
+        amount <= 0 ||
+        !createdAt ||
+        !Number.isFinite(new Date(createdAt).getTime())
+      ) {
+        return;
+      }
+
+      rows.push(
+        makeCashbookRow({
+          id: `simplified-delete-compensation-${compensation.id}`,
+          date: createdAt,
+          billNo: compensation.transactionId || compensation.id,
+          type: "delete_compensation",
+          eventType: "delete_compensation",
+          isSynthetic: true,
+          sourceTxId: compensation.transactionId,
+          customer: compensation.customerName || "Customer",
+          notes: compensation.reason || "Deleted sale cash refund",
+          cashIn: 0,
+          cashOut: amount,
+          netCashEffect: -amount,
+          effectSummary: "Deleted sale cash refund",
+        }),
+      );
+    });
+
+    (data.updatedTransactionEvents || []).forEach((updated) => {
+      const delta = updated.cashbookDelta;
+      const updatedAt = updated.updatedAt;
+      const cashIn = Math.max(0, Number(delta?.cashIn || 0));
+      const cashOut = Math.max(0, Number(delta?.cashOut || 0));
+
+      if (
+        (!cashIn && !cashOut) ||
+        !updatedAt ||
+        !Number.isFinite(new Date(updatedAt).getTime())
+      ) {
+        return;
+      }
+
+      rows.push(
+        makeCashbookRow({
+          id: `simplified-update-correction-${updated.id}`,
+          date: updatedAt,
+          billNo: updated.updatedTransactionId || updated.originalTransactionId || updated.id,
+          type: "update_correction",
+          eventType: "update_correction",
+          isSynthetic: true,
+          sourceTxId: updated.updatedTransactionId || updated.originalTransactionId,
+          customer: updated.customerName || "Customer",
+          notes: updated.changeSummary || updated.effectSummaryAfter || "Edited transaction cash change",
+          grossSales: Number(delta?.grossSales || 0),
+          salesReturn: Number(delta?.salesReturn || 0),
+          netSales: Number(delta?.netSales || 0),
+          creditDueCreated: Number(delta?.creditDueCreated || 0),
+          onlineSale: Number(delta?.onlineSale || 0),
+          currentDueEffect: Number(delta?.currentDueEffect || 0),
+          currentStoreCreditEffect: Number(delta?.currentStoreCreditEffect || 0),
+          cashIn,
+          cashOut,
+          onlineIn: Number(delta?.onlineIn || 0),
+          onlineOut: Number(delta?.onlineOut || 0),
+          netCashEffect: Number(delta?.netCashEffect || cashIn - cashOut),
+          cogsEffect: Number(delta?.cogsEffect || 0),
+          grossProfitEffect: Number(delta?.grossProfitEffect || 0),
+          expense: Number(delta?.expense || 0),
+          netProfitEffect: Number(delta?.netProfitEffect || 0),
+          effectSummary: "Edited transaction cash change",
+        }),
+      );
+    });
+
+    (cashAdjustments || []).forEach((entry) => {
+      const entryDate = entry.effectiveAt || entry.createdAt;
+      const amount = Math.max(0, Number(entry.amount || 0));
+
+      if (
+        !entryDate ||
+        amount <= 0 ||
+        !Number.isFinite(new Date(entryDate).getTime())
+      ) {
+        return;
+      }
+
+      const isOut = entry.type === "cash_withdrawal";
+
+      rows.push(
+        makeCashbookRow({
+          id: `simplified-cash-adjustment-${entry.id}`,
+          date: entryDate,
+          billNo: entry.reference || entry.id,
+          type: "cash_adjustment",
+          eventType: "cash_adjustment",
+          isSynthetic: true,
+          customer: entry.paidTo || entry.title || "Cash Drawer",
+          notes: entry.note || entry.title || (isOut ? "Cash withdrawal" : "Cash addition"),
+          cashIn: isOut ? 0 : amount,
+          cashOut: isOut ? amount : 0,
+          netCashEffect: isOut ? -amount : amount,
+          effectSummary: isOut ? "Manual cash withdrawal" : "Manual cash addition",
+        }),
+      );
+    });
+
+    (data.manualCashbookEntries || [])
+      .filter((entry) => !entry?.isDeleted)
+      .forEach((entry) => {
+        const entryDate = entry.date || entry.createdAt;
+        const amount = Math.max(0, Number(entry.amount || 0));
+        const isOut = entry.type === "cash_out";
+
+        if (
+          !entryDate ||
+          amount <= 0 ||
+          !Number.isFinite(new Date(entryDate).getTime())
+        ) {
+          return;
+        }
+
+        rows.push(
+          makeCashbookRow({
+            id: `simplified-manual-cashbook-${entry.id}`,
+            date: entryDate,
+            billNo: entry.id,
+            type: isOut ? "manual_cash_out" : "manual_cash_in",
+            eventType: "manual_cash_entry",
+            isSynthetic: true,
+            customer: "Cash Drawer",
+            notes: entry.details || (isOut ? "Manual cash out" : "Manual cash in"),
+            cashIn: isOut ? 0 : amount,
+            cashOut: isOut ? amount : 0,
+            netCashEffect: isOut ? -amount : amount,
+            effectSummary: isOut ? "Manual cash out" : "Manual cash in",
+          }),
+        );
+      });
+
+    return rows.sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
+  }, [
+    data.transactions,
+    expenses,
+    data.supplierPayments,
+    data.purchaseOrders,
+    data.deleteCompensations,
+    data.updatedTransactionEvents,
+    cashAdjustments,
+    data.manualCashbookEntries,
+  ]);
+
+  useEffect(() => {
+    if (simplifiedShiftAccess && cashbookScope !== "all") {
+      setCashbookScope("all");
+    }
+  }, [simplifiedShiftAccess, cashbookScope]);
+
+  const simplifiedDailyCashFlow = useMemo(() => {
+    let runningClosing = 0;
+    const byDay = new Map<string, CashbookRow[]>();
+
+    const sortedRows = simplifiedCashMovementRows
+      .filter((row) => Number.isFinite(new Date(row.date).getTime()))
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    sortedRows.forEach((row) => {
+        const key = dateKeyFromDate(new Date(row.date));
+        byDay.set(key, [...(byDay.get(key) || []), row]);
+      });
+
+    const firstDate = sortedRows[0]?.date
+      ? new Date(sortedRows[0].date)
+      : new Date();
+    const cursor = new Date(
+      firstDate.getFullYear(),
+      firstDate.getMonth(),
+      firstDate.getDate(),
+    );
+    const today = new Date();
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const days: Array<{
+      dateKey: string;
+      label: string;
+      opening: number;
+      cashIn: number;
+      cashOut: number;
+      closing: number;
+      rows: CashbookRow[];
+      cashInRows: CashbookRow[];
+      cashOutRows: CashbookRow[];
+    }> = [];
+
+    while (cursor.getTime() <= end.getTime()) {
+        const dateKey = dateKeyFromDate(cursor);
+        const rows = byDay.get(dateKey) || [];
+        const opening = runningClosing;
+        const cashIn = roundMoney(
+          rows.reduce((sum, row) => sum + Math.max(0, Number(row.cashIn) || 0), 0),
+        );
+        const cashOut = roundMoney(
+          rows.reduce((sum, row) => sum + Math.max(0, Number(row.cashOut) || 0), 0),
+        );
+        const closing = roundMoney(opening + cashIn - cashOut);
+
+        runningClosing = closing;
+
+        days.push({
+          dateKey,
+          label: formatDateDisplay(`${dateKey}T00:00:00`),
+          opening,
+          cashIn,
+          cashOut,
+          closing,
+          rows,
+          cashInRows: rows.filter((row) => Math.max(0, Number(row.cashIn) || 0) > 0),
+          cashOutRows: rows.filter((row) => Math.max(0, Number(row.cashOut) || 0) > 0),
+        });
+
+        cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return days.sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+  }, [simplifiedCashMovementRows]);
+
+  const simplifiedTodayCashFlow =
+    simplifiedDailyCashFlow.find((day) => day.dateKey === todayISO()) ||
+    simplifiedDailyCashFlow[0] ||
+    null;
+
+  const openSimplifiedCashDetail = (
+    day: NonNullable<typeof simplifiedTodayCashFlow>,
+    metric: "opening" | "cashIn" | "cashOut" | "closing",
+  ) => {
+    const rows =
+      metric === "cashIn"
+        ? day.cashInRows
+        : metric === "cashOut"
+          ? day.cashOutRows
+          : simplifiedCashMovementRows.filter(
+              (row) => dateKeyFromDate(new Date(row.date)) <= day.dateKey,
+            );
+
+    setSimplifiedCashDetail({
+      dateKey: day.dateKey,
+      label: day.label,
+      metric,
+      rows: [...rows].sort(
+        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+      ),
+      amount: day[metric],
+    });
+  };
+
   const currentClosingBreakdownRows = useMemo(() => {
     if (!openSession) {
       return [] as Array<
@@ -6765,6 +7341,33 @@ const transactionMap = new Map<string, Transaction>(
     }
   };
 
+  const saveSimplifiedNote = async () => {
+    if (!openSession) return;
+
+    setSimplifiedShiftNoteStatus("Saving...");
+
+    try {
+      const nextState = await saveSimplifiedShiftNote(
+        openSession.id,
+        simplifiedShiftNote,
+      );
+
+      setData(nextState);
+      setErrors(null);
+      setSimplifiedShiftNoteStatus("Note saved.");
+      window.setTimeout(() => {
+        setSimplifiedShiftNoteStatus((current) =>
+          current === "Note saved." ? null : current,
+        );
+      }, 1800);
+    } catch (error) {
+      setSimplifiedShiftNoteStatus(null);
+      setErrors(
+        getFriendlyErrorMessage(error, "finance.simplifiedShift.saveNote"),
+      );
+    }
+  };
+
   const startShift = async () => {
     if (openSession) {
       return setErrors("An open cash session already exists.");
@@ -7786,8 +8389,12 @@ const transactionMap = new Map<string, Transaction>(
       : []
     ).find((session) => session.status === "open");
 
+    const resolvedExpenseCashSource: CashSource = simplifiedShiftAccess
+      ? "drawer"
+      : expenseCashSource;
+
     const availableFromSelectedSource = getAvailableCashBySource(
-      expenseCashSource,
+      resolvedExpenseCashSource,
       eventTime,
       fresh,
       freshOpenSession,
@@ -7795,7 +8402,7 @@ const transactionMap = new Map<string, Transaction>(
 
     if (amount > availableFromSelectedSource) {
       return setErrors(
-        `${formatCashSourceLabel(expenseCashSource)} cannot cover this expense.`,
+        `${simplifiedShiftAccess ? "Cash drawer" : formatCashSourceLabel(resolvedExpenseCashSource)} cannot cover this expense.`,
       );
     }
 
@@ -7812,7 +8419,7 @@ const transactionMap = new Map<string, Transaction>(
 
       paymentMethod: "Cash",
 
-      cashSource: expenseCashSource,
+      cashSource: resolvedExpenseCashSource,
 
       effectiveAt: financialDate || new Date().toISOString(),
 
@@ -7941,8 +8548,12 @@ const transactionMap = new Map<string, Transaction>(
       : []
     ).find((session) => session.status === "open");
 
+    const resolvedWithdrawalCashSource: CashSource = simplifiedShiftAccess
+      ? "drawer"
+      : withdrawalCashSource;
+
     const availableFromSelectedSource = getAvailableCashBySource(
-      withdrawalCashSource,
+      resolvedWithdrawalCashSource,
       eventTime,
       fresh,
       freshOpenSession,
@@ -7950,7 +8561,7 @@ const transactionMap = new Map<string, Transaction>(
 
     if (type === "cash_withdrawal" && amount > availableFromSelectedSource) {
       return setErrors(
-        `${formatCashSourceLabel(withdrawalCashSource)} cannot cover this withdrawal.`,
+        `${simplifiedShiftAccess ? "Cash drawer" : formatCashSourceLabel(resolvedWithdrawalCashSource)} cannot cover this withdrawal.`,
       );
     }
 
@@ -7961,7 +8572,8 @@ const transactionMap = new Map<string, Transaction>(
 
       amount,
 
-      cashSource: type === "cash_withdrawal" ? withdrawalCashSource : undefined,
+      cashSource:
+        type === "cash_withdrawal" ? resolvedWithdrawalCashSource : undefined,
 
       note: rawNote.trim() || undefined,
 
@@ -8091,8 +8703,12 @@ const transactionMap = new Map<string, Transaction>(
       return;
     }
 
+    const resolvedWithdrawalCashSource: CashSource = simplifiedShiftAccess
+      ? "drawer"
+      : withdrawalCashSource;
+
     const availableFromSelectedSource = getAvailableCashBySource(
-      withdrawalCashSource,
+      resolvedWithdrawalCashSource,
       financialDate,
     );
 
@@ -8101,7 +8717,7 @@ const transactionMap = new Map<string, Transaction>(
       nextAmount > availableFromSelectedSource
     ) {
       setErrors(
-        `${formatCashSourceLabel(withdrawalCashSource)} cannot cover this withdrawal.`,
+        `${simplifiedShiftAccess ? "Cash drawer" : formatCashSourceLabel(resolvedWithdrawalCashSource)} cannot cover this withdrawal.`,
       );
       return;
     }
@@ -8121,7 +8737,7 @@ const transactionMap = new Map<string, Transaction>(
       type: "cash_withdrawal",
       amount: nextAmount,
       method: withdrawalMethod.trim() || "Cash",
-      cashSource: withdrawalCashSource,
+      cashSource: resolvedWithdrawalCashSource,
       title: withdrawalTitle.trim() || "Manual Cash Withdrawal",
       note: cashWithdrawNote.trim() || undefined,
       paidTo: withdrawalPaidTo.trim() || undefined,
@@ -8173,7 +8789,9 @@ const transactionMap = new Map<string, Transaction>(
         ).find((session) => session.status === "open");
 
         const availableFromSelectedSource = getAvailableCashBySource(
-          withdrawalRepairDraft.nextCashAdjustment.cashSource || "drawer",
+          simplifiedShiftAccess
+            ? "drawer"
+            : withdrawalRepairDraft.nextCashAdjustment.cashSource || "drawer",
           withdrawalRepairDraft.financialDate,
           fresh,
           freshOpenSession,
@@ -8184,7 +8802,7 @@ const transactionMap = new Map<string, Transaction>(
           availableFromSelectedSource
         ) {
           setErrors(
-            `${formatCashSourceLabel(withdrawalRepairDraft.nextCashAdjustment.cashSource)} cannot cover this withdrawal.`,
+            `${simplifiedShiftAccess ? "Cash drawer" : formatCashSourceLabel(withdrawalRepairDraft.nextCashAdjustment.cashSource)} cannot cover this withdrawal.`,
           );
           return;
         }
@@ -8343,8 +8961,11 @@ const transactionMap = new Map<string, Transaction>(
           expenseRepairDraft.nextExpense.effectiveAt ||
           expenseRepairDraft.nextExpense.createdAt;
 
+        const resolvedExpenseCashSource: CashSource = simplifiedShiftAccess
+          ? "drawer"
+          : expenseRepairDraft.nextExpense.cashSource || "drawer";
         const availableFromSelectedSource = getAvailableCashBySource(
-          expenseRepairDraft.nextExpense.cashSource || "drawer",
+          resolvedExpenseCashSource,
           expenseEventTime,
           fresh,
           freshOpenSession,
@@ -8354,7 +8975,7 @@ const transactionMap = new Map<string, Transaction>(
           expenseRepairDraft.nextExpense.amount > availableFromSelectedSource
         ) {
           setErrors(
-            `${formatCashSourceLabel(expenseRepairDraft.nextExpense.cashSource)} cannot cover this expense.`,
+            `${simplifiedShiftAccess ? "Cash drawer" : formatCashSourceLabel(resolvedExpenseCashSource)} cannot cover this expense.`,
           );
           return;
         }
@@ -8751,21 +9372,23 @@ const transactionMap = new Map<string, Transaction>(
                     />
                   </div>
 
-                  <div>
-                    <Label>Utilize From</Label>
+                  {!simplifiedShiftAccess && (
+                    <div>
+                      <Label>Utilize From</Label>
 
-                    <select
-                      className="h-10 w-full rounded-md border px-3 text-sm"
-                      value={expenseCashSource}
-                      onChange={(e) =>
-                        setExpenseCashSource(e.target.value as CashSource)
-                      }
-                    >
-                      <option value="drawer">Active Cash</option>
+                      <select
+                        className="h-10 w-full rounded-md border px-3 text-sm"
+                        value={expenseCashSource}
+                        onChange={(e) =>
+                          setExpenseCashSource(e.target.value as CashSource)
+                        }
+                      >
+                        <option value="drawer">Active Cash</option>
 
-                      <option value="reserve">Reserve Cash</option>
-                    </select>
-                  </div>
+                        <option value="reserve">Reserve Cash</option>
+                      </select>
+                    </div>
+                  )}
 
                   <div>
                     <Label>Repair Reason</Label>
@@ -9156,21 +9779,23 @@ const transactionMap = new Map<string, Transaction>(
                   />
                 </div>
 
-                <div className="space-y-1">
-                  <Label>Utilize From</Label>
+                {!simplifiedShiftAccess && (
+                  <div className="space-y-1">
+                    <Label>Utilize From</Label>
 
-                  <select
-                    className="h-10 w-full rounded-md border px-3 text-sm"
-                    value={withdrawalCashSource}
-                    onChange={(e) =>
-                      setWithdrawalCashSource(e.target.value as CashSource)
-                    }
-                  >
-                    <option value="drawer">Active Cash</option>
+                    <select
+                      className="h-10 w-full rounded-md border px-3 text-sm"
+                      value={withdrawalCashSource}
+                      onChange={(e) =>
+                        setWithdrawalCashSource(e.target.value as CashSource)
+                      }
+                    >
+                      <option value="drawer">Active Cash</option>
 
-                    <option value="reserve">Reserve Cash</option>
-                  </select>
-                </div>
+                      <option value="reserve">Reserve Cash</option>
+                    </select>
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   <Label>Details / Title</Label>
@@ -10067,7 +10692,7 @@ const transactionMap = new Map<string, Transaction>(
         )}
 
         {!lockedTab && (
-          <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+          <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
             {tabs.map((tab) => {
               const isActive = activeTab === tab.key;
               return (
@@ -10477,7 +11102,141 @@ const transactionMap = new Map<string, Transaction>(
 
             {!isFinanceHydrating && (
               <>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {simplifiedShiftAccess && (
+              <Card className="border-slate-200 shadow-sm">
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle className="flex flex-wrap items-center gap-3">
+                        <span className="flex items-center gap-2">
+                          <Wallet className="w-5 h-5" /> Cash Management
+                        </span>
+                        {simplifiedTodayCashFlow && (
+                          <span className="text-xl font-semibold text-slate-900">
+                            {simplifiedTodayCashFlow.label}
+                          </span>
+                        )}
+                      </CardTitle>
+                    </div>
+                  </div>
+                </CardHeader>
+
+                <CardContent className="space-y-4">
+                  <>
+                      <div className="grid grid-cols-1 items-stretch gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)_24px_minmax(0,1fr)_24px_minmax(0,1fr)]">
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          disabled={!simplifiedTodayCashFlow}
+                          onClick={() =>
+                            simplifiedTodayCashFlow &&
+                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "opening")
+                          }
+                        >
+                          <StatCard
+                            label="Opening Cash"
+                            value={formatINRSummary(
+                              simplifiedTodayCashFlow?.opening || 0,
+                            )}
+                            interactive={Boolean(simplifiedTodayCashFlow)}
+                          />
+                        </button>
+                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                          +
+                        </div>
+
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          disabled={!simplifiedTodayCashFlow}
+                          onClick={() =>
+                            simplifiedTodayCashFlow &&
+                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "cashIn")
+                          }
+                        >
+                          <StatCard
+                            label="Cash In"
+                            value={formatINRSummary(
+                              simplifiedTodayCashFlow?.cashIn || 0,
+                            )}
+                            tone="good"
+                            interactive={Boolean(simplifiedTodayCashFlow)}
+                          />
+                        </button>
+                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                          -
+                        </div>
+
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          disabled={!simplifiedTodayCashFlow}
+                          onClick={() =>
+                            simplifiedTodayCashFlow &&
+                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "cashOut")
+                          }
+                        >
+                          <StatCard
+                            label="Cash Out"
+                            value={formatINRSummary(
+                              simplifiedTodayCashFlow?.cashOut || 0,
+                            )}
+                            tone="bad"
+                            interactive={Boolean(simplifiedTodayCashFlow)}
+                          />
+                        </button>
+                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                          =
+                        </div>
+
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          disabled={!simplifiedTodayCashFlow}
+                          onClick={() =>
+                            simplifiedTodayCashFlow &&
+                            openSimplifiedCashDetail(simplifiedTodayCashFlow, "closing")
+                          }
+                        >
+                          <StatCard
+                            label="Closing Cash"
+                            value={formatINRSummary(simplifiedTodayCashFlow?.closing || 0)}
+                            tone={(simplifiedTodayCashFlow?.closing || 0) < 0 ? "bad" : "amber"}
+                            interactive
+                          />
+                        </button>
+                      </div>
+
+                      <div className="w-full max-w-md space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:w-[30%]">
+                        <Label>Shift Note</Label>
+                        <Input
+                          value={simplifiedShiftNote}
+                          onChange={(event) =>
+                            setSimplifiedShiftNote(event.target.value)
+                          }
+                          placeholder="Optional note for this shift"
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void saveSimplifiedNote()}
+                          >
+                            Save Note
+                          </Button>
+                          {simplifiedShiftNoteStatus && (
+                            <span className="text-xs font-medium text-muted-foreground">
+                              {simplifiedShiftNoteStatus}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                  </>
+                </CardContent>
+              </Card>
+            )}
+
+            <div className={`grid grid-cols-1 gap-4 lg:grid-cols-2 ${simplifiedShiftAccess ? "hidden" : ""}`}>
               <Card className="border-slate-200 shadow-sm">
                 <CardHeader>
                   <div className="flex items-start justify-between gap-3">
@@ -11072,6 +11831,7 @@ const transactionMap = new Map<string, Transaction>(
               </Card>
             </div>
 
+            {!simplifiedShiftAccess && (
             <Card className="border-slate-200 shadow-sm">
               <CardHeader>
                 <CardTitle>Manual Cash Adjustment</CardTitle>
@@ -11107,7 +11867,8 @@ const transactionMap = new Map<string, Transaction>(
                 </Button>
               </CardContent>
             </Card>
-            {isCurrentClosingBreakdownOpen && openSession && (
+            )}
+            {!simplifiedShiftAccess && isCurrentClosingBreakdownOpen && openSession && (
               <div
                 className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
                 role="dialog"
@@ -12074,6 +12835,98 @@ const transactionMap = new Map<string, Transaction>(
                 );
               })()}
 
+            {simplifiedShiftAccess && (
+              <Card className="border-slate-200 shadow-sm bg-white">
+                <CardHeader className="border-b border-slate-200">
+                  <CardTitle className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold text-slate-900">
+                        Daily Cash Flow
+                      </h2>
+                    </div>
+                  </CardTitle>
+                </CardHeader>
+
+                <CardContent className="space-y-3 pt-5">
+                  {simplifiedDailyCashFlow.map((day) => (
+                    <div
+                      key={day.dateKey}
+                      className="rounded-xl border border-slate-200 bg-white shadow-sm"
+                    >
+                      <div className="grid grid-cols-1 items-center gap-2 p-3 sm:grid-cols-2 lg:grid-cols-[110px_minmax(0,1fr)_22px_minmax(0,1fr)_22px_minmax(0,1fr)_22px_minmax(0,1fr)]">
+                        <div className="min-w-0 text-sm font-semibold text-slate-900">
+                          {day.label}
+                        </div>
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          onClick={() => openSimplifiedCashDetail(day, "opening")}
+                        >
+                          <StatCard
+                            label="Opening"
+                            value={formatINRSummary(day.opening)}
+                            interactive
+                          />
+                        </button>
+                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                          +
+                        </div>
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          onClick={() => openSimplifiedCashDetail(day, "cashIn")}
+                        >
+                          <StatCard
+                            label="Total Cash In"
+                            value={formatINRSummary(day.cashIn)}
+                            tone="good"
+                            interactive
+                          />
+                        </button>
+                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                          -
+                        </div>
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          onClick={() => openSimplifiedCashDetail(day, "cashOut")}
+                        >
+                          <StatCard
+                            label="Total Cash Out"
+                            value={formatINRSummary(day.cashOut)}
+                            tone="bad"
+                            interactive
+                          />
+                        </button>
+                        <div className="hidden items-center justify-center text-4xl font-black leading-none text-slate-600 lg:flex">
+                          =
+                        </div>
+                        <button
+                          type="button"
+                          className="min-w-0 text-left"
+                          onClick={() => openSimplifiedCashDetail(day, "closing")}
+                        >
+                          <StatCard
+                            label="Closing"
+                            value={formatINRSummary(day.closing)}
+                            tone={day.closing >= 0 ? "amber" : "bad"}
+                            interactive
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {!simplifiedDailyCashFlow.length && (
+                    <p className="text-sm text-muted-foreground">
+                      No cash movement records found yet.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {!simplifiedShiftAccess && (
             <Card className="border-slate-200 shadow-sm bg-white">
               <CardHeader className="border-b border-slate-200">
                 <CardTitle className="flex items-start justify-between gap-3">
@@ -12382,7 +13235,8 @@ const transactionMap = new Map<string, Transaction>(
                 )}
               </CardContent>
             </Card>
-            {activeHistorySession &&
+            )}
+            {!simplifiedShiftAccess && activeHistorySession &&
               (() => {
                 const computedTotals = getSessionCashTotals(
                   data.transactions,
@@ -13233,6 +14087,7 @@ const transactionMap = new Map<string, Transaction>(
                         placeholder="Optional note or vendor detail"
                       />
                     </div>
+                    {!simplifiedShiftAccess && (
                     <div className="space-y-1.5">
                       <Label>Utilize From</Label>
                       <select
@@ -13257,6 +14112,7 @@ const transactionMap = new Map<string, Transaction>(
                         </span>
                       </div>
                     </div>
+                    )}
 
                     {repairMode && (
                       <>
@@ -13334,11 +14190,11 @@ const transactionMap = new Map<string, Transaction>(
                         Withdraw Cash
                       </CardTitle>
                       <p className="text-sm text-amber-800">
-                        Move cash out after choosing whether it should come from
-                        active cash or reserve cash.
+                        Move cash out from active cash.
                       </p>
                     </CardHeader>
                     <CardContent className="space-y-3 pt-5">
+                      {!simplifiedShiftAccess && (
                       <div className="rounded-xl border border-amber-200 bg-white/70 px-3 py-2 text-sm text-amber-900">
                         Available in{" "}
                         {formatCashSourceLabel(withdrawalCashSource)}:{" "}
@@ -13351,6 +14207,8 @@ const transactionMap = new Map<string, Transaction>(
                           )}
                         </span>
                       </div>
+                      )}
+                      {!simplifiedShiftAccess && (
                       <select
                         className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm"
                         value={withdrawalCashSource}
@@ -13361,6 +14219,7 @@ const transactionMap = new Map<string, Transaction>(
                         <option value="drawer">Active Cash</option>
                         <option value="reserve">Reserve Cash</option>
                       </select>
+                      )}
                       <Input
                         value={cashWithdrawAmount}
                         onChange={(e) =>
@@ -13796,6 +14655,7 @@ const transactionMap = new Map<string, Transaction>(
                             placeholder="Optional"
                           />
                         </div>
+                        {!simplifiedShiftAccess && (
                         <div className="space-y-1">
                           <Label>Utilize From</Label>
                           <select
@@ -13821,6 +14681,7 @@ const transactionMap = new Map<string, Transaction>(
                             </span>
                           </div>
                         </div>
+                        )}
 
                         {repairMode && (
                           <>
@@ -13877,6 +14738,7 @@ const transactionMap = new Map<string, Transaction>(
                             <div className="text-sm font-semibold text-amber-900">
                               Withdraw Cash
                             </div>
+                            {!simplifiedShiftAccess && (
                             <div className="text-xs text-amber-800">
                               Available in{" "}
                               {formatCashSourceLabel(withdrawalCashSource)}:{" "}
@@ -13887,6 +14749,7 @@ const transactionMap = new Map<string, Transaction>(
                                 ),
                               )}
                             </div>
+                            )}
                             <Input
                               value={cashWithdrawAmount}
                               onChange={(e) =>
@@ -13904,6 +14767,7 @@ const transactionMap = new Map<string, Transaction>(
                               }
                               placeholder="Reason / note (optional)"
                             />
+                            {!simplifiedShiftAccess && (
                             <select
                               className="w-full h-10 rounded-xl border border-amber-200 bg-white px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-300"
                               value={withdrawalCashSource}
@@ -13916,6 +14780,7 @@ const transactionMap = new Map<string, Transaction>(
                               <option value="drawer">Active Cash</option>
                               <option value="reserve">Reserve Cash</option>
                             </select>
+                            )}
                             <Button
                               variant="outline"
                               className="w-full"
@@ -14132,6 +14997,100 @@ const transactionMap = new Map<string, Transaction>(
                     )}
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {simplifiedCashDetail && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setSimplifiedCashDetail(null)}
+          >
+            <div
+              className="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
+                <div>
+                  <div className="text-base font-semibold text-slate-900">
+                    {simplifiedCashDetail.label} -{" "}
+                    {simplifiedCashDetail.metric === "cashIn"
+                      ? "Cash In"
+                      : simplifiedCashDetail.metric === "cashOut"
+                        ? "Cash Out"
+                        : simplifiedCashDetail.metric === "opening"
+                          ? "Opening"
+                          : "Closing"}
+                  </div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    Amount:{" "}
+                    <span className="font-semibold text-slate-900">
+                      {formatINRSummary(simplifiedCashDetail.amount)}
+                    </span>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSimplifiedCashDetail(null)}
+                >
+                  Close
+                </Button>
+              </div>
+
+              <div className="max-h-[72vh] overflow-auto p-4">
+                {simplifiedCashDetail.rows.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-600">
+                    No direct transaction rows for this amount.
+                  </div>
+                ) : (
+                  <div className="overflow-hidden rounded-xl border border-slate-200">
+                    <table className="min-w-full divide-y divide-slate-200 text-sm">
+                      <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Date</th>
+                          <th className="px-3 py-2 text-left">Type</th>
+                          <th className="px-3 py-2 text-left">Bill / Ref</th>
+                          <th className="px-3 py-2 text-left">Party</th>
+                          <th className="px-3 py-2 text-right">Cash In</th>
+                          <th className="px-3 py-2 text-right">Cash Out</th>
+                          <th className="px-3 py-2 text-left">Details</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 bg-white">
+                        {simplifiedCashDetail.rows.map((row) => (
+                          <tr key={row.id}>
+                            <td className="whitespace-nowrap px-3 py-2 text-slate-700">
+                              {formatDateTimeDisplay(row.date)}
+                            </td>
+                            <td className="px-3 py-2 font-medium capitalize text-slate-900">
+                              {row.type.replace(/_/g, " ")}
+                            </td>
+                            <td className="px-3 py-2 text-slate-600">
+                              {row.billNo || "-"}
+                            </td>
+                            <td className="px-3 py-2 text-slate-600">
+                              {row.customer || "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-emerald-700">
+                              {row.cashIn > 0 ? formatINRSummary(row.cashIn) : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-rose-700">
+                              {row.cashOut > 0 ? formatINRSummary(row.cashOut) : "-"}
+                            </td>
+                            <td className="min-w-[220px] px-3 py-2 text-slate-600">
+                              {row.notes || row.effectSummary || "-"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           </div>

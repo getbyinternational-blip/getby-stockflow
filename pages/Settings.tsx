@@ -11,7 +11,7 @@ import { getConfiguredWhatsAppServerUrl, getWhatsAppHealth, getWhatsAppQr, getWh
 import { getOfficialWhatsAppConfigDiagnostics } from '../services/metaWhatsAppStatus';
 import { appendWhatsAppLog, getWhatsAppLogStats } from '../services/whatsappLogs';
 import { Button, Input, Card, CardContent, CardHeader, CardTitle, Label, Select } from '../components/ui';
-import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit, History } from 'lucide-react';
+import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCircle2, Image as ImageIcon, Trash2, FileText, UserPlus, Edit, History, Clock3 } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { getEffectiveAdminPin } from '../src/auth/permissions';
 import { isAdmin } from '../src/auth/simplePermissions';
@@ -135,7 +135,7 @@ export default function Settings() {
     addressLine1: '', addressLine2: '', state: '',
     bankName: '', bankAccount: '', bankIfsc: '', bankHolder: '',
     defaultTaxRate: 0, defaultTaxLabel: 'None', signatureImage: '', logoImage: '', adminPin: '',
-    invoiceFormat: 'standard', thermalPaperWidth: '80mm', thermalStyle: 'grocery', thermalDensity: 'compact', thermalFontScale: 1, thermalPaddingX: 2, thermalPaddingY: 1.5
+    invoiceFormat: 'standard', thermalPaperWidth: '80mm', thermalStyle: 'grocery', thermalDensity: 'compact', thermalFontScale: 1, thermalPaddingX: 2, thermalPaddingY: 1.5, simplifiedShiftAccess: false
   });
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -327,6 +327,7 @@ export default function Settings() {
         customerCatalogFirstPage: typeof data.profile?.customerCatalogFirstPage === 'string' ? data.profile.customerCatalogFirstPage : '',
         customerCatalogFirstPageName: typeof data.profile?.customerCatalogFirstPageName === 'string' ? data.profile.customerCatalogFirstPageName : '',
         customerCatalogFirstPageMimeType: typeof data.profile?.customerCatalogFirstPageMimeType === 'string' ? data.profile.customerCatalogFirstPageMimeType : '',
+        simplifiedShiftAccess: Boolean(data.profile?.simplifiedShiftAccess),
       };
       setProfile(adminAccess ? baseProfile : mergeInvoicePrintFields(baseProfile, getStoredInvoicePrintPreferences()));
       setUserEmail(getCurrentUser());
@@ -358,6 +359,7 @@ export default function Settings() {
       customerCatalogFirstPage: typeof profile.customerCatalogFirstPage === 'string' ? profile.customerCatalogFirstPage : '',
       customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
       customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
+      simplifiedShiftAccess: Boolean(profile.simplifiedShiftAccess),
     };
     setIsSavingProfile(true);
     setSuccess(false);
@@ -1246,6 +1248,36 @@ export default function Settings() {
                 <Button variant="outline" size="sm" onClick={() => setProfile(prev => ({ ...prev, customerCatalogFirstPage: '', customerCatalogFirstPageName: '', customerCatalogFirstPageMimeType: '' }))}>Remove</Button>
               </div>
             )}
+          </CardContent>
+        </Card>}
+
+        {adminAccess && <Card className="md:col-span-2 border-slate-200">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Clock3 className="w-5 h-5 text-primary" />
+              Shift Access
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Choose whether cash shifts are controlled manually or opened automatically each day.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4"
+                checked={Boolean(profile.simplifiedShiftAccess)}
+                onChange={(event) => setProfile((prev) => ({ ...prev, simplifiedShiftAccess: event.target.checked }))}
+              />
+              <span className="space-y-1">
+                <span className="block text-sm font-semibold text-slate-900">
+                  Turn on simplified shift access
+                </span>
+                <span className="block text-xs leading-5 text-slate-600">
+                  Finance shows one combined cash view with optional notes and automatic daily access.
+                </span>
+              </span>
+            </label>
           </CardContent>
         </Card>}
 

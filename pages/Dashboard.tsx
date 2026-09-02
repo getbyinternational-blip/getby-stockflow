@@ -19,6 +19,7 @@ import { Package, Search } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 import { createPerfRunId, perfLog, perfMeasureSync } from '../services/perf';
+import { isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
 
 type CustomerReceivableRow = Customer & { receivable: number; ledgerBalanceUnavailable?: boolean };
 type PartyPayableRow = PurchaseParty & { payable: number; dueOrders: PurchaseOrder[]; partyCredit: number; dashboardMergedPartyIds?: string[] };
@@ -281,6 +282,7 @@ export default function Dashboard() {
     initialDataRef.current = loadData();
   }
   const initialData = initialDataRef.current;
+  const simplifiedShiftAccess = isSimplifiedShiftAccessEnabled(initialData);
   const [customers, setCustomers] = useState<Customer[]>(initialData.customers || []);
   const [transactions, setTransactions] = useState<Transaction[]>(initialData.transactions || []);
   const [parties, setParties] = useState<PurchaseParty[]>(getPurchaseParties());
@@ -617,9 +619,10 @@ export default function Dashboard() {
     cashSessions,
   } as AppState), [transactions, expenses, deleteCompensations, supplierPayments, cashAdjustments, manualCashbookEntries, upfrontOrders, orders, cashSessions]);
   const getAvailableCashBySource = (source: CashSource) => (
-    normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+    simplifiedShiftAccess ? cashSourceAvailability.totalCash : normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
   );
-  const cashOverdrawAmount = payMethod === 'cash' && payAmountValid && openCashSession ? Math.max(0, payAmountValue - getAvailableCashBySource(payCashSource)) : 0;
+  const resolvedPayCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : payCashSource;
+  const cashOverdrawAmount = payMethod === 'cash' && payAmountValid && (simplifiedShiftAccess || openCashSession) ? Math.max(0, payAmountValue - getAvailableCashBySource(resolvedPayCashSource)) : 0;
   const isCashOverdraw = payMethod === 'cash' && cashOverdrawAmount > 0;
   const editSupplierAmountValue = Number(editSupplierAmount);
   const editSupplierAmountValid = Number.isFinite(editSupplierAmountValue) && editSupplierAmountValue > 0;
@@ -633,13 +636,15 @@ export default function Dashboard() {
     ? Math.max(0, Number(editingSupplierPayment?.amount || editingLegacySupplierRow?.credit || 0))
     : 0;
   const editableCashAvailableBySource = (source: CashSource) => {
+    if (simplifiedShiftAccess) return cashSourceAvailability.totalCash + editSupplierReversibleCashAmount;
     const normalizedSource = normalizeCashSource(source);
     const baseAvailable = getAvailableCashBySource(normalizedSource);
     if (editSupplierOriginalMethod !== 'cash') return baseAvailable;
     return baseAvailable + (editSupplierOriginalCashSource === normalizedSource ? editSupplierReversibleCashAmount : 0);
   };
-  const editSupplierCashOverdrawAmount = editSupplierMethod === 'cash' && editSupplierAmountValid && openCashSession
-    ? Math.max(0, editSupplierAmountValue - editableCashAvailableBySource(editSupplierCashSource))
+  const resolvedEditSupplierCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : editSupplierCashSource;
+  const editSupplierCashOverdrawAmount = editSupplierMethod === 'cash' && editSupplierAmountValid && (simplifiedShiftAccess || openCashSession)
+    ? Math.max(0, editSupplierAmountValue - editableCashAvailableBySource(resolvedEditSupplierCashSource))
     : 0;
   const isEditSupplierCashOverdraw = editSupplierMethod === 'cash' && editSupplierCashOverdrawAmount > 0;
 
@@ -1147,8 +1152,9 @@ export default function Dashboard() {
     if (!payingParty) return;
     const amount = Number(payAmount);
     if (!Number.isFinite(amount) || amount <= 0) return setPayError('Enter valid amount greater than zero.');
-    if (payMethod === 'cash' && openCashSession && amount > getAvailableCashBySource(payCashSource)) {
-      return setPayError(`Cash payment exceeds available ${formatCashSourceLabel(payCashSource).toLowerCase()} by ${formatINRPrecise(amount - getAvailableCashBySource(payCashSource))}.`);
+    const resolvedCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : payCashSource;
+    if (payMethod === 'cash' && (simplifiedShiftAccess || openCashSession) && amount > getAvailableCashBySource(resolvedCashSource)) {
+      return setPayError(`Cash payment exceeds available ${simplifiedShiftAccess ? 'cash drawer' : formatCashSourceLabel(resolvedCashSource).toLowerCase()} by ${formatINRPrecise(amount - getAvailableCashBySource(resolvedCashSource))}.`);
     }
     const paymentDate = payDateTime ? new Date(payDateTime) : new Date();
     if (Number.isNaN(paymentDate.getTime())) return setPayError('Please select a valid payment date.');
@@ -1164,7 +1170,7 @@ export default function Dashboard() {
         partyName: payingPartySnapshot.name,
         amount,
         method: payMethod,
-        cashSource: payMethod === 'cash' ? payCashSource : undefined,
+        cashSource: payMethod === 'cash' ? resolvedCashSource : undefined,
         paidAt: paymentDate.toISOString(),
         note: payNote.trim() || 'Supplier payment',
         payableApplied,
@@ -1378,16 +1384,17 @@ export default function Dashboard() {
     if (!Number.isFinite(amount) || amount <= 0) return setEditSupplierError('Enter valid amount greater than zero.');
     const paymentDate = editSupplierDateTime ? new Date(editSupplierDateTime) : new Date();
     if (Number.isNaN(paymentDate.getTime())) return setEditSupplierError('Please select a valid payment date.');
-    if (editSupplierMethod === 'cash' && openCashSession && amount > editableCashAvailableBySource(editSupplierCashSource)) {
-      return setEditSupplierError(`Cash payment exceeds available ${formatCashSourceLabel(editSupplierCashSource).toLowerCase()} by ${formatINRPrecise(amount - editableCashAvailableBySource(editSupplierCashSource))}.`);
+    const resolvedCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : editSupplierCashSource;
+    if (editSupplierMethod === 'cash' && (simplifiedShiftAccess || openCashSession) && amount > editableCashAvailableBySource(resolvedCashSource)) {
+      return setEditSupplierError(`Cash payment exceeds available ${simplifiedShiftAccess ? 'cash drawer' : formatCashSourceLabel(resolvedCashSource).toLowerCase()} by ${formatINRPrecise(amount - editableCashAvailableBySource(resolvedCashSource))}.`);
     }
     try {
       if (editingLegacySupplierRow) {
         await deleteLegacySupplierPaymentGroup(editingLegacySupplierRow.allocations?.map((a) => ({ orderId: a.orderId, paymentId: a.paymentId })) || []);
-        await createSupplierPayment({ partyId: selectedParty?.id || '', partyName: selectedParty?.name || '', amount, method: editSupplierMethod === 'online' ? 'online' : 'cash', cashSource: editSupplierMethod === 'cash' ? editSupplierCashSource : undefined, paidAt: paymentDate.toISOString(), note: editSupplierNote.trim() || 'Supplier payment' });
+        await createSupplierPayment({ partyId: selectedParty?.id || '', partyName: selectedParty?.name || '', amount, method: editSupplierMethod === 'online' ? 'online' : 'cash', cashSource: editSupplierMethod === 'cash' ? resolvedCashSource : undefined, paidAt: paymentDate.toISOString(), note: editSupplierNote.trim() || 'Supplier payment' });
         setEditingLegacySupplierRow(null);
       } else if (editingSupplierPayment) {
-        await updateSupplierPayment(editingSupplierPayment.id, { amount, method: editSupplierMethod === 'bank' ? 'online' : editSupplierMethod, cashSource: editSupplierMethod === 'cash' ? editSupplierCashSource : undefined, note: editSupplierNote.trim(), paidAt: paymentDate.toISOString() });
+        await updateSupplierPayment(editingSupplierPayment.id, { amount, method: editSupplierMethod === 'bank' ? 'online' : editSupplierMethod, cashSource: editSupplierMethod === 'cash' ? resolvedCashSource : undefined, note: editSupplierNote.trim(), paidAt: paymentDate.toISOString() });
       }
       setEditingSupplierPayment(null);
       setEditingLegacySupplierRow(null);
@@ -1679,7 +1686,7 @@ export default function Dashboard() {
                 <option value="online">Online</option>
               </Select>
             </div>
-            {payMethod === 'cash' && (
+            {payMethod === 'cash' && !simplifiedShiftAccess && (
               <>
                 <div>
                   <Label>Utilize From</Label>
@@ -1697,7 +1704,7 @@ export default function Dashboard() {
             )}
             {isCashOverdraw && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                Cash payment exceeds available {formatCashSourceLabel(payCashSource).toLowerCase()} by {formatINRPrecise(cashOverdrawAmount)}. Adjust cash management or choose the other source before paying.
+                Cash payment exceeds available {simplifiedShiftAccess ? 'cash drawer' : formatCashSourceLabel(payCashSource).toLowerCase()} by {formatINRPrecise(cashOverdrawAmount)}. Adjust cash management before paying.
               </div>
             )}
             <div>
@@ -1754,7 +1761,7 @@ export default function Dashboard() {
             <div><Label>Amount</Label><Input type="number" min="0" step="0.01" value={editSupplierAmount} onChange={(e) => setEditSupplierAmount(e.target.value)} /></div>
             <div><Label>Payment Date</Label><Input type="datetime-local" value={editSupplierDateTime} onChange={(e) => setEditSupplierDateTime(e.target.value)} /></div>
             <div><Label>Method</Label><Select value={editSupplierMethod} onChange={(e) => setEditSupplierMethod(e.target.value as 'cash' | 'online' | 'bank')}><option value="cash">Cash</option><option value="online">Online</option><option value="bank">Bank</option></Select></div>
-            {editSupplierMethod === 'cash' && (
+            {editSupplierMethod === 'cash' && !simplifiedShiftAccess && (
               <>
                 <div>
                   <Label>Utilize From</Label>
@@ -1772,7 +1779,7 @@ export default function Dashboard() {
             )}
             {isEditSupplierCashOverdraw && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                Cash payment exceeds available {formatCashSourceLabel(editSupplierCashSource).toLowerCase()} by {formatINRPrecise(editSupplierCashOverdrawAmount)}.
+                Cash payment exceeds available {simplifiedShiftAccess ? 'cash drawer' : formatCashSourceLabel(editSupplierCashSource).toLowerCase()} by {formatINRPrecise(editSupplierCashOverdrawAmount)}.
               </div>
             )}
             <div><Label>Note</Label><Input value={editSupplierNote} onChange={(e) => setEditSupplierNote(e.target.value)} /></div>

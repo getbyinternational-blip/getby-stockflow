@@ -3,6 +3,7 @@ import { getProductBarcode, getProductCategory, getProductName, getProductSearch
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from '../components/ui';
 import { AppState, CashSource, PartyCreditLedgerEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, RepairHistoryEntry, SupplierPaymentLedgerEntry } from '../types';
 import { appendRepairHistoryEntry, applyConfirmedPurchasePartyOrderOnlyMerge, applyMissingProductPurchaseHistoryRowsSafePatches, applyPartyCreditToPurchaseOrder, applySafePurchasePartyMerge, createPurchaseOrder, createPurchaseParty, createSupplierPayment, deletePurchaseParty, deleteSupplierPayment, editInventoryPurchaseHistoryEntry, getPurchaseOrders, getSaleSettlementBreakdown, loadData, receivePurchaseOrder, recordPurchaseOrderPayment, refreshPurchaseReceiptPostingsFromCloud, repairMissingProductPurchaseHistoryRowsDryRun, searchPurchaseOrdersRuntime, updatePurchaseOrder, updatePurchaseParty, updateSupplierPayment, ApplyMissingProductPurchaseHistorySafeRestoreResult, MissingProductPurchaseHistoryDryRunResult, PurchaseOrderRuntimeSearchResult } from '../services/storage';
+import { isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
 import { UploadImportModal } from '../components/UploadImportModal';
 import { downloadPurchaseData, downloadPurchaseTemplate, importPurchaseFromFile } from '../services/importExcel';
 import { getProductStockRows, NO_COLOR, NO_VARIANT } from '../services/productVariants';
@@ -1028,6 +1029,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     orders: orders.length,
     parties: parties.length,
   }), [orders, parties]);
+  const simplifiedShiftAccess = isSimplifiedShiftAccessEnabled(dataSnapshot);
   const supplierPayments = useMemo(() => dataSnapshot.supplierPayments || [], [dataSnapshot]);
   const partyCreditLedger = useMemo(() => dataSnapshot.partyCreditLedger || [], [dataSnapshot]);
   const cashSourceAvailability = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.cashSourceAvailability', () => getPurchaseCashSourceAvailability(dataSnapshot), {
@@ -1037,7 +1039,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     supplierPayments: (dataSnapshot.supplierPayments || []).length,
   }), [dataSnapshot]);
   const getAvailableCashBySource = (source: CashSource) => (
-    normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+    simplifiedShiftAccess ? cashSourceAvailability.totalCash : normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
   );
   const duplicatePartyCheckReport = useMemo(() => perfMeasureSync('page.PurchasePanel.derive.duplicatePartyCheckReport', () => buildPurchasePartyDuplicateCheckReport(
     parties,
@@ -1407,8 +1409,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
     const gstRate = gstPercent === '.' ? 0 : Math.max(0, Number(gstPercent) || 0);
     const gstAmount = Number(((taxableAmount * gstRate) / 100).toFixed(2));
     const initialPaid = Math.max(0, Number(initialPaidAmount) || 0);
-    if (initialPaid > 0 && initialPaid > getAvailableCashBySource(initialPaidCashSource)) {
-      throw new Error(`${formatCashSourceLabel(initialPaidCashSource)} cannot cover this initial purchase payment.`);
+    const resolvedInitialPaidCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : initialPaidCashSource;
+    if (initialPaid > 0 && initialPaid > getAvailableCashBySource(resolvedInitialPaidCashSource)) {
+      throw new Error(`${simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(resolvedInitialPaidCashSource)} cannot cover this initial purchase payment.`);
     }
     const latestData = loadData();
     const relatedIds = getRelatedPartyIdSet(party.id);
@@ -1448,7 +1451,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         paidAt: now,
         amount: Number(initialPaid.toFixed(2)),
         method: 'cash',
-        cashSource: initialPaidCashSource,
+        cashSource: resolvedInitialPaidCashSource,
         note: editingOrderId ? 'Adjusted on order edit' : 'Initial payment during order create',
       }] : [],
       receivedQuantity: 0,
@@ -2352,8 +2355,9 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       setPartyPaymentError('Please enter a valid financial date and time.');
       return;
     }
-    if (partialPaymentMethod === 'cash' && amount > getAvailableCashBySource(partialPaymentCashSource)) {
-      setPartyPaymentError(`${formatCashSourceLabel(partialPaymentCashSource)} cannot cover this supplier payment.`);
+    const resolvedPartialPaymentCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : partialPaymentCashSource;
+    if (partialPaymentMethod === 'cash' && amount > getAvailableCashBySource(resolvedPartialPaymentCashSource)) {
+      setPartyPaymentError(`${simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(resolvedPartialPaymentCashSource)} cannot cover this supplier payment.`);
       return;
     }
     if (repairMode) {
@@ -2376,7 +2380,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
         partyName: paymentTargetParty.name,
         amount,
         method: partialPaymentMethod,
-        cashSource: partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined,
+        cashSource: partialPaymentMethod === 'cash' ? resolvedPartialPaymentCashSource : undefined,
         note: partialPaymentNote.trim() || undefined,
         paidAt: financialDate,
         effectiveAt: financialDate,
@@ -2414,7 +2418,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       partyName: paymentTargetParty.name,
       amount,
       method: partialPaymentMethod,
-      cashSource: partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined,
+      cashSource: partialPaymentMethod === 'cash' ? resolvedPartialPaymentCashSource : undefined,
       note: partialPaymentNote.trim() || undefined,
       paidAt: financialDate,
       effectiveAt: financialDate,
@@ -2757,11 +2761,12 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
       setPartyPaymentError('Please enter a valid amount within the remaining payable.');
       return;
     }
-    if (partialPaymentMethod === 'cash' && amount > getAvailableCashBySource(partialPaymentCashSource)) {
-      setPartyPaymentError(`${formatCashSourceLabel(partialPaymentCashSource)} cannot cover this purchase payment.`);
+    const resolvedPartialPaymentCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : partialPaymentCashSource;
+    if (partialPaymentMethod === 'cash' && amount > getAvailableCashBySource(resolvedPartialPaymentCashSource)) {
+      setPartyPaymentError(`${simplifiedShiftAccess ? 'Cash drawer' : formatCashSourceLabel(resolvedPartialPaymentCashSource)} cannot cover this purchase payment.`);
       return;
     }
-    await recordPurchaseOrderPayment(paymentTargetOrder.id, amount, partialPaymentMethod, partialPaymentNote, partialPaymentMethod === 'cash' ? partialPaymentCashSource : undefined);
+    await recordPurchaseOrderPayment(paymentTargetOrder.id, amount, partialPaymentMethod, partialPaymentNote, partialPaymentMethod === 'cash' ? resolvedPartialPaymentCashSource : undefined);
     setShowPaymentPopup(false);
     setPaymentTargetOrder(null);
     setPartyPaymentError(null);
@@ -4723,14 +4728,16 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
                   <div><Label>Bill Date</Label><Input type="date" value={billDate} onChange={e => setBillDate(e.target.value)} /></div>
                   <div><Label>GST %</Label><Input type="number" value={gstPercent} onChange={e => setGstPercent(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="e.g. 18" /></div>
                   <div><Label>Initial Paid Amount</Label><Input type="number" value={initialPaidAmount} onChange={e => setInitialPaidAmount(e.target.value === '.' ? '.' : Number(e.target.value))} placeholder="e.g. 1000" /></div>
-                  <div>
-                    <Label>Cash Paid From</Label>
-                    <select className="h-10 w-full rounded-md border px-3 text-sm" value={initialPaidCashSource} onChange={e => setInitialPaidCashSource(e.target.value as CashSource)}>
-                      <option value="drawer">Active Cash</option>
-                      <option value="reserve">Reserve Cash</option>
-                    </select>
-                    <div className="mt-1 text-xs text-slate-500">Available: {formatCurrency(getAvailableCashBySource(initialPaidCashSource))}</div>
-                  </div>
+                  {!simplifiedShiftAccess && (
+                    <div>
+                      <Label>Cash Paid From</Label>
+                      <select className="h-10 w-full rounded-md border px-3 text-sm" value={initialPaidCashSource} onChange={e => setInitialPaidCashSource(e.target.value as CashSource)}>
+                        <option value="drawer">Active Cash</option>
+                        <option value="reserve">Reserve Cash</option>
+                      </select>
+                      <div className="mt-1 text-xs text-slate-500">Available: {formatCurrency(getAvailableCashBySource(initialPaidCashSource))}</div>
+                    </div>
+                  )}
                   <div>
                     <Label>Apply Party Credit</Label>
                     <Input
@@ -4981,7 +4988,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
           </div>
           <div><Label>Amount</Label><Input type="number" value={partialPaymentAmount} onChange={e => setPartialPaymentAmount(e.target.value === '.' ? '.' : Number(e.target.value))} /></div>
           <div><Label>Method</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentMethod} onChange={e => setPartialPaymentMethod(e.target.value as 'cash' | 'online')}><option value="cash">Cash</option><option value="online">Online</option></select></div>
-          {partialPaymentMethod === 'cash' && (
+          {partialPaymentMethod === 'cash' && !simplifiedShiftAccess && (
             <div><Label>Cash Paid From</Label><select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}><option value="drawer">Active Cash</option><option value="reserve">Reserve Cash</option></select><div className="mt-1 text-xs text-slate-500">Available: {formatCurrency(getAvailableCashBySource(partialPaymentCashSource))}</div></div>
           )}
           <div><Label>{repairMode ? 'Financial Date' : 'Date'}</Label><Input type={repairMode ? 'datetime-local' : 'date'} value={partyPaymentDate} onChange={e => setPartyPaymentDate(e.target.value)} /></div>
@@ -5003,7 +5010,7 @@ export default function PurchasePanel({ repairMode = false, embeddedRepairCenter
               <option value="online">Online</option>
             </select>
           </div>
-          {partialPaymentMethod === 'cash' && (
+          {partialPaymentMethod === 'cash' && !simplifiedShiftAccess && (
             <div>
               <Label>Cash Paid From</Label>
               <select className="h-10 w-full rounded-md border px-3 text-sm" value={partialPaymentCashSource} onChange={e => setPartialPaymentCashSource(e.target.value as CashSource)}>
