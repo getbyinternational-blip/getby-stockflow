@@ -2997,6 +2997,15 @@ export default function Transactions() {
         if (!activeDetailTx) {
           return null;
         }
+        const detailItems = normalizeTransactionItems(activeDetailTx.items);
+        const detailDate = new Date(activeDetailTx.date);
+        const detailDateLabel = Number.isFinite(detailDate.getTime())
+          ? detailDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
+          : DISPLAY_FALLBACK;
+        const detailSettlement = isSaleLikeTransaction(activeDetailTx) ? getCanonicalSaleSettlement(activeDetailTx) : null;
+        const detailPaymentLabel = detailSettlement
+          ? [detailSettlement.cashPaid > 0 ? 'Cash' : '', detailSettlement.onlinePaid > 0 ? 'Online' : '', Number(activeDetailTx.storeCreditUsed || 0) > 0 ? 'Store Credit' : '', detailSettlement.creditDue > 0 ? 'Credit Due' : ''].filter(Boolean).join(' + ') || getDisplayPaymentMethod(activeDetailTx)
+          : getDisplayPaymentMethod(activeDetailTx);
 
         const closeActiveDetailTx = () => {
           if (selectedKpiTx) {
@@ -3012,10 +3021,10 @@ export default function Transactions() {
               selectedKpiTx ? 'z-[70]' : 'z-50'
             }`}
           >
-              <Card className="w-full max-w-md animate-in zoom-in duration-200 flex flex-col max-h-[90vh] shadow-2xl">
+              <Card role="dialog" aria-modal="true" aria-label={getTransactionReceiptTitle(activeDetailTx)} className="w-full max-w-lg animate-in zoom-in duration-200 flex flex-col max-h-[90vh] overflow-hidden bg-white shadow-2xl">
                   <CardHeader className="border-b pb-3 shrink-0 bg-muted/5">
-                      <div className="flex justify-between items-center">
-                          <CardTitle className="text-lg flex items-center gap-2">
+                      <div className="flex justify-between items-center gap-2">
+                          <CardTitle className="text-lg flex flex-wrap items-center gap-2">
                               {getTransactionReceiptTitle(activeDetailTx)}
                               {getTransactionReference(activeDetailTx) ? (
                                 <span className="text-xs font-normal text-muted-foreground font-mono">#{getTransactionReference(activeDetailTx)}</span>
@@ -3030,46 +3039,39 @@ export default function Transactions() {
                                     onClick={() => openInvoiceOptions(activeDetailTx)}
                                 >
                                     <Download className="w-3.5 h-3.5" />
-                                    {isUpfrontVirtualTransaction(activeDetailTx) ? 'Receipt' : 'Invoice'}
+                                    Download receipt
                                 </Button>
                               )}
-                              <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive" onClick={closeActiveDetailTx}><X className="w-4 h-4" /></Button>
+                              <Button variant="ghost" size="icon" aria-label="Close receipt" className="h-8 w-8 shrink-0 hover:bg-destructive/10 hover:text-destructive" onClick={closeActiveDetailTx}><X className="w-4 h-4" /></Button>
                           </div>
                       </div>
                   </CardHeader>
-                  <CardContent className="overflow-y-auto p-0">
-                      <div className="p-5 space-y-5">
+                  <CardContent className="min-h-0 flex-1 overflow-y-auto p-0">
+                      <div className="p-4 sm:p-5 space-y-3">
                           {/* Info Header */}
-                          <div className="grid grid-cols-2 gap-4 text-sm bg-muted/30 p-4 rounded-xl border">
-                              <div>
-                                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Date</p>
-                                  <p className="font-medium flex items-center gap-1.5">
-                                     <Calendar className="w-3.5 h-3.5 text-primary" />
-                                     {formatDateTimeDisplay(activeDetailTx.date)}
-                                  </p>
+                          <div className="grid grid-cols-1 min-[420px]:grid-cols-3 gap-3 text-sm bg-slate-50/80 p-3 rounded-lg border border-slate-200">
+                              <div className="flex gap-2 min-w-0">
+                                  <Calendar className="w-4 h-4 shrink-0 text-slate-700" />
+                                  <div><p className="text-xs text-slate-500 mb-1">Date</p><p className="font-medium text-slate-900">{detailDateLabel}</p></div>
                               </div>
-                              <div>
-                                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Customer</p>
-                                  <p className="font-medium flex items-center gap-1.5">
-                                      <User className="w-3.5 h-3.5 text-primary" />
-                                      {activeDetailTx.customerName || 'Walk-in'}
-                                  </p>
+                              <div className="flex gap-2 min-w-0 min-[420px]:border-l min-[420px]:pl-3">
+                                  <User className="w-4 h-4 shrink-0 text-slate-700" />
+                                  <div className="min-w-0"><p className="text-xs text-slate-500 mb-1">Customer</p><p className="font-semibold break-words text-slate-900">{activeDetailTx.customerName || 'Walk-in'}</p></div>
                               </div>
-                              <div className="col-span-2 border-t pt-2 mt-1">
-                                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Payment Method</p>
-                                  <p className="font-medium flex items-center gap-1.5 text-primary">
-                                      <CreditCard className="w-3.5 h-3.5" />
-                                      {getDisplayPaymentMethod(activeDetailTx)}
-                                  </p>
+                              <div className="flex gap-2 min-w-0 min-[420px]:border-l min-[420px]:pl-3">
+                                  <CreditCard className="w-4 h-4 shrink-0 text-slate-700" />
+                                  <div><p className="text-xs text-slate-500 mb-1">Payment</p><p className="font-semibold text-slate-900">{detailPaymentLabel}</p>
+                                    {detailSettlement && <p className="mt-1 text-xs text-slate-500">{formatCurrencyWhole(detailSettlement.cashPaid + detailSettlement.onlinePaid + Number(activeDetailTx.storeCreditUsed || 0))} paid · {formatCurrencyWhole(detailSettlement.creditDue)} due</p>}
+                                  </div>
                               </div>
                               {getTransactionCashSourceLabel(activeDetailTx) && (
-                                <div className="col-span-2 border-t pt-2 mt-1">
+                                <div className="col-span-full border-t pt-2 mt-1">
                                   <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Cash Source</p>
                                   <p className="font-medium text-slate-900">{getTransactionCashSourceLabel(activeDetailTx)}</p>
                                 </div>
                               )}
                               {isUpfrontVirtualTransaction(activeDetailTx) && (
-                                <div className="col-span-2 rounded-lg border bg-blue-50 p-2">
+                                <div className="col-span-full rounded-lg border bg-blue-50 p-2">
                                   {(() => {
                                     const note = String(activeDetailTx.notes || '');
                                     const read = (label: string) => {
@@ -3096,88 +3098,94 @@ export default function Transactions() {
                                   })()}
                                 </div>
                               )}
-                              {isSaleLikeTransaction(activeDetailTx) && (
-                                <div className="col-span-2 rounded-lg border bg-muted/10 p-2">
-                                  <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold mb-1">Settlement</p>
-                                  <p className="text-xs">Total Sale: {formatMoneyWhole(Math.abs(activeDetailTx.total))}</p>
-                                  <p className="text-xs">Store Credit Used: {formatMoneyWhole(Number(activeDetailTx.storeCreditUsed || 0))}</p>
-                                  <p className="text-xs">Cash Paid: {formatMoneyWhole(getCanonicalSaleSettlement(activeDetailTx).cashPaid)}</p>
-                                  <p className="text-xs">Online Paid: {formatMoneyWhole(getCanonicalSaleSettlement(activeDetailTx).onlinePaid)}</p>
-                                  <p className="text-xs font-semibold">Credit Due Created: {formatMoneyWhole(getCanonicalSaleSettlement(activeDetailTx).creditDue)}</p>
-                                </div>
-                              )}
                           </div>
+                          {detailSettlement && (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2">
+                              <p className="text-sm font-semibold text-slate-900 mb-1">Payment Summary</p>
+                              <dl className="divide-y divide-slate-200/70">
+                                {[
+                                  ['Total Sale', Math.abs(activeDetailTx.total)],
+                                  ['Cash Paid', detailSettlement.cashPaid],
+                                  ['Store Credit Used', Number(activeDetailTx.storeCreditUsed || 0)],
+                                  ['Online Paid', detailSettlement.onlinePaid],
+                                  ['Credit Due', detailSettlement.creditDue],
+                                ].map(([label, value]) => (
+                                  <div key={label} className="flex justify-between gap-3 py-1.5 text-sm">
+                                    <dt className="text-slate-500">{label}</dt><dd className="font-medium text-slate-900 tabular-nums">{formatCurrencyWhole(Number(value))}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </div>
+                          )}
 
                           {/* Items */}
-                          <div className="space-y-3">
-                              <p className="text-sm font-semibold border-b pb-2 flex items-center gap-2">
+                          <div className="space-y-2">
+                              <p className="text-base font-semibold py-1 flex items-center gap-2">
                                   <Package className="w-4 h-4 text-primary" />
-                                  Items Purchased
+                                  {activeDetailTx.type === 'return' ? 'Items Returned' : 'Items Purchased'}
+                                  <span className="ml-auto text-xs font-normal text-slate-500">{detailItems.length} {detailItems.length === 1 ? 'item' : 'items'}</span>
                               </p>
-                              {normalizeTransactionItems(activeDetailTx.items).map((item, idx) => (
-                                  <div key={idx} className="flex gap-3 items-start p-2 rounded-lg hover:bg-muted/50 transition-colors">
-                                      <div className="h-10 w-10 bg-white rounded border flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
+                              {detailItems.length === 0 && <p className="rounded-lg border border-slate-200 p-3 text-xs text-slate-500">No items in this transaction.</p>}
+                              {detailItems.map((item, idx) => (
+                                  <div key={idx} className="flex gap-3 items-start p-3 rounded-lg border border-slate-200 bg-slate-50/30">
+                                      <div className="h-12 w-12 bg-white rounded border flex items-center justify-center shrink-0 overflow-hidden">
                                           {item.image ? (
                                               <img src={item.image} alt={item.name} className="w-full h-full object-contain" />
                                           ) : (
-                                              <span className="text-[8px] text-muted-foreground">IMG</span>
+                                              <Package className="h-6 w-6 text-slate-300" />
                                           )}
                                       </div>
-                                      <div className="flex-1">
-                                          <div className="flex justify-between items-start">
-                                              <p className="font-medium text-sm leading-tight">{item.name}</p>
-                                              <p className="font-medium text-sm">{formatMoneyWhole((item.sellPrice * item.quantity) - (item.discountAmount || 0))}</p>
-                                          </div>
-                                          <div className="flex justify-between items-center mt-1">
-                                              <p className="text-xs text-muted-foreground">SKU: {item.barcode} | {item.selectedVariant || NO_VARIANT} / {item.selectedColor || NO_COLOR}</p>
-                                              <div className="flex flex-col items-end">
-                                                  <Badge variant="secondary" className="text-[10px] h-4 px-1.5 font-normal">
-                                                      {item.quantity} x {item.sellPrice}
-                                                  </Badge>
+                                      <div className="flex-1 min-w-0">
+                                              <p className="font-semibold text-sm leading-snug break-words text-slate-900">{item.name}</p>
+                                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
+                                                  <span className="text-slate-600">Qty: <strong className="font-semibold text-slate-900 tabular-nums">{item.quantity}</strong></span>
+                                                  <span className="text-slate-600">Unit price: <strong className="font-semibold text-slate-900 tabular-nums">{formatCurrencyWhole(item.sellPrice)}</strong></span>
                                                   {item.discountAmount !== undefined && item.discountAmount > 0 ? (
-                                                      <span className="text-[9px] font-bold text-emerald-600 mt-0.5">
+                                                      <span className="text-xs font-bold text-emerald-600 mt-0.5">
                                                           -{item.discountAmount.toFixed(2)} ({item.discountPercent}%)
                                                       </span>
                                                   ) : null}
                                               </div>
-                                          </div>
+                                      </div>
+                                      <div className="shrink-0 text-right">
+                                        <p className="font-bold text-lg text-slate-900 tabular-nums">{formatCurrencyWhole((item.sellPrice * item.quantity) - (item.discountAmount || 0))}</p>
                                       </div>
                                   </div>
                               ))}
                           </div>
 
                           {/* Footer Breakdown */}
-                          <div className="bg-muted/10 p-4 rounded-xl border-2 border-dashed border-muted space-y-2">
+                          <div className="bg-slate-50/70 p-3 rounded-lg border border-slate-200 space-y-2">
                               {/* Subtotal */}
-                              <div className="flex justify-between text-xs text-muted-foreground">
+                              <div className="flex justify-between text-sm text-muted-foreground">
                                   <span>Subtotal</span>
-                                  <span>{formatMoneyWhole(activeDetailTx.subtotal ? activeDetailTx.subtotal : Math.abs(activeDetailTx.total))}</span>
+                                  <span className="text-slate-900 tabular-nums">{formatCurrencyWhole(activeDetailTx.subtotal ?? Math.abs(activeDetailTx.total))}</span>
                               </div>
                               
                               {/* Discount */}
-                              <div className="flex justify-between text-xs text-green-600">
+                              <div className="flex justify-between text-sm text-green-600">
                                   <span>Discount</span>
                                   {activeDetailTx.discount && activeDetailTx.discount > 0 ? (
-                                      <span>-{formatMoneyWhole(activeDetailTx.discount)}</span>
+                                      <span>-{formatCurrencyWhole(activeDetailTx.discount)}</span>
                                   ) : (
-                                      <span className="text-muted-foreground font-medium">No discount</span>
+                                      <span className="text-muted-foreground font-medium">—</span>
                                   )}
                               </div>
 
                               {/* Tax */}
-                              <div className="flex justify-between text-xs text-muted-foreground">
+                              <div className="flex justify-between text-sm text-muted-foreground">
                                   <span>Tax {activeDetailTx.tax && activeDetailTx.tax > 0 ? `(${activeDetailTx.taxLabel})` : ''}</span>
                                   {activeDetailTx.tax && activeDetailTx.tax > 0 ? (
-                                      <span>+{formatMoneyWhole(activeDetailTx.tax)}</span>
+                                      <span>+{formatCurrencyWhole(activeDetailTx.tax)}</span>
                                   ) : (
-                                      <span className="text-muted-foreground font-medium">No tax applied</span>
+                                      <span className="text-muted-foreground font-medium">—</span>
                                   )}
                               </div>
 
                               <div className="border-t pt-2 mt-2 flex justify-between items-center font-bold text-xl">
                                   <span>Total</span>
                                   <span className={activeDetailTx.type === 'sale' ? 'text-green-700' : activeDetailTx.type === 'return' ? 'text-red-700' : 'text-emerald-700'}>
-                                      {activeDetailTx.type === 'return' ? '-' : ''}{formatMoneyWhole(Math.abs(activeDetailTx.total))}
+                                      {activeDetailTx.type === 'return' ? '-' : ''}{formatCurrencyWhole(Math.abs(activeDetailTx.total))}
                                   </span>
                               </div>
                           </div>
