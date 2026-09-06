@@ -25,6 +25,7 @@ import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateForma
 import { useRouteReady } from '../src/routing/routeReady';
 import { createPerfRunId, perfLog, perfMeasureAsync, perfMeasureSync } from '../services/perf';
 import { computeFilteredTransactionIds, type TransactionFilterRequest, type TransactionsFilterType } from '../services/transactionsFilter';
+import { getPurchaseCashPaymentOrders, getTransactionCashKpis } from '../services/transactionCashKpis';
 
 function ConfirmDialog({ open, title, message, onCancel, onConfirm }: { open: boolean; title: string; message: string; onCancel: () => void; onConfirm: () => void }) {
   useEscapeLayer(open, onCancel, { priority: 120 });
@@ -1055,6 +1056,10 @@ export default function Transactions() {
     });
   }, [purchaseOrders, debouncedSearchTerm, filterType, customStart, customEnd]);
 
+  const filteredPurchaseCashPaymentOrders = useMemo(() => getPurchaseCashPaymentOrders(
+    purchaseOrders || [], matchesCurrentDateFilter, debouncedSearchTerm,
+  ), [purchaseOrders, debouncedSearchTerm, filterType, customStart, customEnd]);
+
   const filteredCashSupplierPayments = useMemo(() => {
     const query = debouncedSearchTerm.trim().toLowerCase();
 
@@ -1141,23 +1146,9 @@ export default function Transactions() {
       creditDue,
     };
   };
-  const isCustomerReceivableCashPayment = (tx: Transaction) => {
-    const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-    if (txType !== 'payment') return false;
-    if (isSupplierPaymentVirtualTransaction(tx)) return false;
-    if (String(tx.paymentMethod || '').trim().toLowerCase() !== 'cash') return false;
-
-    const appliedToReceivable = Math.max(
-      0,
-      Number((tx as any).paymentAppliedToReceivable || 0),
-      Number((tx as any).paymentAppliedToCanonicalReceivable || 0),
-      Number((tx as any).paymentAppliedToCustomOrderReceivable || 0),
-      Number((tx as any).appliedToCanonicalReceivable || 0),
-      Number((tx as any).appliedToCustomOrderReceivable || 0),
-    );
-
-    return Boolean(tx.customerId || tx.customerName || appliedToReceivable > 0);
-  };
+  const getCashKpiAmounts = (tx: Transaction) => getTransactionCashKpis(
+    tx, isSaleLikeTransaction(tx) ? getCanonicalSaleSettlement(tx).cashPaid : 0,
+  );
 
   const getDisplayPaymentMethod = (tx: Transaction) => {
     if (isExpenseVirtualTransaction(tx)) return 'Cash';
@@ -1991,9 +1982,11 @@ export default function Transactions() {
 
       filteredTransactions.forEach(tx => {
           const amount = Math.abs(tx.total);
-          const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
           const isSaleLike = isSaleLikeTransaction(tx);
-          const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
+          const cashKpis = getCashKpiAmounts(tx);
+          totalCashIn += cashKpis.totalCashIn;
+          if (!isSupplierPaymentVirtualTransaction(tx)) totalCashOut += cashKpis.totalCashOut;
+          cashReceivedOnCreditDue += cashKpis.cashReceivedOnCreditDue;
           
           if (isSaleLike) {
               const settlement = getCanonicalSaleSettlement(tx);
@@ -2005,7 +1998,6 @@ export default function Transactions() {
               totalCash += cashPaid;
               totalCredit += creditDue;
               totalOnline += onlinePaid;
-              totalCashIn += cashPaid;
               // Calculate Profit: (Sell - Buy) * Qty
               normalizeTransactionItems(tx.items).forEach(item => {
                   const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
@@ -2013,32 +2005,15 @@ export default function Transactions() {
               });
           } else if (tx.type === 'return') {
               totalReturns += amount;
-              const returnMode = String((tx as any).returnHandlingMode || '').trim().toLowerCase();
-              if (paymentMethod === 'cash' || returnMode === 'refund_cash') totalCashOut += amount;
               // Reverse Profit for returns
               normalizeTransactionItems(tx.items).forEach(item => {
                   const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
                   grossProfit -= profit;
               });
-          } else if (isExpenseVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx)) {
-              totalCashOut += amount;
-          } else if (isCashWithdrawalVirtualTransaction(tx)) {
-              if (paymentMethod === 'cash') totalCashOut += amount;
-          } else if (isCashAdditionVirtualTransaction(tx) || isManualCashInVirtualTransaction(tx)) {
-              if (paymentMethod === 'cash' || isManualCashInVirtualTransaction(tx)) totalCashIn += amount;
-          } else if (txType === 'payment') {
-              if (isSupplierPaymentVirtualTransaction(tx)) {
-                  if (paymentMethod === 'cash') totalCashOut += amount;
-              } else if (isCustomerReceivableCashPayment(tx)) {
-                  totalCashIn += amount;
-                  cashReceivedOnCreditDue += amount;
-              }
-          } else if (txType === 'customer_cash_out' && paymentMethod === 'cash') {
-              totalCashOut += amount;
           }
       });
 
-      const purchaseOrderCashTotal = filteredPurchaseOrders.reduce((sum, order) => (
+      const purchaseOrderCashTotal = filteredPurchaseCashPaymentOrders.reduce((sum, order) => (
           sum + (Array.isArray(order.paymentHistory) ? order.paymentHistory.reduce((historySum, payment) => {
               const method = String(payment?.method || '').trim().toLowerCase();
               if (method !== 'cash') return historySum;
@@ -2051,7 +2026,7 @@ export default function Transactions() {
           purchaseOrderCashTotal
           + filteredCashSupplierPayments.reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
 
-      totalCashOut += purchaseOrderCashTotal;
+      totalCashOut += totalPurchaseCash;
 
       const totalPurchaseCredit = filteredPurchaseOrders.reduce(
           (sum, order) => sum + Math.max(0, Number(order.remainingAmount || 0)),
@@ -2084,7 +2059,7 @@ export default function Transactions() {
     filteredTransactions: filteredTransactions.length,
     filteredPurchaseOrders: filteredPurchaseOrders.length,
     filteredCashSupplierPayments: filteredCashSupplierPayments.length,
-  }), [filteredCashSupplierPayments, filteredPurchaseOrders, filteredTransactions, productsById]);
+  }), [filteredCashSupplierPayments, filteredPurchaseOrders, filteredPurchaseCashPaymentOrders, filteredTransactions, productsById]);
 
   const stats = transactionDerivedSummary.stats;
   const transactionKpis = transactionDerivedSummary.kpis;
@@ -2109,7 +2084,7 @@ export default function Transactions() {
   const selectedKpiRows = useMemo(() => {
     if (!selectedKpiKey) return [] as Array<{ id: string; date: string; type: string; name: string; method: string; amount: number; cashSource: string | null; imageSrc: string | null; imageAlt: string; productName: string | null; quantity: number | null; unitPrice: number | null; tx: Transaction | null }>;
 
-    const purchaseCashRows = filteredPurchaseOrders.flatMap((order) =>
+    const purchaseCashRows = filteredPurchaseCashPaymentOrders.flatMap((order) =>
       Array.isArray(order.paymentHistory)
         ? order.paymentHistory
             .filter((payment) => String(payment?.method || '').trim().toLowerCase() === 'cash')
@@ -2178,17 +2153,7 @@ export default function Transactions() {
 
     if (selectedKpiKey === 'totalCashOut') {
       const transactionCashOutRows = filteredTransactions
-        .filter((tx) => {
-          const amount = Math.max(0, Math.abs(Number(tx.total || 0)));
-          if (amount <= 0) return false;
-          const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-          const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
-          const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
-          return isCashOutVirtual
-            || (txType === 'return' && (paymentMethod === 'cash' || String((tx as any).returnHandlingMode || '').trim().toLowerCase() === 'refund_cash'))
-            || (txType === 'customer_cash_out' && paymentMethod === 'cash')
-            || (txType === 'payment' && isSupplierPaymentVirtualTransaction(tx) && paymentMethod === 'cash');
-        })
+        .filter((tx) => !isSupplierPaymentVirtualTransaction(tx) && getCashKpiAmounts(tx).totalCashOut > 0)
         .map((tx) => ({
           id: tx.id,
           date: getTransactionBusinessDate(tx) || tx.date,
@@ -2205,7 +2170,7 @@ export default function Transactions() {
           tx,
         }));
 
-      return [...purchaseCashRows, ...transactionCashOutRows]
+      return [...purchaseCashRows, ...supplierCashRows, ...transactionCashOutRows]
         .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     }
 
@@ -2239,11 +2204,7 @@ export default function Transactions() {
       .filter((tx) => {
         const amount = Math.max(0, Math.abs(Number(tx.total || 0)));
         if (amount <= 0) return false;
-        const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
-        const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
         const isSaleLike = isSaleLikeTransaction(tx);
-        const isCashInVirtual = isCashAdditionVirtualTransaction(tx) || isManualCashInVirtualTransaction(tx);
-        const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
         const settlement = isSaleLike ? getCanonicalSaleSettlement(tx) : null;
 
         switch (selectedKpiKey) {
@@ -2256,16 +2217,9 @@ export default function Transactions() {
           case 'totalOnline':
             return isSaleLike && roundMoney(Math.max(0, Number(settlement?.onlinePaid || 0))) > 0;
           case 'cashReceivedOnCreditDue':
-            return isCustomerReceivableCashPayment(tx);
           case 'totalCashIn':
-            return (isSaleLike && roundMoney(Math.max(0, Number(settlement?.cashPaid || 0))) > 0)
-              || isCustomerReceivableCashPayment(tx)
-              || isCashInVirtual;
           case 'totalCashOut':
-            return isCashOutVirtual
-              || (txType === 'return' && (paymentMethod === 'cash' || String((tx as any).returnHandlingMode || '').trim().toLowerCase() === 'refund_cash'))
-              || (txType === 'customer_cash_out' && paymentMethod === 'cash')
-              || (txType === 'payment' && isSupplierPaymentVirtualTransaction(tx) && paymentMethod === 'cash');
+            return getCashKpiAmounts(tx)[selectedKpiKey] > 0;
           default:
             return false;
         }
@@ -2278,7 +2232,7 @@ export default function Transactions() {
         if (selectedKpiKey === 'totalCash') amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
         if (selectedKpiKey === 'totalCredit') amount = roundMoney(Math.max(0, Number(settlement?.creditDue || 0)));
         if (selectedKpiKey === 'totalOnline') amount = roundMoney(Math.max(0, Number(settlement?.onlinePaid || 0)));
-        if (selectedKpiKey === 'totalCashIn' && isSaleLikeTransaction(tx)) amount = roundMoney(Math.max(0, Number(settlement?.cashPaid || 0)));
+        if (selectedKpiKey === 'totalCashIn' || selectedKpiKey === 'cashReceivedOnCreditDue') amount = roundMoney(getCashKpiAmounts(tx)[selectedKpiKey]);
         return {
           id: tx.id,
           date: getTransactionBusinessDate(tx) || tx.date,
@@ -2296,7 +2250,7 @@ export default function Transactions() {
         };
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [selectedKpiKey, filteredTransactions, filteredPurchaseOrders, filteredCashSupplierPayments, virtualSupplierPaymentTransactions, virtualPurchaseOrderTransactions, productsById]);
+  }, [selectedKpiKey, filteredTransactions, filteredPurchaseOrders, filteredPurchaseCashPaymentOrders, filteredCashSupplierPayments, virtualSupplierPaymentTransactions, virtualPurchaseOrderTransactions, productsById]);
 
   const selectedRevenueDistribution = useMemo(() => {
     if (selectedKpiKey !== 'totalRevenue') return null;
