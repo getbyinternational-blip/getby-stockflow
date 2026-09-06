@@ -2020,7 +2020,7 @@ export default function Transactions() {
                   const profit = (item.sellPrice - resolveBuyPrice(item, tx.date)) * item.quantity;
                   grossProfit -= profit;
               });
-          } else if (isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx)) {
+          } else if (isExpenseVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx)) {
               totalCashOut += amount;
           } else if (isCashWithdrawalVirtualTransaction(tx)) {
               if (paymentMethod === 'cash') totalCashOut += amount;
@@ -2183,7 +2183,7 @@ export default function Transactions() {
           if (amount <= 0) return false;
           const txType = String((tx as Transaction & { type?: string }).type || '').toLowerCase();
           const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
-          const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
+          const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
           return isCashOutVirtual
             || (txType === 'return' && (paymentMethod === 'cash' || String((tx as any).returnHandlingMode || '').trim().toLowerCase() === 'refund_cash'))
             || (txType === 'customer_cash_out' && paymentMethod === 'cash')
@@ -2243,7 +2243,7 @@ export default function Transactions() {
         const paymentMethod = String(tx.paymentMethod || '').trim().toLowerCase();
         const isSaleLike = isSaleLikeTransaction(tx);
         const isCashInVirtual = isCashAdditionVirtualTransaction(tx) || isManualCashInVirtualTransaction(tx);
-        const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isDeleteCompensationVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
+        const isCashOutVirtual = isExpenseVirtualTransaction(tx) || isCashWithdrawalVirtualTransaction(tx) || isManualCashOutVirtualTransaction(tx);
         const settlement = isSaleLike ? getCanonicalSaleSettlement(tx) : null;
 
         switch (selectedKpiKey) {
@@ -3237,7 +3237,7 @@ export default function Transactions() {
       {selectedKpiCard && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
           <Card className="flex max-h-[90vh] w-full max-w-[calc(100vw-2rem)] flex-col overflow-hidden shadow-2xl">
-            <CardHeader className={`border-b ${selectedKpiCard.cardClass}`}>
+            <CardHeader className={`shrink-0 border-b ${selectedKpiCard.cardClass}`}>
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-5">
@@ -3263,10 +3263,10 @@ export default function Transactions() {
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="min-h-0 flex-1 overflow-hidden p-0">
-              <div className="flex h-full min-h-0 flex-col">
+            <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
+              <div className="flex min-h-0 flex-1 flex-col">
                 {selectedRevenueDistribution && (
-                  <div className="border-b border-slate-200 bg-slate-50/80 px-4 pt-4">
+                  <div className="shrink-0 border-b border-slate-200 bg-slate-50/80 px-4 pt-4">
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
