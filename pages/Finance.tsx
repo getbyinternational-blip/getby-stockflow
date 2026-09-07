@@ -64,7 +64,7 @@ import {
   Unlock,
 } from "lucide-react";
 import { getCurrentUser } from "../services/auth";
-import { formatINRPrecise, formatINRWhole } from "../services/numberFormat";
+import { formatMoneyPrecise as formatINRPrecise, formatMoneyWhole as formatINRWhole } from "../services/numberFormat";
 import { getCanonicalCustomerBalanceView } from "../services/customerBalanceView";
 import { normalizeTransactionItems } from "../utils/transactionItems";
 import { getFriendlyErrorMessage } from "../services/errorMessages";
@@ -229,8 +229,7 @@ const getExpenseEffectiveDate = (expense: CanonicalExpense) =>
 
 const formatINR = (value: number) => formatINRPrecise(value);
 const formatINRSummary = (value: number) => formatINRWhole(value);
-const formatPlainAmount = (value: number) =>
-  formatINRPrecise(value).replace(/₹\s*/g, "");
+const formatPlainAmount = (value: number) => formatINRPrecise(value);
 
 const formatEditableAmount = (value: number) => {
   if (!Number.isFinite(value) || Math.abs(value) < 0.000001) return "";
@@ -11775,7 +11774,7 @@ const transactionMap = new Map<string, Transaction>(
 
                         <div className="grid grid-cols-1 text-s gap-3 sm:grid-cols-2">
                           <div>
-                            <Label className="mb-2 block text-s">
+                            <Label className="mb-2 block text-lg font-semibold">
                               Closing Cash
                             </Label>
 
@@ -11783,6 +11782,7 @@ const transactionMap = new Map<string, Transaction>(
                               type="number"
                               min="0"
                               value={closingBalance}
+                              className="h-14 px-4 text-xl font-semibold tabular-nums"
                               onChange={(e) => {
                                 setClosingBalanceManuallySet(true);
                                 setClosingBalance(e.target.value);
