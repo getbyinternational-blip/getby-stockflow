@@ -12039,8 +12039,16 @@ const transactionMap = new Map<string, Transaction>(
                     {currentClosingShiftMovement && (
                       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 p-3 text-sm font-semibold text-emerald-700">
-                            Cash In
+                          <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-3 text-sm font-semibold text-emerald-700">
+                            <span>Cash In</span>
+                            <span className="tabular-nums">
+                              {formatPlainAmount(
+                                currentClosingShiftMovementDisplay?.cashInRows.reduce(
+                                  (total, row) => total + row.amount,
+                                  0,
+                                ) ?? 0,
+                              )}
+                            </span>
                           </div>
 
                           <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
@@ -12121,8 +12129,16 @@ const transactionMap = new Map<string, Transaction>(
                         </div>
 
                         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                          <div className="border-b border-slate-200 p-3 text-sm font-semibold text-rose-700">
-                            Cash Out
+                          <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 p-3 text-sm font-semibold text-rose-700">
+                            <span>Cash Out</span>
+                            <span className="tabular-nums">
+                              {formatPlainAmount(
+                                currentClosingShiftMovementDisplay?.cashOutRows.reduce(
+                                  (total, row) => total + row.amount,
+                                  0,
+                                ) ?? 0,
+                              )}
+                            </span>
                           </div>
 
                           <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
