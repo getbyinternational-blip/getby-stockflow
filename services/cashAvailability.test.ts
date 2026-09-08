@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AppState, CashSession, CashSource } from "../types";
 import { getAvailableCashAt } from "./cashAvailability";
+
+// Exercise real cash calculations without starting cloud authentication or sync.
+vi.mock("./firebase", () => ({ db: null, auth: null }));
 
 const buildState = (overrides: Partial<AppState> = {}): AppState =>
   ({
@@ -40,6 +43,25 @@ const available = (
 ) => getAvailableCashAt(source, eventTime, state, session);
 
 describe("getAvailableCashAt", () => {
+  it("keeps supplier payment availability separate from reserve transfers and reserve spending", () => {
+    const session = buildSession({
+      openingBalance: 10000,
+      reserveCashLedger: [
+        { id: "top-up", date: "2026-08-30T10:15:00.000Z", type: "in", amount: 6000 },
+        { id: "add-back", date: "2026-08-30T10:30:00.000Z", type: "out", amount: 500 },
+      ],
+    });
+    const state = buildState({
+      supplierPayments: [
+        { id: "reserve-payment", partyId: "party-1", partyName: "Supplier", amount: 2000, method: "cash", cashSource: "reserve", paidAt: "2026-08-30T11:00:00.000Z", createdAt: "2026-08-30T11:00:00.000Z" },
+        { id: "drawer-payment", partyId: "party-1", partyName: "Supplier", amount: 1000, method: "cash", cashSource: "drawer", paidAt: "2026-08-30T11:15:00.000Z", createdAt: "2026-08-30T11:15:00.000Z" },
+      ],
+    });
+
+    expect(available("drawer", "2026-08-30T12:00:00.000Z", state, session)).toBe(3500);
+    expect(available("reserve", "2026-08-30T12:00:00.000Z", state, session)).toBe(3500);
+  });
+
   it("ignores inherited reserve-ledger entries before the current shift for both buckets", () => {
     const session = buildSession({
       openingBalance: 500,

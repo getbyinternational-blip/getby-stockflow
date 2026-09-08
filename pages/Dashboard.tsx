@@ -20,6 +20,7 @@ import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 import { createPerfRunId, perfLog, perfMeasureSync } from '../services/perf';
 import { isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
+import { getAvailableCashAt } from '../services/cashAvailability';
 
 type CustomerReceivableRow = Customer & { receivable: number; ledgerBalanceUnavailable?: boolean };
 type PartyPayableRow = PurchaseParty & { payable: number; dueOrders: PurchaseOrder[]; partyCredit: number; dashboardMergedPartyIds?: string[] };
@@ -86,35 +87,7 @@ const getDashboardCashSourceAvailability = (state: AppState) => {
     .find((session: CashSession) => evaluateCarryForwardSession(session).valid) || null;
   const start = new Date(openSession.startTime).getTime();
   if (!Number.isFinite(start)) return { activeCash: 0, reserveCash: 0, totalCash: 0 };
-  const end = openSession.endTime ? new Date(openSession.endTime).getTime() : Number.POSITIVE_INFINITY;
-  const cashFromTransactions = (state.transactions || []).reduce((sum, tx) => {
-    if (!isInCashWindow((tx as any).financialDate || tx.date, start, end)) return sum;
-    const amount = Math.max(0, Number(tx.total || 0));
-    const type = String((tx as any).type || '').toLowerCase();
-    if (type === 'sale' || type === 'historical_reference') return sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0));
-    if (type === 'payment' && tx.paymentMethod === 'Cash') return sum + amount;
-    if ((type === 'return' || type === 'customer_cash_out') && tx.paymentMethod === 'Cash') return sum - amount;
-    return sum;
-  }, 0);
-  const expenseOut = (state.expenses || [])
-    .filter((expense) => isInCashWindow(getExpenseEffectiveDate(expense), start, end))
-    .reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
-  const cashAdjustments = (state.cashAdjustments || [])
-    .filter((entry) => isInCashWindow(entry.effectiveAt || entry.createdAt, start, end))
-    .reduce((sum, entry) => sum + (entry.type === 'cash_addition' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
-  const manualCash = (state.manualCashbookEntries || [])
-    .filter((entry) => !entry.isDeleted && isInCashWindow(entry.date || entry.createdAt, start, end))
-    .reduce((sum, entry) => sum + (entry.type === 'cash_in' ? 1 : -1) * Math.max(0, Number(entry.amount || 0)), 0);
-  const directPurchaseCashOut = (state.purchaseOrders || []).reduce((sum, order) => sum + (order.paymentHistory || []).reduce((inner, payment: any) => {
-    if (payment?.supplierPaymentId) return inner;
-    if (String(payment?.method || 'cash').toLowerCase() !== 'cash') return inner;
-    if (!isInCashWindow(payment.paidAt || order.effectiveAt || order.orderDate || order.createdAt, start, end)) return inner;
-    return inner + Math.max(0, Number(payment.amount || 0));
-  }, 0), 0);
-  const supplierCashOut = (state.supplierPayments || [])
-    .filter((payment) => !payment.deletedAt && getSupplierPaymentMethod(payment.method) === 'cash' && isInCashWindow(payment.effectiveAt || payment.paidAt || payment.createdAt, start, end))
-    .reduce((sum, payment) => sum + Math.max(0, Number(payment.amount || 0)), 0);
-  const totalCash = Math.max(0, Math.round((Number(openSession.openingBalance || 0) + cashFromTransactions + cashAdjustments + manualCash - expenseOut - directPurchaseCashOut - supplierCashOut) * 100) / 100);
+  const activeCash = getAvailableCashAt('drawer', new Date().toISOString(), state, openSession);
   const currentSessionReserve = getSessionReservedCash(openSession);
   const priorReserve = latestCarryForwardSession ? getSessionReservedCash(latestCarryForwardSession) : 0;
   const reserveBase = currentSessionReserve > 0 ? currentSessionReserve : priorReserve;
@@ -145,9 +118,9 @@ const getDashboardCashSourceAvailability = (state: AppState) => {
   ) : 0;
   const reserveCash = roundMoney(Math.max(0, reserveBase - reserveOut));
   return {
-    activeCash: Math.max(0, roundMoney(totalCash)),
+    activeCash,
     reserveCash,
-    totalCash: roundMoney(Math.max(0, Math.max(0, totalCash) + reserveCash)),
+    totalCash: roundMoney(activeCash + reserveCash),
   };
 };
 
@@ -294,6 +267,7 @@ export default function Dashboard() {
   const [cashAdjustments, setCashAdjustments] = useState<CashAdjustment[]>(initialData.cashAdjustments || []);
   const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>((initialData.manualCashbookEntries || []).filter((entry) => !entry?.isDeleted));
   const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>(initialData.deleteCompensations || []);
+  const [deletedTransactions, setDeletedTransactions] = useState(initialData.deletedTransactions || []);
   const [cashSessions, setCashSessions] = useState<any[]>(initialData.cashSessions || []);
 
   const [receivingCustomer, setReceivingCustomer] = useState<CustomerReceivableRow | null>(null);
@@ -358,6 +332,7 @@ export default function Dashboard() {
       setCashAdjustments(data.cashAdjustments || []);
       setManualCashbookEntries((data.manualCashbookEntries || []).filter((entry) => !entry?.isDeleted));
       setDeleteCompensations(data.deleteCompensations || []);
+      setDeletedTransactions(data.deletedTransactions || []);
       setCashSessions(data.cashSessions || []);
     }, { runId: perfRunIdRef.current });
   };
@@ -608,6 +583,8 @@ export default function Dashboard() {
   const payExtraToPartyCredit = payAmountValid ? Math.max(0, payAmountValue - payCurrentPayable) : 0;
   const openCashSession = useMemo(() => (cashSessions || []).find((session: any) => session?.status === 'open' && !session?.deletedAt), [cashSessions]);
   const cashSourceAvailability = useMemo(() => getDashboardCashSourceAvailability({
+    customers,
+    deletedTransactions,
     transactions,
     expenses,
     deleteCompensations,
@@ -617,9 +594,9 @@ export default function Dashboard() {
     upfrontOrders,
     purchaseOrders: orders,
     cashSessions,
-  } as AppState), [transactions, expenses, deleteCompensations, supplierPayments, cashAdjustments, manualCashbookEntries, upfrontOrders, orders, cashSessions]);
+  } as AppState), [customers, deletedTransactions, transactions, expenses, deleteCompensations, supplierPayments, cashAdjustments, manualCashbookEntries, upfrontOrders, orders, cashSessions]);
   const getAvailableCashBySource = (source: CashSource) => (
-    simplifiedShiftAccess ? cashSourceAvailability.totalCash : normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
+    !simplifiedShiftAccess && normalizeCashSource(source) === 'reserve' ? cashSourceAvailability.reserveCash : cashSourceAvailability.activeCash
   );
   const resolvedPayCashSource: CashSource = simplifiedShiftAccess ? 'drawer' : payCashSource;
   const cashOverdrawAmount = payMethod === 'cash' && payAmountValid && (simplifiedShiftAccess || openCashSession) ? Math.max(0, payAmountValue - getAvailableCashBySource(resolvedPayCashSource)) : 0;
@@ -636,7 +613,7 @@ export default function Dashboard() {
     ? Math.max(0, Number(editingSupplierPayment?.amount || editingLegacySupplierRow?.credit || 0))
     : 0;
   const editableCashAvailableBySource = (source: CashSource) => {
-    if (simplifiedShiftAccess) return cashSourceAvailability.totalCash + editSupplierReversibleCashAmount;
+    if (simplifiedShiftAccess) return cashSourceAvailability.activeCash + (editSupplierOriginalCashSource === 'drawer' ? editSupplierReversibleCashAmount : 0);
     const normalizedSource = normalizeCashSource(source);
     const baseAvailable = getAvailableCashBySource(normalizedSource);
     if (editSupplierOriginalMethod !== 'cash') return baseAvailable;
