@@ -652,6 +652,44 @@ function AppContent() {
   const updateDateLabel = latestVersionData?.deployedAt
     ? formatDateDisplay(latestVersionData.deployedAt)
     : null;
+  const updateToast = updateAvailable ? (
+    <div className="fixed inset-x-3 bottom-3 z-[260] sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-[360px]">
+      <div className="rounded-2xl border border-amber-200 bg-white/95 p-3 text-xs text-slate-800 shadow-xl backdrop-blur">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-950">Update available</span>
+              {(updateVersionLabel || updateDateLabel) && (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-900">
+                  {[updateVersionLabel, updateDateLabel].filter(Boolean).join(' • ')}
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-600">A new version is ready with accounting fixes.</div>
+          </div>
+        </div>
+
+        <details className="group mt-2 rounded-lg bg-slate-50 px-2 py-1.5">
+          <summary className="cursor-pointer select-none text-[11px] font-semibold text-slate-700 outline-none">
+            What changed?
+          </summary>
+          <div className="mt-1 text-[11px] text-slate-600">
+            <div className="font-medium text-slate-700">Fixes in this version:</div>
+            <ul className="mt-1 space-y-0.5 pl-3">
+              {updateReleaseNotes.map((note) => (
+                <li key={note} className="list-disc">{note}</li>
+              ))}
+            </ul>
+          </div>
+        </details>
+
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <Button size="sm" className="h-8 bg-slate-900 px-3 text-white hover:bg-slate-800" onClick={handleUpdate}>Update Now</Button>
+          <Button size="sm" variant="outline" className="h-8 border-slate-200 px-3 text-slate-700 hover:bg-slate-50" onClick={dismissUpdate}>Later</Button>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   const handleLoginSuccess = () => {
     const user = auth?.currentUser;
@@ -730,34 +768,40 @@ function AppContent() {
   if (authStatus === 'loading') {
     if (isPublicRoute) {
       return (
+        <>
+          <Routes>
+            <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/data-deletion" element={<DataDeletion />} />
+            <Route path="*" element={<Navigate to="/privacy-policy" replace />} />
+          </Routes>
+          {updateToast}
+        </>
+      );
+    }
+    return (<><LightweightLoader label="Checking your session..." className="min-h-screen" />{updateToast}</>);
+  }
+
+  if (isPublicRoute) {
+    return (
+      <>
         <Routes>
           <Route path="/privacy-policy" element={<PrivacyPolicy />} />
           <Route path="/terms" element={<Terms />} />
           <Route path="/data-deletion" element={<DataDeletion />} />
           <Route path="*" element={<Navigate to="/privacy-policy" replace />} />
         </Routes>
-      );
-    }
-    return <LightweightLoader label="Checking your session..." className="min-h-screen" />;
-  }
-
-  if (isPublicRoute) {
-    return (
-      <Routes>
-        <Route path="/privacy-policy" element={<PrivacyPolicy />} />
-        <Route path="/terms" element={<Terms />} />
-        <Route path="/data-deletion" element={<DataDeletion />} />
-        <Route path="*" element={<Navigate to="/privacy-policy" replace />} />
-      </Routes>
+        {updateToast}
+      </>
     );
   }
 
   if (authStatus === 'unauthenticated') {
-      return <Auth onLogin={handleLoginSuccess} />;
+      return (<><Auth onLogin={handleLoginSuccess} />{updateToast}</>);
   }
 
   if (authStatus === 'unverified') {
-      return <VerificationRequired email={currentEmail || undefined} />;
+      return (<><VerificationRequired email={currentEmail || undefined} />{updateToast}</>);
   }
 
   return (
@@ -771,44 +815,7 @@ function AppContent() {
             </div>
           </div>
         )}
-        {updateAvailable && (
-          <div className="fixed inset-x-3 bottom-3 z-[95] sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-[360px]">
-            <div className="rounded-2xl border border-amber-200 bg-white/95 p-3 text-xs text-slate-800 shadow-xl backdrop-blur">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-slate-950">Update available</span>
-                    {(updateVersionLabel || updateDateLabel) && (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-900">
-                        {[updateVersionLabel, updateDateLabel].filter(Boolean).join(' • ')}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-slate-600">A new version is ready with accounting fixes.</div>
-                </div>
-              </div>
-
-              <details className="group mt-2 rounded-lg bg-slate-50 px-2 py-1.5">
-                <summary className="cursor-pointer select-none text-[11px] font-semibold text-slate-700 outline-none">
-                  What changed?
-                </summary>
-                <div className="mt-1 text-[11px] text-slate-600">
-                  <div className="font-medium text-slate-700">Fixes in this version:</div>
-                  <ul className="mt-1 space-y-0.5 pl-3">
-                    {updateReleaseNotes.map((note) => (
-                      <li key={note} className="list-disc">{note}</li>
-                    ))}
-                  </ul>
-                </div>
-              </details>
-
-              <div className="mt-3 flex items-center justify-end gap-2">
-                <Button size="sm" className="h-8 bg-slate-900 px-3 text-white hover:bg-slate-800" onClick={handleUpdate}>Update Now</Button>
-                <Button size="sm" variant="outline" className="h-8 border-slate-200 px-3 text-slate-700 hover:bg-slate-50" onClick={dismissUpdate}>Later</Button>
-              </div>
-            </div>
-          </div>
-        )}
+        {updateToast}
         {(cloudStatus.status === 'offline' || cloudStatus.status === 'missing_store' || cloudStatus.status === 'error') && (
           <div className="fixed top-0 left-0 right-0 z-[80] bg-red-600 text-white text-xs px-3 py-2 text-center">
             {cloudStatus.message || 'Live cloud data unavailable. Business data operations are blocked until connection is restored.'}
