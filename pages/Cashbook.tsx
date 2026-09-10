@@ -24,6 +24,52 @@ type Row = {
   storeCreditIncrease: number; storeCreditDecrease: number;
   itemPreviews?: Array<{ id: string; name: string; quantity: number; image?: string; meta?: string }>;
 };
+type CashbookExportFieldKey =
+  | 'date'
+  | 'type'
+  | 'description'
+  | 'reference'
+  | 'party'
+  | 'payment'
+  | 'cashSource'
+  | 'amount'
+  | 'cashIn'
+  | 'cashOut'
+  | 'bankIn'
+  | 'bankOut'
+  | 'netCash'
+  | 'netBank'
+  | 'receivableIncrease'
+  | 'receivableDecrease'
+  | 'payableIncrease'
+  | 'payableDecrease'
+  | 'storeCreditIncrease'
+  | 'storeCreditDecrease'
+  | 'items';
+const CASHBOOK_EXPORT_FIELDS: Array<{ key: CashbookExportFieldKey; label: string; group: string }> = [
+  { key: 'date', label: 'Date and time', group: 'Transaction Identity' },
+  { key: 'type', label: 'Transaction type', group: 'Transaction Identity' },
+  { key: 'description', label: 'Description / narration', group: 'Transaction Identity' },
+  { key: 'reference', label: 'Bill / reference', group: 'Transaction Identity' },
+  { key: 'party', label: 'Customer / party', group: 'Transaction Identity' },
+  { key: 'payment', label: 'Payment mode', group: 'Payment Details' },
+  { key: 'cashSource', label: 'Cash source', group: 'Payment Details' },
+  { key: 'amount', label: 'Amount', group: 'Payment Details' },
+  { key: 'cashIn', label: 'Cash in', group: 'Cash / Bank Movement' },
+  { key: 'cashOut', label: 'Cash out', group: 'Cash / Bank Movement' },
+  { key: 'bankIn', label: 'Bank in', group: 'Cash / Bank Movement' },
+  { key: 'bankOut', label: 'Bank out', group: 'Cash / Bank Movement' },
+  { key: 'netCash', label: 'Net cash movement', group: 'Cash / Bank Movement' },
+  { key: 'netBank', label: 'Net bank movement', group: 'Cash / Bank Movement' },
+  { key: 'receivableIncrease', label: 'Receivable increase', group: 'Accounting Effects' },
+  { key: 'receivableDecrease', label: 'Receivable decrease', group: 'Accounting Effects' },
+  { key: 'payableIncrease', label: 'Payable increase', group: 'Accounting Effects' },
+  { key: 'payableDecrease', label: 'Payable decrease', group: 'Accounting Effects' },
+  { key: 'storeCreditIncrease', label: 'Store credit increase', group: 'Accounting Effects' },
+  { key: 'storeCreditDecrease', label: 'Store credit decrease', group: 'Accounting Effects' },
+  { key: 'items', label: 'Item summary', group: 'Item Details' },
+];
+const CASHBOOK_DEFAULT_EXPORT_FIELDS = CASHBOOK_EXPORT_FIELDS.map((field) => field.key);
 const PURCHASE_EDITOR_SETTLEMENT_NOTE = 'settlement updated from purchase editor';
 type GrossProfitRow = {
   id: string;
@@ -378,6 +424,12 @@ export default function Cashbook() {
   const [grossProfitModalScope, setGrossProfitModalScope] = useState<'all' | 'net_sales' | 'gross_profit' | 'expenses'>('all');
   const [grossProfitPage, setGrossProfitPage] = useState(1);
   const [grossProfitModalPage, setGrossProfitModalPage] = useState(1);
+  const [isCashbookExportOpen, setIsCashbookExportOpen] = useState(false);
+  const [cashbookExportScope, setCashbookExportScope] = useState<'filtered' | 'all'>('filtered');
+  const [cashbookExportFields, setCashbookExportFields] = useState<CashbookExportFieldKey[]>(CASHBOOK_DEFAULT_EXPORT_FIELDS);
+  const [cashbookExportDelimiter, setCashbookExportDelimiter] = useState<',' | ';' | '\t'>(',');
+  const [cashbookExportDateFormat, setCashbookExportDateFormat] = useState<'display' | 'iso'>('display');
+  const [cashbookExportNumberFormat, setCashbookExportNumberFormat] = useState<'raw' | 'formatted'>('raw');
   const [isAddCashOpen, setIsAddCashOpen] = useState(false);
   const [manualType, setManualType] = useState<'cash_in' | 'cash_out'>('cash_in');
   const dailyBreakdownModalRef = React.useRef<HTMLDivElement | null>(null);
@@ -395,6 +447,7 @@ export default function Cashbook() {
   }
   useEscapeLayer(Boolean(selectedDailyBreakdownKey), closeDailyBreakdownModal, { priority: 110 });
   useEscapeLayer(isGrossProfitModalOpen, () => setIsGrossProfitModalOpen(false), { priority: 115 });
+  useEscapeLayer(isCashbookExportOpen, () => setIsCashbookExportOpen(false), { priority: 116 });
 
   const refreshCashbookData = React.useCallback(async () => {
     try {
@@ -862,6 +915,75 @@ export default function Cashbook() {
       fallbackLabel,
     };
   }), [visibleRows, productImageById]);
+  const cashbookExportFieldGroups = useMemo(
+    () => Array.from(new Set(CASHBOOK_EXPORT_FIELDS.map((field) => field.group))),
+    [],
+  );
+  const cashbookExportRows = cashbookExportScope === 'all' ? allLedgerRows : filteredDisplayRows;
+  const cashbookExportSelectedFields = CASHBOOK_EXPORT_FIELDS.filter((field) => cashbookExportFields.includes(field.key));
+  const getCashbookExportValue = (row: Row, field: CashbookExportFieldKey) => {
+    const moneyValue = (value: number) => cashbookExportNumberFormat === 'formatted' ? fmt(value) : Number(value || 0).toFixed(2);
+    if (field === 'date') return cashbookExportDateFormat === 'iso' ? row.date : formatDateTimeDisplay(row.date);
+    if (field === 'type') return row.type.replace(/_/g, ' ');
+    if (field === 'description') return row.description;
+    if (field === 'reference') return row.reference;
+    if (field === 'party') return row.party;
+    if (field === 'payment') return row.payment === 'na' ? '' : row.payment;
+    if (field === 'cashSource') return row.cashSource ? formatCashSourceLabel(row.cashSource) : '';
+    if (field === 'amount') return moneyValue(getCashbookRowAmount(row));
+    if (field === 'cashIn') return moneyValue(row.cashIn);
+    if (field === 'cashOut') return moneyValue(row.cashOut);
+    if (field === 'bankIn') return moneyValue(row.bankIn);
+    if (field === 'bankOut') return moneyValue(row.bankOut);
+    if (field === 'netCash') return moneyValue(row.cashIn - row.cashOut);
+    if (field === 'netBank') return moneyValue(row.bankIn - row.bankOut);
+    if (field === 'receivableIncrease') return moneyValue(row.receivableIncrease);
+    if (field === 'receivableDecrease') return moneyValue(row.receivableDecrease);
+    if (field === 'payableIncrease') return moneyValue(row.payableIncrease);
+    if (field === 'payableDecrease') return moneyValue(row.payableDecrease);
+    if (field === 'storeCreditIncrease') return moneyValue(row.storeCreditIncrease);
+    if (field === 'storeCreditDecrease') return moneyValue(row.storeCreditDecrease);
+    if (field === 'items') {
+      return (row.itemPreviews || [])
+        .map((item) => `${item.name} x ${item.quantity}${item.meta ? ` (${item.meta})` : ''}`)
+        .join(' | ');
+    }
+    return '';
+  };
+  const escapeCsvValue = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const downloadCashbookCsv = () => {
+    const delimiter = cashbookExportDelimiter;
+    const headers = cashbookExportSelectedFields.length ? cashbookExportSelectedFields : CASHBOOK_EXPORT_FIELDS;
+    const summaryRows = [
+      ['Cashbook Export Summary', ''],
+      ['Generated At', new Date().toISOString()],
+      ['Rows Included', String(cashbookExportRows.length)],
+      ['Total Transactions In Cashbook', String(allLedgerRows.length)],
+      ['Filtered Transactions', String(filteredDisplayRows.length)],
+      ['Date Preset', datePreset],
+      ['From Date', effectiveFrom || 'All'],
+      ['To Date', effectiveTo || 'All'],
+      ['Payment Filter', payFilter],
+      ['Type Filter', typeFilter],
+      ['Search', search || 'None'],
+      ['Sort', sort],
+      [],
+    ];
+    const csvRows = [
+      ...summaryRows,
+      headers.map((field) => field.label),
+      ...cashbookExportRows.map((row) => headers.map((field) => getCashbookExportValue(row, field.key))),
+    ];
+    const content = csvRows.map((row) => row.map(escapeCsvValue).join(delimiter)).join('\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Cashbook_Accounting_Export_${new Date().toISOString().split('T')[0]}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setIsCashbookExportOpen(false);
+  };
 
   const getLocalDayKey = (value: string) => {
     const parsed = new Date(value);
@@ -1437,6 +1559,20 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
         </div>
         {(activeTab === 'ledger' || activeTab === 'daily_breakdown' || activeTab === 'gross_profit') && (
         <div className="flex flex-wrap gap-2 xl:justify-end">
+          {activeTab === 'ledger' && (
+            <>
+              <div className="flex h-10 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700">
+                Total transactions: {filteredDisplayRows.length} / {allLedgerRows.length}
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCashbookExportOpen(true)}
+                className="h-10 rounded-lg border border-slate-900 bg-slate-900 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Download CSV
+              </button>
+            </>
+          )}
           <FilterSelect value={datePreset} onChange={e => setDatePreset(e.target.value as any)}>
             <option value="all">All</option>
             <option value="today">Today</option>
@@ -1824,6 +1960,193 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
         </div>
       )}
     </section>
+    {isCashbookExportOpen && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" onClick={() => setIsCashbookExportOpen(false)}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cashbook-export-title"
+          className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="border-b border-slate-200 px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="cashbook-export-title" className="text-xl font-semibold text-slate-900">Download Cashbook CSV</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {cashbookExportRows.length} rows selected from {allLedgerRows.length} total transactions
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCashbookExportOpen(false)}
+                className="rounded-full border border-slate-200 p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                aria-label="Close cashbook export"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="space-y-4">
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <div className="mb-2 text-sm font-semibold text-slate-900">Data to include</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+                      <input
+                        type="radio"
+                        name="cashbook-export-scope"
+                        checked={cashbookExportScope === 'filtered'}
+                        onChange={() => setCashbookExportScope('filtered')}
+                        className="mt-1"
+                      />
+                      <span>
+                        <span className="block font-medium text-slate-900">Current filtered rows</span>
+                        <span className="block text-xs text-slate-500">{filteredDisplayRows.length} rows matching the current date, payment, type, search, and sort filters.</span>
+                      </span>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
+                      <input
+                        type="radio"
+                        name="cashbook-export-scope"
+                        checked={cashbookExportScope === 'all'}
+                        onChange={() => setCashbookExportScope('all')}
+                        className="mt-1"
+                      />
+                      <span>
+                        <span className="block font-medium text-slate-900">Full cashbook data</span>
+                        <span className="block text-xs text-slate-500">{allLedgerRows.length} rows before screen filters, for complete accounting backup.</span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm font-semibold text-slate-900">Fields to include</div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCashbookExportFields(CASHBOOK_DEFAULT_EXPORT_FIELDS)}
+                        className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCashbookExportFields(['date', 'type', 'description', 'reference', 'party', 'payment', 'amount', 'cashIn', 'cashOut', 'bankIn', 'bankOut'])}
+                        className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        Core fields
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {cashbookExportFieldGroups.map((group) => (
+                      <div key={group} className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
+                        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{group}</div>
+                        <div className="space-y-2">
+                          {CASHBOOK_EXPORT_FIELDS.filter((field) => field.group === group).map((field) => (
+                            <label key={field.key} className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={cashbookExportFields.includes(field.key)}
+                                onChange={(event) =>
+                                  setCashbookExportFields((prev) =>
+                                    event.target.checked
+                                      ? Array.from(new Set([...prev, field.key]))
+                                      : prev.filter((key) => key !== field.key),
+                                  )
+                                }
+                              />
+                              <span>{field.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <div className="mb-3 text-sm font-semibold text-slate-900">CSV format</div>
+                  <div className="space-y-3">
+                    <label className="block text-xs font-medium text-slate-500">
+                      Delimiter
+                      <select
+                        value={cashbookExportDelimiter}
+                        onChange={(event) => setCashbookExportDelimiter(event.target.value as ',' | ';' | '\t')}
+                        className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value=",">Comma CSV</option>
+                        <option value=";">Semicolon CSV</option>
+                        <option value={'\t'}>Tab separated</option>
+                      </select>
+                    </label>
+                    <label className="block text-xs font-medium text-slate-500">
+                      Date format
+                      <select
+                        value={cashbookExportDateFormat}
+                        onChange={(event) => setCashbookExportDateFormat(event.target.value as 'display' | 'iso')}
+                        className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value="display">Screen date and time</option>
+                        <option value="iso">ISO timestamp</option>
+                      </select>
+                    </label>
+                    <label className="block text-xs font-medium text-slate-500">
+                      Number format
+                      <select
+                        value={cashbookExportNumberFormat}
+                        onChange={(event) => setCashbookExportNumberFormat(event.target.value as 'raw' | 'formatted')}
+                        className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value="raw">Raw decimals</option>
+                        <option value="formatted">Formatted currency</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                  <div className="font-semibold text-slate-900">Export summary</div>
+                  <div className="mt-2 space-y-1">
+                    <div>Rows: {cashbookExportRows.length}</div>
+                    <div>Fields: {cashbookExportSelectedFields.length || CASHBOOK_EXPORT_FIELDS.length}</div>
+                    <div>Date range: {effectiveFrom || 'All'} to {effectiveTo || 'All'}</div>
+                    <div>Payment: {payFilter}</div>
+                    <div>Type: {typeFilter}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 bg-white px-5 py-3">
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsCashbookExportOpen(false)}
+                className="h-10 rounded-lg border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={downloadCashbookCsv}
+                className="h-10 rounded-lg border border-slate-900 bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                Download CSV
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
     {isGrossProfitModalOpen && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" onClick={() => setIsGrossProfitModalOpen(false)} aria-hidden="true">
         <div

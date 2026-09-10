@@ -666,6 +666,7 @@ export interface CashSession {
   >;
   closingEditedAt?: string;
   closingEditNote?: string;
+  shiftNote?: string;
   deletedAt?: string;
   deletedReason?: string;
   deletedBy?: string;

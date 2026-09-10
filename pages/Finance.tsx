@@ -2128,6 +2128,261 @@ const buildShiftCashMovementBreakdown = (
   };
 };
 
+const buildShiftReserveUtilizationBreakdown = (
+  state: AppState,
+  session: CashSession,
+) => {
+  const start = new Date(session.startTime).getTime();
+
+  const end = session.endTime
+    ? new Date(session.endTime).getTime()
+    : Number.POSITIVE_INFINITY;
+
+  const reserveOutRows: ShiftMovementRow[] = [];
+
+  const isReserveSource = (rawSource: unknown) =>
+    normalizeCashSource(rawSource) === "reserve";
+
+  (state.transactions || []).forEach((tx) => {
+    const at = resolveTransactionTimeForSession(tx);
+
+    if (!Number.isFinite(at) || at < start || at > end) {
+      return;
+    }
+
+    if (
+      tx.type === "customer_cash_out" &&
+      tx.paymentMethod === "Cash" &&
+      isReserveSource((tx as any).cashSource)
+    ) {
+      reserveOutRows.push({
+        id: `reserve-cashout-${tx.id}`,
+        date: tx.date,
+        type: "Cash Out",
+        direction: "out",
+        name: tx.customerName || "Customer",
+        ref: (tx.receiptNo || tx.id).slice(-6),
+        description: "Customer cash out / withdrawal",
+        amount: Math.abs(tx.total),
+        source: "reserveCustomerCashOut",
+        sourceTxId: tx.id,
+      });
+    }
+
+    if (tx.type === "return") {
+      const effects = getReturnFinancialEffectsForFinance(tx);
+
+      if (effects.affectsCash && isReserveSource((tx as any).cashSource)) {
+        reserveOutRows.push({
+          id: `reserve-ret-${tx.id}`,
+          date: tx.date,
+          type: "Cash Refund",
+          direction: "out",
+          name: tx.customerName || "Customer",
+          ref: tx.id.slice(-6),
+          description: "Cash refund / return",
+          amount: Math.abs(tx.total),
+          source: "reserveRefunds",
+          sourceTxId: tx.id,
+        });
+      }
+    }
+  });
+
+  (state.cashAdjustments || []).forEach((entry) => {
+    const at = new Date(entry.createdAt).getTime();
+
+    if (
+      !Number.isFinite(at) ||
+      at < start ||
+      at > end ||
+      entry.type !== "cash_withdrawal" ||
+      !isReserveSource(entry.cashSource)
+    ) {
+      return;
+    }
+
+    reserveOutRows.push({
+      id: `reserve-adj-out-${entry.id}`,
+      date: entry.createdAt,
+      type: "Cash Withdrawal",
+      direction: "out",
+      name: "Manual",
+      ref: entry.id.slice(-6),
+      description: withCashSourceLabel(
+        entry.note || "Cash withdrawal",
+        entry.cashSource,
+      ),
+      amount: Math.max(0, Number(entry.amount) || 0),
+      source: "reserveCashWithdrawals",
+    });
+  });
+
+  (((state as any).manualCashbookEntries || []) as ManualCashbookEntry[])
+    .filter((entry) => !entry?.isDeleted)
+    .forEach((entry) => {
+      const at = new Date(entry.date || entry.createdAt).getTime();
+
+      if (
+        !Number.isFinite(at) ||
+        at < start ||
+        at > end ||
+        entry.type !== "cash_out" ||
+        !isReserveSource(entry.cashSource)
+      ) {
+        return;
+      }
+
+      reserveOutRows.push({
+        id: `reserve-manual-${entry.id}`,
+        date: entry.date || entry.createdAt,
+        type: "Manual Cash Out",
+        direction: "out",
+        name: "Reserve Cash",
+        ref: entry.id.slice(-6),
+        description: withCashSourceLabel(
+          entry.details || "Manual cash out",
+          entry.cashSource,
+        ),
+        amount: Math.max(0, Number(entry.amount || 0)),
+        source: "reserveManualCashbookEntries",
+      });
+    });
+
+  (state.expenses || []).forEach((e) => {
+    const at = new Date(getExpenseEffectiveDate(e)).getTime();
+
+    if (
+      !Number.isFinite(at) ||
+      at < start ||
+      at > end ||
+      !isReserveSource(e.cashSource)
+    ) {
+      return;
+    }
+
+    reserveOutRows.push({
+      id: `reserve-exp-${e.id}`,
+      date: getExpenseEffectiveDate(e),
+      type: "Expense",
+      direction: "out",
+      name: e.title,
+      ref: e.id.slice(-6),
+      description: withCashSourceLabel(e.note || "Expense", e.cashSource),
+      amount: Math.max(0, Number(e.amount) || 0),
+      source: "reserveExpenses",
+    });
+  });
+
+  const supplierPayments = ((state as any).supplierPayments || []) as any[];
+
+  supplierPayments.forEach((p) => {
+    const at = getSupplierPaymentTimestamp(p);
+
+    const normalizedMethod = getSupplierPaymentMethodForDrawer(p.method);
+
+    if (
+      !Number.isFinite(at) ||
+      at < start ||
+      at > end ||
+      p.deletedAt ||
+      normalizedMethod !== "cash" ||
+      !isReserveSource(p.cashSource)
+    ) {
+      return;
+    }
+
+    const id = String(p.id || p.voucherNo || at);
+
+    reserveOutRows.push({
+      id: `reserve-sp-${id}`,
+      date: p.paidAt || p.paymentDate || p.date || p.createdAt,
+      type: "Party Payment",
+      direction: "out",
+      name: p.partyName || "Supplier",
+      ref: p.voucherNo || id.slice(-6),
+      description: withCashSourceLabel(
+        p.note || "Cash supplier payment",
+        p.cashSource,
+      ),
+      amount: Math.max(0, Number(p.amount) || 0),
+      source: "reserveSupplierPayments",
+    });
+  });
+
+  const legacySupplierMap = new Map<
+    string,
+    {
+      date: string;
+      party: string;
+      note: string;
+      amount: number;
+    }
+  >();
+
+  (state.purchaseOrders || []).forEach((order) =>
+    (order.paymentHistory || []).forEach((payment: any) => {
+      if (
+        payment?.supplierPaymentId ||
+        (payment.method || "cash") !== "cash" ||
+        !isReserveSource(payment.cashSource)
+      ) {
+        return;
+      }
+
+      const at = new Date(payment.paidAt).getTime();
+
+      if (!Number.isFinite(at) || at < start || at > end) {
+        return;
+      }
+
+      const bucket = new Date(Math.floor(at / 60000) * 60000)
+        .toISOString()
+        .slice(0, 16);
+
+      const key = `${order.partyId}|${(payment.note || "").trim().toLowerCase()}|${bucket}`;
+
+      const existing = legacySupplierMap.get(key) || {
+        date: payment.paidAt,
+        party: order.partyName,
+        note: payment.note || "",
+        amount: 0,
+      };
+
+      existing.amount = roundMoney(
+        existing.amount + Math.max(0, Number(payment.amount) || 0),
+      );
+
+      legacySupplierMap.set(key, existing);
+    }),
+  );
+
+  legacySupplierMap.forEach((group, key) =>
+    reserveOutRows.push({
+      id: `reserve-legacy-${key}`,
+      date: group.date,
+      type: "Party Payment",
+      direction: "out",
+      name: group.party,
+      ref: "LEGACY",
+      description: group.note || "Cash supplier payment allocated across POs",
+      amount: group.amount,
+      source: "reserveLegacySupplierPayments",
+    }),
+  );
+
+  reserveOutRows.sort(
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+  );
+
+  return {
+    reserveOutRows,
+    reserveOutTotal: roundMoney(
+      reserveOutRows.reduce((sum, row) => sum + row.amount, 0),
+    ),
+  };
+};
+
 const CLOSING_DENOMS = [500, 200, 100, 50, 20, 10, 5, 2, 1] as const;
 
 const HIGH_DENOMS = [500, 200, 100, 50, 20] as const;
@@ -2318,6 +2573,8 @@ export default function Finance({
     first: null,
     second: null,
   });
+
+  const cashHistoryUiLoadingTimerRef = React.useRef<number | null>(null);
 
   const storageRefreshFrameRef = React.useRef<number | null>(null);
 
@@ -2527,6 +2784,7 @@ export default function Finance({
   const [cashHistoryRange, setCashHistoryRange] = useState<
     "today" | "7d" | "30d" | "all"
   >("today");
+  const [cashHistoryUiLoading, setCashHistoryUiLoading] = useState(false);
   const [closingCounts, setClosingCounts] = useState<Record<number, number>>(
     () => buildEmptyCounts(),
   );
@@ -2554,6 +2812,9 @@ export default function Finance({
   const [editingClosingReserveAmount, setEditingClosingReserveAmount] =
     useState("");
   const [editingClosingNote, setEditingClosingNote] = useState("");
+  const [shiftNoteDrafts, setShiftNoteDrafts] = useState<
+    Record<string, string>
+  >({});
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(
     null,
   );
@@ -3027,6 +3288,27 @@ export default function Finance({
       setActiveHistoryDetailSessionId(null);
     }
   }, [activeHistoryDetailSessionId, activeHistorySession]);
+
+  useEffect(
+    () => () => {
+      if (cashHistoryUiLoadingTimerRef.current !== null) {
+        window.clearTimeout(cashHistoryUiLoadingTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  const showCashHistoryUiLoader = () => {
+    if (cashHistoryUiLoadingTimerRef.current !== null) {
+      window.clearTimeout(cashHistoryUiLoadingTimerRef.current);
+    }
+
+    setCashHistoryUiLoading(true);
+    cashHistoryUiLoadingTimerRef.current = window.setTimeout(() => {
+      setCashHistoryUiLoading(false);
+      cashHistoryUiLoadingTimerRef.current = null;
+    }, 220);
+  };
 
   useEffect(() => {
     if (!simplifiedShiftAccess) return;
@@ -3628,6 +3910,21 @@ export default function Finance({
       .length;
   }, [closingCounts]);
 
+  const closingCountCalculationTerms = useMemo(
+    () =>
+      CLOSING_DENOMS.map((denom) => {
+        const qty = Math.max(0, Number(closingCounts[denom] || 0));
+
+        return {
+          denomination: denom,
+          receivedQuantity: qty,
+          amount: roundMoney(denom * qty),
+          calculation: `${denom} x ${qty}`,
+        };
+      }),
+    [closingCounts],
+  );
+
   const cashManagementKpis = useMemo(() => {
     const cashAtSale = dailyCashTotals.cashSales;
 
@@ -3961,6 +4258,25 @@ export default function Finance({
         ? roundMoney(Math.max(0, activeReserveBase))
         : 0,
     [activeReserveBase, openSession],
+  );
+
+  const activeReserveOutflowInOpenShift = useMemo(
+    () =>
+      openSession
+        ? buildShiftReserveUtilizationBreakdown(
+            data as AppState,
+            openSession,
+          ).reserveOutTotal
+        : 0,
+    [
+      openSession,
+      data.transactions,
+      data.cashAdjustments,
+      data.manualCashbookEntries,
+      data.expenses,
+      data.supplierPayments,
+      data.purchaseOrders,
+    ],
   );
 
   const displayedReserveCardBalance = useMemo(
@@ -6900,6 +7216,162 @@ const transactionMap = new Map<string, Transaction>(
     ? countedClosingValue - totalAccessibleCash
     : 0;
 
+  const kpiCalculationDebug = useMemo(
+    () => {
+      const activeDenominationTerms = closingCountCalculationTerms.filter(
+        (term) => term.receivedQuantity > 0,
+      );
+
+      const denominationCalculation = activeDenominationTerms.length
+        ? activeDenominationTerms
+            .map(
+              (term) =>
+                `${term.calculation} = ${formatPlainAmount(term.amount)}`,
+            )
+            .join(" + ")
+        : "No counted denominations received";
+
+      const piecesCalculation = activeDenominationTerms.length
+        ? activeDenominationTerms
+            .map((term) => String(term.receivedQuantity))
+            .join(" + ")
+        : "No counted pieces received";
+
+      const activeDenomsCalculation = activeDenominationTerms.length
+        ? activeDenominationTerms
+            .map((term) => `${term.denomination}`)
+            .join(", ")
+        : "No denominations used";
+
+      return {
+        openingBalance: {
+          screen: "Opening Balance card",
+          received: openSession
+            ? openSession.openingBalance
+            : Number(openingBalance || 0) || 0,
+          calculation: openSession
+            ? "openSession.openingBalance"
+            : "Number(openingBalance || 0) || 0",
+          totalShown: financeMovementSummary.shiftStartingBalance,
+        },
+        cashInMovement: {
+          screen: "Cash In Movement card",
+          received: currentWindowRows.map((row) => ({
+            id: row.id,
+            date: row.date,
+            cashIn: Number(row.cashIn) || 0,
+          })),
+          calculation:
+            "sum max(0, Number(row.cashIn) || 0) for current shift rows",
+          totalShown: financeMovementSummary.cashInMovement,
+        },
+        cashOutMovement: {
+          screen: "Cash Out Movement card",
+          received: {
+            cashRefunds: cashManagementKpis.cashRefunds || 0,
+            deleteCompensationRefunds:
+              cashManagementKpis.deleteCompensationRefunds || 0,
+            supplierCashPayments: cashManagementKpis.supplierCashPayments || 0,
+            expenseCashOutflow: cashManagementKpis.expenseCashOutflow || 0,
+            cashWithdrawals: cashManagementKpis.cashWithdrawals || 0,
+          },
+          calculation:
+            "cashRefunds + deleteCompensationRefunds + supplierCashPayments + expenseCashOutflow + cashWithdrawals",
+          totalShown: financeMovementSummary.cashOutMovement,
+        },
+        activeClosingCash: {
+          screen: "Active closing cash card and Closing Cash input",
+          received: {
+            savedDrawerCash,
+            reserveDraftValue,
+          },
+          calculation: "max(0, savedDrawerCash - reserveDraftValue)",
+          totalShown: displayedActiveClosingCash,
+        },
+        reserveClosingCash: {
+          screen: "Reserve closing cash card and Reserved cash panel",
+          received: {
+            liveRemainingReserveCash,
+            reserveDraftValue,
+          },
+          calculation: "liveRemainingReserveCash + reserveDraftValue",
+          totalShown: displayedReservedCash,
+        },
+        countedCashTotal: {
+          screen: "Counted Cash Total card",
+          received: closingCountCalculationTerms,
+          calculation: denominationCalculation,
+          totalShown: closingCountTotal,
+        },
+        piecesCounted: {
+          screen: "Pieces Counted card",
+          received: closingCountCalculationTerms.map((term) => ({
+            denomination: term.denomination,
+            receivedQuantity: term.receivedQuantity,
+          })),
+          calculation: piecesCalculation,
+          totalShown: closingCountPieces,
+        },
+        denominationsUsed: {
+          screen: "Denominations Used card",
+          received: activeDenominationTerms.map((term) => term.denomination),
+          calculation: activeDenomsCalculation,
+          totalShown: closingCountActiveDenoms,
+        },
+        totalClosingCash: {
+          screen: "Total Closing Cash card",
+          received: {
+            activeClosingCash: submittedClosingValue,
+            reserveCash: closingReserveValue,
+          },
+          calculation: "activeClosingCash + reserveCash",
+          totalShown: countedClosingValue,
+        },
+      };
+    },
+    [
+      openSession,
+      openingBalance,
+      financeMovementSummary,
+      currentWindowRows,
+      cashManagementKpis,
+      savedDrawerCash,
+      reserveDraftValue,
+      displayedActiveClosingCash,
+      liveRemainingReserveCash,
+      displayedReservedCash,
+      closingCountCalculationTerms,
+      closingCountTotal,
+      closingCountPieces,
+      closingCountActiveDenoms,
+      submittedClosingValue,
+      closingReserveValue,
+      countedClosingValue,
+    ],
+  );
+
+  useEffect(() => {
+    const data = kpiCalculationDebug;
+
+    try {
+      if (typeof window !== "undefined") {
+        (window as any).__stockflowKpiCalculationDebug = data;
+      }
+
+      console.log(JSON.stringify(data, null, 2));
+      console.log(JSON.stringify(data));
+
+      const logTimer = window.setTimeout(() => {
+        console.log(JSON.stringify(data, null, 2));
+        console.log(JSON.stringify(data));
+      }, 0);
+
+      return () => window.clearTimeout(logTimer);
+    } catch (error) {
+      console.error("[STOCKFLOW_KPI_CALCULATION_DEBUG_FAILED]", error);
+    }
+  }, [kpiCalculationDebug]);
+
   useEffect(() => {
     if (!openSession) {
       setClosingBalanceManuallySet(false);
@@ -7781,6 +8253,29 @@ const transactionMap = new Map<string, Transaction>(
     setEditingClosingReserveAmount("");
 
     setEditingClosingNote("");
+  };
+
+  const saveShiftNote = async (sessionId: string) => {
+    const fresh = loadData();
+
+    const freshSessions = Array.isArray(fresh.cashSessions)
+      ? fresh.cashSessions
+      : [];
+
+    const updatedSessions = freshSessions.map((session) =>
+      session.id === sessionId
+        ? {
+            ...session,
+
+            shiftNote: (shiftNoteDrafts[sessionId] ?? session.shiftNote ?? "")
+              .trim() || undefined,
+          }
+        : session,
+    );
+
+    await persistState({
+      cashSessions: updatedSessions,
+    });
   };
 
   const openDeleteShiftModal = (session: CashSession) => {
@@ -11370,7 +11865,6 @@ const transactionMap = new Map<string, Transaction>(
                     </button>
 
                   </div>
-
                   {openSession && (
                     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-1">
@@ -11765,7 +12259,6 @@ const transactionMap = new Map<string, Transaction>(
                           </div>
                         </div>
                       </div>
-
                       <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
                         {/* <Label>Split Counted Closing Cash</Label> */}
                         {/* <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
@@ -11810,12 +12303,11 @@ const transactionMap = new Map<string, Transaction>(
                             <div className="mt-1 text-s font-semibold text-slate-900">
                               {formatINR(liveRemainingReserveCash)}
                             </div>
-                            {activeReserveOutflowSinceSave > 0 ? (
+                            {activeReserveOutflowInOpenShift > 0 ? (
                               <div className="mt-1 text-xs text-slate-500">
-                                Saved {formatINRSummary(activeReserveBase)} •
-                                Utilized{" "}
+                                Used in this shift{" "}
                                 {formatINRSummary(
-                                  activeReserveOutflowSinceSave,
+                                  activeReserveOutflowInOpenShift,
                                 )}
                               </div>
                             ) : null}
@@ -12995,11 +13487,12 @@ const transactionMap = new Map<string, Transaction>(
                     <select
                       className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
                       value={cashHistoryRange}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        showCashHistoryUiLoader();
                         setCashHistoryRange(
                           e.target.value as "today" | "7d" | "30d" | "all",
-                        )
-                      }
+                        );
+                      }}
                     >
                       <option value="today">Today</option>
 
@@ -13014,6 +13507,14 @@ const transactionMap = new Map<string, Transaction>(
               </CardHeader>
 
               <CardContent className="space-y-3 pt-5">
+                {cashHistoryUiLoading ? (
+                  <div className="fixed inset-0 z-[70] flex items-center justify-center bg-white/60 backdrop-blur-[1px]">
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
+                      <LightweightLoader label="Updating shift view..." />
+                    </div>
+                  </div>
+                ) : null}
+
                 {filteredCashHistory.map((session) => {
                   const computedTotals = getSessionCashTotals(
                     data.transactions,
@@ -13118,11 +13619,12 @@ const transactionMap = new Map<string, Transaction>(
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() =>
+                            onClick={() => {
+                              showCashHistoryUiLoader();
                               setActiveHistoryDetailSessionId((prev) =>
                                 prev === session.id ? null : session.id,
-                              )
-                            }
+                              );
+                            }}
                           >
                             {isOpen ? "Hide details" : "View details"}
                           </Button>
@@ -13262,6 +13764,38 @@ const transactionMap = new Map<string, Transaction>(
                               : ""}
                           </div>
                         )}
+
+                        <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                          <Label className="mb-2 block text-xs text-slate-600">
+                            Notes
+                          </Label>
+
+                          <div className="flex flex-col gap-2 sm:flex-row">
+                            <Input
+                              value={
+                                shiftNoteDrafts[session.id] ??
+                                session.shiftNote ??
+                                ""
+                              }
+                              onChange={(event) =>
+                                setShiftNoteDrafts((prev) => ({
+                                  ...prev,
+                                  [session.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="Add notes for this shift"
+                            />
+
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => void saveShiftNote(session.id)}
+                            >
+                              Save Note
+                            </Button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   );
@@ -13451,12 +13985,70 @@ const transactionMap = new Map<string, Transaction>(
                   }
                 }
 
+                const reserveUtilizationMovement =
+                  buildShiftReserveUtilizationBreakdown(
+                    data as AppState,
+                    activeHistorySession,
+                  );
+
+                const sessionReserveRows = reserveLedgerRows.filter((row) => {
+                  const rowTime = new Date(row.date).getTime();
+
+                  return (
+                    Number.isFinite(rowTime) &&
+                    rowTime >= sessionStartTs &&
+                    rowTime <= sessionEndTs
+                  );
+                });
+                const openingReserveCash = roundMoney(
+                  getReserveLedgerBalance(
+                    cashSessions,
+                    activeHistorySession.startTime,
+                  ),
+                );
+                const reserveAddedInShift = roundMoney(
+                  sessionReserveRows
+                    .filter((row) => row.direction === "in")
+                    .reduce((sum, row) => sum + row.amount, 0),
+                );
+                const reserveUtilizedInShift =
+                  reserveUtilizationMovement.reserveOutTotal;
+                const totalCashOutIncludingReserve = roundMoney(
+                  movement.cashOutTotal + reserveUtilizedInShift,
+                );
+                const sessionReserveDisplayRows = [
+                  ...sessionReserveRows
+                    .filter((row) => row.direction === "in")
+                    .map((row) => ({
+                      id: row.id,
+                      date: row.date,
+                      details: row.details,
+                      partyName: row.partyName,
+                      direction: row.direction,
+                      amount: row.amount,
+                    })),
+                  ...reserveUtilizationMovement.reserveOutRows.map((row) => ({
+                    id: row.id,
+                    date: row.date,
+                    details: row.description || row.type,
+                    partyName: row.name,
+                    direction: row.direction,
+                    amount: row.amount,
+                  })),
+                ].sort(
+                  (a, b) =>
+                    new Date(a.date).getTime() - new Date(b.date).getTime(),
+                );
+
                 return (
                   <div
                     className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
                     role="dialog"
                     aria-modal="true"
-                    onClick={() => setActiveHistoryDetailSessionId(null)}
+                    onClick={() => {
+                      showCashHistoryUiLoader();
+                      setActiveHistoryDetailSessionId(null);
+                    }}
                   >
                     <div
                       className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-2xl border border-slate-200 bg-white shadow-2xl"
@@ -13549,15 +14141,16 @@ const transactionMap = new Map<string, Transaction>(
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() =>
-                              setActiveHistoryDetailSessionId(null)
-                            }
+                            onClick={() => {
+                              showCashHistoryUiLoader();
+                              setActiveHistoryDetailSessionId(null);
+                            }}
                           >
                             Hide details
                           </Button>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-6">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8">
                           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                             <div className="text-[11px] font-medium text-slate-500">
                               Opening cash
@@ -13589,6 +14182,36 @@ const transactionMap = new Map<string, Transaction>(
                               {formatINR(
                                 getSessionReservedCash(activeHistorySession),
                               )}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3">
+                            <div className="text-[11px] font-medium text-violet-700">
+                              Opening reserve cash
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-violet-900">
+                              {formatINR(openingReserveCash)}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                            <div className="text-[11px] font-medium text-emerald-700">
+                              Reserve added
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-emerald-900">
+                              {formatINR(reserveAddedInShift)}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                            <div className="text-[11px] font-medium text-rose-700">
+                              Reserve utilized
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-rose-900">
+                              {formatINR(reserveUtilizedInShift)}
                             </div>
                           </div>
 
@@ -13624,12 +14247,12 @@ const transactionMap = new Map<string, Transaction>(
                           <div>
                             Cash out in this shift:{" "}
                             <span className="font-semibold text-slate-800">
-                              {formatINR(movement.cashOutTotal)}
+                              {formatINR(totalCashOutIncludingReserve)}
                             </span>
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                           <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
                             <div className="text-[11px] text-emerald-700">
                               Cash In
@@ -13646,7 +14269,22 @@ const transactionMap = new Map<string, Transaction>(
                             </div>
 
                             <div className="mt-1 text-sm font-semibold text-rose-900">
-                              {formatINR(movement.cashOutTotal)}
+                              {formatINR(totalCashOutIncludingReserve)}
+                            </div>
+
+                            <div className="mt-1 text-[11px] text-rose-700">
+                              Active {formatINR(movement.cashOutTotal)} +
+                              reserve {formatINR(reserveUtilizedInShift)}
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-violet-200 bg-violet-50 p-3">
+                            <div className="text-[11px] text-violet-700">
+                              Reserve Cash Utilized
+                            </div>
+
+                            <div className="mt-1 text-sm font-semibold text-violet-900">
+                              {formatINR(reserveUtilizedInShift)}
                             </div>
                           </div>
 
@@ -13754,6 +14392,88 @@ const transactionMap = new Map<string, Transaction>(
                                 ))
                               )}
                             </div>
+                          </div>
+                        </div>
+
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-3">
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">
+                                Reserve Movements
+                              </div>
+
+                              <div className="mt-0.5 text-xs text-slate-500">
+                                Active cash to reserve and reserve utilization
+                                during this shift
+                              </div>
+                            </div>
+
+                            <Pill tone="neutral">
+                              {sessionReserveDisplayRows.length} entries
+                            </Pill>
+                          </div>
+
+                          <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                            <div className="col-span-2">Time</div>
+
+                            <div className="col-span-5">What happened</div>
+
+                            <div className="col-span-2">Type</div>
+
+                            <div className="col-span-3 text-right">
+                              Amount
+                            </div>
+                          </div>
+
+                          <div className="max-h-[220px] overflow-auto divide-y divide-slate-200">
+                            {sessionReserveDisplayRows.length === 0 ? (
+                              <div className="p-4 text-sm text-slate-500">
+                                No reserve movements for this shift.
+                              </div>
+                            ) : (
+                              sessionReserveDisplayRows.map((row) => (
+                                <div
+                                  key={row.id}
+                                  className="grid grid-cols-12 gap-2 px-3 py-2 text-xs"
+                                >
+                                  <div className="col-span-2">
+                                    {new Date(row.date).toLocaleTimeString()}
+                                  </div>
+
+                                  <div className="col-span-5 min-w-0">
+                                    <div className="truncate">{row.details}</div>
+                                    {row.partyName ? (
+                                      <div className="mt-0.5 truncate text-[11px] text-slate-500">
+                                        {row.partyName}
+                                      </div>
+                                    ) : null}
+                                  </div>
+
+                                  <div
+                                    className={`col-span-2 font-semibold ${
+                                      row.direction === "in"
+                                        ? "text-emerald-700"
+                                        : "text-rose-700"
+                                    }`}
+                                  >
+                                    {row.direction === "in"
+                                      ? "Reserve added"
+                                      : "Reserve used"}
+                                  </div>
+
+                                  <div
+                                    className={`col-span-3 text-right font-semibold ${
+                                      row.direction === "in"
+                                        ? "text-emerald-700"
+                                        : "text-rose-700"
+                                    }`}
+                                  >
+                                    {row.direction === "in" ? "+" : "-"}
+                                    {formatINR(row.amount)}
+                                  </div>
+                                </div>
+                              ))
+                            )}
                           </div>
                         </div>
 

@@ -7,6 +7,19 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Ctext y=%27.9em%27 font-size=%2790%27%3E📦%3C/text%3E%3C/svg%3E" />
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
+      window.addEventListener('error', function (event) {
+        var stack = event.error && event.error.stack ? String(event.error.stack) : '';
+        var message = event.message ? String(event.message) : '';
+
+        if (
+          message.indexOf("Cannot read properties of undefined (reading 'startTime')") !== -1 &&
+          stack.indexOf('reportAllChanges') !== -1
+        ) {
+          event.preventDefault();
+        }
+      });
+    </script>
+    <script>
       tailwind.config = {
         theme: {
           extend: {

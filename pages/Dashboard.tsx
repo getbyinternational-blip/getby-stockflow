@@ -36,7 +36,7 @@ const getLedgerSortTime = (date: string): number => {
   return Number.isFinite(time) ? time : 0;
 };
 const newestLedgerRowFirst = <T extends { date: string; id: string }>(a: T, b: T): number =>
-  getLedgerSortTime(b.date) - getLedgerSortTime(a.date) || a.id.localeCompare(b.id);
+  getLedgerSortTime(b.date) - getLedgerSortTime(a.date) || b.id.localeCompare(a.id);
 const formatGroupedSupplierPaymentDescription = (method: string, allocationCount: number) => {
   const normalizedMethod = String(method || '').toLowerCase();
   const methodLabel = normalizedMethod === 'online' ? 'Online' : normalizedMethod === 'bank' ? 'Bank' : 'Cash';
