@@ -251,7 +251,7 @@ describe('telegramProductMapper', () => {
       name: 'Product One',
       description:
         'Product description\nsummer, sale',
-      price: 80,
+      price: 120,
       salePrice: 120,
       imageUrl:
         'https://example.com/thumb.jpg',

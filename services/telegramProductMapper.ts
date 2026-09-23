@@ -198,7 +198,7 @@ export const toTelegramSchedulerProduct = (
       ),
 
     price:
-      getTelegramBuyPrice(product),
+      getTelegramSalePrice(product),
 
     salePrice:
       getTelegramSalePrice(product),

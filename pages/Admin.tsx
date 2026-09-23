@@ -2156,9 +2156,11 @@ const displayProductCategory = (value: unknown): string => {
       if (partyResolution.status === 'ambiguous') {
         throw new Error('Multiple supplier parties match this name. Please select the correct party.');
       }
-      const party = partyResolution.status === 'matched'
-        ? partyResolution.party
-        : await createPurchaseParty({ name: partyName });
+      if (partyResolution.status !== 'matched') {
+        setStockSourceError('Please select an existing purchase party from the suggestions or use + Add Party before saving.');
+        return;
+      }
+      const party = partyResolution.party;
       await applyStockSourceInventoryUpdate({
         product: stockSourceProduct,
         quantity,
@@ -2221,9 +2223,11 @@ const displayProductCategory = (value: unknown): string => {
       if (partyResolution.status === 'ambiguous') {
         throw new Error('Multiple supplier parties match this name. Please select the correct party.');
       }
-      const party = partyResolution.status === 'matched'
-        ? partyResolution.party
-        : await createPurchaseParty({ name: partyName });
+      if (partyResolution.status !== 'matched') {
+        setStockSourceError('Please select an existing purchase party from the suggestions or use + Add Party before saving.');
+        return;
+      }
+      const party = partyResolution.party;
       const now = resolveAdminIsoFromLocalInput(stockSourceDate);
       const orderId = `po-admin-stock-source-${Date.now()}`;
       const isVariantPurchase = productHasCombinationStock(stockSourceProduct) && !!selectedStockSourceVariantRow;
@@ -2925,9 +2929,11 @@ const displayProductCategory = (value: unknown): string => {
       setPurchaseError('Multiple supplier parties match this name. Please select the correct supplier from the supplier list.');
       return;
     }
-    const party = partyResolution.status === 'matched'
-      ? partyResolution.party
-      : await createPurchaseParty({ name: partyName });
+    if (partyResolution.status !== 'matched') {
+      setPurchaseError('Please select an existing purchase party from the suggestions or use + Add Party before saving.');
+      return;
+    }
+    const party = partyResolution.party;
     const now = new Date().toISOString();
     const orderId = `po-admin-${Date.now()}`;
     const line: PurchaseOrderLine = {
@@ -5364,7 +5370,7 @@ useEffect(() => {
                               className="w-full border-b last:border-b-0 px-3 py-2 text-left hover:bg-muted"
                               onClick={() => {
                                 setPurchasePartyName(party.name);
-                                setSelectedPurchasePartyId(party.id);
+                                setSelectedPurchasePartyId(getCanonicalPurchasePartySelectionId(party));
                                 setIsPurchasePartyInputFocused(false);
                               }}
                             >

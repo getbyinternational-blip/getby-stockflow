@@ -15,6 +15,7 @@ import { Save, LogOut, Store, Building2, Landmark, ShieldCheck, Percent, CheckCi
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { getEffectiveAdminPin } from '../src/auth/permissions';
 import { isAdmin } from '../src/auth/simplePermissions';
+import { applyThemeMode, normalizeThemeMode } from '../src/theme';
 import { getNormalizedInvoicePrintPreferences, getStoredInvoicePrintPreferences, saveInvoicePrintPreferences } from '../services/invoicePrintPreferences';
 import { buildThermalInvoiceHtmlFromProfile } from '../services/pdf';
 const isValidOperatorPin = (value: string) => /^\d{6,8}$/.test(value.trim());
@@ -135,7 +136,7 @@ export default function Settings() {
     addressLine1: '', addressLine2: '', state: '',
     bankName: '', bankAccount: '', bankIfsc: '', bankHolder: '',
     defaultTaxRate: 0, defaultTaxLabel: 'None', signatureImage: '', logoImage: '', adminPin: '',
-    invoiceFormat: 'standard', thermalPaperWidth: '80mm', thermalStyle: 'grocery', thermalDensity: 'compact', thermalFontScale: 1, thermalPaddingX: 2, thermalPaddingY: 1.5, simplifiedShiftAccess: false
+    invoiceFormat: 'standard', thermalPaperWidth: '80mm', thermalStyle: 'grocery', thermalDensity: 'compact', thermalFontScale: 1, thermalPaddingX: 2, thermalPaddingY: 1.5, simplifiedShiftAccess: false, themeMode: 'light'
   });
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -328,7 +329,9 @@ export default function Settings() {
         customerCatalogFirstPageName: typeof data.profile?.customerCatalogFirstPageName === 'string' ? data.profile.customerCatalogFirstPageName : '',
         customerCatalogFirstPageMimeType: typeof data.profile?.customerCatalogFirstPageMimeType === 'string' ? data.profile.customerCatalogFirstPageMimeType : '',
         simplifiedShiftAccess: Boolean(data.profile?.simplifiedShiftAccess),
+        themeMode: normalizeThemeMode(data.profile?.themeMode),
       };
+      applyThemeMode(baseProfile.themeMode);
       setProfile(adminAccess ? baseProfile : mergeInvoicePrintFields(baseProfile, getStoredInvoicePrintPreferences()));
       setUserEmail(getCurrentUser());
       setOperatorUsers(Array.isArray(data.operatorUsers) ? data.operatorUsers : []);
@@ -360,6 +363,7 @@ export default function Settings() {
       customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
       customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
       simplifiedShiftAccess: Boolean(profile.simplifiedShiftAccess),
+      themeMode: normalizeThemeMode(profile.themeMode),
     };
     setIsSavingProfile(true);
     setSuccess(false);
@@ -1280,6 +1284,35 @@ export default function Settings() {
             </label>
           </CardContent>
         </Card>}
+
+        <Card className="md:col-span-2 border-slate-200">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Store className="w-5 h-5 text-primary" />
+              Appearance
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Choose the app theme for this store.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="max-w-sm space-y-2">
+              <Label>Theme</Label>
+              <Select
+                value={normalizeThemeMode(profile.themeMode)}
+                onChange={(event) => {
+                  const nextTheme = normalizeThemeMode(event.target.value);
+                  applyThemeMode(nextTheme);
+                  setProfile((prev) => ({ ...prev, themeMode: nextTheme }));
+                }}
+                className="bg-background"
+              >
+                <option value="light">Light mode</option>
+                <option value="dark">Dark mode</option>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Tax Configuration Section */}
         <Card className="border-primary/20 bg-primary/5">

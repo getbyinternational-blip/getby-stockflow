@@ -24,6 +24,17 @@ type Row = {
   storeCreditIncrease: number; storeCreditDecrease: number;
   itemPreviews?: Array<{ id: string; name: string; quantity: number; image?: string; meta?: string }>;
 };
+type AdvanceOrderCashbookRow = Row & {
+  orderId: string;
+  productName: string;
+  orderStatus: UpfrontOrder['status'];
+  totalAmount: number;
+  advancePaid: number;
+  remainingAmount: number;
+  paymentCount: number;
+  isLegacyInfoOnly?: boolean;
+  isFulfilledInfoOnly?: boolean;
+};
 type CashbookExportFieldKey =
   | 'date'
   | 'type'
@@ -416,7 +427,7 @@ export default function Cashbook() {
   const [typeFilter, setTypeFilter] = useState<'all' | LedgerType>('all');
   const [search, setSearch] = useState(''); const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [visibleRowCount, setVisibleRowCount] = useState(100);
-  const [activeTab, setActiveTab] = useState<'ledger' | 'daily_breakdown' | 'gross_profit'>('ledger');
+  const [activeTab, setActiveTab] = useState<'ledger' | 'daily_breakdown' | 'advance_orders' | 'gross_profit'>('ledger');
   const [selectedDailyBreakdownKey, setSelectedDailyBreakdownKey] = useState<string | null>(null);
   const [grossProfitCustomerSearch, setGrossProfitCustomerSearch] = useState('');
   const [grossProfitProductSearch, setGrossProfitProductSearch] = useState('');
@@ -822,6 +833,110 @@ export default function Cashbook() {
     if (typeFilter !== 'all' && r.type !== typeFilter) return false;
     const q = search.trim().toLowerCase(); if (!q) return true; return `${r.description} ${r.reference} ${r.party}`.toLowerCase().includes(q);
   }).sort((a, b) => sort === 'newest' ? new Date(b.date).getTime() - new Date(a.date).getTime() : new Date(a.date).getTime() - new Date(b.date).getTime()), [allLedgerRows, effectiveFrom, effectiveTo, payFilter, typeFilter, search, sort]);
+
+  const advanceOrderRows = useMemo<AdvanceOrderCashbookRow[]>(() => {
+    const orderById = new Map(safeUpfrontOrders.map((order) => [String(order.id), order]));
+    const q = search.trim().toLowerCase();
+    const effectRows = buildUpfrontOrderLedgerEffects(safeUpfrontOrders, safeCustomers)
+      .filter((effect) => !effect.isReceivableOnlyRepair)
+      .map((effect): AdvanceOrderCashbookRow => {
+        const order = orderById.get(String(effect.orderId));
+        const payment: PayType = effect.paymentMethod === 'Cash'
+          ? 'cash'
+          : effect.paymentMethod === 'Online'
+            ? 'online'
+            : effect.paymentMethod === 'Mixed'
+              ? 'mixed'
+              : effect.type === 'custom_order_receivable' || effect.type === 'legacy_custom_order_info'
+                ? 'na'
+                : 'credit';
+        const rowType: LedgerType = effect.type === 'custom_order_payment' ? 'custom_order_payment' : 'custom_order_receivable';
+        return {
+          id: effect.id,
+          date: effect.date,
+          type: rowType,
+          description: effect.description,
+          reference: effect.paymentId || effect.orderId,
+          party: effect.customerName,
+          payment,
+          cashIn: Math.max(0, effect.cashIn),
+          cashOut: 0,
+          bankIn: Math.max(0, effect.bankIn),
+          bankOut: 0,
+          receivableIncrease: Math.max(0, effect.receivableIncrease),
+          receivableDecrease: Math.max(0, effect.receivableDecrease),
+          payableIncrease: 0,
+          payableDecrease: 0,
+          storeCreditIncrease: 0,
+          storeCreditDecrease: 0,
+          orderId: effect.orderId,
+          productName: effect.productName,
+          orderStatus: order?.status || 'unpaid',
+          totalAmount: Math.max(0, Number(effect.totalAmount || 0)),
+          advancePaid: Math.max(0, Number(order?.advancePaid ?? effect.paidAmount ?? 0)),
+          remainingAmount: Math.max(0, Number(effect.remainingAmount || order?.remainingAmount || 0)),
+          paymentCount: Array.isArray(order?.paymentHistory) ? order.paymentHistory.length : 0,
+          isLegacyInfoOnly: effect.isLegacyInfoOnly,
+        };
+      });
+    const representedOrderIds = new Set(effectRows.map((row) => row.orderId));
+    const fulfilledInfoRows: AdvanceOrderCashbookRow[] = safeUpfrontOrders
+      .filter((order) => !representedOrderIds.has(String(order.id)))
+      .map((order) => {
+        const paidNowCash = Math.max(0, Number(order.paidNowCash || 0));
+        const paidNowOnline = Math.max(0, Number(order.paidNowOnline || 0));
+        const payment: PayType = paidNowCash > 0 && paidNowOnline > 0 ? 'mixed' : paidNowCash > 0 ? 'cash' : paidNowOnline > 0 ? 'online' : 'na';
+        const customerName = (order as any).customerName || customerMap.get(order.customerId) || 'Unknown Customer';
+        const totalAmount = Math.max(0, Number(order.finalTotal ?? order.totalCost ?? order.orderTotalCustomer ?? 0));
+        return {
+          id: `upfront-info-${order.id}`,
+          date: order.effectiveAt || order.date || order.fulfilledAt || order.createdAt || order.updatedAt || new Date(0).toISOString(),
+          type: 'custom_order_receivable',
+          description: `Fulfilled Advance Order - ${order.productName || 'Custom Order'} - ${customerName}`,
+          reference: order.id,
+          party: customerName,
+          payment,
+          cashIn: 0,
+          cashOut: 0,
+          bankIn: 0,
+          bankOut: 0,
+          receivableIncrease: 0,
+          receivableDecrease: 0,
+          payableIncrease: 0,
+          payableDecrease: 0,
+          storeCreditIncrease: 0,
+          storeCreditDecrease: 0,
+          orderId: order.id,
+          productName: order.productName || 'Custom Order',
+          orderStatus: order.status || 'cleared',
+          totalAmount,
+          advancePaid: Math.max(0, Number(order.advancePaid || 0)),
+          remainingAmount: Math.max(0, Number(order.remainingAmount || 0)),
+          paymentCount: Array.isArray(order.paymentHistory) ? order.paymentHistory.length : 0,
+          isFulfilledInfoOnly: true,
+        };
+      });
+    return [...effectRows, ...fulfilledInfoRows]
+      .filter((row) => {
+        const t = new Date(row.date).getTime();
+        if (effectiveFrom && t < new Date(`${effectiveFrom}T00:00:00`).getTime()) return false;
+        if (effectiveTo && t > new Date(`${effectiveTo}T23:59:59`).getTime()) return false;
+        if (payFilter !== 'all' && row.payment !== payFilter) return false;
+        if (!q) return true;
+        return `${row.description} ${row.reference} ${row.party} ${row.productName} ${row.orderStatus}`.toLowerCase().includes(q);
+      })
+      .sort((a, b) => sort === 'newest' ? new Date(b.date).getTime() - new Date(a.date).getTime() : new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [effectiveFrom, effectiveTo, payFilter, safeCustomers, safeUpfrontOrders, search, sort]);
+
+  const advanceOrderSummary = useMemo(() => ({
+    rows: advanceOrderRows.length,
+    orders: new Set(advanceOrderRows.map((row) => row.orderId)).size,
+    cashIn: advanceOrderRows.reduce((sum, row) => sum + row.cashIn, 0),
+    bankIn: advanceOrderRows.reduce((sum, row) => sum + row.bankIn, 0),
+    receivable: advanceOrderRows.reduce((sum, row) => sum + row.receivableIncrease - row.receivableDecrease, 0),
+    legacyRows: advanceOrderRows.filter((row) => row.isLegacyInfoOnly).length,
+    fulfilledRows: advanceOrderRows.filter((row) => row.isFulfilledInfoOnly).length,
+  }), [advanceOrderRows]);
 
   const currentWindowRows = useMemo(() => asArray<Row>(allLedgerRows).filter((r) => {
     const t = new Date(r.date).getTime();
@@ -1555,9 +1670,10 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setActiveTab('ledger')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'ledger' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Cashbook Ledger</button>
           <button onClick={() => setActiveTab('daily_breakdown')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'daily_breakdown' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Daily Breakdown</button>
+          <button onClick={() => setActiveTab('advance_orders')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'advance_orders' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Advance Orders</button>
           <button onClick={() => setActiveTab('gross_profit')} className={`h-10 rounded-lg border px-4 text-sm font-medium transition ${activeTab === 'gross_profit' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>Gross Profit</button>
         </div>
-        {(activeTab === 'ledger' || activeTab === 'daily_breakdown' || activeTab === 'gross_profit') && (
+        {(activeTab === 'ledger' || activeTab === 'daily_breakdown' || activeTab === 'advance_orders' || activeTab === 'gross_profit') && (
         <div className="flex flex-wrap gap-2 xl:justify-end">
           {activeTab === 'ledger' && (
             <>
@@ -1587,10 +1703,10 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
               <input type="date" value={to} onChange={e => setTo(e.target.value)} className="h-10 min-w-[170px] rounded-lg border border-slate-200 px-3 text-sm" />
             </>
           )}
-          {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && (
+          {(activeTab === 'ledger' || activeTab === 'daily_breakdown' || activeTab === 'advance_orders') && (
             <>
               <FilterSelect value={payFilter} onChange={e => setPayFilter(e.target.value as any)}><option value="all">All Payment</option><option value="cash">Cash</option><option value="online">Bank / Online</option><option value="credit">Credit</option><option value="mixed">Mixed Payment</option></FilterSelect>
-              <FilterSelect value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">All Type</option><option value="sale">Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></FilterSelect>
+              {(activeTab === 'ledger' || activeTab === 'daily_breakdown') && <FilterSelect value={typeFilter} onChange={e => setTypeFilter(e.target.value as any)}><option value="all">All Type</option><option value="sale">Sale</option><option value="payment">Payment</option><option value="return">Return</option><option value="deleted_sale">Deleted Sale</option><option value="deleted_refund">Deleted Refund</option><option value="purchase">Purchase</option><option value="supplier_payment">Supplier Payment</option><option value="expense">Expense</option><option value="adjustment">Adjustment</option><option value="manual_cash_in">Manual Cash In</option><option value="manual_cash_out">Manual Cash Out</option><option value="custom_order_receivable">Custom Order</option><option value="custom_order_payment">Custom Order Payment</option></FilterSelect>}
               <FilterSelect value={sort} onChange={e => setSort(e.target.value as any)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></FilterSelect>
             </>
           )}
@@ -1744,8 +1860,80 @@ const getGrossProfitSourceLabel = (source: ResolvedCostSource) => {
                 </button>
               </div>
             </div>
-          </div>
         </div>
+      </div>
+      )}
+      {activeTab === 'advance_orders' && (
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 p-3">
+          <input placeholder="Search advance order, customer, product, or reference" value={search} onChange={e => setSearch(e.target.value)} className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" />
+        </div>
+        <div className="grid gap-2 border-b border-slate-200 bg-slate-50/60 p-3 text-xs sm:grid-cols-2 xl:grid-cols-6">
+          <div className="rounded-lg border bg-white px-3 py-2"><div className="text-slate-500">Rows</div><div className="text-sm font-semibold text-slate-900">{advanceOrderSummary.rows}</div></div>
+          <div className="rounded-lg border bg-white px-3 py-2"><div className="text-slate-500">Orders</div><div className="text-sm font-semibold text-slate-900">{advanceOrderSummary.orders}</div></div>
+          <div className="rounded-lg border bg-emerald-50 px-3 py-2"><div className="text-emerald-700">Cash Advance</div><div className="text-sm font-semibold text-emerald-800">{fmt(advanceOrderSummary.cashIn)}</div></div>
+          <div className="rounded-lg border bg-blue-50 px-3 py-2"><div className="text-blue-700">Online Advance</div><div className="text-sm font-semibold text-blue-800">{fmt(advanceOrderSummary.bankIn)}</div></div>
+          <div className="rounded-lg border bg-amber-50 px-3 py-2"><div className="text-amber-700">Net Receivable</div><div className="text-sm font-semibold text-amber-800">{fmt(advanceOrderSummary.receivable)}</div></div>
+          <div className="rounded-lg border bg-slate-100 px-3 py-2"><div className="text-slate-600">Info Rows</div><div className="text-sm font-semibold text-slate-900">{advanceOrderSummary.legacyRows + advanceOrderSummary.fulfilledRows}</div></div>
+        </div>
+        <div className="overflow-auto">
+          <table className="w-full min-w-[1280px] text-sm">
+            <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600">
+              <tr className="border-b border-slate-200">
+                <th className="px-3 py-3 text-left font-semibold">Date</th>
+                <th className="px-3 py-3 text-left font-semibold">Entry</th>
+                <th className="px-3 py-3 text-left font-semibold">Customer</th>
+                <th className="px-3 py-3 text-left font-semibold">Product</th>
+                <th className="px-3 py-3 text-left font-semibold">Order Ref</th>
+                <th className="px-3 py-3 text-left font-semibold">Payment</th>
+                <th className="px-3 py-3 text-right font-semibold">Order Total</th>
+                <th className="px-3 py-3 text-right font-semibold">Advance Paid</th>
+                <th className="px-3 py-3 text-right font-semibold">Remaining</th>
+                <th className="px-3 py-3 text-right font-semibold">Cash In</th>
+                <th className="px-3 py-3 text-right font-semibold">Bank In</th>
+                <th className="px-3 py-3 text-left font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white">
+              {advanceOrderRows.map((row) => (
+                <tr key={row.id} className={`border-b border-slate-100 align-top ${row.isLegacyInfoOnly || row.isFulfilledInfoOnly ? 'bg-slate-50/80' : getLedgerRowToneClass(row.type)}`}>
+                  <td className="whitespace-nowrap px-3 py-3 text-slate-700">{formatDateTimeDisplay(row.date)}</td>
+                  <td className="px-3 py-3">
+                    <span className="inline-flex rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+                      {row.isLegacyInfoOnly ? 'Legacy Advance Order' : row.isFulfilledInfoOnly ? 'Fulfilled Advance Order' : row.type === 'custom_order_payment' ? 'Advance Payment' : 'Advance Order'}
+                    </span>
+                    <div className="mt-1 max-w-[260px] truncate text-xs text-slate-500">{row.description}</div>
+                  </td>
+                  <td className="px-3 py-3 font-medium text-slate-900">{row.party || '-'}</td>
+                  <td className="min-w-[220px] px-3 py-3 text-slate-800">{row.productName || '-'}</td>
+                  <td className="px-3 py-3">
+                    <div className="font-mono text-xs text-slate-700">{row.orderId}</div>
+                    {row.paymentCount > 0 && <div className="mt-1 text-[11px] text-slate-400">{row.paymentCount} payment row{row.paymentCount === 1 ? '' : 's'}</div>}
+                  </td>
+                  <td className="px-3 py-3 whitespace-nowrap text-xs font-semibold text-slate-500">
+                    <div className="uppercase">{row.payment === 'na' ? '-' : row.payment}</div>
+                  </td>
+                  <td className="px-3 py-3 text-right font-semibold text-slate-900">{fmt(row.totalAmount)}</td>
+                  <td className="px-3 py-3 text-right font-semibold text-emerald-700">{row.advancePaid ? fmt(row.advancePaid) : '-'}</td>
+                  <td className="px-3 py-3 text-right font-semibold text-orange-700">{row.remainingAmount ? fmt(row.remainingAmount) : '-'}</td>
+                  <td className="px-3 py-3 text-right font-medium text-emerald-700">{row.cashIn ? fmt(row.cashIn) : '-'}</td>
+                  <td className="px-3 py-3 text-right font-medium text-blue-700">{row.bankIn ? fmt(row.bankIn) : '-'}</td>
+                  <td className="px-3 py-3">
+                    <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${row.orderStatus === 'cleared' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                      {row.orderStatus === 'cleared' ? 'Cleared' : 'Pending'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {advanceOrderRows.length === 0 && (
+                <tr>
+                  <td colSpan={12} className="px-3 py-10 text-center text-sm text-slate-500">No advance order records found.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
       )}
       {activeTab === 'ledger' && (
       <>

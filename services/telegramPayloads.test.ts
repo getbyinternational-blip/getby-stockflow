@@ -311,19 +311,19 @@ describe('telegramPayloads', () => {
       );
     });
 
-    it('rejects a frequency below one minute', () => {
+    it('accepts a flexible seconds frequency', () => {
       const input = {
         ...createInput(),
-        frequencyValue: 59,
+        frequencyValue: 5,
         frequencyUnit:
           'seconds' as const,
       };
 
-      expect(() =>
+      expect(
         buildTelegramCollectionStartRequest(
           input,
-        ),
-      ).toThrow();
+        ).frequencyValue,
+      ).toBe(5);
     });
 
     it('rejects an unsupported batch size', () => {

@@ -19,10 +19,6 @@ import {
 } from '../../services/telegram';
 
 import {
-  TELEGRAM_POLL_INTERVAL_MS,
-} from '../../services/telegramConfig';
-
-import {
   getTelegramErrorMessage,
 } from '../../services/telegramErrors';
 
@@ -49,7 +45,6 @@ export type TelegramCollectionsRefreshOptions = {
 
 export type UseTelegramCollectionsOptions = {
   autoRefresh?: boolean;
-  pollIntervalMs?: number;
 };
 
 const EMPTY_ERRORS:
@@ -72,8 +67,6 @@ export const useTelegramCollections = (
 ) => {
   const {
     autoRefresh = true,
-    pollIntervalMs =
-      TELEGRAM_POLL_INTERVAL_MS,
   } = options;
 
   const [
@@ -474,39 +467,8 @@ export const useTelegramCollections = (
         // in errors.refresh.
       },
     );
-
-    if (
-      !Number.isFinite(
-        pollIntervalMs,
-      ) ||
-      pollIntervalMs <= 0
-    ) {
-      return;
-    }
-
-    const intervalId =
-      window.setInterval(
-        () => {
-          void refresh({
-            silent: true,
-          }).catch(
-            () => {
-              // Error is already stored
-              // in errors.refresh.
-            },
-          );
-        },
-        pollIntervalMs,
-      );
-
-    return () => {
-      window.clearInterval(
-        intervalId,
-      );
-    };
   }, [
     autoRefresh,
-    pollIntervalMs,
     refresh,
   ]);
 

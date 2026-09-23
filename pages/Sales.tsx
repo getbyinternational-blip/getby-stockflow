@@ -865,7 +865,7 @@ export default function Sales() {
       }
       if (detail.phase === 'success') {
         if (pendingCheckoutRef.current?.transactionId === detail.transactionId) {
-          const completedTransaction = pendingCheckoutRef.current.transaction;
+          const completedTransaction = resolveCompletedTransactionForReceipt(pendingCheckoutRef.current.transaction);
           const completedCashDetails = pendingCheckoutRef.current.cashDetails;
           const shouldPrintReceipt = pendingCheckoutRef.current.printAfterSave;
           setTransactionComplete(completedTransaction);
@@ -908,14 +908,22 @@ export default function Sales() {
     failureMessage = 'Print failed.',
   ) => {
     try {
-      return await printReceipt(transaction, loadData().customers || customers, cashDetails || undefined);
+      const printableTransaction = resolveCompletedTransactionForReceipt(transaction);
+      return await printReceipt(printableTransaction, loadData().customers || customers, cashDetails || undefined);
     } catch (error) {
       const message = error instanceof Error && error.message === 'PRINT_POPUP_BLOCKED'
         ? 'Allow popups to print receipt.'
         : failureMessage;
       setReceiptPrintToast({ tone: 'error', message });
-      throw error;
     }
+  };
+
+  const resolveCompletedTransactionForReceipt = (transaction: Transaction): Transaction => {
+    const freshTransaction = loadData().transactions?.find((entry) => entry.id === transaction.id);
+    if (!freshTransaction) return transaction;
+    const currentDocumentNo = getTransactionDocumentNumber(transaction);
+    const freshDocumentNo = getTransactionDocumentNumber(freshTransaction);
+    return freshDocumentNo && freshDocumentNo !== currentDocumentNo ? freshTransaction : { ...transaction, ...freshTransaction };
   };
 
   const getLineAvailableStock = (product: Product, variant?: string, color?: string) =>

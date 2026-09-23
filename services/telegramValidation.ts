@@ -10,7 +10,7 @@ import {
 } from './telegramErrors';
 
 export const TELEGRAM_MIN_FREQUENCY_MS =
-  60_000;
+  5_000;
 
 export const TELEGRAM_ALLOWED_BATCH_SIZES:
   readonly TelegramCollectionBatchSize[] = [
@@ -132,7 +132,7 @@ export const validateTelegramFrequency = (
       TELEGRAM_MIN_FREQUENCY_MS
   ) {
     return invalid(
-      'Telegram collections cannot run more frequently than once per minute.',
+      'Telegram collections cannot run more frequently than once every 5 seconds.',
       'frequencyValue',
     );
   }

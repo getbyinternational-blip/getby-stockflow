@@ -17,8 +17,8 @@ import {
 
 describe('telegramValidation', () => {
   describe('frequency', () => {
-    it('uses a one-minute minimum frequency', () => {
-      expect(TELEGRAM_MIN_FREQUENCY_MS).toBe(60_000);
+    it('uses a five-second minimum frequency', () => {
+      expect(TELEGRAM_MIN_FREQUENCY_MS).toBe(5_000);
     });
 
     it('converts supported frequency units to milliseconds', () => {
@@ -53,10 +53,10 @@ describe('telegramValidation', () => {
       ).toBe(false);
     });
 
-    it('accepts a frequency of exactly one minute', () => {
+    it('accepts flexible positive frequencies', () => {
       expect(
         validateTelegramFrequency(
-          60,
+          5,
           'seconds',
         ),
       ).toEqual({
@@ -73,16 +73,16 @@ describe('telegramValidation', () => {
       });
     });
 
-    it('rejects a frequency below one minute', () => {
+    it('rejects a frequency below five seconds', () => {
       expect(
         validateTelegramFrequency(
-          59,
+          4,
           'seconds',
         ),
       ).toEqual({
         valid: false,
         message:
-          'Telegram collections cannot run more frequently than once per minute.',
+          'Telegram collections cannot run more frequently than once every 5 seconds.',
         field: 'frequencyValue',
       });
     });

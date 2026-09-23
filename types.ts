@@ -512,9 +512,11 @@ export interface StoreProfile {
   autoSendInvoiceAfterCreation?: boolean;
   repairCenterEnabled?: boolean;
   simplifiedShiftAccess?: boolean;
+  themeMode?: 'light' | 'dark';
   adminPin?: string;
 
   telegramChannels?: string[];
+  telegramChannelNames?: Record<string, string>;
   telegramChannelId?: string;
   telegramTemplate?: string;
   telegramNotes?: string;

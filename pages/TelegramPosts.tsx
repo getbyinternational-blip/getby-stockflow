@@ -49,6 +49,7 @@ const TELEGRAM_BATCH_OPTIONS = [
 ] as const;
 
 const DEFAULT_FREQUENCY_VALUE = 1;
+const MIN_SECONDS_FREQUENCY_VALUE = 5;
 
 const DEFAULT_FREQUENCY_UNIT:
   TelegramCollectionFrequencyUnit =
@@ -69,6 +70,32 @@ const TELEGRAM_CHANNEL_REQUIRED_MESSAGE =
 const safeText = (value: unknown, fallback = '') => {
   const text = String(value ?? '').trim();
   return text || fallback;
+};
+
+const normalizeTelegramChannelNames = (
+  value: unknown,
+): Record<string, string> => {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value)
+  ) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(
+      value as Record<string, unknown>,
+    )
+      .map(([channelId, name]) => [
+        safeText(channelId),
+        safeText(name),
+      ])
+      .filter(
+        ([channelId, name]) =>
+          Boolean(channelId && name),
+      ),
+  );
 };
 
 const toNonNegativeNumber = (value: unknown, fallback = 0) => {
@@ -107,7 +134,7 @@ const normalizeTelegramFrequencyValue = (
     parsed <= 0
   ) {
     return unit === 'seconds'
-      ? 60
+      ? MIN_SECONDS_FREQUENCY_VALUE
       : DEFAULT_FREQUENCY_VALUE;
   }
 
@@ -117,14 +144,12 @@ const normalizeTelegramFrequencyValue = (
       Math.floor(parsed),
     );
 
-  if (unit === 'seconds') {
-    return Math.max(
-      60,
-      integerValue,
-    );
-  }
-
-  return integerValue;
+  return unit === 'seconds'
+    ? Math.max(
+        MIN_SECONDS_FREQUENCY_VALUE,
+        integerValue,
+      )
+    : integerValue;
 };
 
 const normalizeTelegramBatchSize = (
@@ -416,6 +441,11 @@ export default function TelegramPosts() {
   ] = useState<string[]>([]);
 
   const [
+    telegramChannelNames,
+    setTelegramChannelNames,
+  ] = useState<Record<string, string>>({});
+
+  const [
     telegramTemplate,
     setTelegramTemplate,
   ] = useState(DEFAULT_TEMPLATE);
@@ -548,6 +578,16 @@ const [
   ] = useState('');
 
   const [
+    channelNameDraft,
+    setChannelNameDraft,
+  ] = useState('');
+
+  const [
+    isSavingChannelName,
+    setIsSavingChannelName,
+  ] = useState(false);
+
+  const [
     newChannelId,
     setNewChannelId,
   ] = useState('');
@@ -654,6 +694,12 @@ setTelegramChannelId(
 
     setTelegramChannels(
       normalizedChannels,
+    );
+
+    setTelegramChannelNames(
+      normalizeTelegramChannelNames(
+        safeProfile?.telegramChannelNames,
+      ),
     );
 
     setSelectedChannelId(
@@ -1437,6 +1483,43 @@ setTelegramChannelId(
   const hasSavedChannel =
     savedChannels.length > 0;
 
+  const getChannelDisplayName = (
+    channelId: string,
+  ) => {
+    const id = safeText(channelId);
+
+    return safeText(
+      telegramChannelNames[id],
+      id,
+    );
+  };
+
+  const selectedChannelDisplayName =
+    getChannelDisplayName(
+      selectedChannelId,
+    );
+
+  useEffect(() => {
+    const channelId =
+      safeText(
+        selectedChannelId ||
+          savedChannels[0],
+      );
+
+    setChannelNameDraft(
+      channelId
+        ? safeText(
+            telegramChannelNames[channelId],
+            channelId,
+          )
+        : '',
+    );
+  }, [
+    savedChannels,
+    selectedChannelId,
+    telegramChannelNames,
+  ]);
+
   const selectedChannelCollections =
     useMemo(
       () =>
@@ -1927,6 +2010,7 @@ setTelegramChannelId(
       nextValues: {
         telegramChannelId?: string;
         telegramChannels?: string[];
+        telegramChannelNames?: Record<string, string>;
         telegramTemplate?: string;
         telegramNotes?: string;
         telegramCollections?: TelegramPostCollection[];
@@ -1953,6 +2037,10 @@ setTelegramChannelId(
           telegramChannels:
             nextValues.telegramChannels ??
             telegramChannels,
+
+          telegramChannelNames:
+            nextValues.telegramChannelNames ??
+            telegramChannelNames,
 
           telegramTemplate:
             nextValues.telegramTemplate ??
@@ -1981,6 +2069,9 @@ telegramActiveCollectionId:
 
             telegramChannels:
               nextProfile.telegramChannels,
+
+            telegramChannelNames:
+              nextProfile.telegramChannelNames,
 
             telegramTemplate:
               nextProfile.telegramTemplate,
@@ -2014,6 +2105,12 @@ telegramActiveCollectionId:
       setTelegramCollections(
         normalizeCollections(
           saved,
+        ),
+      );
+
+      setTelegramChannelNames(
+        normalizeTelegramChannelNames(
+          saved.telegramChannelNames,
         ),
       );
 return saved;
@@ -2110,6 +2207,178 @@ return saved;
               'telegram.channel_add',
             ),
         });
+      }
+    };
+
+  const saveSelectedChannelName =
+    async () => {
+      const previousChannelId =
+        safeText(
+          selectedChannelId ||
+            savedChannels[0],
+        );
+
+      if (!previousChannelId) {
+        setNotice({
+          type: 'error',
+
+          message:
+            'Select a Telegram channel first.',
+        });
+
+        return;
+      }
+
+      const nextChannelId =
+        channelNameDraft.trim();
+
+      if (!nextChannelId) {
+        setNotice({
+          type: 'error',
+
+          message:
+            'Channel name is required.',
+        });
+
+        return;
+      }
+
+      if (
+        nextChannelId !== previousChannelId &&
+        savedChannels.includes(
+          nextChannelId,
+        )
+      ) {
+        setNotice({
+          type: 'error',
+
+          message:
+            'That Telegram channel already exists.',
+        });
+
+        return;
+      }
+
+      const renameChannelId = (
+        value: unknown,
+      ) =>
+        safeText(value) ===
+        previousChannelId
+          ? nextChannelId
+          : safeText(value);
+
+      const nextChannels =
+        Array.from(
+          new Set(
+            savedChannels
+              .map(renameChannelId)
+              .filter(Boolean),
+          ),
+        );
+
+      const nextCollections =
+        telegramCollections.map(
+          (collection) => ({
+            ...collection,
+            channelId:
+              renameChannelId(
+                collection.channelId,
+              ),
+          }),
+        );
+
+      const nextNames = {
+        ...telegramChannelNames,
+      };
+
+      delete nextNames[
+        previousChannelId
+      ];
+      delete nextNames[
+        nextChannelId
+      ];
+
+      setIsSavingChannelName(true);
+      setNotice(null);
+
+      try {
+        const saved =
+          await persistTelegramProfile({
+            telegramChannelId:
+              renameChannelId(
+                telegramChannelId,
+              ) || nextChannelId,
+
+            telegramChannels:
+              nextChannels,
+
+            telegramChannelNames:
+              nextNames,
+
+            telegramCollections:
+              nextCollections,
+
+            telegramActiveCollectionId:
+              activeCollectionId,
+          });
+
+        if (saved) {
+          setTelegramChannelId(
+            renameChannelId(
+              telegramChannelId,
+            ) || nextChannelId,
+          );
+
+          setTelegramChannels(
+            nextChannels,
+          );
+
+          setTelegramCollections(
+            nextCollections,
+          );
+
+          setSelectedChannelId(
+            nextChannelId,
+          );
+
+          setCollectionChannelId(
+            (current) =>
+              renameChannelId(
+                current,
+              ) || nextChannelId,
+          );
+
+          setChannelNameDraft(
+            nextChannelId,
+          );
+
+          setTelegramChannelNames(
+            normalizeTelegramChannelNames(
+              saved.telegramChannelNames,
+            ),
+          );
+
+          setNotice({
+            type: 'success',
+
+            message:
+              'Channel renamed.',
+          });
+        }
+      } catch (error) {
+        setNotice({
+          type: 'error',
+
+          message:
+            getFriendlyErrorMessage(
+              error,
+              'telegram.channel_name',
+            ),
+        });
+      } finally {
+        setIsSavingChannelName(
+          false,
+        );
       }
     };
 
@@ -3748,32 +4017,66 @@ if (
             </CardTitle>
           </div>
 
-          <div className="flex w-full max-w-xl items-center gap-2">
-            <Input
-              value={
-                hasSavedChannel
-                  ? ''
-                  : newChannelId
-              }
-              onChange={(
-                event,
-              ) =>
-                setNewChannelId(
-                  event.target
-                    .value,
-                )
-              }
-              placeholder={
-                hasSavedChannel
-                  ? savedChannels[0]
-                  : '@stockflow_offers'
-              }
-              disabled={
-                hasSavedChannel
-              }
-            />
+          <div className="w-full max-w-xl">
+            {hasSavedChannel ? (
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <div>
+                  <Input
+                    value={
+                      channelNameDraft
+                    }
+                    onChange={(
+                      event,
+                    ) =>
+                      setChannelNameDraft(
+                        event.target
+                          .value,
+                      )
+                    }
+                    placeholder={
+                      selectedChannelId ||
+                      savedChannels[0]
+                    }
+                  />
 
-            {!hasSavedChannel && (
+                  <div className="mt-1 truncate text-xs text-slate-500">
+                    {selectedChannelId ||
+                      savedChannels[0]}
+                  </div>
+                </div>
+
+                <Button
+                  type="button"
+                  onClick={() =>
+                    void saveSelectedChannelName()
+                  }
+                  disabled={
+                    isSavingChannelName
+                  }
+                >
+                  <Save className="mr-2 h-4 w-4" />
+                  {isSavingChannelName
+                    ? 'Saving...'
+                    : 'Rename'}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Input
+                  value={
+                    newChannelId
+                  }
+                  onChange={(
+                    event,
+                  ) =>
+                    setNewChannelId(
+                      event.target
+                        .value,
+                    )
+                  }
+                  placeholder="@stockflow_offers"
+                />
+
               <Button
                 type="button"
                 onClick={() =>
@@ -3783,6 +4086,7 @@ if (
                 <Plus className="mr-2 h-4 w-4" />
                 Add Channel
               </Button>
+              </div>
             )}
           </div>
         </CardHeader>
@@ -3813,9 +4117,19 @@ if (
                         : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    {
-                      channelId
-                    }
+                    <span className="block">
+                      {getChannelDisplayName(
+                        channelId,
+                      )}
+                    </span>
+
+                    {getChannelDisplayName(
+                      channelId,
+                    ) !== channelId && (
+                      <span className="block text-[11px] font-medium opacity-75">
+                        {channelId}
+                      </span>
+                    )}
                   </button>
                 ),
               )}
@@ -3842,6 +4156,7 @@ if (
                 <div>
                   <div className="text-lg font-bold text-slate-950">
                     {
+                      selectedChannelDisplayName ||
                       selectedChannelId
                     }
                   </div>
@@ -4216,6 +4531,7 @@ if (
               <div>
                 <div className="text-lg font-bold text-slate-950">
                   {
+                    selectedChannelDisplayName ||
                     selectedChannelId
                   }
                 </div>
@@ -4582,7 +4898,7 @@ if (
                     >
                       {savedChannels.map((channelId) => (
                         <option key={channelId} value={channelId}>
-                          {channelId}
+                          {getChannelDisplayName(channelId)}
                         </option>
                       ))}
                     </Select>
@@ -4709,7 +5025,7 @@ if (
                       min={
                         frequencyUnit ===
                         'seconds'
-                          ? 5
+                          ? MIN_SECONDS_FREQUENCY_VALUE
                           : 1
                       }
                       step="1"
@@ -5132,7 +5448,7 @@ if (
                         min={
                           frequencyUnit ===
                           'seconds'
-                            ? 60
+                            ? MIN_SECONDS_FREQUENCY_VALUE
                             : 1
                         }
                         step="1"
@@ -5317,7 +5633,8 @@ if (
                               </div>
 
                               <div className="truncate text-[10px] text-slate-500">
-                                {selectedChannelId ||
+                                {selectedChannelDisplayName ||
+                                  selectedChannelId ||
                                   'Message preview'}
                               </div>
                             </div>

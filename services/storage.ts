@@ -2717,6 +2717,7 @@ const defaultProfile: StoreProfile = {
   autoSendInvoiceAfterCreation: false,
   repairCenterEnabled: false,
   simplifiedShiftAccess: false,
+  themeMode: 'light',
   telegramCollections: [],
   telegramActiveCollectionId: '',
 };
@@ -3147,6 +3148,16 @@ const buildHydratedTelegramProfile = (
         .map((channelId) => String(channelId || '').trim())
         .filter(Boolean)
     )),
+    telegramChannelNames: isPlainSerializableObject(telegramData.telegramChannelNames)
+      ? Object.fromEntries(
+          Object.entries(telegramData.telegramChannelNames)
+            .map(([channelId, name]) => [
+              String(channelId || '').trim(),
+              String(name || '').trim(),
+            ])
+            .filter(([channelId, name]) => channelId && name)
+        )
+      : {},
     telegramTemplate: String(telegramData.telegramTemplate || '').trim(),
     telegramNotes: String(telegramData.telegramNotes || '').trim(),
     telegramCollections: Array.isArray(telegramData.telegramCollections)
@@ -5239,6 +5250,7 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
   customerCatalogFirstPageName: typeof profile.customerCatalogFirstPageName === 'string' ? profile.customerCatalogFirstPageName : '',
   customerCatalogFirstPageMimeType: typeof profile.customerCatalogFirstPageMimeType === 'string' ? profile.customerCatalogFirstPageMimeType : '',
   simplifiedShiftAccess: Boolean(profile.simplifiedShiftAccess),
+  themeMode: profile.themeMode === 'dark' ? 'dark' : 'light',
   telegramCollections: Array.isArray(profile.telegramCollections)
     ? profile.telegramCollections
         .map((collection) => {
@@ -5357,6 +5369,16 @@ const sanitizeStoreProfileForPersistence = (profile: StoreProfile): StoreProfile
       .map((channelId) => String(channelId || '').trim())
       .filter(Boolean)
   )),
+  telegramChannelNames: isPlainSerializableObject(profile.telegramChannelNames)
+    ? Object.fromEntries(
+        Object.entries(profile.telegramChannelNames)
+          .map(([channelId, name]) => [
+            String(channelId || '').trim(),
+            String(name || '').trim(),
+          ])
+          .filter(([channelId, name]) => channelId && name)
+      )
+    : {},
   telegramActiveCollectionId: String(profile.telegramActiveCollectionId || '').trim(),
 });
 
@@ -5405,13 +5427,14 @@ export const updateStoreProfile = async (profile: StoreProfile): Promise<StorePr
       'thermalPaperWidth',
       'autoSendInvoiceAfterCreation',
       'simplifiedShiftAccess',
+      'themeMode',
       'adminPin',
     ],
   });
   return safeProfile;
 };
 
-export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
+export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile, 'telegramChannelId' | 'telegramChannels' | 'telegramChannelNames' | 'telegramTemplate' | 'telegramNotes' | 'telegramCollections' | 'telegramActiveCollectionId'>): Promise<StoreProfile> => {
   const nextProfile = sanitizeStoreProfileForPersistence({
     ...memoryState.profile,
     ...profilePatch,
@@ -5419,6 +5442,7 @@ export const updateTelegramProfileState = async (profilePatch: Pick<StoreProfile
   const telegramPayload = sanitizeData({
     telegramChannelId: nextProfile.telegramChannelId || '',
     telegramChannels: Array.isArray(nextProfile.telegramChannels) ? nextProfile.telegramChannels : [],
+    telegramChannelNames: isPlainSerializableObject(nextProfile.telegramChannelNames) ? nextProfile.telegramChannelNames : {},
     telegramTemplate: nextProfile.telegramTemplate || '',
     telegramNotes: nextProfile.telegramNotes || '',
     telegramCollections: Array.isArray(nextProfile.telegramCollections) ? nextProfile.telegramCollections : [],
