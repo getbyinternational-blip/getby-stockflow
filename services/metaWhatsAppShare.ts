@@ -6,7 +6,7 @@ import { requireTransactionDocumentNumber } from './invoiceDocument';
 
 export type MetaWhatsAppShareResult = {
   ok: boolean;
-  reason: 'META_WHATSAPP_NOT_CONFIGURED' | 'META_WHATSAPP_KEY_MISSING' | 'META_WHATSAPP_PHONE_MISSING' | 'META_WHATSAPP_FILE_MISSING' | 'META_WHATSAPP_SEND_FAILED' | 'META_WHATSAPP_SENT';
+  reason: 'META_WHATSAPP_NOT_CONFIGURED' | 'META_WHATSAPP_KEY_MISSING' | 'META_WHATSAPP_PHONE_MISSING' | 'META_WHATSAPP_STORE_PHONE_MISSING' | 'META_WHATSAPP_FILE_MISSING' | 'META_WHATSAPP_SEND_FAILED' | 'META_WHATSAPP_SENT';
   message: string;
   whatsappMessageId?: string;
   whatsappMediaId?: string;
@@ -131,6 +131,16 @@ export const shareTransactionInvoiceViaMetaWhatsApp = async (
       ok: false,
       reason: 'META_WHATSAPP_PHONE_MISSING',
       message: 'Customer phone number is missing.',
+    };
+  }
+
+  if (!payload.storePhone) {
+    return {
+      ok: false,
+      reason: 'META_WHATSAPP_STORE_PHONE_MISSING',
+      message:
+        'Store phone number is missing. Add it in Settings > Business Info before sending invoices via Official WhatsApp.',
+      backendUrl: configuredUrl,
     };
   }
 

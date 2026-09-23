@@ -326,6 +326,20 @@ describe('telegramPayloads', () => {
       ).toBe(5);
     });
 
+    it('normalizes the legacy telegram_details token for backend compatibility', () => {
+      const input = {
+        ...createInput(),
+        template:
+          'New arrival\n{telegram_details}',
+      };
+
+      expect(
+        buildTelegramCollectionStartRequest(
+          input,
+        ).template,
+      ).toBe('New arrival\n{telegram details}');
+    });
+
     it('rejects an unsupported batch size', () => {
       const input = {
         ...createInput(),

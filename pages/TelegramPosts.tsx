@@ -252,21 +252,21 @@ const getTelegramDescription = (product?: Product | null) => {
 };
 
 const sanitizeTelegramTemplate = (value?: string | null) => {
-  const raw = safeText(value, DEFAULT_TEMPLATE);
+  const raw = safeText(value, DEFAULT_TEMPLATE).replace(
+    /\{telegram_details\}/g,
+    '{telegram details}',
+  );
 
   const hasTelegramDetailsToken =
     raw.includes(
       '{telegram details}',
-    ) ||
-    raw.includes(
-      '{telegram_details}',
     );
 
   const withTelegramDetails = hasTelegramDetailsToken
     ? raw
     : raw.replace(
         /Price:\s*\{price\}/i,
-        'Price: {price}\n{telegram_details}',
+        'Price: {price}\n{telegram details}',
       );
 
   return (
@@ -1908,7 +1908,7 @@ setTelegramChannelId(
     '{price}',
     '{category}',
     '{stock}',
-    '{telegram_details}',
+    '{telegram details}',
     '{barcode}',
     '{keywords}',
   ];

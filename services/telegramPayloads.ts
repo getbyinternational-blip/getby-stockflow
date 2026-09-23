@@ -62,6 +62,14 @@ const safeText = (
   return text || fallback;
 };
 
+const normalizeTelegramTemplateTokens = (
+  value: unknown,
+): string =>
+  safeText(value).replace(
+    /\{telegram_details\}/g,
+    '{telegram details}',
+  );
+
 const toPositiveInteger = (
   value: unknown,
   fallback: number,
@@ -273,7 +281,7 @@ export const buildTelegramCollectionStartRequest = (
       'all',
     ),
 
-    template: safeText(
+    template: normalizeTelegramTemplateTokens(
       input.template,
     ),
 
@@ -423,7 +431,7 @@ export const buildTelegramManualPostRequest = (
 
     product,
 
-    template: safeText(
+    template: normalizeTelegramTemplateTokens(
       input.template,
     ),
 
