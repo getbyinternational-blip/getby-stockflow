@@ -46,6 +46,17 @@ describe('transaction cash KPI classification', () => {
     expect(getTransactionCashKpis(transaction({ type, paymentMethod: 'Mixed' }), 25))
       .toEqual({ ...zero, totalCashIn: 25 });
   });
+  it('counts sale cash kept above invoice cash as credit received', () => {
+    expect(getTransactionCashKpis(transaction({
+      type: 'sale',
+      total: 130,
+      saleSettlement: { cashPaid: 130, onlinePaid: 0, creditDue: 0 },
+      cashReceived: 150,
+      changeReturned: 0,
+      paymentAppliedToReceivable: 20,
+      storeCreditCreated: 20,
+    }), 130)).toEqual({ ...zero, totalCashIn: 150, cashReceivedOnCreditDue: 20 });
+  });
   it.each(['reduce_due', 'store_credit', 'refund_online'] as const)(
     'does not count a %s return as cash out even if its old method is Cash', (returnHandlingMode) => {
       expect(getTransactionCashKpis(transaction({ type: 'return', returnHandlingMode }))).toEqual(zero);

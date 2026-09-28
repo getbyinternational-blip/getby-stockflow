@@ -66,7 +66,13 @@ const emitAccessUpdate = () => {
   window.dispatchEvent(new Event('local-storage-update'));
 };
 
-export const getCurrentRole = (): AppRole => readStorage(ROLE_KEY) === 'operator' ? 'operator' : 'admin';
+export const getCurrentRole = (): AppRole | null => {
+  const role = readStorage(ROLE_KEY);
+  if (role === 'admin' || role === 'operator') {
+    return role;
+  }
+  return null;
+};
 
 export const getCurrentOperatorId = (): string => readStorage(OPERATOR_ID_KEY);
 
@@ -108,6 +114,7 @@ export const getCurrentAccessSession = (): { role: AppRole; operatorId?: string;
   }
   if (!isAccessUnlocked()) return null;
   const role = getCurrentRole();
+  if (!role) return null;
   const operatorId = getCurrentOperatorId();
   const operatorName = getCurrentOperatorName();
   const userEmail = readStorage(ACCESS_USER_EMAIL_KEY) || null;
@@ -156,6 +163,8 @@ export const installRoleTestHelpers = () => {
 };
 
 export const can = (permission: SimplePermission): boolean => {
-  if (isAdmin()) return true;
+  const role = getCurrentRole();
+  if (role === 'admin') return true;
+  if (role !== 'operator') return false;
   return operatorPermissions[permission] === true;
 };

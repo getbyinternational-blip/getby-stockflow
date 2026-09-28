@@ -666,7 +666,8 @@ type CustomersProps = {
 };
 
 export default function Customers({ repairMode = false, hideStandardHeaderActions = false }: CustomersProps) {
-  const { requestAdminOverride } = useRoleSession();
+  const { session: roleSession, requestAdminOverride } = useRoleSession();
+  const canCollectCustomerPayments = roleSession?.role === 'admin';
   const CUSTOMERS_PAGE_SIZE = 15;
   const initialDataRef = React.useRef<{
     customers: Customer[];
@@ -1558,6 +1559,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       ? new Date(b.date || b.createdAt || 0).getTime() - new Date(a.date || a.createdAt || 0).getTime()
       : new Date(a.date || a.createdAt || 0).getTime() - new Date(b.date || b.createdAt || 0).getTime()), [popupCustomerOrders, allOrdersSearch, allOrdersStatus, allOrdersSort]);
   const openCustomerActionModal = (type: 'payment' | 'customer_cash_out' | 'customer_credit' = 'payment') => {
+    if (!canCollectCustomerPayments) return;
     setCustomerActionType(type);
     setCustomerActionDateTime(toDateTimeLocalNow());
     setCustomerActionAmount('');
@@ -1574,6 +1576,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   };
   const handleSubmitCustomerAction = () => {
     setCustomerActionError(null);
+    if (!canCollectCustomerPayments) return setCustomerActionError('Admin access is required to receive customer payments.');
     if (!viewingCustomer) return setCustomerActionError('Please select a customer.');
     const actionDate = resolveCustomerActionDate();
     if (!actionDate) return setCustomerActionError('Please select a valid date and time.');
@@ -1638,13 +1641,13 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
     [viewingCustomer, customers, transactions, upfrontOrders],
   );
   const customerDetailPermissions = useMemo(() => ({
-    canAddTransactions: true,
+    canAddTransactions: canCollectCustomerPayments,
     canEditTransactions: repairMode,
     canDeleteTransactions: repairMode,
     canViewRepairHistory: repairMode,
     requiresRepairReason: repairMode,
     writesRepairHistory: repairMode,
-  }), [repairMode]);
+  }), [canCollectCustomerPayments, repairMode]);
   const customerDetailTabs = useMemo(() => ([
     { key: 'ledger' as const, label: 'Ledger' },
     { key: 'store_credit' as const, label: 'Store Credit' },
@@ -2017,6 +2020,10 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   };
 
   const handleCollectUpfrontPayment = () => {
+      if (!canCollectCustomerPayments) {
+          setCollectPaymentError('Admin access is required to collect customer payments.');
+          return;
+      }
       if (!selectedUpfrontOrder || !collectAmount) return;
       setCollectPaymentError(null);
       
@@ -2168,6 +2175,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
   };
 
   const openUpfrontPaymentModal = (order: UpfrontOrder, payment?: UpfrontOrderPaymentEntry | null) => {
+    if (!canCollectCustomerPayments) return;
     setSelectedUpfrontOrder(order);
     setEditingUpfrontPaymentId(payment?.id || null);
     setCollectAmount(payment ? String(payment.amount || '') : '');
@@ -2926,7 +2934,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                               </div>
                           </div>
                           <div className="flex flex-wrap items-center justify-start gap-1.5 lg:justify-end [&_button]:h-[34px] [&_button]:rounded-lg [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:font-semibold">
-                              <Button size="sm" className={repairMode ? 'bg-amber-600 text-white shadow-none hover:bg-amber-700' : 'bg-emerald-700 text-white shadow-none hover:bg-emerald-800'} onClick={() => openRepairDraft(createCustomerRepairAddDraft())}>{repairMode ? <Plus className="mr-1.5 h-4 w-4" /> : <Coins className="mr-1.5 h-4 w-4" />}{repairMode ? 'Add Transaction' : 'Receive Payment'}</Button>
+                              {customerDetailPermissions.canAddTransactions && <Button size="sm" className={repairMode ? 'bg-amber-600 text-white shadow-none hover:bg-amber-700' : 'bg-emerald-700 text-white shadow-none hover:bg-emerald-800'} onClick={() => openRepairDraft(createCustomerRepairAddDraft())}>{repairMode ? <Plus className="mr-1.5 h-4 w-4" /> : <Coins className="mr-1.5 h-4 w-4" />}{repairMode ? 'Add Transaction' : 'Receive Payment'}</Button>}
                               <Button size="sm" variant="outline" disabled={sendingCustomerLedgerId === viewingCustomer?.id} onClick={() => viewingCustomer && void sendCustomerLedgerViaWhatsApp(viewingCustomer)}>{sendingCustomerLedgerId === viewingCustomer?.id ? 'Sending...' : 'Send Ledger'}</Button>
                               <Button size="sm" variant="outline" onClick={() => { setExportType('statement'); setIsExportModalOpen(true); }}><FileText className="mr-1.5 h-4 w-4" /> Statement</Button>
                               {can('analytics') && <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px] font-medium text-slate-500 hover:bg-transparent hover:text-slate-700" onClick={() => { if (!viewingCustomer) return; setUpdatedViewPreview(previewCustomerRepairedAllocationView(viewingCustomer.id)); setUpdatedViewOpen(true); }}>Updated View</Button>}
@@ -3168,7 +3176,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                       )}
                       {customerDetailTab === 'custom_orders' && (
                         <div className="space-y-3">
-                          {customerHistory.filter((item) => item.historyType === 'upfrontOrder').length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No custom orders for this customer.</div> : customerHistory.filter((item) => item.historyType === 'upfrontOrder').map((item) => { const order = item as UpfrontOrder; const orderHistoryId = `order-${order.id}`; const expanded = expandedCustomerHistoryId === orderHistoryId; const repairEligibleForDueCreation = repairMode && getUpfrontOrderAccountingMode(order) !== 'modern_receivable' && Math.max(0, Number(order.remainingAmount || 0)) > 0; return <div key={order.id} className="overflow-hidden rounded-2xl border bg-white shadow-sm"><button type="button" className="grid w-full gap-3 px-4 py-3 text-left hover:bg-slate-50 sm:grid-cols-[110px_minmax(0,1fr)_100px_100px_110px_100px] sm:items-center" onClick={() => setExpandedCustomerHistoryId(expanded ? null : orderHistoryId)}><div className="font-mono text-xs text-slate-500">#{order.id.slice(-6)}</div><div><div className="font-bold text-slate-900">{order.productName}</div><div className="text-xs text-slate-500">{formatDateDisplay(order.date)} · {order.quantity} {order.isCarton ? 'carton(s)' : 'unit(s)'}</div></div><div className="text-right text-xs font-bold">{formatINRWhole(order.totalCost)}</div><div className="text-right text-xs font-bold text-emerald-700">{formatINRWhole(order.advancePaid)}</div><div className="text-right text-xs font-bold text-orange-700">{formatINRWhole(order.remainingAmount)}</div><div className="text-right"><Badge className={order.status === 'cleared' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{order.status === 'cleared' ? 'Paid' : 'Pending'}</Badge></div></button>{expanded && <div className="border-t bg-amber-50/40 p-4 text-xs"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Custom Order</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Order ID</span><b>{order.id}</b></div><div className="flex justify-between"><span>Product</span><b>{order.productName}</b></div><div className="flex justify-between"><span>Status</span><b>{order.status}</b></div></div></div><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Balance</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Total</span><b>{formatINRWhole(order.totalCost)}</b></div><div className="flex justify-between"><span>Advance</span><b>{formatINRWhole(order.advancePaid)}</b></div><div className="flex justify-between text-orange-700"><span>Remaining</span><b>{formatINRWhole(order.remainingAmount)}</b></div>{repairMode && <div className="flex justify-between"><span>Accounting Mode</span><b>{getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? 'Modern receivable' : 'Legacy / untrusted'}</b></div>}</div></div></div><div className="mt-3 flex gap-2">{order.status !== 'cleared' && <Button size="sm" onClick={(e) => { e.stopPropagation(); setCollectPaymentError(null); openUpfrontPaymentModal(order); }}>Collect Payment</Button>}{order.status !== 'cleared' && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openUpfrontOrderEditor(order); }}>Edit Order</Button>}{repairEligibleForDueCreation && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); previewCreateDueForRemainingAmount(order); }}>Create Due for Remaining Amount</Button>}</div></div>}</div>; })}
+                          {customerHistory.filter((item) => item.historyType === 'upfrontOrder').length === 0 ? <div className="rounded-3xl border bg-white p-12 text-center text-sm text-slate-400">No custom orders for this customer.</div> : customerHistory.filter((item) => item.historyType === 'upfrontOrder').map((item) => { const order = item as UpfrontOrder; const orderHistoryId = `order-${order.id}`; const expanded = expandedCustomerHistoryId === orderHistoryId; const repairEligibleForDueCreation = repairMode && getUpfrontOrderAccountingMode(order) !== 'modern_receivable' && Math.max(0, Number(order.remainingAmount || 0)) > 0; return <div key={order.id} className="overflow-hidden rounded-2xl border bg-white shadow-sm"><button type="button" className="grid w-full gap-3 px-4 py-3 text-left hover:bg-slate-50 sm:grid-cols-[110px_minmax(0,1fr)_100px_100px_110px_100px] sm:items-center" onClick={() => setExpandedCustomerHistoryId(expanded ? null : orderHistoryId)}><div className="font-mono text-xs text-slate-500">#{order.id.slice(-6)}</div><div><div className="font-bold text-slate-900">{order.productName}</div><div className="text-xs text-slate-500">{formatDateDisplay(order.date)} · {order.quantity} {order.isCarton ? 'carton(s)' : 'unit(s)'}</div></div><div className="text-right text-xs font-bold">{formatINRWhole(order.totalCost)}</div><div className="text-right text-xs font-bold text-emerald-700">{formatINRWhole(order.advancePaid)}</div><div className="text-right text-xs font-bold text-orange-700">{formatINRWhole(order.remainingAmount)}</div><div className="text-right"><Badge className={order.status === 'cleared' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>{order.status === 'cleared' ? 'Paid' : 'Pending'}</Badge></div></button>{expanded && <div className="border-t bg-amber-50/40 p-4 text-xs"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Custom Order</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Order ID</span><b>{order.id}</b></div><div className="flex justify-between"><span>Product</span><b>{order.productName}</b></div><div className="flex justify-between"><span>Status</span><b>{order.status}</b></div></div></div><div className="rounded-2xl border bg-white p-4"><div className="font-black uppercase tracking-wide text-slate-500">Balance</div><div className="mt-2 space-y-1"><div className="flex justify-between"><span>Total</span><b>{formatINRWhole(order.totalCost)}</b></div><div className="flex justify-between"><span>Advance</span><b>{formatINRWhole(order.advancePaid)}</b></div><div className="flex justify-between text-orange-700"><span>Remaining</span><b>{formatINRWhole(order.remainingAmount)}</b></div>{repairMode && <div className="flex justify-between"><span>Accounting Mode</span><b>{getUpfrontOrderAccountingMode(order) === 'modern_receivable' ? 'Modern receivable' : 'Legacy / untrusted'}</b></div>}</div></div></div><div className="mt-3 flex gap-2">{canCollectCustomerPayments && order.status !== 'cleared' && <Button size="sm" onClick={(e) => { e.stopPropagation(); setCollectPaymentError(null); openUpfrontPaymentModal(order); }}>Collect Payment</Button>}{order.status !== 'cleared' && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); openUpfrontOrderEditor(order); }}>Edit Order</Button>}{repairEligibleForDueCreation && <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); previewCreateDueForRemainingAmount(order); }}>Create Due for Remaining Amount</Button>}</div></div>}</div>; })}
                         </div>
                       )}
                       {customerDetailTab === 'notes' && (
@@ -3945,7 +3953,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
                                 {order.notes ? <div>Notes: {order.notes}</div> : <div>Notes: —</div>}
                                 <div className="flex gap-2 flex-wrap">
                                   <Button size="sm" variant="outline" onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}>View Details</Button>
-                                  {rem > 0 && <Button size="sm" onClick={() => openUpfrontPaymentModal(order)}>{repairMode ? 'Add Advance Payment' : 'Collect Payment'}</Button>}
+                                  {canCollectCustomerPayments && rem > 0 && <Button size="sm" onClick={() => openUpfrontPaymentModal(order)}>{repairMode ? 'Add Advance Payment' : 'Collect Payment'}</Button>}
                                   {repairMode && <Button size="sm" variant="outline" onClick={() => openUpfrontOrderEditor(order)}>Edit Order</Button>}
                                 </div>
                                 {expandedOrderId === order.id && (
@@ -3977,7 +3985,7 @@ export default function Customers({ repairMode = false, hideStandardHeaderAction
       )}
 
       {/* Collect Payment Modal */}
-      {isCollectPaymentModalOpen && selectedUpfrontOrder && (
+      {canCollectCustomerPayments && isCollectPaymentModalOpen && selectedUpfrontOrder && (
           <div className="fixed inset-0 bg-black/80 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
               <Card className="w-full max-w-xs shadow-2xl animate-in zoom-in border-t-4 border-t-emerald-600 overflow-hidden">
                   <CardHeader className="text-center bg-emerald-50/30 pb-4">

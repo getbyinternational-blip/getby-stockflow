@@ -1,0 +1,12 @@
+{
+  "version": "__APP_BUILD_ID__",
+  "deployedAt": "__DEPLOYED_AT__",
+  "targetUrl": "__TARGET_URL__",
+  "notes": [
+    "Staff login now stays staff after a shutdown instead of falling back to admin.",
+    "Staff users no longer see or use customer credit receive-payment actions.",
+    "Cashbook, Finance cash KPIs, and shift closing now show invoice overpayment cash applied to previous customer due.",
+    "Telegram posts now use sell price, support saved channel renames, stop repeated active-window backend calls, and allow 5-second collection frequency.",
+    "WhatsApp invoice sending has the Store Phone field restored and checks it before sending."
+  ]
+}

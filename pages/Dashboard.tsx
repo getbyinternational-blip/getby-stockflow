@@ -15,6 +15,7 @@ import { shareStatementPdfViaMetaWhatsApp } from '../services/metaWhatsAppShare'
 import { CanonicalCustomerBalanceResult, getCanonicalCustomerBalanceResult } from '../services/customerBalanceView';
 import { getTransactionDocumentNumber } from '../services/invoiceDocument';
 import { can, isAdmin } from '../src/auth/simplePermissions';
+import { useRoleSession } from '../src/auth/roleSession';
 import { Package, Search } from 'lucide-react';
 import { useEscapeLayer } from '../src/hooks/useEscapeLayer';
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
@@ -239,6 +240,8 @@ function StatementModal({ open, title, subtitle, onClose, children, headerAction
 }
 
 export default function Dashboard() {
+  const { session: roleSession } = useRoleSession();
+  const canCollectCustomerPayments = roleSession?.role === 'admin';
   const perfRunIdRef = React.useRef(createPerfRunId('dashboard'));
   const renderStartLoggedRef = React.useRef(false);
   const firstEffectLoggedRef = React.useRef(false);
@@ -1070,6 +1073,7 @@ export default function Dashboard() {
   }, [dashboardLedgerDebugPayload]);
 
   const openReceiveModal = (customer: CustomerReceivableRow) => {
+    if (!canCollectCustomerPayments) return;
     setReceivingCustomer(customer);
     setReceiveAmount('');
     setReceiveMethod('Cash');
@@ -1090,6 +1094,7 @@ export default function Dashboard() {
 
   const handleReceive = async () => {
     setReceiveError(null);
+    if (!canCollectCustomerPayments) return setReceiveError('Admin access is required to receive customer payments.');
     if (!receivingCustomer) return;
     const amount = Number(receiveAmount);
     if (!Number.isFinite(amount) || amount <= 0) return setReceiveError('Enter valid amount greater than zero.');
@@ -1536,7 +1541,7 @@ export default function Dashboard() {
                   <div className="mt-2 flex flex-wrap gap-2 sm:justify-end">
                     <Button size="sm" variant="outline" onClick={() => setStatementCustomerId(c.id)}>View Statement</Button>
                     <Button size="sm" variant="outline" disabled={sendingCustomerStatementId === c.id} onClick={() => void sendCustomerStatementViaWhatsApp(c)}>{sendingCustomerStatementId === c.id ? 'Sending...' : 'Send Ledger'}</Button>
-                    {customerDashboardTab === 'receivable' && <Button size="sm" onClick={() => openReceiveModal(c)}>Receive</Button>}
+                    {canCollectCustomerPayments && customerDashboardTab === 'receivable' && <Button size="sm" onClick={() => openReceiveModal(c)}>Receive</Button>}
                   </div>
                 </div>
               </div>
@@ -1593,7 +1598,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <ActionModal open={!!receivingCustomer} title="Receive Payment" onClose={() => setReceivingCustomer(null)}>
+      <ActionModal open={canCollectCustomerPayments && !!receivingCustomer} title="Receive Payment" onClose={() => setReceivingCustomer(null)}>
         {receivingCustomer && (
           <div className="space-y-3">
             <div className="text-sm"><span className="font-medium">Customer:</span> {receivingCustomer.name}</div>

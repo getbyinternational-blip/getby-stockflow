@@ -642,50 +642,59 @@ function AppContent() {
     window.location.reload();
   };
 
-  const updateReleaseNotes = [
-    'Expense saving issue fixed',
-    'Purchase data fallback restored',
-    'Customer ledger calculation preview improved',
-    'Supplier statement warnings improved',
+  const updateReleaseNotes = latestVersionData?.notes?.length ? latestVersionData.notes : [
+    'Staff login now stays staff after a shutdown instead of falling back to admin.',
+    'Staff users no longer see or use customer credit receive-payment actions.',
+    'Cashbook, Finance cash KPIs, and shift closing now show invoice overpayment cash applied to previous customer due.',
+    'Telegram posts now use sell price, support saved channel renames, stop repeated active-window backend calls, and allow 5-second collection frequency.',
+    'WhatsApp invoice sending has the Store Phone field restored and checks it before sending.',
   ];
   const updateVersionLabel = latestVersionData?.version ? `Version ${latestVersionData.version}` : null;
   const updateDateLabel = latestVersionData?.deployedAt
     ? formatDateDisplay(latestVersionData.deployedAt)
     : null;
   const updateToast = updateAvailable ? (
-    <div className="fixed inset-x-3 bottom-3 z-[260] sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-[360px]">
-      <div className="rounded-2xl border border-amber-200 bg-white/95 p-3 text-xs text-slate-800 shadow-xl backdrop-blur">
-        <div className="flex items-start justify-between gap-3">
+    <div className="fixed inset-0 z-[260] flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="app-update-title"
+        className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-800 shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-950">Update available</span>
+              <h2 id="app-update-title" className="text-lg font-bold text-slate-950">Update available</h2>
               {(updateVersionLabel || updateDateLabel) && (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-900">
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
                   {[updateVersionLabel, updateDateLabel].filter(Boolean).join(' • ')}
                 </span>
               )}
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-600">A new version is ready with accounting fixes.</div>
+            <p className="mt-1 text-xs text-slate-600">A new version is ready. Update now to load the latest fixes, or choose later to continue your current work.</p>
           </div>
+          <button
+            type="button"
+            className="rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+            onClick={dismissUpdate}
+            aria-label="Remind me later"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
 
-        <details className="group mt-2 rounded-lg bg-slate-50 px-2 py-1.5">
-          <summary className="cursor-pointer select-none text-[11px] font-semibold text-slate-700 outline-none">
-            What changed?
-          </summary>
-          <div className="mt-1 text-[11px] text-slate-600">
-            <div className="font-medium text-slate-700">Fixes in this version:</div>
-            <ul className="mt-1 space-y-0.5 pl-3">
-              {updateReleaseNotes.map((note) => (
-                <li key={note} className="list-disc">{note}</li>
-              ))}
-            </ul>
-          </div>
-        </details>
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs font-bold uppercase tracking-wide text-slate-700">What changed</div>
+          <ul className="mt-2 space-y-1.5 pl-4 text-xs leading-5 text-slate-600">
+            {updateReleaseNotes.map((note) => (
+              <li key={note} className="list-disc">{note}</li>
+            ))}
+          </ul>
+        </div>
 
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <Button size="sm" className="h-8 bg-slate-900 px-3 text-white hover:bg-slate-800" onClick={handleUpdate}>Update Now</Button>
-          <Button size="sm" variant="outline" className="h-8 border-slate-200 px-3 text-slate-700 hover:bg-slate-50" onClick={dismissUpdate}>Later</Button>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button size="sm" variant="outline" className="h-9 border-slate-200 px-4 text-slate-700 hover:bg-slate-50" onClick={dismissUpdate}>Later</Button>
+          <Button size="sm" className="h-9 bg-slate-900 px-4 text-white hover:bg-slate-800" onClick={handleUpdate}>Update Now</Button>
         </div>
       </div>
     </div>
@@ -800,11 +809,7 @@ function AppContent() {
       return (<><Auth onLogin={handleLoginSuccess} />{updateToast}</>);
   }
 
-  if (authStatus === 'unverified') {
-      return (<><VerificationRequired email={currentEmail || undefined} />{updateToast}</>);
-  }
-
-  return (
+  if(authStatus==='unverified'){return(React.createElement(React.Fragment,null,React.createElement(VerificationRequired,{email:currentEmail?currentEmail:undefined}),updateToast));}if(!roleSession){return(React.createElement(React.Fragment,null,React.createElement(RoleLoginModal,{onLogin:handleAccessLogin}),updateToast));}return(
       <>
       <MenuController setIsMenuOpen={setIsMenuOpen} />
       <div className="flex h-screen bg-background overflow-hidden">
@@ -1052,4 +1057,5 @@ function AppContent() {
 export default function App() {
   return <RoleSessionProvider><Router><AppContent /></Router></RoleSessionProvider>;
 }
+
 

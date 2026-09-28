@@ -83,6 +83,7 @@ import {
   perfMeasureSync,
 } from "../services/perf";
 import { useRouteReady } from "../src/routing/routeReady";
+import { getSaleCashAppliedToPreviousDue, getSaleCashKept } from "../services/transactionCashKpis";
 
 type Expense = CanonicalExpense;
 
@@ -920,9 +921,10 @@ const getReturnFinancialEffectsForFinance = (transaction: Transaction) => {
 
 const getSaleSettlementContribution = (transaction: Transaction) => {
   const settlement = getSaleSettlementBreakdown(transaction);
+  const cashKept = getSaleCashKept(transaction, settlement.cashPaid);
 
   return {
-    cashPaid: settlement.cashPaid,
+    cashPaid: cashKept,
     onlinePaid: settlement.onlinePaid,
     creditDue: settlement.creditDue,
     totalSales: Math.abs(transaction.total),
@@ -1187,7 +1189,7 @@ const buildCanonicalFinanceBreakdown = (
 
       const settlement = getSaleSettlementBreakdown(original);
 
-      return roundMoney(sum + Math.max(0, Number(settlement.cashPaid || 0)));
+      return roundMoney(sum + getSaleCashKept(original, settlement.cashPaid));
     }, 0);
 
   const scopedDeleteCompensationOutflow = (deleteCompensations || [])
@@ -1327,7 +1329,7 @@ const getSessionCashTotals = (
 
       const settlement = getSaleSettlementBreakdown(original);
 
-      return sum + Math.max(0, Number(settlement.cashPaid || 0));
+      return sum + getSaleCashKept(original, settlement.cashPaid);
     }, 0);
 
   const cashSales =
@@ -1734,8 +1736,10 @@ const buildShiftCashMovementBreakdown = (
 
     if (tx.type === "sale") {
       const s = getSaleSettlementBreakdown(tx);
+      const cashKept = getSaleCashKept(tx, s.cashPaid);
+      const appliedToPreviousDue = getSaleCashAppliedToPreviousDue(tx, s.cashPaid);
 
-      if (s.cashPaid > 0) {
+      if (cashKept > 0) {
         pushRow({
           id: `sale-${tx.id}`,
           date: tx.date,
@@ -1743,8 +1747,10 @@ const buildShiftCashMovementBreakdown = (
           direction: "in",
           name: tx.customerName || "Walk-in",
           ref: tx.id.slice(-6),
-          description: "Cash from sale invoice",
-          amount: s.cashPaid,
+          description: appliedToPreviousDue > 0
+            ? `Cash from sale invoice; ${formatINR(appliedToPreviousDue)} applied to previous due`
+            : "Cash from sale invoice",
+          amount: cashKept,
           source: "salesCash",
           sourceTxId: tx.id,
         });
@@ -5744,6 +5750,9 @@ export default function Finance({
       if (isSaleLikeTx(tx)) {
         const settlement = getSaleSettlementBreakdown(tx);
         const storeCreditUsed = Math.max(0, Number(tx.storeCreditUsed || 0));
+        const cashKept = getSaleCashKept(tx, settlement.cashPaid);
+        const appliedToPreviousDue = getSaleCashAppliedToPreviousDue(tx, settlement.cashPaid);
+        const storeCreditCreated = Math.max(0, Number(tx.storeCreditCreated || 0));
 
         runningDue = Math.max(0, runningDue + settlement.creditDue);
 
@@ -5756,24 +5765,29 @@ export default function Finance({
           isSynthetic: false,
           sourceTxId: tx.id,
           customer: tx.customerName || "Walk-in customer",
-          notes: `Cash ${settlement.cashPaid.toFixed(2)} • Online ${settlement.onlinePaid.toFixed(2)} • Credit Due ${settlement.creditDue.toFixed(2)}`,
+          notes: `Cash ${cashKept.toFixed(2)}${appliedToPreviousDue > 0 ? ` (${settlement.cashPaid.toFixed(2)} invoice + ${appliedToPreviousDue.toFixed(2)} previous due)` : ""} • Online ${settlement.onlinePaid.toFixed(2)} • Credit Due ${settlement.creditDue.toFixed(2)}`,
           grossSales: txAmount,
           salesReturn: 0,
           netSales: txAmount,
           creditDueCreated: settlement.creditDue,
           onlineSale: settlement.onlinePaid,
           currentDueEffect: settlement.creditDue,
-          currentStoreCreditEffect: -storeCreditUsed,
-          cashIn: settlement.cashPaid,
+          currentStoreCreditEffect: storeCreditCreated - storeCreditUsed,
+          cashIn: cashKept,
           cashOut: 0,
           onlineIn: settlement.onlinePaid,
           onlineOut: 0,
-          netCashEffect: settlement.cashPaid,
+          netCashEffect: cashKept,
           cogsEffect: cogsAmount,
           grossProfitEffect: txAmount - cogsAmount,
           expense: 0,
           netProfitEffect: txAmount - cogsAmount,
           effectSummary:
+            appliedToPreviousDue > 0
+              ? "Cash sale with previous due settlement"
+              : storeCreditCreated > 0
+                ? "Cash sale with store credit movement"
+                :
             settlement.creditDue > 0
               ? "Credit sale created due"
               : settlement.onlinePaid > 0
@@ -6005,7 +6019,8 @@ export default function Finance({
 
       if (isSaleLikeTx(tx)) {
         const settlement = getSaleSettlementBreakdown(tx);
-        const cashPaid = Math.max(0, Number(settlement.cashPaid || 0));
+        const cashPaid = getSaleCashKept(tx, settlement.cashPaid);
+        const appliedToPreviousDue = getSaleCashAppliedToPreviousDue(tx, settlement.cashPaid);
         const cogsAmount = getTxCogs(tx);
 
         if (cashPaid > 0) {
@@ -6018,7 +6033,9 @@ export default function Finance({
               eventType: "transaction",
               sourceTxId: tx.id,
               customer: tx.customerName || "Walk-in customer",
-              notes: `Cash sale received`,
+              notes: appliedToPreviousDue > 0
+                ? `Cash sale received; ${formatINR(appliedToPreviousDue)} applied to previous due`
+                : `Cash sale received`,
               grossSales: txAmount,
               netSales: txAmount,
               creditDueCreated: Math.max(0, Number(settlement.creditDue || 0)),
@@ -6029,7 +6046,9 @@ export default function Finance({
               cogsEffect: cogsAmount,
               grossProfitEffect: txAmount - cogsAmount,
               netProfitEffect: txAmount - cogsAmount,
-              effectSummary: `Cash ${cashPaid.toFixed(2)}`,
+              effectSummary: appliedToPreviousDue > 0
+                ? `Cash ${cashPaid.toFixed(2)} incl. previous due ${appliedToPreviousDue.toFixed(2)}`
+                : `Cash ${cashPaid.toFixed(2)}`,
             }),
           );
         }

@@ -10,6 +10,7 @@ import { ResolvedCostSource, resolveTransactionItemCost } from '../services/cost
 import { formatDateDisplay, formatDateTimeDisplay } from '../src/utils/dateFormat';
 import { perfLog } from '../services/perf';
 import { isSimplifiedShiftAccessEnabled } from '../services/simplifiedShift';
+import { getSaleCashAppliedToPreviousDue, getSaleCashKept } from '../services/transactionCashKpis';
 
 type LedgerType = 'sale' | 'payment' | 'purchase' | 'supplier_payment' | 'expense' | 'return' | 'adjustment' | 'credit' | 'deleted_sale' | 'deleted_refund' | 'custom_order_receivable' | 'custom_order_payment' | 'manual_cash_in' | 'manual_cash_out';
 type PayType = 'cash' | 'online' | 'credit' | 'mixed' | 'na';
@@ -206,7 +207,10 @@ const getCashbookCashSourceAvailability = (state: AppState) => {
     if (!isInCashSourceWindow((tx as any).financialDate || tx.date, start, end)) return sum;
     const amount = Math.max(0, Number(tx.total || 0));
     const type = String((tx as any).type || '').toLowerCase();
-    if (type === 'sale' || type === 'historical_reference') return sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0));
+    if (type === 'sale' || type === 'historical_reference') {
+      const settlement = getSaleSettlementBreakdown(tx);
+      return sum + getSaleCashKept(tx, settlement.cashPaid);
+    }
     if (type === 'payment' && tx.paymentMethod === 'Cash') return sum + amount;
     if ((type === 'return' || type === 'customer_cash_out') && tx.paymentMethod === 'Cash') return sum - amount;
     return sum;
@@ -375,12 +379,16 @@ const normalizeTransactionForCashbook = (tx: Transaction, customerMap: Map<strin
 
   if (normalizedType === 'sale') {
     const s = getCashbookSaleBreakdown(tx, txAny);
+    const cashKept = getSaleCashKept(tx, s.cashPaid);
+    const appliedToPreviousDue = getSaleCashAppliedToPreviousDue(tx, s.cashPaid);
+    const storeCreditCreated = Math.max(0, toNum(txAny?.storeCreditCreated));
     const pay = getCashbookPaymentMethod(txAny);
     const isMixed = (s.cashPaid > 0 && s.onlinePaid > 0) || (s.creditDue > 0 && (s.cashPaid > 0 || s.onlinePaid > 0));
-    const payment: PayType = isMixed ? 'mixed' : (s.creditDue > 0 ? 'credit' : (s.cashPaid > 0 ? 'cash' : s.onlinePaid > 0 ? 'online' : pay));
-    const row = { id: `tx-${tx.id}`, date, type: s.creditDue > 0 && !isMixed ? 'credit' as LedgerType : 'sale' as LedgerType, description: `Sale Invoice #${reference} - ${getTransactionProductSummary(txAny)} - ${party}`, reference, party, payment, itemPreviews: getCashbookItemPreviews(txAny),
-      cashIn: s.cashPaid, cashOut: 0, bankIn: s.onlinePaid, bankOut: 0,
-      receivableIncrease: s.creditDue, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: Math.max(0, toNum(txAny?.storeCreditUsed)) };
+    const payment: PayType = isMixed ? 'mixed' : (s.creditDue > 0 ? 'credit' : (cashKept > 0 ? 'cash' : s.onlinePaid > 0 ? 'online' : pay));
+    const extraNote = appliedToPreviousDue > 0 ? ` - ${appliedToPreviousDue.toFixed(2)} applied to previous due` : '';
+    const row = { id: `tx-${tx.id}`, date, type: s.creditDue > 0 && !isMixed ? 'credit' as LedgerType : 'sale' as LedgerType, description: `Sale Invoice #${reference} - ${getTransactionProductSummary(txAny)} - ${party}${extraNote}`, reference, party, payment, itemPreviews: getCashbookItemPreviews(txAny),
+      cashIn: cashKept, cashOut: 0, bankIn: s.onlinePaid, bankOut: 0,
+      receivableIncrease: s.creditDue, receivableDecrease: appliedToPreviousDue, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: storeCreditCreated, storeCreditDecrease: Math.max(0, toNum(txAny?.storeCreditUsed)) };
     if (row.payment === 'credit') {
       row.cashIn = 0; row.bankIn = 0; row.cashOut = 0; row.bankOut = 0;
       row.receivableIncrease = Math.max(row.receivableIncrease, getCashbookMoney(txAny, ['total','amount','grandTotal']));
@@ -739,7 +747,7 @@ export default function Cashbook() {
       if (!isExplicitRefund || !linkedDeleted?.originalTransaction) return [baseRow];
       const originalTx = linkedDeleted.originalTransaction as Transaction;
       const originalSettlement = getCashbookSaleBreakdown(originalTx, originalTx as any);
-      const originalCashIn = Math.max(0, Number(originalSettlement.cashPaid || 0));
+      const originalCashIn = getSaleCashKept(originalTx, originalSettlement.cashPaid);
       if (originalCashIn <= 0) return [baseRow];
       const originalCashRow: Row = {
         id: `dc-src-${c.id}`,

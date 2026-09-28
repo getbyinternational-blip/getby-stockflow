@@ -4,6 +4,7 @@ type VersionPayload = {
   version: string;
   deployedAt?: string;
   targetUrl?: string;
+  notes?: string[];
 };
 
 
@@ -12,6 +13,7 @@ const isValidVersionPayload = (value: unknown): value is VersionPayload => {
   const payload = value as VersionPayload;
   if (typeof payload.version !== 'string' || !payload.version.trim()) return false;
   if (payload.version.includes('__APP_BUILD_ID__')) return false;
+  if (payload.notes !== undefined && (!Array.isArray(payload.notes) || payload.notes.some((note) => typeof note !== 'string'))) return false;
   return true;
 };
 
@@ -80,3 +82,4 @@ export const useVersionCheck = (currentVersion: string) => {
     checkVersion,
   };
 };
+

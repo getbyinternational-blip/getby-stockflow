@@ -5,6 +5,21 @@ const money = (value: unknown) => {
   return Number.isFinite(amount) ? Math.max(0, amount) : 0;
 };
 
+export function getSaleCashKept(tx: Transaction, saleCashPaid = 0) {
+  const received = money(tx.cashReceived);
+  if (received > 0) return Math.max(0, received - money(tx.changeReturned));
+  const extraSettled = Math.max(
+    money(tx.paymentAppliedToReceivable),
+    money(tx.storeCreditCreated),
+    money(tx.paymentAppliedToCanonicalReceivable) + money(tx.paymentAppliedToCustomOrderReceivable),
+  );
+  return money(saleCashPaid) + extraSettled;
+}
+
+export function getSaleCashAppliedToPreviousDue(tx: Transaction, saleCashPaid = 0) {
+  return Math.max(0, getSaleCashKept(tx, saleCashPaid) - money(saleCashPaid));
+}
+
 // Purchase-order totals are represented separately by their payment histories.
 // Never treat their supplier identity as evidence of a customer receipt.
 export function getTransactionCashKpis(tx: Transaction, saleCashPaid = 0) {
@@ -17,7 +32,8 @@ export function getTransactionCashKpis(tx: Transaction, saleCashPaid = 0) {
     || tx.id.startsWith('purchase-order-') || tx.id.startsWith('purchase-cash-')) return result;
 
   if (type === 'sale' || type === 'historical_reference') {
-    result.totalCashIn = money(saleCashPaid);
+    result.totalCashIn = getSaleCashKept(tx, saleCashPaid);
+    result.cashReceivedOnCreditDue = getSaleCashAppliedToPreviousDue(tx, saleCashPaid);
   } else if (type === 'return') {
     const mode = String(tx.returnHandlingMode || '').trim().toLowerCase();
     if (mode === 'refund_cash' || (!mode && cash)) result.totalCashOut = amount;

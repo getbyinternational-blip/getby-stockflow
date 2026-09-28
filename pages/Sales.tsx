@@ -1417,6 +1417,9 @@ export default function Sales() {
       const checkoutStoreCreditCreated = !isReturnMode && storeOverpaymentAsCredit && finalCustomer
         ? changeGivenAtSubmit
         : 0;
+      const checkoutAppliedToPreviousDue = !isReturnMode && storeOverpaymentAsCredit && finalCustomer
+        ? changeGivenAtSubmit
+        : 0;
 
       const splitTotal = roundMoneyWhole(settlementCashPaid + settlementOnlinePaid + creditDue);
       const splitMismatch = Math.abs(splitTotal - payableAfterCreditWhole) > 0.001;
@@ -1477,7 +1480,7 @@ export default function Sales() {
           taxRate: selectedTax.value, taxLabel: selectedTax.label, date: buildEffectiveTransactionDate(), type: isReturnMode ? 'return' : 'sale',
           customerId: finalCustomer?.id, customerName: finalCustomer?.name, paymentMethod: resolvedPaymentMethod, storeCreditUsed: appliedStoreCredit,
           storeCreditCreated: checkoutStoreCreditCreated,
-          paymentAppliedToReceivable: 0,
+          paymentAppliedToReceivable: checkoutAppliedToPreviousDue,
           cashReceived: !isReturnMode ? Math.max(0, cashPaid) : undefined,
           changeReturned: !isReturnMode ? (storeOverpaymentAsCredit && finalCustomer ? 0 : changeGivenAtSubmit) : undefined,
           customerPhone: finalCustomer?.phone,
