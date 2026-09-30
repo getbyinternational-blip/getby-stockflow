@@ -278,6 +278,7 @@ function FilterSelect({
 }
 
 const getCashbookMoney = (tx: any, candidates: string[]) => candidates.map((k) => toNum(tx?.[k])).find((v) => v > 0) || 0;
+const getCashbookTransactionDate = (tx: any) => String(tx?.effectiveAt || tx?.date || tx?.createdAt || tx?.updatedAt || '');
 
 const getCashbookSaleBreakdown = (tx: Transaction, txAny: any) => {
   const s = getSaleSettlementBreakdown(tx);
@@ -310,7 +311,7 @@ const getDeletedTransactionLedgerRow = (deleted: any, customerMap: Map<string, s
   const originalId = String(deleted?.originalTransactionId || original?.id || deleted?.id || '');
   const reference = getCashbookReference({ ...original, id: originalId });
   const party = deleted?.customerName || getCashbookCustomerName(original, customerMap);
-  const date = String(deleted?.deletedAt || original?.date || deleted?.createdAt || '');
+  const date = String(deleted?.deletedAt || getCashbookTransactionDate(original) || deleted?.createdAt || '');
   const txType = String(deleted?.type || original?.type || '').toLowerCase();
 
   if (txType === 'sale' || txType === 'historical_reference') {
@@ -326,27 +327,25 @@ const getDeletedTransactionLedgerRow = (deleted: any, customerMap: Map<string, s
       party,
       payment,
       itemPreviews: getCashbookItemPreviews(original),
-      // Deleted transaction rows are audit-only and must not impact cash/bank KPIs.
-      // Real cash payout (if any) is represented by explicit delete compensation rows.
+      // Deleted transaction rows are audit-only; movement is represented by explicit rows.
       cashIn: 0,
       cashOut: 0,
       bankIn: 0,
       bankOut: 0,
-      receivableIncrease: settlement.creditDue,
+      receivableIncrease: 0,
       receivableDecrease: 0,
       payableIncrease: 0,
       payableDecrease: 0,
       storeCreditIncrease: 0,
-      storeCreditDecrease: Math.max(0, toNum(original?.storeCreditUsed)),
+      storeCreditDecrease: 0,
     };
   }
 
   if (txType === 'payment') {
-    const amount = Math.abs(toNum(original?.total));
     const payment = getCashbookPaymentMethod(original);
     return { id: `dtx-${deleted.id || originalId}`, date, type: 'deleted_sale', description: `Deleted Payment Audit #${reference} - ${party}`, reference, party, payment,
       cashIn: 0, cashOut: 0, bankIn: 0, bankOut: 0,
-      receivableIncrease: 0, receivableDecrease: amount, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
+      receivableIncrease: 0, receivableDecrease: 0, payableIncrease: 0, payableDecrease: 0, storeCreditIncrease: 0, storeCreditDecrease: 0 };
   }
 
   return null;
@@ -502,13 +501,20 @@ export default function Cashbook() {
     };
   }, [refreshCashbookData]);
 
-  const safeTransactions = asArray<Transaction>(data.transactions);
+  const safeDeletedTransactions = asArray<any>(data.deletedTransactions);
+  const deletedOriginalTransactionIds = useMemo(
+    () => new Set(safeDeletedTransactions.map((record) => String(record?.originalTransactionId || record?.originalTransaction?.id || '')).filter(Boolean)),
+    [safeDeletedTransactions],
+  );
+  const safeTransactions = useMemo(
+    () => asArray<Transaction>(data.transactions).filter((tx) => !deletedOriginalTransactionIds.has(String(tx.id || ''))),
+    [data.transactions, deletedOriginalTransactionIds],
+  );
   const safeProducts = asArray<Product>((data as any).products);
   const safePurchaseOrders = asArray<PurchaseOrder>(data.purchaseOrders);
   const safeSupplierPayments = asArray<any>((data as any).supplierPayments);
   const safeExpenses = asArray<Expense>(data.expenses);
   const safeCashAdjustments = asArray<CashAdjustment>(data.cashAdjustments);
-  const safeDeletedTransactions = asArray<any>(data.deletedTransactions);
   const safeDeleteCompensations = asArray<any>(data.deleteCompensations);
   const safeUpdatedTransactionEvents = asArray<any>(data.updatedTransactionEvents);
   const safeCustomers = asArray<any>(data.customers);
@@ -751,7 +757,7 @@ export default function Cashbook() {
       if (originalCashIn <= 0) return [baseRow];
       const originalCashRow: Row = {
         id: `dc-src-${c.id}`,
-        date: c.createdAt,
+        date: getCashbookTransactionDate(originalTx) || c.createdAt,
         type: 'deleted_refund' as LedgerType,
         description: isOrphan ? `Deleted Sale Original Cash (orphan) #${reference} - ${party}` : `Deleted Sale Original Cash #${reference} - ${party}`,
         reference: String(c.transactionId || c.id),

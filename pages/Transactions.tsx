@@ -547,9 +547,13 @@ export default function Transactions() {
     }));
     return [...groupedInitial, ...additionalRows];
   }), [upfrontOrders, customers]);
+  const deletedOriginalTransactionIds = useMemo(
+    () => new Set(deletedTransactions.map((record) => String(record.originalTransactionId || record.originalTransaction?.id || '')).filter(Boolean)),
+    [deletedTransactions]
+  );
   const renderedTransactions = useMemo(
     () => [
-      ...transactions,
+      ...transactions.filter((tx) => !deletedOriginalTransactionIds.has(String(tx.id || ''))),
       ...virtualExpenseTransactions,
       ...virtualCashAdjustmentTransactions,
       ...virtualManualCashbookTransactions,
@@ -558,7 +562,7 @@ export default function Transactions() {
       ...virtualUpfrontOrderTransactions,
       ...virtualSupplierPaymentTransactions,
     ],
-    [transactions, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualManualCashbookTransactions, virtualDeleteCompensationTransactions, virtualPurchaseOrderTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
+    [transactions, deletedOriginalTransactionIds, virtualExpenseTransactions, virtualCashAdjustmentTransactions, virtualManualCashbookTransactions, virtualDeleteCompensationTransactions, virtualPurchaseOrderTransactions, virtualUpfrontOrderTransactions, virtualSupplierPaymentTransactions]
   );
 
   const formatRoleLabel = (role?: string) => {

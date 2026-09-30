@@ -1066,7 +1066,13 @@ const buildCanonicalFinanceBreakdown = (
   windowStart: number,
   windowEnd: number,
 ) => {
+  const deletedOriginalIds = new Set(
+    (deletedTransactions || [])
+      .map((record) => String(record.originalTransactionId || record.originalTransaction?.id || ""))
+      .filter(Boolean),
+  );
   const scopedTransactions = transactions.filter((transaction) => {
+    if (deletedOriginalIds.has(String(transaction.id || ""))) return false;
     const txTime = resolveTransactionTimeForSession(transaction);
 
     return (
@@ -1167,16 +1173,6 @@ const buildCanonicalFinanceBreakdown = (
   const explicitDeletedSaleCashIncluded = (deleteCompensations || [])
     .filter((record) => isExplicitDeleteRefund(record))
     .reduce((sum, record) => {
-      const eventTime = new Date(record.createdAt).getTime();
-
-      if (
-        !Number.isFinite(eventTime) ||
-        eventTime < windowStart ||
-        eventTime > windowEnd
-      ) {
-        return sum;
-      }
-
       const linkedDeleted = deletedByOriginalId.get(
         String(record.transactionId || ""),
       );
@@ -1184,6 +1180,16 @@ const buildCanonicalFinanceBreakdown = (
       const original = linkedDeleted?.originalTransaction;
 
       if (!original || !isSaleLikeTx(original)) {
+        return sum;
+      }
+
+      const originalTime = resolveTransactionTimeForSession(original);
+
+      if (
+        !Number.isFinite(originalTime) ||
+        originalTime < windowStart ||
+        originalTime > windowEnd
+      ) {
         return sum;
       }
 
@@ -1283,7 +1289,13 @@ const getSessionCashTotals = (
     ? new Date(sessionEndIso).getTime()
     : Number.POSITIVE_INFINITY;
 
+  const deletedOriginalIds = new Set(
+    (deletedTransactions || [])
+      .map((record) => String(record.originalTransactionId || record.originalTransaction?.id || ""))
+      .filter(Boolean),
+  );
   const scopedTransactions = transactions.filter((t) => {
+    if (deletedOriginalIds.has(String(t.id || ""))) return false;
     const txTime = resolveTransactionTimeForSession(t);
 
     return txTime >= start && txTime <= end;
@@ -1311,12 +1323,6 @@ const getSessionCashTotals = (
   const explicitDeletedSaleCashIncluded = (deleteCompensations || [])
     .filter((record) => isExplicitDeleteRefund(record))
     .reduce((sum, record) => {
-      const eventTime = new Date(record.createdAt).getTime();
-
-      if (!Number.isFinite(eventTime) || eventTime < start || eventTime > end) {
-        return sum;
-      }
-
       const linkedDeleted = deletedByOriginalId.get(
         String(record.transactionId || ""),
       );
@@ -1324,6 +1330,12 @@ const getSessionCashTotals = (
       const original = linkedDeleted?.originalTransaction;
 
       if (!original || !isSaleLikeTx(original)) {
+        return sum;
+      }
+
+      const originalTime = resolveTransactionTimeForSession(original);
+
+      if (!Number.isFinite(originalTime) || originalTime < start || originalTime > end) {
         return sum;
       }
 
@@ -1943,16 +1955,19 @@ const buildShiftCashMovementBreakdown = (
     const original = linkedDeleted?.originalTransaction;
 
     if (original && isSaleLikeTx(original)) {
+      const originalTime = resolveTransactionTimeForSession(original);
+
+      if (!Number.isFinite(originalTime) || originalTime < start || originalTime > end) {
+        return;
+      }
+
       const settlement = getSaleSettlementBreakdown(original);
-      const deletedSaleCash = Math.max(
-        0,
-        Number(settlement.cashPaid || 0),
-      );
+      const deletedSaleCash = getSaleCashKept(original, settlement.cashPaid);
 
       if (deletedSaleCash > 0) {
         pushRow({
           id: `deleted-sale-${d.id}`,
-          date: d.createdAt,
+          date: original.date || d.createdAt,
           type: "Deleted Cash Sale",
           direction: "in",
           name: d.customerName || original.customerName || "Customer",
@@ -3102,6 +3117,22 @@ export default function Finance({
     () => (Array.isArray(data.upfrontOrders) ? data.upfrontOrders : []),
     [data],
   );
+
+  const activeFinanceTransactions: Transaction[] = useMemo(() => {
+    const deletedOriginalIds = new Set(
+      (data.deletedTransactions || [])
+        .map((record) => String(record?.originalTransactionId || record?.originalTransaction?.id || ""))
+        .filter(Boolean),
+    );
+
+    if (!deletedOriginalIds.size) {
+      return data.transactions || [];
+    }
+
+    return (data.transactions || []).filter(
+      (tx) => !deletedOriginalIds.has(String(tx.id || "")),
+    );
+  }, [data.transactions, data.deletedTransactions]);
 
   const expenseCategories: string[] = useMemo(
     () =>
@@ -4946,7 +4977,7 @@ export default function Finance({
             const view = getCanonicalCustomerBalanceView(
               customer,
               data.customers,
-              data.transactions,
+              activeFinanceTransactions,
               data.upfrontOrders || [],
             );
 
@@ -4959,14 +4990,14 @@ export default function Finance({
           runId: perfRunIdRef.current,
           activeTab,
           customers: data.customers.length,
-          transactions: data.transactions.length,
+          transactions: activeFinanceTransactions.length,
           upfrontOrders: (data.upfrontOrders || []).length,
         },
       ),
     [
       shouldComputeExpenseTabDerives,
       data.customers,
-      data.transactions,
+      activeFinanceTransactions,
       data.upfrontOrders,
       activeTab,
     ],
@@ -5008,7 +5039,7 @@ export default function Finance({
           try {
             const snapshot = getCanonicalCustomerBalanceSnapshot(
               data.customers,
-              data.transactions,
+              activeFinanceTransactions,
               data.upfrontOrders || [],
             );
             return {
@@ -5033,26 +5064,26 @@ export default function Finance({
           runId: perfRunIdRef.current,
           activeTab,
           customers: data.customers.length,
-          transactions: data.transactions.length,
+          transactions: activeFinanceTransactions.length,
           upfrontOrders: (data.upfrontOrders || []).length,
         },
       ),
     [
       shouldComputeExpenseTabDerives,
       data.customers,
-      data.transactions,
+      activeFinanceTransactions,
       data.upfrontOrders,
       activeTab,
     ],
   );
 
   const scopedCashbookTransactions = useMemo(() => {
-    if (cashbookScope === "all") return data.transactions;
+    if (cashbookScope === "all") return activeFinanceTransactions;
     const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-    return data.transactions.filter(
+    return activeFinanceTransactions.filter(
       (tx) => new Date(tx.date).getTime() >= cutoff,
     );
-  }, [data.transactions, cashbookScope]);
+  }, [activeFinanceTransactions, cashbookScope]);
 
   const cashbookRows = useMemo(() => {
     if (!shouldComputeDetailedCashbook) return [] as CashbookRow[];
@@ -6011,7 +6042,7 @@ export default function Finance({
   const simplifiedCashMovementRows = useMemo(() => {
     const rows: CashbookRow[] = [];
 
-    (data.transactions || []).forEach((tx) => {
+    activeFinanceTransactions.forEach((tx) => {
       const txDate = (tx as any).financialDate || tx.date;
       const txAmount = Math.abs(Number(tx.total || 0));
 
@@ -6386,7 +6417,7 @@ export default function Finance({
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     );
   }, [
-    data.transactions,
+    activeFinanceTransactions,
     expenses,
     data.supplierPayments,
     data.purchaseOrders,
@@ -13901,7 +13932,7 @@ const transactionMap = new Map<string, Transaction>(
                   ? new Date(activeHistorySession.endTime).getTime()
                   : Number.POSITIVE_INFINITY;
 
-                const sessionSalesTx = data.transactions.filter((t) => {
+                const sessionSalesTx = activeFinanceTransactions.filter((t) => {
                   if (t.type !== "sale") return false;
 
                   const txTime = new Date(t.date).getTime();

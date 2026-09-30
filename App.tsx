@@ -1,4 +1,4 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+﻿import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import Auth from './pages/Auth';
 import VerificationRequired from './pages/VerificationRequired';
@@ -643,11 +643,11 @@ function AppContent() {
   };
 
   const updateReleaseNotes = latestVersionData?.notes?.length ? latestVersionData.notes : [
-    'Staff login now stays staff after a shutdown instead of falling back to admin.',
-    'Staff users no longer see or use customer credit receive-payment actions.',
-    'Cashbook, Finance cash KPIs, and shift closing now show invoice overpayment cash applied to previous customer due.',
-    'Telegram posts now use sell price, support saved channel renames, stop repeated active-window backend calls, and allow 5-second collection frequency.',
-    'WhatsApp invoice sending has the Store Phone field restored and checks it before sending.',
+    'Cancelled invoices no longer appear in Transaction Credit Received totals.',
+    'Finance cash-session closing now handles cancelled cash invoices in the correct shift chronology.',
+    'Same-shift invoice cancellations now net sale cash and refund cash to zero.',
+    'Later-shift invoice cancellations now reduce only the refund shift instead of changing the original sale shift.',
+    'Cashbook, Finance, Admin, and cash availability now ignore stale active copies of deleted invoices.',
   ];
   const updateVersionLabel = latestVersionData?.version ? `Version ${latestVersionData.version}` : null;
   const updateDateLabel = latestVersionData?.deployedAt

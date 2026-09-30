@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PurchaseOrder, Transaction } from '../types';
-import { getPurchaseCashPaymentOrders, getTransactionCashKpis } from './transactionCashKpis';
+import { getPurchaseCashPaymentOrders, getSaleCashKept, getTransactionCashKpis } from './transactionCashKpis';
 
 const transaction = (overrides: Partial<Transaction> = {}): Transaction => ({
   id: 'receipt-1', type: 'payment', total: 100, items: [], date: '2026-09-06',
@@ -56,6 +56,28 @@ describe('transaction cash KPI classification', () => {
       paymentAppliedToReceivable: 20,
       storeCreditCreated: 20,
     }), 130)).toEqual({ ...zero, totalCashIn: 150, cashReceivedOnCreditDue: 20 });
+  });
+  it('excludes inactive sale rows from transaction cash KPIs', () => {
+    expect(getTransactionCashKpis(transaction({
+      type: 'sale',
+      status: 'cancelled' as any,
+      saleSettlement: { cashPaid: 100, onlinePaid: 0, creditDue: 0 },
+    }), 100)).toEqual(zero);
+    expect(getTransactionCashKpis(transaction({
+      type: 'sale',
+      isDeleted: true,
+      saleSettlement: { cashPaid: 100, onlinePaid: 0, creditDue: 0 },
+    } as any), 100)).toEqual(zero);
+  });
+  it('uses the full kept cash for deleted-sale chronology offsets', () => {
+    expect(getSaleCashKept(transaction({
+      type: 'sale',
+      total: 130,
+      saleSettlement: { cashPaid: 130, onlinePaid: 0, creditDue: 0 },
+      cashReceived: 150,
+      changeReturned: 10,
+      paymentAppliedToReceivable: 20,
+    }), 130)).toBe(140);
   });
   it.each(['reduce_due', 'store_credit', 'refund_online'] as const)(
     'does not count a %s return as cash out even if its old method is Cash', (returnHandlingMode) => {

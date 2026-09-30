@@ -6,6 +6,7 @@ import jsPDF from 'jspdf';
 import { AppState, CashSession, CashSource, Customer, Expense, ManualCashbookEntry, Product, PurchaseOrder, PurchaseOrderLine, PurchaseParty, Transaction, UpfrontOrder } from '../types';
 import { NO_COLOR, NO_VARIANT, getProductStockRows, productHasCombinationStock } from '../services/productVariants';
 import { loadData, addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, getNextBarcode, renameCategory, addVariantMaster, addColorMaster, createPurchaseOrder, createPurchaseParty, reverseInventoryPurchaseHistoryEntry, editInventoryPurchaseHistoryEntry, applyPartyCreditToPurchaseOrder, uploadImageFileToCloudinary, buildUpfrontOrderLedgerEffects, getCanonicalReturnAllocation, getSaleSettlementBreakdown } from '../services/storage';
+import { getSaleCashKept } from '../services/transactionCashKpis';
 import { Button, Input, Select, Card, CardContent, CardHeader, CardTitle, Label, Badge, LightweightLoader } from '../components/ui';
 import { Plus, Trash2, Edit, Save, X, Search, QrCode, Download, Share2, AlertCircle, Tags, FileDown, Package, Coins, AlertTriangle, Layers, ScanBarcode, Eye, TrendingUp, ChevronRight, MoreVertical } from 'lucide-react';
 import { ExportModal } from '../components/ExportModal';
@@ -1736,8 +1737,14 @@ const displayProductCategory = (value: unknown): string => {
     const cashAdjustmentsInput = Array.isArray(snapshot.cashAdjustments) ? snapshot.cashAdjustments : [];
     const upfrontOrdersInput = Array.isArray(snapshot.upfrontOrders) ? (snapshot.upfrontOrders as UpfrontOrder[]) : [];
     const supplierPaymentsInput = Array.isArray(snapshot.supplierPayments) ? snapshot.supplierPayments : [];
+    const deletedOriginalTransactionIds = new Set(
+      deletedTransactionsInput
+        .map((record: any) => String(record?.originalTransactionId || record?.originalTransaction?.id || ''))
+        .filter(Boolean),
+    );
 
     const scopedTransactions = transactionsInput.filter((tx) => {
+      if (deletedOriginalTransactionIds.has(String(tx.id || ''))) return false;
       const at = getAdminTransactionTimeForSession(tx);
       return Number.isFinite(at) && at >= start && at <= end;
     });
@@ -1747,7 +1754,27 @@ const displayProductCategory = (value: unknown): string => {
     });
     const cashSales = scopedTransactions
       .filter((tx) => isAdminSaleLikeTx(tx))
-      .reduce((sum, tx) => sum + Math.max(0, Number(getSaleSettlementBreakdown(tx).cashPaid || 0)), 0);
+      .reduce((sum, tx) => {
+        const settlement = getSaleSettlementBreakdown(tx);
+        return sum + getSaleCashKept(tx, settlement.cashPaid);
+      }, 0);
+    const deletedByOriginalId = new Map<string, any>(
+      deletedTransactionsInput.map((record: any) => [
+        String(record?.originalTransactionId || record?.originalTransaction?.id || ''),
+        record,
+      ]),
+    );
+    const deletedSaleCashIncluded = deleteCompensationsInput
+      .filter((record: any) => isAdminExplicitDeleteRefund(record))
+      .reduce((sum: number, record: any) => {
+        const linkedDeleted = deletedByOriginalId.get(String(record?.transactionId || ''));
+        const original = linkedDeleted?.originalTransaction as Transaction | undefined;
+        if (!original || !isAdminSaleLikeTx(original)) return sum;
+        const originalAt = getAdminTransactionTimeForSession(original);
+        if (!Number.isFinite(originalAt) || originalAt < start || originalAt > end) return sum;
+        const settlement = getSaleSettlementBreakdown(original);
+        return sum + getSaleCashKept(original, settlement.cashPaid);
+      }, 0);
     const cashCollections = scopedTransactions
       .filter((tx) => tx.type === 'payment' && tx.paymentMethod === 'Cash')
       .reduce((sum, tx) => sum + Math.abs(Number(tx.total || 0)), 0);
@@ -1815,7 +1842,7 @@ const displayProductCategory = (value: unknown): string => {
       })
       .reduce((sum, effect) => sum + Math.max(0, Number(effect.cashIn || 0)), 0);
     const expenseTotal = scopedExpenses.reduce((sum, expense) => sum + Math.max(0, Number(expense.amount || 0)), 0);
-    const cashIn = roundAdminMoney(cashSales + cashCollections + customOrderCashIn + manualCashIn + cashAdjustmentsIn);
+    const cashIn = roundAdminMoney(cashSales + deletedSaleCashIncluded + cashCollections + customOrderCashIn + manualCashIn + cashAdjustmentsIn);
     const cashOut = roundAdminMoney(cashRefunds + deleteCompensationRefunds + customerCashOutflow + supplierCashPaymentsFromLedger + legacySupplierCashPayments + manualCashOut + cashAdjustmentsOut + expenseTotal);
     const netCashMovement = roundAdminMoney(cashIn - cashOut);
 

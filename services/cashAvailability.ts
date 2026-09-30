@@ -3,6 +3,7 @@ import {
   getCanonicalReturnAllocation,
   getSaleSettlementBreakdown,
 } from "./storage";
+import { getSaleCashKept } from "./transactionCashKpis";
 import type {
   AppState,
   CashSession,
@@ -46,6 +47,16 @@ const isExplicitDeleteRefund = (record: DeleteCompensationRecord) =>
 const isSaleLikeTx = (tx: Transaction) => {
   const type = String(tx.type || "").trim().toLowerCase();
   return type === "sale" || type === "historical_reference";
+};
+
+const resolveOriginalDeletedSaleTime = (transaction: Transaction) => {
+  const effectiveMs = new Date(transaction.effectiveAt || "").getTime();
+  if (Number.isFinite(effectiveMs)) return effectiveMs;
+
+  const transactionDateMs = new Date(transaction.date || "").getTime();
+  if (Number.isFinite(transactionDateMs)) return transactionDateMs;
+
+  return getTimestampFromTransactionId(transaction.id);
 };
 
 const getExpenseEffectiveDate = (expense: Expense) =>
@@ -175,12 +186,6 @@ const getExplicitDeletedSaleCashIncluded = (
     (deleteCompensations || [])
       .filter((record) => isExplicitDeleteRefund(record))
       .reduce((sum, record) => {
-        const eventTime = new Date(record.createdAt || "").getTime();
-
-        if (!isWithinWindow(eventTime, sessionStartMs, targetMs)) {
-          return sum;
-        }
-
         const linkedDeleted = deletedByOriginalId.get(String(record.transactionId || ""));
         const original = linkedDeleted?.originalTransaction;
 
@@ -188,8 +193,14 @@ const getExplicitDeletedSaleCashIncluded = (
           return sum;
         }
 
+        const originalTime = resolveOriginalDeletedSaleTime(original);
+
+        if (!isWithinWindow(originalTime, sessionStartMs, targetMs)) {
+          return sum;
+        }
+
         const settlement = getSaleSettlementBreakdown(original);
-        return sum + Math.max(0, Number(settlement.cashPaid || 0));
+        return sum + getSaleCashKept(original, settlement.cashPaid);
       }, 0),
   );
 };
@@ -259,7 +270,13 @@ export const getAvailableCashAt = (
     supplierPayments,
   } = getStateCollections(state);
 
+  const deletedOriginalIds = new Set(
+    (deletedTransactions || [])
+      .map((record) => String(record.originalTransactionId || record.originalTransaction?.id || ""))
+      .filter(Boolean),
+  );
   const scopedTransactions = transactions.filter((transaction) =>
+    !deletedOriginalIds.has(String(transaction.id || "")) &&
     isWithinWindow(resolveTransactionTime(transaction), sessionStartMs, targetMs),
   );
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AppState, CashSession, CashSource } from "../types";
+import type { AppState, CashSession, CashSource, Transaction } from "../types";
 import { getAvailableCashAt } from "./cashAvailability";
 
 // Exercise real cash calculations without starting cloud authentication or sync.
@@ -230,5 +230,86 @@ describe("getAvailableCashAt", () => {
     expect(canonicalActive).toBe(1000);
     expect(available("drawer", now, state, session)).toBe(canonicalActive);
     expect(available("reserve", now, state, session)).toBe(500);
+  });
+
+  it("nets a same-shift cancelled cash invoice to zero", () => {
+    const session = buildSession({ openingBalance: 0 });
+    const originalSale: Transaction = {
+      id: "sale-same-shift",
+      type: "sale",
+      total: 100,
+      date: "2026-08-30T10:15:00.000Z",
+      items: [],
+      customerId: "customer-1",
+      customerName: "Customer",
+      paymentMethod: "Cash",
+      saleSettlement: { cashPaid: 100, onlinePaid: 0, creditDue: 0 },
+    };
+    const state = buildState({
+      deletedTransactions: [{
+        id: "bin-sale-same-shift",
+        originalTransactionId: originalSale.id,
+        originalTransaction: originalSale,
+        deletedAt: "2026-08-30T10:30:00.000Z",
+        type: "sale",
+        amount: 100,
+        beforeImpact: {} as any,
+        afterImpact: {} as any,
+      }],
+      deleteCompensations: [{
+        id: "refund-same-shift",
+        transactionId: originalSale.id,
+        amount: 100,
+        mode: "cash_refund",
+        source: "explicit_refund",
+        isExplicitRefund: true,
+        refundConfirmed: true,
+        createdAt: "2026-08-30T10:30:00.000Z",
+      }],
+    });
+
+    expect(available("drawer", "2026-08-30T10:45:00.000Z", state, session)).toBe(0);
+  });
+
+  it("does not neutralize a later-shift cancellation with previous-shift sale cash", () => {
+    const session = buildSession({
+      openingBalance: 100,
+      startTime: "2026-08-31T10:00:00.000Z",
+    });
+    const originalSale: Transaction = {
+      id: "sale-previous-shift",
+      type: "sale",
+      total: 100,
+      date: "2026-08-30T10:15:00.000Z",
+      items: [],
+      customerId: "customer-1",
+      customerName: "Customer",
+      paymentMethod: "Cash",
+      saleSettlement: { cashPaid: 100, onlinePaid: 0, creditDue: 0 },
+    };
+    const state = buildState({
+      deletedTransactions: [{
+        id: "bin-sale-previous-shift",
+        originalTransactionId: originalSale.id,
+        originalTransaction: originalSale,
+        deletedAt: "2026-08-31T10:30:00.000Z",
+        type: "sale",
+        amount: 100,
+        beforeImpact: {} as any,
+        afterImpact: {} as any,
+      }],
+      deleteCompensations: [{
+        id: "refund-next-shift",
+        transactionId: originalSale.id,
+        amount: 100,
+        mode: "cash_refund",
+        source: "explicit_refund",
+        isExplicitRefund: true,
+        refundConfirmed: true,
+        createdAt: "2026-08-31T10:30:00.000Z",
+      }],
+    });
+
+    expect(available("drawer", "2026-08-31T10:45:00.000Z", state, session)).toBe(0);
   });
 });

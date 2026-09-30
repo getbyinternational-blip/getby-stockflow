@@ -5,6 +5,12 @@ const money = (value: unknown) => {
   return Number.isFinite(amount) ? Math.max(0, amount) : 0;
 };
 
+const isInactiveTransaction = (tx: Transaction) => {
+  const row = tx as Transaction & { status?: unknown; isDeleted?: unknown; deletedAt?: unknown };
+  const status = String(row.status || '').trim().toLowerCase();
+  return Boolean(row.isDeleted || row.deletedAt || status === 'cancelled' || status === 'canceled' || status === 'void' || status === 'voided');
+};
+
 export function getSaleCashKept(tx: Transaction, saleCashPaid = 0) {
   const received = money(tx.cashReceived);
   if (received > 0) return Math.max(0, received - money(tx.changeReturned));
@@ -28,6 +34,7 @@ export function getTransactionCashKpis(tx: Transaction, saleCashPaid = 0) {
   const cash = String(tx.paymentMethod || '').trim().toLowerCase() === 'cash';
   const online = String(tx.paymentMethod || '').trim().toLowerCase() === 'online';
   const amount = money(Math.abs(Number(tx.total)));
+  if (isInactiveTransaction(tx)) return result;
   if (tx.id.startsWith('delete-compensation-') || type === 'delete_compensation'
     || tx.id.startsWith('purchase-order-') || tx.id.startsWith('purchase-cash-')) return result;
 
