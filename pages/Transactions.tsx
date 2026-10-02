@@ -152,6 +152,10 @@ export default function Transactions() {
   const DELETED_ROWS_PER_PAGE = 25;
   const DELETED_WINDOW_BATCH_SIZE = 100;
   const TRANSACTION_RENDER_BATCH_SIZE = 100;
+  const getDeletedOriginalTransactionIds = (records: DeletedTransactionRecord[] = []) =>
+    records
+      .map((record) => String(record.originalTransactionId || record.originalTransaction?.id || ''))
+      .filter(Boolean);
   const routeReady = useRouteReady();
   const isRouteActive = routeReady?.isRouteActive ?? true;
   const initialDataRef = useRef<{
@@ -161,6 +165,7 @@ export default function Transactions() {
     manualCashbookEntries: ManualCashbookEntry[];
     deleteCompensations: DeleteCompensationRecord[];
     deletedTransactions: DeletedTransactionRecord[];
+    deletedOriginalTransactionIds: string[];
     customers: Customer[];
     products: Product[];
     purchaseOrders: PurchaseOrder[];
@@ -182,6 +187,7 @@ export default function Transactions() {
         manualCashbookEntries: (data as any).manualCashbookEntries || [],
         deleteCompensations: (data as any).deleteCompensations || [],
         deletedTransactions: deletedWindow.rows,
+        deletedOriginalTransactionIds: getDeletedOriginalTransactionIds(data.deletedTransactions || []),
         customers: data.customers || [],
         products: data.products || [],
         purchaseOrders: data.purchaseOrders || [],
@@ -200,6 +206,7 @@ export default function Transactions() {
         manualCashbookEntries: [],
         deleteCompensations: [],
         deletedTransactions: [],
+        deletedOriginalTransactionIds: [],
         customers: [],
         products: [],
         purchaseOrders: [],
@@ -220,6 +227,7 @@ export default function Transactions() {
   const [manualCashbookEntries, setManualCashbookEntries] = useState<ManualCashbookEntry[]>(initialData.manualCashbookEntries);
   const [deleteCompensations, setDeleteCompensations] = useState<DeleteCompensationRecord[]>(initialData.deleteCompensations);
   const [deletedTransactions, setDeletedTransactions] = useState<DeletedTransactionRecord[]>(initialData.deletedTransactions);
+  const [deletedOriginalTransactionIdList, setDeletedOriginalTransactionIdList] = useState<string[]>(initialData.deletedOriginalTransactionIds);
   const [customers, setCustomers] = useState<Customer[]>(initialData.customers);
   const [products, setProducts] = useState<Product[]>(initialData.products);
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(initialData.purchaseOrders);
@@ -548,8 +556,8 @@ export default function Transactions() {
     return [...groupedInitial, ...additionalRows];
   }), [upfrontOrders, customers]);
   const deletedOriginalTransactionIds = useMemo(
-    () => new Set(deletedTransactions.map((record) => String(record.originalTransactionId || record.originalTransaction?.id || '')).filter(Boolean)),
-    [deletedTransactions]
+    () => new Set(deletedOriginalTransactionIdList),
+    [deletedOriginalTransactionIdList]
   );
   const renderedTransactions = useMemo(
     () => [
@@ -599,6 +607,7 @@ export default function Transactions() {
           setManualCashbookEntries((data as any).manualCashbookEntries || []);
           setDeleteCompensations((data as any).deleteCompensations || []);
           setDeletedTransactions(deletedWindow.rows);
+          setDeletedOriginalTransactionIdList(getDeletedOriginalTransactionIds(data.deletedTransactions || []));
           setCustomers(data.customers);
           setProducts(data.products || []);
           setPurchaseOrders(data.purchaseOrders || []);
@@ -701,8 +710,10 @@ export default function Transactions() {
     await perfMeasureAsync('page.Transactions.refreshDeletedTransactionsBin', async () => {
       try {
         await refreshDeletedTransactionsFromCloud();
+        const data = loadData();
         const deletedWindow = loadDeletedTransactionsPage({ limit: DELETED_WINDOW_BATCH_SIZE });
         setDeletedTransactions(deletedWindow.rows);
+        setDeletedOriginalTransactionIdList(getDeletedOriginalTransactionIds(data.deletedTransactions || []));
         setDeletedWindowCursor(deletedWindow.nextCursor);
         setHasMoreDeletedWindow(deletedWindow.hasMore);
         setIsDeletedWindowed(deletedWindow.hasMore);
@@ -1601,6 +1612,7 @@ export default function Transactions() {
       createCashCompensation: compensationMode === 'cash_refund',
     });
     setTransactions(next);
+    setDeletedOriginalTransactionIdList((prev) => Array.from(new Set([...prev, deleteTargetTx.id])));
     setSelectedTransactionIds(prev => prev.filter(id => id !== deleteTargetTx.id));
     setDeleteTargetTx(null);
   };
@@ -3663,6 +3675,7 @@ export default function Transactions() {
           const data = loadData();
           setTransactions(data.transactions);
           setDeletedTransactions(data.deletedTransactions || []);
+          setDeletedOriginalTransactionIdList(getDeletedOriginalTransactionIds(data.deletedTransactions || []));
           setCustomers(data.customers);
           return result;
         }}
